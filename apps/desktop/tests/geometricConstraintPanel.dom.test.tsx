@@ -751,6 +751,27 @@ describe('GeometricConstraintPanel', () => {
     expect(status.classList.contains('is-clear')).toBe(true)
   })
 
+  it('presents an exact full-document witness as proven satisfiable', () => {
+    renderPanel({
+      preflight: {
+        status: 'proven_satisfiable',
+        model_id: 'geometric_constraint_current_runtime_exact_satisfaction_v1',
+        constraint_count: 11,
+        equation_count: 14,
+        authorizes_project_mutation: false,
+        replayable_across_runtimes: false,
+      },
+    })
+
+    const status = screen.getByRole('status')
+    expect(status.textContent).toContain(
+      '現在の実行環境で、現在の配置は全11件・14方程式のbinary64残差を厳密に満たしています。',
+    )
+    expect(status.textContent).not.toContain('未証明')
+    expect(status.classList.contains('is-clear')).toBe(true)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('shortens canonical constraint IDs without restricting UUID version or variant bits', () => {
     const id = 'abcdef00-0000-0000-7000-00000000abcd'
     renderPanel({

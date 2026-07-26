@@ -25,7 +25,7 @@
 | 要件・基本設計・技術検証 | 5% | 85% | 4.25% | trust・proof・resource・persistence境界をversion固定したcodeと回帰へ接続。一般物理・一般自動設計の証明範囲は未完成 |
 | プロジェクト・保存・履歴 | 8% | 94% | 7.52% | strictな`.ori2`・展開folder・recovery、認証済みUndo/Redo、autosave authorityを実装。Windowsオーナー実機障害matrixと正式schema compatibility policyを残す |
 | 2D展開図エディター | 15% | 100% | 15.00% | 基本編集、9種スナップ、5線種、layer文書・edge assignment・管理UI、表示・lock・透明度、注釈・下絵object、面属性編集、複数選択の移動・複製・任意軸対称編集を保存・復旧・履歴・native IPC・Canvasへ接続 |
-| 数式・幾何制約 | 9% | 85% | 7.65% | 数式入力、11種制約、有界solver、原子的Apply、保存・履歴・10,000件境界を実装。直接矛盾certificateは限定familyで、一般充足可能性・一般MUSは未完成 |
+| 数式・幾何制約 | 9% | 85% | 7.65% | 数式入力、11種制約、有界solver、原子的Apply、保存・履歴・10,000件境界、現在配置の全11種exact-zero一般肯定判定を実装。完全な一般SAT/UNSAT決定と一般MUSは未完成 |
 | 3D折り・紙厚・衝突 | 17% | 75% | 12.75% | Tree・限定cycle・限定正厚のproof、preview、原子的Apply、限定層順viewerを実装。一般正厚・一般多面・任意self-contact・一般物理motionは未証明 |
 | 折り可能性・経路探索 | 18% | 78% | 14.04% | dyadic 3/5/9、Tree/cycle issuer proof、preview、atomic Applyを実装。任意non-tree・dense・multi-cycleの一般経路と安全なcycle mutationを残す |
 | 折り手順・PDF | 10% | 92% | 9.20% | named compiler、認証済みpreview/Apply、保存、PDF/SVG ZIPを実装。未証明技法の連続3D certificate付きcompilerを残す |
@@ -36,7 +36,7 @@
 
 ## 81.96%時点でも残る未完境界
 
-- EDT-009はlegacy 21 variantのwire互換を維持し、10/11制約種を横断するbinary64 exact-zero implication closure専用tagを2件追加して`DirectConstraintConflictKindV1`を合計23 variantとした。実残差に対して`DirectConflict`へ昇格できるsound proof familyは15 variant、残るlegacy 8 variantは`Unknown`へfail-closedである。256制約までの有界closureと16制約以下のsubset oracleを越える全11種の一般充足可能性、完全な一般矛盾原因、semantic MUSは未完成。
+- EDT-009はlegacy 21 variantのwire互換を維持し、10/11制約種を横断するbinary64 exact-zero implication closure専用tagを2件追加して`DirectConstraintConflictKindV1`を合計23 variantとした。実残差に対して`DirectConflict`へ昇格できるsound proof familyは15 variant、残るlegacy 8 variantは`Unknown`へfail-closedである。現在配置が全production residualをcurrent runtimeでexact zeroにする場合の全11種一般肯定判定は実装したが、近似解からのexact witness生成、任意入力の完全なSAT/UNSAT決定、完全な一般矛盾原因、semantic MUSは未完成。
 - 任意のnon-tree・dense・multi-cycle topologyに対する一般経路探索と安全なcycle mutation。
 - 任意角度・分岐・self-contactを含む一般正厚continuous motion、衝突回避、一般複数層transport、層順証明。
 - 摩擦、弾性、塑性、圧縮、手指把持を含む一般物理motion。
@@ -50,6 +50,7 @@
 
 以下の個別完成度は各checkpoint時点の履歴値であり、冒頭の条件付き正本値を上書きしない。
 この節の旧checkpointにある「現行」「sound」「直接矛盾variant」という表現も記録当時の主張であり、後続の2026-07-26 EDT-009監査訂正が現在の正本境界である。
+- 2026-07-26 EDT-009一般肯定判定追補: validatedな現在配置の全production V1 residualを同じ演算順で再評価し、全方程式が有限かつbinary64 exact zeroの場合だけ、全11制約種を横断するcurrent-runtime限定の充足witnessをnative分析・strict DTO・日英UIへ接続した。`NoDirectConflict`や数値toleranceを肯定にせず、11種それぞれの独立exact/nonzero fixture、invalid/degenerate、順序不変、late cancel/deadline、strict model ID/count/authority境界を固定した。超越演算のcross-runtime bit replayは証明しないため`replayable_across_runtimes=false`、project mutationは`authorizes_project_mutation=false`である。完全な一般SAT/UNSAT決定、exact witness探索、一般矛盾原因、semantic MUSは未完成なので、EDT-009部分実装、数式・幾何制約85%、全体81.96%（表示82.0%）、MUST集計85 / 2 / 0は変更しない
 - `9f6053f`で、正の紙厚・全三角形`MaterialTree`・全hinge角が有限かつ90度未満という限定入力について、単一の静的exact poseにおける全unordered face pairのclosed-prism分類と、canonical shared-hingeごとのwhole-tree coverage vectorの完全一致を証明した。4/8/16-face Treeの成功と資源上限超過のpreflight拒否を固定した。連続経路、layer transport、current mutation、非三角形・一般姿勢は未証明であり、SIM-010は部分実装、全体完成度は79.32%（表示79.3%）を維持する
 
 - EDT-009の既存`horizontal_and_vertical` 2制約原因を再監査し、水平残差`dy=0`と垂直残差`dx=0`は同一辺を長さ0へ潰す解を共有するため、直接矛盾という従来判定が偽陽性だったことを確認した。実residual回帰でzero-length escapeを固定し、同じ辺へ正の固定長がある3制約の場合だけ直接矛盾とし、それ以外は判定保留へ閉じるよう修正した。旧2-ID DTOは拒否、新3-ID DTOだけを受理し、削除最小原因も再検証した。WSL focused 2件、削除最小1件、Clippy all-targets、Node 18件、DOM 12件、production buildが成功した。`7c7134d`後から本修正`6b00ed0`前までの「soundな13種」という文書表現はこの1種について過大だった。現行の数え方は`DirectConstraintConflictKindV1`の21直接矛盾variant（17 fixed-pattern + 4 general-graph）へ統一する。19番目は同じcenterで`source/target`を逆にした2回転と実在半径辺のconsistentな正の固定長について、binary64加算結果が360度でない片側証拠がある場合だけcollapse矛盾を肯定し、丸め結果が360度なら判定保留へ閉じる。20番目は同じ対称軸上へ拘束された鏡映点と、その鏡映点対を結ぶ実在辺のconsistentな正の固定長を厳密IDで照合し、反射が強制するcollapseと正の間隔の矛盾を肯定する。21番目は180度ではない回転対称に対し、`source on line(center,target)`または`target on line(center,source)`を同一実在半径edgeの`PointOnLine`で指定する2制約を矛盾とする。PointOnLineの正規化残差はline edgeのcollapseを`NonConvergent`へ閉じ、非退化時は非零ベクトルとその非180度回転像が共線にならないため、固定長の追加証拠は不要である。solverとsolution verifierは直接矛盾preflightを数値toleranceより先に`NonConvergent`へ閉じる。初期座標、epsilon、近似値、別点・別辺は根拠にしない。EDT-009は一般MUS未実装の部分実装、全体完成率は79.32%（表示79.3%）を維持する

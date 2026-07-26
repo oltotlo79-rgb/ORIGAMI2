@@ -4,6 +4,10 @@ use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId
 
 mod annotation_editor;
 mod applied_pose;
+#[cfg(test)]
+mod constraint_exact_satisfaction_adversarial_tests;
+#[cfg(test)]
+mod constraint_exact_satisfaction_tests;
 mod constraint_solver;
 mod constraints;
 mod cycle_fold_transaction;
@@ -22,9 +26,10 @@ pub use applied_pose::{
     prepare_applied_pose_v1, prepare_closed_graph_applied_pose_v1,
 };
 pub use constraint_solver::{
-    ConstraintSolveErrorV1, ConstraintSolveLimitsV1, ConstraintSolvePreviewV1,
-    solve_geometric_constraints_v1, solve_geometric_constraints_with_drivers_v1,
-    verify_geometric_constraint_solution_v1,
+    Binary64ExactConstraintSatisfactionV1, ConstraintSolveErrorV1, ConstraintSolveLimitsV1,
+    ConstraintSolvePreviewV1, GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+    certify_binary64_exact_geometric_constraint_satisfaction_v1, solve_geometric_constraints_v1,
+    solve_geometric_constraints_with_drivers_v1, verify_geometric_constraint_solution_v1,
 };
 pub use constraints::{
     BoundedDirectMusObserverV1, BoundedDirectMusV1, ConstraintEdgeRoleV1, ConstraintId,

@@ -676,6 +676,16 @@ function ConstraintPreflightStatus({
       TEXT.unknownStatus,
       { reason: unknownReasonLabel(preflight.reason, locale) },
     )
+  } else if (!analyzing && preflight?.status === 'proven_satisfiable') {
+    className = 'is-clear'
+    message = formatLocalizedText(
+      locale,
+      TEXT.provenSatisfiable,
+      {
+        constraintCount: preflight.constraint_count,
+        equationCount: preflight.equation_count,
+      },
+    )
   } else if (!analyzing && preflight?.status === 'no_direct_conflict') {
     className = 'is-clear'
     message = selectLocalizedText(locale, TEXT.noDirectConflict)

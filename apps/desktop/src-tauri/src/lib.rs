@@ -200,7 +200,8 @@ use ori_collision::{
 use ori_core::{
     BoundaryEdgeRef, BoundedDirectMusObserverV1, BoundedDirectMusV1, Command,
     ConstraintPreflightV1, ConstraintSolveLimitsV1, DirectConstraintConflictV1, EditorState,
-    EditorTopology, GeometricConstraintLimitsV1, GeometricConstraintPreflightObserverControlV1,
+    EditorTopology, GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+    GeometricConstraintLimitsV1, GeometricConstraintPreflightObserverControlV1,
     GeometricConstraintPreflightObserverV1, GeometricConstraintUnknownReasonV1,
     GlobalFlatFoldabilityCheckpoint, GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits,
     GlobalFlatFoldabilityObserver, GlobalFlatFoldabilityOutcome,
@@ -210,10 +211,10 @@ use ori_core::{
     MirrorSelectionModeV1, PaperValidationIssue, PointPolygonRelation, TopologyAnalysisInput,
     TopologyIssue, TopologySnapshot, ValidationIssue, VertexPositionUpdate,
     analyze_global_flat_foldability_with_observer, analyze_local_flat_foldability,
-    create_rectangular_sheet, find_bounded_direct_mus_with_observer_v1,
-    prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
-    solve_geometric_constraints_v1, solve_geometric_constraints_with_drivers_v1,
-    validate_crease_pattern, validate_paper,
+    certify_binary64_exact_geometric_constraint_satisfaction_v1, create_rectangular_sheet,
+    find_bounded_direct_mus_with_observer_v1, prepare_geometric_constraints_v1,
+    segment_midpoint_polygon_relation, solve_geometric_constraints_v1,
+    solve_geometric_constraints_with_drivers_v1, validate_crease_pattern, validate_paper,
 };
 use ori_domain::{
     AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,

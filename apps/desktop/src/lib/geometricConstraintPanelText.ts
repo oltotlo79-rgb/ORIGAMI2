@@ -93,6 +93,7 @@ type GeometricConstraintPanelSimpleTextKey =
   | 'analysisFailed'
   | 'directConflictCount'
   | 'unknownStatus'
+  | 'provenSatisfiable'
   | 'noDirectConflict'
   | 'unanalyzed'
   | 'directConflictCauses'
@@ -256,6 +257,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
   unknownStatus: text(
     '{reason}。安全確認済みとして扱いません。',
     '{reason} Do not treat the constraints as safety-verified.',
+  ),
+  provenSatisfiable: text(
+    '現在の実行環境で、現在の配置は全{constraintCount}件・{equationCount}方程式のbinary64残差を厳密に満たしています。',
+    'In this runtime, the current assignment exactly satisfies all {constraintCount} constraints and {equationCount} binary64 residual equations.',
   ),
   noDirectConflict: text(
     '直接矛盾は見つかりません（全制約の充足可能性は未証明）',

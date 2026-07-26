@@ -14,6 +14,9 @@ use crate::{
 const REGULARIZATION: f64 = 1e-10;
 const DERIVATIVE_STEP: f64 = 1e-6;
 
+pub const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1: &str =
+    "geometric_constraint_current_runtime_exact_satisfaction_v1";
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstraintSolveLimitsV1 {
     pub max_vertices: usize,
@@ -46,6 +49,33 @@ pub struct ConstraintSolvePreviewV1 {
     pub degrees_of_freedom: usize,
     pub equation_count: usize,
     pub condition_estimate: f64,
+}
+
+/// Native-produced witness that the current pattern satisfies the complete
+/// validated constraint document in the V1 binary64 residual language.
+///
+/// This is deliberately separate from a numerical solve preview: every hard
+/// residual must be finite and exactly `+0.0` or `-0.0`. A failed attempt is
+/// never evidence of unsatisfiability.
+///
+/// The witness is ephemeral and runtime-local. V1 uses the same `f64`
+/// transcendental operations as the production solver, whose last bits are
+/// not a cross-platform replay contract. This value is neither serializable
+/// nor mutation authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Binary64ExactConstraintSatisfactionV1 {
+    constraint_count: usize,
+    equation_count: usize,
+}
+
+impl Binary64ExactConstraintSatisfactionV1 {
+    pub fn constraint_count(self) -> usize {
+        self.constraint_count
+    }
+
+    pub fn equation_count(self) -> usize {
+        self.equation_count
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -367,6 +397,45 @@ pub fn verify_geometric_constraint_solution_v1(
     } else {
         Err(ConstraintSolveErrorV1::NonConvergent)
     }
+}
+
+/// Certifies an explicit, complete assignment for every supported constraint.
+///
+/// `Ok(Some(_))` is a positive satisfiability proof for the implemented V1
+/// binary64 residual language. `Ok(None)` only means that at least one finite
+/// residual is non-zero. Invalid, non-finite, or degenerate inputs return an
+/// error and therefore fail closed.
+pub fn certify_binary64_exact_geometric_constraint_satisfaction_v1(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+) -> Result<Option<Binary64ExactConstraintSatisfactionV1>, ConstraintSolveErrorV1> {
+    let prepared =
+        prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
+            .map_err(|_| ConstraintSolveErrorV1::InvalidConstraintDocumentOrGeometry)?;
+    let equation_count = hard_len(document)?;
+    let positions = pattern
+        .vertices
+        .iter()
+        .map(|vertex| (vertex.id, vertex.position))
+        .collect::<HashMap<_, _>>();
+    let values = residuals(pattern, document, &positions)?;
+    debug_assert_eq!(values.len(), equation_count);
+    if !values.iter().all(|value| *value == 0.0) {
+        return Ok(None);
+    }
+    if matches!(
+        prepared.preflight(),
+        ConstraintPreflightV1::DirectConflict { .. }
+    ) {
+        // A concrete exact witness and a direct unsatisfiability theorem must
+        // never escape as simultaneous positive claims. Preserve neither if
+        // these independently implemented boundaries ever disagree.
+        return Err(ConstraintSolveErrorV1::NonConvergent);
+    }
+    Ok(Some(Binary64ExactConstraintSatisfactionV1 {
+        constraint_count: document.constraints.len(),
+        equation_count,
+    }))
 }
 
 fn validate_limits(limits: ConstraintSolveLimitsV1) -> Result<(), ConstraintSolveErrorV1> {

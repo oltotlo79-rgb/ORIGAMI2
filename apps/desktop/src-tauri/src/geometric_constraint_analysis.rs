@@ -213,6 +213,13 @@ pub(super) enum GeometricConstraintPreflightResult {
         conflicts: Vec<DirectConstraintConflictV1>,
         bounded_direct_mus: BoundedDirectMusResult,
     },
+    ProvenSatisfiable {
+        model_id: &'static str,
+        constraint_count: usize,
+        equation_count: usize,
+        authorizes_project_mutation: bool,
+        replayable_across_runtimes: bool,
+    },
     NoDirectConflict,
     Unknown {
         reason: GeometricConstraintUnknownReason,
@@ -500,24 +507,7 @@ pub(super) fn analyze_geometric_constraint_document_with_observer(
     observer: &mut GeometricConstraintAnalysisObserver,
 ) -> GeometricConstraintPreflightResult {
     if let Some(stop) = observer.checkpoint() {
-        let mut unchecked_constraint_ids = document
-            .constraints
-            .iter()
-            .map(|record| record.id)
-            .collect::<Vec<_>>();
-        unchecked_constraint_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
-        unchecked_constraint_ids.dedup();
-        return GeometricConstraintPreflightResult::Unknown {
-            reason: match stop {
-                GeometricConstraintAnalysisStop::Cancelled => {
-                    GeometricConstraintUnknownReason::Cancelled
-                }
-                GeometricConstraintAnalysisStop::DeadlineReached => {
-                    GeometricConstraintUnknownReason::DeadlineReached
-                }
-            },
-            unchecked_constraint_ids,
-        };
+        return stopped_geometric_constraint_analysis_result(document, stop);
     }
     if document.schema_version == ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1
         && document.is_empty()
@@ -540,7 +530,18 @@ pub(super) fn analyze_geometric_constraint_document_with_observer(
         };
     };
 
-    match prepared.preflight_with_observer(observer) {
+    let preflight = prepared.preflight_with_observer(observer);
+    if let Some(stop) = observer.checkpoint() {
+        return stopped_geometric_constraint_analysis_result(document, stop);
+    }
+    if !matches!(preflight, ConstraintPreflightV1::DirectConflict { .. })
+        && let Ok(Some(certificate)) =
+            certify_binary64_exact_geometric_constraint_satisfaction_v1(pattern, document)
+    {
+        return finish_exact_geometric_constraint_satisfaction(document, observer, certificate);
+    }
+
+    match preflight {
         ConstraintPreflightV1::DirectConflict { conflicts } => {
             let bounded_direct_mus = analyze_bounded_direct_mus_with_observer(&prepared, observer);
             GeometricConstraintPreflightResult::DirectConflict {
@@ -577,6 +578,47 @@ pub(super) fn analyze_geometric_constraint_document_with_observer(
             },
             unchecked_constraint_ids,
         },
+    }
+}
+
+pub(super) fn finish_exact_geometric_constraint_satisfaction(
+    document: &GeometricConstraintDocumentV1,
+    observer: &mut GeometricConstraintAnalysisObserver,
+    certificate: ori_core::Binary64ExactConstraintSatisfactionV1,
+) -> GeometricConstraintPreflightResult {
+    if let Some(stop) = observer.checkpoint() {
+        return stopped_geometric_constraint_analysis_result(document, stop);
+    }
+    GeometricConstraintPreflightResult::ProvenSatisfiable {
+        model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+        constraint_count: certificate.constraint_count(),
+        equation_count: certificate.equation_count(),
+        authorizes_project_mutation: false,
+        replayable_across_runtimes: false,
+    }
+}
+
+fn stopped_geometric_constraint_analysis_result(
+    document: &GeometricConstraintDocumentV1,
+    stop: GeometricConstraintAnalysisStop,
+) -> GeometricConstraintPreflightResult {
+    let mut unchecked_constraint_ids = document
+        .constraints
+        .iter()
+        .map(|record| record.id)
+        .collect::<Vec<_>>();
+    unchecked_constraint_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+    unchecked_constraint_ids.dedup();
+    GeometricConstraintPreflightResult::Unknown {
+        reason: match stop {
+            GeometricConstraintAnalysisStop::Cancelled => {
+                GeometricConstraintUnknownReason::Cancelled
+            }
+            GeometricConstraintAnalysisStop::DeadlineReached => {
+                GeometricConstraintUnknownReason::DeadlineReached
+            }
+        },
+        unchecked_constraint_ids,
     }
 }
 

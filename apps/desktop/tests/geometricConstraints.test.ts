@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   createGeometricConstraintPresentation,
+  GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
   GEOMETRIC_CONSTRAINT_SCHEMA_VERSION,
   MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS,
   MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS,
@@ -1314,6 +1315,102 @@ test('normalizes no-conflict and all seven closed unknown reasons', () => {
       reason,
     )
     assertDeepFrozen(normalized)
+  }
+})
+
+test('normalizes only bounded exact-model satisfiability certificates', () => {
+  const exact = normalizeGeometricConstraintPreflightResponse(
+    response({
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      constraint_count: 11,
+      equation_count: 14,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: false,
+    }),
+    BINDING,
+  )
+  assert.deepEqual(exact?.result, {
+    status: 'proven_satisfiable',
+    model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+    constraint_count: 11,
+    equation_count: 14,
+    authorizes_project_mutation: false,
+    replayable_across_runtimes: false,
+  })
+  assertDeepFrozen(exact)
+
+  for (const result of [
+    {
+      status: 'proven_satisfiable',
+      model_id: 'future_model',
+      constraint_count: 11,
+      equation_count: 14,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: false,
+    },
+    {
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      constraint_count: 0,
+      equation_count: 0,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: false,
+    },
+    {
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      constraint_count: MAX_GEOMETRIC_CONSTRAINT_RECORDS + 1,
+      equation_count: MAX_GEOMETRIC_CONSTRAINT_RECORDS + 1,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: false,
+    },
+    {
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      constraint_count: 2,
+      equation_count: 1,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: false,
+    },
+    {
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      constraint_count: 2,
+      equation_count: 5,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: false,
+    },
+    {
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      constraint_count: 2,
+      equation_count: 2,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: false,
+      future: true,
+    },
+    {
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      constraint_count: 2,
+      equation_count: 2,
+      authorizes_project_mutation: true,
+      replayable_across_runtimes: false,
+    },
+    {
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      constraint_count: 2,
+      equation_count: 2,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: true,
+    },
+  ]) {
+    assert.equal(
+      normalizeGeometricConstraintPreflightResponse(response(result), BINDING),
+      null,
+    )
   }
 })
 

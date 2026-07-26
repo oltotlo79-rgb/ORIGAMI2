@@ -12,6 +12,8 @@ export const MAX_GEOMETRIC_CONSTRAINT_DIRECT_CONFLICTS = 10_000
 export const MAX_DIRECT_CONFLICT_WITNESS_IDS = 256
 export const MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS = 16
 export const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS = 65_535
+export const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID =
+  'geometric_constraint_current_runtime_exact_satisfaction_v1' as const
 
 export type ZeroLengthClosureProviderKindV1 =
   | 'point_on_line'
@@ -266,6 +268,14 @@ export type GeometricConstraintPreflightResultV1 =
       status: 'direct_conflict'
       conflicts: readonly DirectConstraintConflictV1[]
       bounded_direct_mus: BoundedDirectMusV1
+    }>
+  | Readonly<{
+      status: 'proven_satisfiable'
+      model_id: typeof GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
+      constraint_count: number
+      equation_count: number
+      authorizes_project_mutation: false
+      replayable_across_runtimes: false
     }>
   | Readonly<{
       status: 'no_direct_conflict'
@@ -787,6 +797,38 @@ function parsePreflightResult(
   const record = snapshotDataRecord(value)
   if (!record || typeof record.status !== 'string') return null
   switch (record.status) {
+    case 'proven_satisfiable': {
+      if (
+        !hasExactKeys(record, [
+          'status',
+          'model_id',
+          'constraint_count',
+          'equation_count',
+          'authorizes_project_mutation',
+          'replayable_across_runtimes',
+        ])
+        || record.model_id
+          !== GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
+        || typeof record.constraint_count !== 'number'
+        || !Number.isSafeInteger(record.constraint_count)
+        || record.constraint_count < 1
+        || record.constraint_count > MAX_GEOMETRIC_CONSTRAINT_RECORDS
+        || typeof record.equation_count !== 'number'
+        || !Number.isSafeInteger(record.equation_count)
+        || record.equation_count < record.constraint_count
+        || record.equation_count > record.constraint_count * 2
+        || record.authorizes_project_mutation !== false
+        || record.replayable_across_runtimes !== false
+      ) return null
+      return Object.freeze({
+        status: record.status,
+        model_id: record.model_id,
+        constraint_count: record.constraint_count,
+        equation_count: record.equation_count,
+        authorizes_project_mutation: false as const,
+        replayable_across_runtimes: false as const,
+      })
+    }
     case 'no_direct_conflict':
       return hasExactKeys(record, ['status'])
         ? Object.freeze({ status: record.status })

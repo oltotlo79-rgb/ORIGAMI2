@@ -3418,7 +3418,7 @@ fn project_layer_presentation_ipc_input_is_a_strict_nested_record() {
 }
 
 #[test]
-fn geometric_constraint_preflight_exposes_all_three_safe_states() {
+fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states() {
     let project = initial_project_state();
     let pattern = project.editor.pattern();
     let first_edge = pattern.edges[0].id;
@@ -3428,9 +3428,42 @@ fn geometric_constraint_preflight_exposes_all_three_safe_states() {
         constraint: GeometricConstraintKindV1::Horizontal { edge: first_edge },
     };
 
-    let no_direct = GeometricConstraintDocumentV1 {
+    let exact_positive = GeometricConstraintDocumentV1 {
         schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
         constraints: vec![horizontal.clone()],
+    };
+    assert_eq!(
+        analyze_geometric_constraint_document(pattern, &exact_positive),
+        GeometricConstraintPreflightResult::ProvenSatisfiable {
+            model_id: ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+            constraint_count: 1,
+            equation_count: 1,
+            authorizes_project_mutation: false,
+            replayable_across_runtimes: false,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(analyze_geometric_constraint_document(
+            pattern,
+            &exact_positive,
+        ))
+        .expect("serialize exact positive constraint result"),
+        serde_json::json!({
+            "status": "proven_satisfiable",
+            "model_id": "geometric_constraint_current_runtime_exact_satisfaction_v1",
+            "constraint_count": 1,
+            "equation_count": 1,
+            "authorizes_project_mutation": false,
+            "replayable_across_runtimes": false,
+        })
+    );
+
+    let no_direct = GeometricConstraintDocumentV1 {
+        schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+        constraints: vec![GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal { edge: second_edge },
+        }],
     };
     assert_eq!(
         analyze_geometric_constraint_document(pattern, &no_direct),
@@ -3522,6 +3555,57 @@ fn geometric_constraint_preflight_exposes_all_three_safe_states() {
             ..
         }
     ));
+}
+
+#[test]
+fn exact_positive_publication_rechecks_late_cancel_and_deadline() {
+    let project = initial_project_state();
+    let pattern = project.editor.pattern();
+    let constraint_id = ConstraintId::new();
+    let document = GeometricConstraintDocumentV1 {
+        schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+        constraints: vec![GeometricConstraintRecordV1 {
+            id: constraint_id,
+            constraint: GeometricConstraintKindV1::Horizontal {
+                edge: pattern.edges[0].id,
+            },
+        }],
+    };
+    let certificate =
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(pattern, &document)
+            .expect("valid exact fixture")
+            .expect("initial horizontal edge is exact");
+
+    for (runtime, expected_reason) in [
+        (
+            GeometricConstraintAnalysisRuntime {
+                cancellation: Arc::new(AtomicBool::new(true)),
+                deadline: std::time::Instant::now()
+                    .checked_add(Duration::from_secs(60))
+                    .expect("future test deadline"),
+            },
+            GeometricConstraintUnknownReason::Cancelled,
+        ),
+        (
+            GeometricConstraintAnalysisRuntime {
+                cancellation: Arc::new(AtomicBool::new(false)),
+                deadline: std::time::Instant::now(),
+            },
+            GeometricConstraintUnknownReason::DeadlineReached,
+        ),
+    ] {
+        assert_eq!(
+            crate::geometric_constraint_analysis::finish_exact_geometric_constraint_satisfaction(
+                &document,
+                &mut GeometricConstraintAnalysisObserver::new(runtime),
+                certificate,
+            ),
+            GeometricConstraintPreflightResult::Unknown {
+                reason: expected_reason,
+                unchecked_constraint_ids: vec![constraint_id],
+            }
+        );
+    }
 }
 
 #[test]

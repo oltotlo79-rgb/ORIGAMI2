@@ -7,6 +7,7 @@ function source(relativePath: string): string {
 }
 
 const nativeLib = source('../src-tauri/src/lib.rs')
+const patternEditNative = source('../src-tauri/src/pattern_edit_commands.rs')
 const nativeTests = source('../src-tauri/src/tests.rs')
 const nativeModule = source('../src-tauri/src/numeric_expression.rs')
 const nativeCargo = source('../src-tauri/Cargo.toml')
@@ -179,7 +180,7 @@ test('existing paper expressions are native-revalidated, undoable, and persisted
     /resize_rectangular_paper[\s\S]*?widthExpression,[\s\S]*?heightExpression,[\s\S]*?widthMm,[\s\S]*?heightMm/u,
   )
   assert.match(
-    nativeLib,
+    patternEditNative,
     /fn resize_rectangular_paper\([\s\S]*?width_expression: String,[\s\S]*?height_expression: String,[\s\S]*?evaluate_positive_millimetre_pair\([\s\S]*?to_bits\(\) != width_mm\.to_bits\(\)/u,
   )
   assert.match(
@@ -207,7 +208,7 @@ test('vertex and polar construction expressions retain source, ID, and native au
     /millimetreExpressionSource\(xDisplayExpression[\s\S]*?millimetreExpressionSource\(yDisplayExpression/u,
   )
   assert.match(
-    nativeLib,
+    patternEditNative,
     /validate_coordinate_expression_pair\(&x_expression,[\s\S]*?adopt_vertex_coordinate_expression/u,
   )
   assert.match(
@@ -234,11 +235,11 @@ test('whole-line translation is one native edit with expression-backed endpoint 
     /submitMoveSelectedEdge[\s\S]*?evaluateDisplayLengthExpression\(deltaXDisplayExpression[\s\S]*?moveEdge\(/u,
   )
   assert.match(
-    nativeLib,
+    patternEditNative,
     /fn move_edge\([\s\S]*?Command::MoveEdge[\s\S]*?for \(vertex, previous, adopted\)[\s\S]*?adopt_vertex_coordinate_expression/u,
   )
   assert.match(
-    nativeLib,
+    patternEditNative,
     /format!\("\(\{\}\)\+\(\{delta_x_expression\}\)"/u,
   )
 })
@@ -253,7 +254,7 @@ test('selected-face translation moves its complete bounded vertex set in one nat
     /submitMoveSelectedFace[\s\S]*?moveVertices\([\s\S]*?\[\.\.\.selectedFace\.vertexIds\]/u,
   )
   assert.match(
-    nativeLib,
+    patternEditNative,
     /fn move_vertices\([\s\S]*?HashSet::with_capacity[\s\S]*?Command::MoveVertices[\s\S]*?adopt_vertex_coordinate_expression/u,
   )
   assert.match(

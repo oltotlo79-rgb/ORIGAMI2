@@ -4,7 +4,7 @@ import test from 'node:test'
 
 const app = source('../src/App.tsx')
 const canvas = source('../src/components/CreaseCanvas.tsx')
-const native = source('../src-tauri/src/lib.rs')
+const native = source('../src-tauri/src/pattern_edit_commands.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
 
 test('mirror preview and apply share one immutable identity-bound request', () => {

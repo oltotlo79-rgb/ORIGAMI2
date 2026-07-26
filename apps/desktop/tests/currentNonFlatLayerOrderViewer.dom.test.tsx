@@ -129,12 +129,16 @@ type Source = {
 }
 
 /** A fresh source object; every call returns a distinct reference. */
-function makeSource(overrides: Partial<Source['appliedPose']> = {}): Source {
+function makeSource(
+  overrides: Partial<Source['appliedPose']> = {},
+  sourceOverrides: Partial<Omit<Source, 'appliedPose'>> = {},
+): Source {
   return {
     projectInstanceId: INSTANCE,
     projectId: PROJECT,
     revision: 12,
     foldModelFingerprintSha256: FINGERPRINT,
+    ...sourceOverrides,
     appliedPose: {
       state: 'stable',
       projectId: PROJECT,
@@ -267,6 +271,21 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     ['an out-of-range request hinge', {
       hingeAngles: [{ edgeId: EDGE_1, angleDegrees: 181 }],
     }],
+    ['an invalid request hinge ID', {
+      hingeAngles: [{ edgeId: 'not-a-canonical-edge-id', angleDegrees: 73.5 }],
+    }],
+    ['a completely flat request hinge vector', {
+      hingeAngles: [
+        { edgeId: EDGE_1, angleDegrees: 0 },
+        { edgeId: uuid(22), angleDegrees: 180 },
+      ],
+    }],
+    ['a request hinge vector above the viewer cap', {
+      hingeAngles: Array.from({ length: 4_097 }, (_, index) => ({
+        edgeId: uuid(100 + index),
+        angleDegrees: 73.5,
+      })),
+    }],
   ]
 
   for (const [name, overrides] of NON_INVOKING) {
@@ -281,6 +300,153 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
       expect(invoke).not.toHaveBeenCalled()
     })
   }
+
+  const NON_INVOKING_ROOT: readonly (readonly [
+    string,
+    Partial<Omit<Source, 'appliedPose'>>,
+  ])[] = [
+    ['an invalid project instance ID', { projectInstanceId: 'invalid' }],
+    ['an invalid project ID', { projectId: 'invalid' }],
+    ['an unsafe revision', { revision: Number.MAX_SAFE_INTEGER + 1 }],
+    ['an uppercase fingerprint', { foldModelFingerprintSha256: 'D'.repeat(64) }],
+    ['a short fingerprint', { foldModelFingerprintSha256: 'd'.repeat(62) }],
+  ]
+
+  for (const [name, overrides] of NON_INVOKING_ROOT) {
+    it(`never invokes the command for ${name}`, async () => {
+      render(
+        <CurrentNonFlatLayerOrderViewer
+          locale="en"
+          source={makeSource({}, overrides)}
+        />,
+      )
+      await screen.findByText('No non-flat layer order is bound to the current pose.')
+      expect(invoke).not.toHaveBeenCalled()
+    })
+  }
+
+  it('never executes a source accessor', async () => {
+    let reads = 0
+    const hostile = makeSource() as Source & Record<string, unknown>
+    Object.defineProperty(hostile, 'appliedPose', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        reads += 1
+        return makeSource().appliedPose
+      },
+    })
+    render(
+      <CurrentNonFlatLayerOrderViewer
+        locale="en"
+        source={hostile}
+      />,
+    )
+    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    expect(reads).toBe(0)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('never reads a request array through its get trap', async () => {
+    let reads = 0
+    const hostile = makeSource()
+    hostile.appliedPose.hingeAngles = new Proxy(
+      hostile.appliedPose.hingeAngles,
+      {
+        get() {
+          reads += 1
+          throw new Error('request array get trap')
+        },
+      },
+    )
+    invoke.mockResolvedValue(viewResponse())
+    render(
+      <CurrentNonFlatLayerOrderViewer
+        locale="en"
+        source={hostile}
+      />,
+    )
+    await screen.findByText('2 faces')
+    expect(reads).toBe(0)
+    expect(invoke).toHaveBeenCalledTimes(1)
+  })
+
+  it('accepts the maximum request hinge count without truncating it', async () => {
+    const maximum = Array.from({ length: 4_096 }, (_, index) => ({
+      edgeId: uuid(10_000 + index),
+      angleDegrees: 73.5,
+    }))
+    invoke.mockResolvedValue(null)
+    render(
+      <CurrentNonFlatLayerOrderViewer
+        locale="en"
+        source={makeSource({ hingeAngles: maximum })}
+      />,
+    )
+    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    expect(invoke).toHaveBeenCalledTimes(1)
+    const request = invoke.mock.calls[0]?.[1] as {
+      request: { expectedAppliedPose: { hingeAngles: unknown[] } }
+    }
+    expect(request.request.expectedAppliedPose.hingeAngles).toHaveLength(4_096)
+  })
+
+  it('never executes a request array index accessor', async () => {
+    let reads = 0
+    const hostile = makeSource()
+    Object.defineProperty(hostile.appliedPose.hingeAngles, '0', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        reads += 1
+        return { edgeId: EDGE_1, angleDegrees: 73.5 }
+      },
+    })
+    render(
+      <CurrentNonFlatLayerOrderViewer
+        locale="en"
+        source={hostile}
+      />,
+    )
+    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    expect(reads).toBe(0)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('never executes a request hinge field accessor', async () => {
+    let reads = 0
+    const hostile = makeSource()
+    Object.defineProperty(hostile.appliedPose.hingeAngles[0]!, 'angleDegrees', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        reads += 1
+        return 73.5
+      },
+    })
+    render(
+      <CurrentNonFlatLayerOrderViewer
+        locale="en"
+        source={hostile}
+      />,
+    )
+    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    expect(reads).toBe(0)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('fails closed for a revoked request source Proxy', async () => {
+    const revocable = Proxy.revocable(makeSource(), {})
+    revocable.revoke()
+    render(
+      <CurrentNonFlatLayerOrderViewer
+        locale="en"
+        source={revocable.proxy}
+      />,
+    )
+    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    expect(invoke).not.toHaveBeenCalled()
+  })
 
   it('rejects a response whose pose binding differs from the request', async () => {
     const forged = viewResponse()

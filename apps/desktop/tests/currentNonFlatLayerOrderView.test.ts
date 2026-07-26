@@ -577,12 +577,12 @@ rejects('a two-point cell boundary', (value) => {
   value.cells[0]!.projection.exactBoundaryUv.pop()
   value.work.exactBoundaryPointCount = 2
 })
-rejects('out-of-order cell keys', (value) => {
+rejects('out-of-order cell keys', () => {
   const two = response({ cells: 2 })
   two.cells = [two.cells[1]!, two.cells[0]!]
   return two
 })
-rejects('duplicate cell keys', (value) => {
+rejects('duplicate cell keys', () => {
   const two = response({ cells: 2 })
   two.cells[1]!.cellKeySha256 = DIGEST_C
   return two
@@ -702,6 +702,43 @@ test('13.2 rejects a throwing nested get trap', () => {
     },
   })
   assert.equal(normalize(value), null)
+})
+
+test('13.2 rejects a revoked root Proxy without throwing', () => {
+  const revocable = Proxy.revocable(response(), {})
+  revocable.revoke()
+  assert.doesNotThrow(() => assert.equal(normalize(revocable.proxy), null))
+})
+
+test('13.2 rejects a revoked array Proxy without throwing', () => {
+  const value = response()
+  const revocable = Proxy.revocable(value.faces, {})
+  value.faces = revocable.proxy
+  revocable.revoke()
+  assert.doesNotThrow(() => assert.equal(normalize(value), null))
+})
+
+test('13.2 never reads a dense array through its get trap', () => {
+  let reads = 0
+  const value = response()
+  value.faces = new Proxy(value.faces, {
+    get() {
+      reads += 1
+      throw new Error('array get trap')
+    },
+  })
+  assert.ok(normalize(value))
+  assert.equal(reads, 0)
+})
+
+test('13.2 rejects a throwing array ownKeys trap without surfacing it', () => {
+  const value = response()
+  value.faces = new Proxy(value.faces, {
+    ownKeys() {
+      throw new Error('array ownKeys trap')
+    },
+  })
+  assert.doesNotThrow(() => assert.equal(normalize(value), null))
 })
 
 // -- 3.1 source hygiene ----------------------------------------------------

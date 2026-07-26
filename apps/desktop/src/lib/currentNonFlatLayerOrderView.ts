@@ -142,23 +142,34 @@ function ownData(record: object, key: string): unknown {
   return descriptor.value
 }
 
+/** Captures all own descriptors in one fail-closed reflection operation. */
+function ownDescriptorSnapshot(value: object): PropertyDescriptorMap | null {
+  try {
+    return Object.getOwnPropertyDescriptors(value)
+  } catch {
+    return null
+  }
+}
+
 /** Detaches an object whose own enumerable keys are exactly `keys`. */
 function exactRecord(
   value: unknown,
   keys: readonly string[],
 ): Record<string, unknown> | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null
-  }
-  let names: string[]
-  let symbols: symbol[]
+  if (typeof value !== 'object' || value === null) return null
+  let isArray: boolean
   try {
-    names = Object.getOwnPropertyNames(value)
-    symbols = Object.getOwnPropertySymbols(value)
+    isArray = Array.isArray(value)
   } catch {
     return null
   }
-  if (symbols.length > 0 || names.length !== keys.length) return null
+  if (isArray) return null
+  const descriptors = ownDescriptorSnapshot(value)
+  if (!descriptors) return null
+  const ownKeys = Reflect.ownKeys(descriptors)
+  if (ownKeys.some((key) => typeof key === 'symbol')) return null
+  const names = ownKeys as string[]
+  if (names.length !== keys.length) return null
   const expected = [...keys].sort()
   const actual = names.slice().sort()
   for (let index = 0; index < expected.length; index += 1) {
@@ -166,34 +177,41 @@ function exactRecord(
   }
   const record: Record<string, unknown> = {}
   for (const key of keys) {
-    const own = ownData(value, key)
-    if (own === undefined) return null
-    record[key] = own
+    const descriptor = descriptors[key]
+    if (!descriptor || !('value' in descriptor)) return null
+    record[key] = descriptor.value
   }
   return record
 }
 
 /** Detaches a dense array with no extra own properties. */
 function denseArray(value: unknown, maximum: number): unknown[] | null {
-  if (!Array.isArray(value) || value.length > maximum) return null
-  let names: string[]
-  let symbols: symbol[]
+  let isArray: boolean
   try {
-    names = Object.getOwnPropertyNames(value)
-    symbols = Object.getOwnPropertySymbols(value)
+    isArray = Array.isArray(value)
   } catch {
     return null
   }
+  if (!isArray || typeof value !== 'object' || value === null) return null
+  const descriptors = ownDescriptorSnapshot(value)
+  if (!descriptors) return null
+  const ownKeys = Reflect.ownKeys(descriptors)
+  if (ownKeys.some((key) => typeof key === 'symbol')) return null
+  const lengthDescriptor = descriptors.length
+  if (!lengthDescriptor || !('value' in lengthDescriptor)) return null
+  const length = lengthDescriptor.value
   if (
-    symbols.length > 0
-    || names.length !== value.length + 1
-    || !names.includes('length')
+    typeof length !== 'number'
+    || !Number.isSafeInteger(length)
+    || length < 0
+    || length > maximum
+    || ownKeys.length !== length + 1
   ) return null
   const items: unknown[] = []
-  for (let index = 0; index < value.length; index += 1) {
-    const own = ownData(value, String(index))
-    if (own === undefined) return null
-    items.push(own)
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = descriptors[String(index)]
+    if (!descriptor || !('value' in descriptor)) return null
+    items.push(descriptor.value)
   }
   return items
 }
@@ -671,6 +689,89 @@ export type CurrentNonFlatLayerOrderViewRequestSource = Readonly<{
   }>
 }>
 
+type DetachedCurrentNonFlatLayerOrderViewRequestSource = Readonly<{
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  foldModelFingerprintSha256: string
+  fixedFaceId: string
+  hingeAngles: readonly Readonly<{ edgeId: string; angleDegrees: number }>[]
+}>
+
+/**
+ * Detaches and validates the complete invoke authority without reading a
+ * getter, array index accessor, or Proxy `get` trap.
+ */
+function detachCurrentNonFlatLayerOrderViewRequestSource(
+  value: unknown,
+): DetachedCurrentNonFlatLayerOrderViewRequestSource | null {
+  const source = exactRecord(value, [
+    'projectInstanceId',
+    'projectId',
+    'revision',
+    'foldModelFingerprintSha256',
+    'appliedPose',
+  ])
+  if (!source) return null
+  const pose = exactRecord(source.appliedPose, [
+    'projectId',
+    'revision',
+    'fixedFaceId',
+    'hingeAngles',
+    'state',
+  ])
+  if (!pose || pose.state !== 'stable') return null
+
+  const revision = safeCount(source.revision, Number.MAX_SAFE_INTEGER)
+  const poseRevision = safeCount(pose.revision, Number.MAX_SAFE_INTEGER)
+  const fingerprint = sha256Hex(source.foldModelFingerprintSha256)
+  if (
+    !isCanonicalNonNilUuid(source.projectInstanceId)
+    || !isCanonicalNonNilUuid(source.projectId)
+    || !isCanonicalNonNilUuid(pose.projectId)
+    || !isCanonicalNonNilUuid(pose.fixedFaceId)
+    || revision === null
+    || poseRevision === null
+    || pose.projectId !== source.projectId
+    || poseRevision !== revision
+    || fingerprint === null
+  ) return null
+
+  const rawAngles = denseArray(pose.hingeAngles, MAX_NON_FLAT_VIEW_HINGES_V1)
+  if (!rawAngles || rawAngles.length === 0) return null
+  const hingeAngles: { edgeId: string; angleDegrees: number }[] = []
+  let hasNonFlatAngle = false
+  for (const rawAngle of rawAngles) {
+    const angle = exactRecord(rawAngle, ['edgeId', 'angleDegrees'])
+    if (!angle || !isCanonicalNonNilUuid(angle.edgeId)) return null
+    const angleDegrees = finiteNumber(angle.angleDegrees)
+    if (angleDegrees === null || angleDegrees < 0 || angleDegrees > 180) {
+      return null
+    }
+    if (angleDegrees !== 0 && angleDegrees !== 180) hasNonFlatAngle = true
+    hingeAngles.push({ edgeId: angle.edgeId, angleDegrees })
+  }
+  if (!hasNonFlatAngle) return null
+  hingeAngles.sort((left, right) => {
+    if (left.edgeId < right.edgeId) return -1
+    if (left.edgeId > right.edgeId) return 1
+    return 0
+  })
+  if (
+    hingeAngles.some((angle, index) =>
+      index > 0 && hingeAngles[index - 1]?.edgeId === angle.edgeId)
+  ) return null
+
+  return Object.freeze({
+    projectInstanceId: source.projectInstanceId,
+    projectId: source.projectId,
+    revision,
+    foldModelFingerprintSha256: fingerprint,
+    fixedFaceId: pose.fixedFaceId,
+    hingeAngles: Object.freeze(hingeAngles.map((angle) => Object.freeze(angle))),
+  })
+}
+
 /**
  * Invokes the read-only viewer for the applied non-flat layer order.
  *
@@ -681,37 +782,17 @@ export type CurrentNonFlatLayerOrderViewRequestSource = Readonly<{
 export async function getCurrentNonFlatLayerOrderViewV1(
   source: CurrentNonFlatLayerOrderViewRequestSource,
 ): Promise<CurrentNonFlatLayerOrderViewV1 | null> {
-  const { appliedPose } = source
-  if (
-    appliedPose.state !== 'stable'
-    || appliedPose.fixedFaceId === null
-    || appliedPose.projectId !== source.projectId
-    || appliedPose.revision !== source.revision
-    || appliedPose.hingeAngles.length === 0
-  ) return null
-  const hingeAngles = [...appliedPose.hingeAngles]
-    .map((angle) => ({ edgeId: angle.edgeId, angleDegrees: angle.angleDegrees }))
-    .sort((left, right) => (left.edgeId < right.edgeId ? -1 : 1))
-  // Duplicate, non-finite, negative-zero, and out-of-range angles never reach
-  // the native boundary.
-  for (const [index, angle] of hingeAngles.entries()) {
-    const previous = index === 0 ? null : hingeAngles[index - 1]
-    if (
-      !Number.isFinite(angle.angleDegrees)
-      || Object.is(angle.angleDegrees, -0)
-      || angle.angleDegrees < 0
-      || angle.angleDegrees > 180
-      || (previous !== null && previous.edgeId >= angle.edgeId)
-    ) return null
-  }
+  const detached = detachCurrentNonFlatLayerOrderViewRequestSource(source)
+  if (!detached) return null
+  const hingeAngles = detached.hingeAngles
   const request = {
     version: 1,
-    expectedProjectInstanceId: source.projectInstanceId,
-    expectedProjectId: source.projectId,
-    expectedRevision: source.revision,
-    expectedFoldModelFingerprintSha256: source.foldModelFingerprintSha256,
+    expectedProjectInstanceId: detached.projectInstanceId,
+    expectedProjectId: detached.projectId,
+    expectedRevision: detached.revision,
+    expectedFoldModelFingerprintSha256: detached.foldModelFingerprintSha256,
     expectedAppliedPose: {
-      fixedFaceId: appliedPose.fixedFaceId,
+      fixedFaceId: detached.fixedFaceId,
       hingeAngles,
     },
   }

@@ -22,20 +22,24 @@ mod stacked_fold_dyadic_scope;
 #[path = "stacked_fold_read_wire.rs"]
 mod stacked_fold_read_wire;
 
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use ori_collision::{
     FlatEndpointLayerOrderInputV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
+    ProofCacheOperationControlV1, ProofCacheRuntimeBindingV1, ProofCacheRuntimeErrorV1,
     StackedFoldFixedSideV1, StackedFoldLinearCandidateV1, StackedFoldMaterialMapLimitsV1,
     StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
     StaticCollisionLimits, anchor_flat_endpoint_layer_order_v1, capture_stacked_fold_read_guard_v1,
     certify_canonical_positive_thickness_cycle_schedule_path_v1,
     certify_general_multi_face_cell_transport_v1, diagnose_collective_hinge_path_v1,
-    diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
-    diagnose_static_collision_geometry,
+    diagnose_collective_hinge_path_with_pair_cache_v1, diagnose_scheduled_cycle_path_v1,
+    diagnose_scheduled_positive_thickness_cycle_path_v1, diagnose_static_collision_geometry,
     diagnose_static_collision_geometry_with_flat_layer_order_v1,
     propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
     supports_scheduled_positive_thickness_path_v1,
@@ -197,6 +201,54 @@ pub(super) fn cancel_current_stacked_fold_read_v1() -> Result<(), String> {
         })
         .map(|_| ())
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+}
+
+fn stacked_fold_pair_cache_control_v1(
+    expected_generation: u64,
+    absolute_deadline: Instant,
+) -> ProofCacheOperationControlV1<'static> {
+    ProofCacheOperationControlV1::new_with_generation(
+        None,
+        &STACKED_FOLD_READ_GENERATION,
+        expected_generation,
+        absolute_deadline,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn positive_pair_proof_cache_binding_v1(
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    geometry_fingerprint: [u8; 32],
+    pose_generation: u64,
+    paper_thickness_mm: f64,
+) -> Result<Option<ProofCacheRuntimeBindingV1>, ProofCacheRuntimeErrorV1> {
+    if !paper_thickness_mm.is_finite() || paper_thickness_mm <= 0.0 {
+        // Model 4 requires strictly positive finite thickness. Preserve the
+        // established uncached diagnostic (including its original failure
+        // meaning) for signed zero and every other non-positive/non-finite
+        // input instead of letting cache binding validation replace it.
+        return Ok(None);
+    }
+    ProofCacheRuntimeBindingV1::new(
+        project_instance_id,
+        project_id,
+        revision,
+        geometry_fingerprint,
+        pose_generation,
+        paper_thickness_mm,
+    )
+    .map(Some)
+}
+
+const fn map_cached_tree_path_error_v1(
+    error: ori_collision::StackedFoldPathDiagnosticErrorV1,
+) -> &'static str {
+    match error {
+        ori_collision::StackedFoldPathDiagnosticErrorV1::Cancelled => CANCELLED_MESSAGE,
+        _ => ANALYSIS_FAILED_MESSAGE,
+    }
 }
 
 /// Native-only holder for the future regular-quad petal transaction.
@@ -2132,17 +2184,19 @@ async fn propose_current_stacked_fold_read_inner(
         .try_acquire_native_pose_worker()
         .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
     // A rejected busy request must not cancel the permit owner.
-    let analysis_generation = STACKED_FOLD_READ_GENERATION
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
-            generation.checked_add(1)
-        })
-        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?
-        .checked_add(1)
-        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    let analysis_generation = begin_stacked_fold_read_generation_v1()?;
     let progress_request_id = request.progress_request_id.clone().filter(|value| {
         !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_graphic())
     });
-    let (paper, pattern, pose_capability, layer_capability, binding) = {
+    let (
+        paper,
+        pattern,
+        pose_capability,
+        layer_capability,
+        binding,
+        pair_proof_cache,
+        pair_proof_cache_capture,
+    ) = {
         let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
         if project.instance_id != request.expected_project_instance_id
             || project.project_id != request.expected_project_id
@@ -2150,8 +2204,8 @@ async fn propose_current_stacked_fold_read_inner(
         {
             return Err(STALE_MESSAGE.to_owned());
         }
-        let pose_capability = project
-            .applied_pose_authority
+        let pose_authority = project.applied_pose_authority.clone();
+        let pose_capability = pose_authority
             .capture_capability(&project)
             .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
             .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
@@ -2165,12 +2219,33 @@ async fn propose_current_stacked_fold_read_inner(
             pose_capability.generation(),
             layer_capability.generation(),
         );
+        let pair_proof_cache = pose_authority.pair_proof_cache_runtime_v1();
+        let pair_proof_cache_binding = positive_pair_proof_cache_binding_v1(
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            ori_foldability::fold_model_fingerprint_v1(
+                project.editor.pattern(),
+                project.editor.paper(),
+            )
+            .0,
+            pose_capability.generation(),
+            project.editor.paper().thickness_mm,
+        )
+        .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        // Lock order is project -> pose (capture_capability above) -> cache.
+        let pair_proof_cache_capture = pair_proof_cache_binding
+            .map(|binding| pair_proof_cache.capture_v1(binding))
+            .transpose()
+            .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
         (
             project.editor.paper().clone(),
             project.editor.pattern().clone(),
             pose_capability,
             layer_capability,
             binding,
+            pair_proof_cache,
+            pair_proof_cache_capture,
         )
     };
 
@@ -2899,15 +2974,38 @@ async fn propose_current_stacked_fold_read_inner(
             .iter()
             .flat_map(|subdivision| subdivision.target_edges().iter().copied())
             .collect::<Vec<_>>();
-        let continuous_path = diagnose_collective_hinge_path_v1(
-            prepared_initial_pose.target().model(),
-            prepared_initial_pose.pose(),
-            &moving_hinges,
-            candidate.requested_angle_degrees(),
-            paper.thickness_mm,
-            StackedFoldPathDiagnosticLimitsV1::default(),
-        )
-        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let path_limits = StackedFoldPathDiagnosticLimitsV1::default();
+        let continuous_path = if let Some(pair_proof_cache_capture) =
+            pair_proof_cache_capture.as_ref()
+        {
+            diagnose_collective_hinge_path_with_pair_cache_v1(
+                prepared_initial_pose.target().model(),
+                prepared_initial_pose.pose(),
+                &moving_hinges,
+                candidate.requested_angle_degrees(),
+                paper.thickness_mm,
+                path_limits,
+                &pair_proof_cache,
+                pair_proof_cache_capture,
+                stacked_fold_pair_cache_control_v1(
+                    analysis_generation,
+                    Instant::now() + Duration::from_secs(30),
+                ),
+            )
+        } else {
+            // Zero-thickness and every non-model-4 branch keep the established
+            // uncached diagnostic. The library cache wrapper itself admits
+            // only model 4 when a positive-thickness capture is present.
+            diagnose_collective_hinge_path_v1(
+                prepared_initial_pose.target().model(),
+                prepared_initial_pose.pose(),
+                &moving_hinges,
+                candidate.requested_angle_degrees(),
+                paper.thickness_mm,
+                path_limits,
+            )
+        }
+        .map_err(|error| map_cached_tree_path_error_v1(error).to_owned())?;
         let prepared_requested_pose = prepare_stacked_fold_requested_pose_v1(
             prepared_initial_pose,
             candidate.requested_angle_degrees(),
@@ -3244,6 +3342,9 @@ async fn propose_current_stacked_fold_read_inner(
         native_transaction,
     ) = analysis;
 
+    if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != analysis_generation {
+        return Err(CANCELLED_MESSAGE.to_owned());
+    }
     {
         let project = lock_project(&app_state).map_err(|_| STALE_MESSAGE.to_owned())?;
         let pose_is_current = project
@@ -4080,6 +4181,61 @@ mod tests {
         STACKED_FOLD_READ_GENERATION_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn pair_cache_binding_is_strictly_positive_finite_only() {
+        let project_instance_id = ProjectId::new();
+        let project_id = ProjectId::new();
+        let binding = |thickness| {
+            positive_pair_proof_cache_binding_v1(
+                project_instance_id,
+                project_id,
+                1,
+                [0x91; 32],
+                1,
+                thickness,
+            )
+        };
+
+        assert!(
+            binding(f64::MIN_POSITIVE)
+                .expect("positive binding")
+                .is_some()
+        );
+        assert_eq!(binding(0.0).expect("positive-zero fallback"), None);
+        assert_eq!(binding(-0.0).expect("negative-zero fallback"), None);
+        assert_eq!(
+            binding(-f64::MIN_POSITIVE).expect("negative fallback"),
+            None
+        );
+        assert_eq!(binding(f64::NAN).expect("NaN fallback"), None);
+        assert_eq!(binding(f64::INFINITY).expect("infinity fallback"), None);
+        assert_eq!(
+            binding(f64::NEG_INFINITY).expect("negative-infinity fallback"),
+            None
+        );
+    }
+
+    #[test]
+    fn production_pair_cache_control_observes_cancel_and_accepts_fresh_retry() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let first = begin_stacked_fold_read_generation_v1().expect("first generation");
+        let first_control =
+            stacked_fold_pair_cache_control_v1(first, Instant::now() + Duration::from_secs(30));
+        assert_eq!(first_control.check_v1(), Ok(()));
+
+        cancel_current_stacked_fold_read_v1().expect("cancel first generation");
+        assert_eq!(
+            first_control.check_v1(),
+            Err(ori_collision::ProofCacheErrorV1::Cancelled)
+        );
+
+        let retry = begin_stacked_fold_read_generation_v1().expect("retry generation");
+        assert_ne!(retry, first);
+        let retry_control =
+            stacked_fold_pair_cache_control_v1(retry, Instant::now() + Duration::from_secs(30));
+        assert_eq!(retry_control.check_v1(), Ok(()));
     }
 
     fn fixed_id<T: serde::de::DeserializeOwned>(group: &str, index: u64) -> T {

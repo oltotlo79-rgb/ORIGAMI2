@@ -34,6 +34,7 @@ mod pattern_edit_commands;
 mod project_folder_io;
 mod project_lifecycle_commands;
 mod project_persistence;
+mod proof_cache_edit_impact;
 #[allow(dead_code)]
 mod recent_projects;
 #[allow(dead_code)]
@@ -97,6 +98,7 @@ use project_lifecycle_commands::{
     list_recent_projects, new_project, open_project, open_recent_project, project_snapshot,
     save_project, save_project_as, update_project_memo, validate_project,
 };
+use proof_cache_edit_impact::commit_editor_pose_and_proof_invalidation_v1;
 use stacked_fold_transaction::StackedFoldTransactionState;
 
 use base64::Engine as _;
@@ -198,9 +200,9 @@ use ori_collision::{
     prepare_effective_cut_static_thickness_prerequisite_v1,
 };
 use ori_core::{
-    BoundaryEdgeRef, BoundedDirectMusObserverV1, BoundedDirectMusV1, Command,
-    ConstraintPreflightV1, ConstraintSolveLimitsV1, DirectConstraintConflictV1, EditorState,
-    EditorTopology, GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+    BoundaryEdgeRef, BoundedDirectMusObserverV1, Command, ConstraintPreflightV1,
+    ConstraintSolveLimitsV1, DirectConstraintConflictV1, EditorState, EditorTopology,
+    GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
     GeometricConstraintLimitsV1, GeometricConstraintPreflightObserverControlV1,
     GeometricConstraintPreflightObserverV1, GeometricConstraintUnknownReasonV1,
     GlobalFlatFoldabilityCheckpoint, GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits,
@@ -212,9 +214,9 @@ use ori_core::{
     TopologyIssue, TopologySnapshot, ValidationIssue, VertexPositionUpdate,
     analyze_global_flat_foldability_with_observer, analyze_local_flat_foldability,
     certify_binary64_exact_geometric_constraint_satisfaction_v1, create_rectangular_sheet,
-    find_bounded_direct_mus_with_observer_v1, prepare_geometric_constraints_v1,
-    segment_midpoint_polygon_relation, solve_geometric_constraints_v1,
-    solve_geometric_constraints_with_drivers_v1, validate_crease_pattern, validate_paper,
+    prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
+    solve_geometric_constraints_v1, solve_geometric_constraints_with_drivers_v1,
+    validate_crease_pattern, validate_paper,
 };
 use ori_domain::{
     AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
@@ -3008,6 +3010,8 @@ fn execute_undo(
         project.current_layer_evidence = None;
         return Ok(snapshot(project));
     }
+    let before_pattern = project.editor.pattern().clone();
+    let before_paper = project.editor.paper().clone();
     let authority = project.applied_pose_authority.clone();
     let invalidation = authority
         .begin_invalidation()
@@ -3018,7 +3022,13 @@ fn execute_undo(
         .map_err(|error| error.to_string())?;
     project.undo_numeric_expression_edit();
     project.current_layer_evidence = None;
-    invalidation.commit();
+    commit_editor_pose_and_proof_invalidation_v1(
+        invalidation,
+        expected_revision,
+        &before_pattern,
+        &before_paper,
+        project,
+    );
     Ok(snapshot(project))
 }
 
@@ -3041,6 +3051,8 @@ fn execute_redo(
         project.current_layer_evidence = None;
         return Ok(snapshot(project));
     }
+    let before_pattern = project.editor.pattern().clone();
+    let before_paper = project.editor.paper().clone();
     let authority = project.applied_pose_authority.clone();
     let invalidation = authority
         .begin_invalidation()
@@ -3051,7 +3063,13 @@ fn execute_redo(
         .map_err(|error| error.to_string())?;
     project.redo_numeric_expression_edit();
     project.current_layer_evidence = None;
-    invalidation.commit();
+    commit_editor_pose_and_proof_invalidation_v1(
+        invalidation,
+        expected_revision,
+        &before_pattern,
+        &before_paper,
+        project,
+    );
     Ok(snapshot(project))
 }
 
@@ -3986,6 +4004,8 @@ fn execute_command(
         project.current_layer_evidence = None;
         return Ok(snapshot(project));
     }
+    let before_pattern = project.editor.pattern().clone();
+    let before_paper = project.editor.paper().clone();
     let authority = project.applied_pose_authority.clone();
     let invalidation = authority
         .begin_invalidation()
@@ -3997,7 +4017,13 @@ fn execute_command(
     project.record_numeric_expression_edit();
     project.reconcile_vertex_coordinate_expressions();
     project.current_layer_evidence = None;
-    invalidation.commit();
+    commit_editor_pose_and_proof_invalidation_v1(
+        invalidation,
+        expected_revision,
+        &before_pattern,
+        &before_paper,
+        project,
+    );
     Ok(snapshot(project))
 }
 

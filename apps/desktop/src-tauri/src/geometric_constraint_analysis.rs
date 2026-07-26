@@ -5,6 +5,17 @@
 
 use super::*;
 
+#[cfg(test)]
+use ori_core::{BoundedDirectMusV1, find_bounded_direct_mus_with_observer_v1};
+
+mod semantic_mus;
+
+use semantic_mus::{GeometricConstraintSemanticMusResult, analyze_semantic_direct_conflict_with};
+#[cfg(test)]
+use semantic_mus::{
+    GeometricConstraintSemanticMusUnknownReason, map_semantic_direct_conflict_result,
+};
+
 pub(super) const GEOMETRIC_CONSTRAINT_ANALYSIS_BUSY_MESSAGE: &str =
     "geometric-constraint analysis is already in progress";
 pub(super) const GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE: &str =
@@ -204,6 +215,25 @@ pub(super) struct GeometricConstraintPreflightResponse {
     pub(super) project_id: ProjectId,
     pub(super) revision: u64,
     pub(super) result: GeometricConstraintPreflightResult,
+    /// Present on every native response. `None` serializes as an explicit
+    /// `null` for non-direct outcomes; direct-conflict analysis always
+    /// publishes either a certified or fail-closed semantic-MUS DTO.
+    pub(super) semantic_mus: Option<GeometricConstraintSemanticMusResult>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct GeometricConstraintAnalysisOutcome {
+    pub(super) result: GeometricConstraintPreflightResult,
+    pub(super) semantic_mus: Option<GeometricConstraintSemanticMusResult>,
+}
+
+impl From<GeometricConstraintPreflightResult> for GeometricConstraintAnalysisOutcome {
+    fn from(result: GeometricConstraintPreflightResult) -> Self {
+        Self {
+            result,
+            semantic_mus: None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -273,18 +303,19 @@ pub(super) async fn analyze_geometric_constraints(
     if request_generation_id.canonical_bytes() == [0; 16] {
         return Err(GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE.to_owned());
     }
-    analyze_geometric_constraints_with_worker(
+    analyze_geometric_constraints_with_outcome_worker(
         &state,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
         request_generation_id,
         |pattern, document, runtime| {
-            Ok(analyze_geometric_constraint_document_with_observer(
+            analyze_geometric_constraint_document_outcome_with_observer(
                 &pattern,
                 &document,
                 &mut GeometricConstraintAnalysisObserver::new(runtime),
-            ))
+            )
+            .map_err(|()| GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE.to_owned())
         },
     )
     .await
@@ -376,12 +407,30 @@ impl BoundedDirectMusObserverV1 for GeometricConstraintAnalysisObserver {
     }
 }
 
+impl ori_core::BoundedSemanticMusObserverV1 for GeometricConstraintAnalysisObserver {
+    fn checkpoint(
+        &mut self,
+        _progress: ori_core::BoundedSemanticMusProgressV1,
+    ) -> ori_core::BoundedSemanticMusObserverControlV1 {
+        match self.checkpoint() {
+            None => ori_core::BoundedSemanticMusObserverControlV1::Continue,
+            Some(GeometricConstraintAnalysisStop::Cancelled) => {
+                ori_core::BoundedSemanticMusObserverControlV1::Cancelled
+            }
+            Some(GeometricConstraintAnalysisStop::DeadlineReached) => {
+                ori_core::BoundedSemanticMusObserverControlV1::DeadlineReached
+            }
+        }
+    }
+}
+
 struct GeometricConstraintAnalysisInput {
     binding: GeometricConstraintAnalysisBinding,
     pattern: CreasePattern,
     document: GeometricConstraintDocumentV1,
 }
 
+#[cfg(test)]
 pub(super) async fn analyze_geometric_constraints_with_worker<F>(
     state: &AppState,
     expected_project_instance_id: ProjectId,
@@ -396,6 +445,36 @@ where
             GeometricConstraintDocumentV1,
             GeometricConstraintAnalysisRuntime,
         ) -> Result<GeometricConstraintPreflightResult, String>
+        + Send
+        + 'static,
+{
+    analyze_geometric_constraints_with_outcome_worker(
+        state,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        request_generation_id,
+        move |pattern, document, runtime| {
+            worker(pattern, document, runtime).map(GeometricConstraintAnalysisOutcome::from)
+        },
+    )
+    .await
+}
+
+async fn analyze_geometric_constraints_with_outcome_worker<F>(
+    state: &AppState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request_generation_id: ProjectId,
+    worker: F,
+) -> Result<GeometricConstraintPreflightResponse, String>
+where
+    F: FnOnce(
+            CreasePattern,
+            GeometricConstraintDocumentV1,
+            GeometricConstraintAnalysisRuntime,
+        ) -> Result<GeometricConstraintAnalysisOutcome, String>
         + Send
         + 'static,
 {
@@ -465,7 +544,7 @@ fn capture_geometric_constraint_analysis(
 fn finish_geometric_constraint_analysis(
     project: &ProjectState,
     binding: GeometricConstraintAnalysisBinding,
-    result: GeometricConstraintPreflightResult,
+    outcome: GeometricConstraintAnalysisOutcome,
 ) -> Result<GeometricConstraintPreflightResponse, String> {
     ensure_project_expectation(
         project,
@@ -479,7 +558,8 @@ fn finish_geometric_constraint_analysis(
         project_instance_id: binding.project_instance_id,
         project_id: binding.project_id,
         revision: binding.revision,
-        result,
+        result: outcome.result,
+        semantic_mus: outcome.semantic_mus,
     })
 }
 
@@ -501,56 +581,75 @@ pub(super) fn analyze_geometric_constraint_document(
     )
 }
 
+#[cfg(test)]
 pub(super) fn analyze_geometric_constraint_document_with_observer(
     pattern: &CreasePattern,
     document: &GeometricConstraintDocumentV1,
     observer: &mut GeometricConstraintAnalysisObserver,
 ) -> GeometricConstraintPreflightResult {
+    analyze_geometric_constraint_document_outcome_with_observer(pattern, document, observer)
+        .map_or_else(
+            |()| invalid_geometric_constraint_analysis_result(document),
+            |outcome| outcome.result,
+        )
+}
+
+fn analyze_geometric_constraint_document_outcome_with_observer(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    observer: &mut GeometricConstraintAnalysisObserver,
+) -> Result<GeometricConstraintAnalysisOutcome, ()> {
     if let Some(stop) = observer.checkpoint() {
-        return stopped_geometric_constraint_analysis_result(document, stop);
+        return Ok(stopped_geometric_constraint_analysis_result(document, stop).into());
     }
     if document.schema_version == ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1
         && document.is_empty()
     {
-        return GeometricConstraintPreflightResult::NoDirectConflict;
+        return Ok(GeometricConstraintPreflightResult::NoDirectConflict.into());
     }
 
     let Ok(prepared) =
         prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
     else {
-        let mut unchecked_constraint_ids = document
-            .constraints
-            .iter()
-            .map(|record| record.id)
-            .collect::<Vec<_>>();
-        unchecked_constraint_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
-        return GeometricConstraintPreflightResult::Unknown {
-            reason: GeometricConstraintUnknownReason::InvalidDocumentOrGeometry,
-            unchecked_constraint_ids,
-        };
+        return Ok(invalid_geometric_constraint_analysis_result(document).into());
     };
 
     let preflight = prepared.preflight_with_observer(observer);
     if let Some(stop) = observer.checkpoint() {
-        return stopped_geometric_constraint_analysis_result(document, stop);
+        return Ok(stopped_geometric_constraint_analysis_result(document, stop).into());
     }
     if !matches!(preflight, ConstraintPreflightV1::DirectConflict { .. })
         && let Ok(Some(certificate)) =
             certify_binary64_exact_geometric_constraint_satisfaction_v1(pattern, document)
     {
-        return finish_exact_geometric_constraint_satisfaction(document, observer, certificate);
+        return Ok(
+            finish_exact_geometric_constraint_satisfaction(document, observer, certificate).into(),
+        );
     }
 
-    match preflight {
+    let outcome = match preflight {
         ConstraintPreflightV1::DirectConflict { conflicts } => {
-            let bounded_direct_mus = analyze_bounded_direct_mus_with_observer(&prepared, observer);
-            GeometricConstraintPreflightResult::DirectConflict {
-                conflicts,
-                bounded_direct_mus,
+            let (bounded_direct_mus, semantic_mus) = analyze_semantic_direct_conflict_with(
+                &prepared,
+                observer,
+                |prepared, observer| {
+                    ori_core::certify_bounded_current_runtime_semantic_mus_with_observer_v1(
+                        prepared,
+                        ori_core::BoundedSemanticMusLimitsV1::default(),
+                        observer,
+                    )
+                },
+            )?;
+            GeometricConstraintAnalysisOutcome {
+                result: GeometricConstraintPreflightResult::DirectConflict {
+                    conflicts,
+                    bounded_direct_mus,
+                },
+                semantic_mus: Some(semantic_mus),
             }
         }
         ConstraintPreflightV1::NoDirectConflict => {
-            GeometricConstraintPreflightResult::NoDirectConflict
+            GeometricConstraintPreflightResult::NoDirectConflict.into()
         }
         ConstraintPreflightV1::Unknown {
             reason,
@@ -577,8 +676,10 @@ pub(super) fn analyze_geometric_constraint_document_with_observer(
                 }
             },
             unchecked_constraint_ids,
-        },
-    }
+        }
+        .into(),
+    };
+    Ok(outcome)
 }
 
 pub(super) fn finish_exact_geometric_constraint_satisfaction(
@@ -595,6 +696,22 @@ pub(super) fn finish_exact_geometric_constraint_satisfaction(
         equation_count: certificate.equation_count(),
         authorizes_project_mutation: false,
         replayable_across_runtimes: false,
+    }
+}
+
+fn invalid_geometric_constraint_analysis_result(
+    document: &GeometricConstraintDocumentV1,
+) -> GeometricConstraintPreflightResult {
+    let mut unchecked_constraint_ids = document
+        .constraints
+        .iter()
+        .map(|record| record.id)
+        .collect::<Vec<_>>();
+    unchecked_constraint_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+    unchecked_constraint_ids.dedup();
+    GeometricConstraintPreflightResult::Unknown {
+        reason: GeometricConstraintUnknownReason::InvalidDocumentOrGeometry,
+        unchecked_constraint_ids,
     }
 }
 
@@ -622,6 +739,7 @@ fn stopped_geometric_constraint_analysis_result(
     }
 }
 
+#[cfg(test)]
 pub(super) fn analyze_bounded_direct_mus_with_observer(
     prepared: &ori_core::GeometricConstraintSetV1<'_>,
     observer: &mut GeometricConstraintAnalysisObserver,
@@ -656,3 +774,7 @@ pub(super) fn analyze_bounded_direct_mus_with_observer(
         },
     }
 }
+
+#[cfg(test)]
+#[path = "geometric_constraint_analysis_semantic_tests.rs"]
+mod semantic_mus_tests;

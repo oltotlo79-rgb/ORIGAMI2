@@ -2,9 +2,17 @@ use std::sync::atomic::AtomicBool;
 
 use super::super::{checked_work_product, checked_work_sum, parallel_meter};
 use super::exact_prism::{
-    ExactPrismAnalysis, ExactPrismLimits, ExactPrismWork, analyze_exact_prism_pair_v1,
+    ExactPrismAnalysis, ExactPrismLimits, ExactPrismWork, PRISM_COUNT, SOLID_VERTEX_COUNT,
+    analyze_exact_prism_pair_v1,
 };
 use super::*;
+
+mod pair_cache_session;
+
+pub(crate) use pair_cache_session::{
+    positive_thickness_exact_pair_cache_work_limits_v1,
+    prepare_positive_thickness_exact_pair_cache_session_v1,
+};
 
 #[cfg(test)]
 #[path = "parallel_tests.rs"]
@@ -250,13 +258,25 @@ fn analyze_positive_thickness_prism_pair_v1(
     if (0..3).any(|axis| {
         first_lower[axis] > second_upper[axis] || second_lower[axis] > first_upper[axis]
     }) {
+        let projected = limits.projected();
+        if projected.max_prisms < PRISM_COUNT || projected.max_solid_vertices < SOLID_VERTEX_COUNT {
+            return Err(PositiveThicknessPrismScanErrorV1::ResourceLimitExceeded);
+        }
         return Ok(PositiveThicknessPrismPairTaskV1 {
             diagnostic: PositiveThicknessPrismPairDiagnosticV1 {
                 first_face: exact.faces[first].face,
                 second_face: exact.faces[second].face,
                 disposition: PositiveThicknessPrismPairDispositionV1::Separated,
             },
-            work: ExactPrismWork::default(),
+            // The pair-local exact AABB discharge still materializes two
+            // prisms and their twelve closed-solid vertices.  Record that
+            // structural work so neither a cold proof nor its future cache
+            // hit can masquerade as a zero-work bypass.
+            work: ExactPrismWork {
+                prisms: PRISM_COUNT,
+                solid_vertices: SOLID_VERTEX_COUNT,
+                ..ExactPrismWork::default()
+            },
         });
     }
     let ExactPrismAnalysis { intersection, work } =

@@ -67,6 +67,7 @@ mod general_cell_transport;
 mod graph_positive_thickness;
 mod hinge_relief;
 mod non_flat_cell_transport;
+mod proof_cache;
 mod stacked_fold_read;
 mod static_collision;
 mod static_transition_chain;
@@ -78,6 +79,18 @@ pub use cayley::{
     SingleHingeThicknessBoundaryObservationV1, prepare_single_hinge_thickness_boundary_v1,
     prepare_tree_hinge_thickness_boundaries_v1, revalidate_single_hinge_thickness_boundary_v1,
     revalidate_tree_hinge_thickness_boundaries_v1,
+};
+pub use proof_cache::{
+    CachedPairProofConclusionV1, CachedPairProofResultV1, MAX_PROOF_CACHE_ENTRIES_V1,
+    MAX_PROOF_CACHE_INVALIDATION_WORK_V1, MAX_PROOF_CACHE_STORAGE_BYTES_V1,
+    PROOF_CACHE_ADDITIVE_WORK_COUNTERS_V1, PROOF_CACHE_MAXIMUM_WORK_COUNTERS_V1,
+    PersistentPairProofCacheRuntimeV1, PersistentPairProofCacheV1, ProofCacheBatchLookupV1,
+    ProofCacheCertificateModelV1, ProofCacheEditEpochTicketV1, ProofCacheEditInvalidationOutcomeV1,
+    ProofCacheErrorV1, ProofCacheHitV1, ProofCacheInvalidationReportV1, ProofCacheKeyInputV1,
+    ProofCacheKeyV1, ProofCacheLimitsV1, ProofCacheOperationControlV1, ProofCachePairWorkLimitsV1,
+    ProofCachePairWorkV1, ProofCacheProgressV1, ProofCachePublishReportV1,
+    ProofCacheRebindContextV1, ProofCacheRuntimeBindingV1, ProofCacheRuntimeCaptureV1,
+    ProofCacheRuntimeErrorV1,
 };
 
 pub use block_composition::{
@@ -162,7 +175,8 @@ pub use continuous_path::{
     compose_shared_hinge_relief_coverage_v1, diagnose_canonical_cycle_schedule_path_v1,
     diagnose_canonical_positive_thickness_cycle_schedule_path_v1,
     diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_from_pose_v1,
-    diagnose_collective_hinge_path_v1, diagnose_continuous_pair_coverage_v1,
+    diagnose_collective_hinge_path_v1, diagnose_collective_hinge_path_with_pair_cache_v1,
+    diagnose_continuous_pair_coverage_v1,
     diagnose_dyadic_shared_vertex_boundary_point_distances_v1,
     diagnose_dyadic_shared_vertex_interval_positions_v1,
     diagnose_dyadic_shared_vertex_sector_boundaries_v1,

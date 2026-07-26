@@ -27,7 +27,11 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use ori_collision::{CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, TOPOLOGY_CONTACT_POLICY_V2};
+use ori_collision::{
+    CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, PersistentPairProofCacheRuntimeV1,
+    ProofCacheEditEpochTicketV1, ProofCacheLimitsV1, ProofCacheOperationControlV1,
+    TOPOLOGY_CONTACT_POLICY_V2,
+};
 use ori_core::{
     APPLIED_POSE_MODEL_ID_V1, AppliedPoseLimitsV1, AppliedPoseV1,
     CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1, TopologyAnalysisInput, TopologySnapshot,
@@ -130,8 +134,21 @@ impl fmt::Display for PoseAuthorityError {
 impl Error for PoseAuthorityError {}
 
 /// Project-subordinate native authority. Clones share one private slot.
-#[derive(Clone, Default)]
-pub(super) struct CurrentAppliedPoseAuthority(Arc<Mutex<CurrentAppliedPoseSlot>>);
+#[derive(Clone)]
+pub(super) struct CurrentAppliedPoseAuthority {
+    slot: Arc<Mutex<CurrentAppliedPoseSlot>>,
+    pair_proof_cache: PersistentPairProofCacheRuntimeV1,
+}
+
+impl Default for CurrentAppliedPoseAuthority {
+    fn default() -> Self {
+        Self {
+            slot: Arc::new(Mutex::new(CurrentAppliedPoseSlot::default())),
+            pair_proof_cache: PersistentPairProofCacheRuntimeV1::new(ProofCacheLimitsV1::default())
+                .expect("the fixed pair-proof cache limits are valid"),
+        }
+    }
+}
 
 #[derive(Default)]
 struct CurrentAppliedPoseSlot {
@@ -368,7 +385,7 @@ pub(super) fn lock_revalidated_current_applied_pose_for_commit<'a>(
     capability: &'a CurrentAppliedPoseCapability,
 ) -> Result<Option<CurrentAppliedPoseCommitGuard<'a>>, PoseAuthorityError> {
     let authority = project.applied_pose_authority.clone();
-    if !Arc::ptr_eq(&authority.0, &capability.slot) {
+    if !Arc::ptr_eq(&authority.slot, &capability.slot) {
         return Ok(None);
     }
     let slot = capability
@@ -602,7 +619,7 @@ impl CurrentAppliedPoseAuthority {
             binding: Arc::clone(&binding),
         });
         Ok(CapturedNativePoseRequest {
-            slot: Arc::clone(&self.0),
+            slot: Arc::clone(&self.slot),
             binding,
             fixed_face: request.fixed_face_id,
             complete_hinge_angles,
@@ -636,7 +653,7 @@ impl CurrentAppliedPoseAuthority {
         // From this point onward every failure deliberately preserves the
         // pending marker and all other live state exactly as it was on entry.
         prepared.pending_cleanup.disarm();
-        if !self.is_project_authority(project) || !Arc::ptr_eq(&self.0, &prepared.slot) {
+        if !self.is_project_authority(project) || !Arc::ptr_eq(&self.slot, &prepared.slot) {
             return Err(PoseAuthorityError::WrongAuthority);
         }
         if !prepared_native_pose_is_internally_consistent(&prepared) {
@@ -727,6 +744,9 @@ impl CurrentAppliedPoseAuthority {
             return Err(PoseAuthorityError::InternalInconsistency);
         }
         let capability_claims = certificate.claims.clone();
+        self.pair_proof_cache
+            .advance_pose_authority_v1(prepared.binding.revision)
+            .map_err(|_| PoseAuthorityError::LockUnavailable)?;
 
         project
             .editor
@@ -737,7 +757,7 @@ impl CurrentAppliedPoseAuthority {
         slot.current = Some(Arc::clone(&certificate));
 
         Ok(CurrentAppliedPoseCapability {
-            slot: Arc::clone(&self.0),
+            slot: Arc::clone(&self.slot),
             certificate,
             claims: capability_claims,
         })
@@ -762,7 +782,7 @@ impl CurrentAppliedPoseAuthority {
             return Ok(None);
         }
         Ok(Some(CurrentAppliedPoseCapability {
-            slot: Arc::clone(&self.0),
+            slot: Arc::clone(&self.slot),
             certificate: Arc::clone(certificate),
             claims: certificate.claims.clone(),
         }))
@@ -774,7 +794,7 @@ impl CurrentAppliedPoseAuthority {
         project: &ProjectState,
         capability: &'a CurrentAppliedPoseCapability,
     ) -> Result<Option<CurrentAppliedPoseView<'a>>, PoseAuthorityError> {
-        if !self.is_project_authority(project) || !Arc::ptr_eq(&self.0, &capability.slot) {
+        if !self.is_project_authority(project) || !Arc::ptr_eq(&self.slot, &capability.slot) {
             return Ok(None);
         }
         let slot = self.lock()?;
@@ -802,18 +822,31 @@ impl CurrentAppliedPoseAuthority {
             .generation
             .checked_add(1)
             .ok_or(PoseAuthorityError::GenerationExhausted)?;
+        // The desktop already owns project then pose authority here. Advance
+        // the cache epoch while both are held, establishing the global
+        // project -> pose -> cache order before any semantic edit can run.
+        let edit_ticket = self
+            .pair_proof_cache
+            .begin_edit_epoch_v1()
+            .map_err(|_| PoseAuthorityError::LockUnavailable)?;
         Ok(PoseAuthorityInvalidation {
             slot,
             next_generation,
+            pair_proof_cache: self.pair_proof_cache.clone(),
+            edit_ticket: Some(edit_ticket),
         })
     }
 
+    pub(super) fn pair_proof_cache_runtime_v1(&self) -> PersistentPairProofCacheRuntimeV1 {
+        self.pair_proof_cache.clone()
+    }
+
     fn is_project_authority(&self, project: &ProjectState) -> bool {
-        Arc::ptr_eq(&self.0, &project.applied_pose_authority.0)
+        Arc::ptr_eq(&self.slot, &project.applied_pose_authority.slot)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, CurrentAppliedPoseSlot>, PoseAuthorityError> {
-        self.0
+        self.slot
             .lock()
             .map_err(|_| PoseAuthorityError::LockUnavailable)
     }
@@ -1015,15 +1048,61 @@ impl CapturedNativePoseRequest {
 pub(super) struct PoseAuthorityInvalidation<'a> {
     slot: MutexGuard<'a, CurrentAppliedPoseSlot>,
     next_generation: u64,
+    pair_proof_cache: PersistentPairProofCacheRuntimeV1,
+    edit_ticket: Option<ProofCacheEditEpochTicketV1>,
 }
 
 impl PoseAuthorityInvalidation<'_> {
     /// Commits the already-preflighted invalidation. This operation is
     /// infallible so it can safely follow a successful editor mutation.
     pub(super) fn commit(mut self) {
+        if let Some(ticket) = self.edit_ticket.take() {
+            let _ = self.pair_proof_cache.abandon_edit_epoch_v1(ticket);
+        }
         self.slot.current = None;
         self.slot.pending = None;
         self.slot.generation = self.next_generation;
+    }
+
+    pub(super) fn commit_with_complete_impact(
+        mut self,
+        source_revision: u64,
+        target_revision: u64,
+        vertices: Vec<ori_domain::VertexId>,
+        edges: Vec<EdgeId>,
+        faces: Vec<FaceId>,
+        upstream_preparation_work: usize,
+        control: ProofCacheOperationControlV1<'_>,
+    ) {
+        if let Some(ticket) = self.edit_ticket.take() {
+            if self
+                .pair_proof_cache
+                .complete_edit_epoch_with_upstream_work_v1(
+                    ticket,
+                    source_revision,
+                    target_revision,
+                    vertices,
+                    edges,
+                    faces,
+                    upstream_preparation_work,
+                    control,
+                )
+                .is_err()
+            {
+                let _ = self.pair_proof_cache.abandon_edit_epoch_v1(ticket);
+            }
+        }
+        self.slot.current = None;
+        self.slot.pending = None;
+        self.slot.generation = self.next_generation;
+    }
+}
+
+impl Drop for PoseAuthorityInvalidation<'_> {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.edit_ticket.take() {
+            let _ = self.pair_proof_cache.abandon_edit_epoch_v1(ticket);
+        }
     }
 }
 
@@ -1037,7 +1116,7 @@ pub(super) fn commit_project_replacement(
 ) -> Result<(), PoseAuthorityError> {
     let old_authority = current.applied_pose_authority.clone();
     let new_authority = replacement.applied_pose_authority.clone();
-    if Arc::ptr_eq(&old_authority.0, &new_authority.0) {
+    if Arc::ptr_eq(&old_authority.slot, &new_authority.slot) {
         return Err(PoseAuthorityError::ReplacementAuthorityNotFresh);
     }
 
@@ -1054,6 +1133,10 @@ pub(super) fn commit_project_replacement(
     {
         return Err(PoseAuthorityError::ReplacementAuthorityNotFresh);
     }
+    old_authority
+        .pair_proof_cache
+        .invalidate_all_v1()
+        .map_err(|_| PoseAuthorityError::LockUnavailable)?;
 
     old_slot.current = None;
     old_slot.pending = None;
@@ -1100,7 +1183,7 @@ pub(super) fn with_revalidated_current_applied_pose_capability<R>(
 ) -> Result<Option<R>, PoseAuthorityError> {
     let project = lock_project(app_state).map_err(|_| PoseAuthorityError::LockUnavailable)?;
     let authority = project.applied_pose_authority.clone();
-    if !Arc::ptr_eq(&authority.0, &capability.slot) {
+    if !Arc::ptr_eq(&authority.slot, &capability.slot) {
         return Ok(None);
     }
     let slot = authority.lock()?;
@@ -2505,7 +2588,7 @@ pub(super) mod tests {
             authority
                 .commit_prepared_with_semantic_clone(&mut project, prepared, |_| {
                     assert!(
-                        authority.0.try_lock().is_ok(),
+                        authority.slot.try_lock().is_ok(),
                         "semantic duplication must run before the pose slot is locked"
                     );
                     Err(PoseAuthorityError::SemanticPoseUnavailable)

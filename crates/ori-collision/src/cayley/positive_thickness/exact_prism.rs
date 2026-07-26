@@ -21,8 +21,8 @@ use super::{
     rational_bits, rational_storage_bits, try_array3,
 };
 
-const PRISM_COUNT: usize = 2;
-const SOLID_VERTEX_COUNT: usize = 12;
+pub(super) const PRISM_COUNT: usize = 2;
+pub(super) const SOLID_VERTEX_COUNT: usize = 12;
 const FACET_COUNT: usize = 10;
 const HALFSPACE_COUNT: usize = 10;
 const PRISM_VOLUME_TEST_COUNT: usize = PRISM_COUNT;

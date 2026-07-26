@@ -717,7 +717,7 @@ pub(crate) fn with_revalidated_current_static_collision_certificate<R>(
     let data = certificate.certificate.as_ref();
     let capability = &data.pose_capability;
     let authority = project.applied_pose_authority.clone();
-    if !Arc::ptr_eq(&authority.0, &capability.slot) {
+    if !Arc::ptr_eq(&authority.slot, &capability.slot) {
         return Ok(None);
     }
     let slot = authority.lock().map_err(map_pose_authority_error)?;
@@ -1034,7 +1034,7 @@ fn mint_current_static_collision(
     let project =
         lock_project(app_state).map_err(|_| CurrentStaticCollisionError::LockUnavailable)?;
     let authority = project.applied_pose_authority.clone();
-    if !Arc::ptr_eq(&authority.0, &prepared.pose_capability.slot) {
+    if !Arc::ptr_eq(&authority.slot, &prepared.pose_capability.slot) {
         return Ok(None);
     }
     let slot = authority.lock().map_err(map_pose_authority_error)?;
@@ -1677,7 +1677,7 @@ mod tests {
             project.applied_pose_authority.clone()
         };
         assert!(
-            authority.0.try_lock().is_ok(),
+            authority.slot.try_lock().is_ok(),
             "pose lock must remain available after observation panic"
         );
         assert!(

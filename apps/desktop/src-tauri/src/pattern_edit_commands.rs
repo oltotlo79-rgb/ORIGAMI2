@@ -1344,6 +1344,8 @@ pub(super) fn repair_all_unsplit_intersections(
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
+    let before_pattern = project.editor.pattern().clone();
+    let before_paper = project.editor.paper().clone();
     let authority = project.applied_pose_authority.clone();
     let invalidation = authority
         .begin_invalidation()
@@ -1355,7 +1357,13 @@ pub(super) fn repair_all_unsplit_intersections(
     project.record_numeric_expression_edit();
     project.reconcile_vertex_coordinate_expressions();
     project.current_layer_evidence = None;
-    invalidation.commit();
+    commit_editor_pose_and_proof_invalidation_v1(
+        invalidation,
+        expected_revision,
+        &before_pattern,
+        &before_paper,
+        &project,
+    );
     Ok(snapshot(&project))
 }
 

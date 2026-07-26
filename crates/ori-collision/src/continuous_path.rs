@@ -31,6 +31,7 @@ use crate::{
 };
 
 mod multi_hinge_union;
+mod pair_proof_cache;
 pub use multi_hinge_union::{
     MAX_MULTI_HINGE_UNION_GEOMETRY_HINGES_V2, MAX_MULTI_HINGE_UNION_HINGES_V2,
     MAX_MULTI_HINGE_UNION_PAIRS_V2, MAX_MULTI_HINGE_UNION_STORAGE_BYTES_V2,
@@ -43,6 +44,10 @@ pub use multi_hinge_union::{
     diagnose_multi_hinge_relief_union_gaps_v2,
     diagnose_multi_hinge_relief_union_gaps_with_cancel_v2,
     revalidate_multi_hinge_relief_union_certificate_v2,
+};
+pub use pair_proof_cache::diagnose_collective_hinge_path_with_pair_cache_v1;
+use pair_proof_cache::{
+    PositiveEndpointPairCacheUseV1, prove_positive_endpoint_pairs_with_cache_v1,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -2629,6 +2634,12 @@ pub enum StackedFoldPathDiagnosticErrorV1 {
     PoseUnavailable,
     #[error("one sampled static collision diagnosis failed")]
     StaticDiagnosisUnavailable,
+    #[error("the path diagnostic was cancelled")]
+    Cancelled,
+    #[error("the pair-proof cache operation failed closed")]
+    ProofCacheUnavailable,
+    #[error("the pair-proof result became stale before publication")]
+    StaleProofCacheResult,
 }
 
 /// Opaque positive-thickness Tree-path evidence.  It retains the complete
@@ -2993,6 +3004,24 @@ pub fn diagnose_collective_hinge_path_v1(
     paper_thickness_mm: f64,
     limits: StackedFoldPathDiagnosticLimitsV1,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
+    let (source_absolute, target_absolute) =
+        collective_path_absolute_angles_v1(initial_pose, moving_hinges, requested_angle_degrees)?;
+    diagnose_collective_hinge_path_from_pose_with_optional_cache_v1(
+        model,
+        initial_pose,
+        source_absolute,
+        target_absolute.as_slice(),
+        paper_thickness_mm,
+        limits,
+        None,
+    )
+}
+
+fn collective_path_absolute_angles_v1<'a>(
+    initial_pose: &'a MaterialTreePose,
+    moving_hinges: &[EdgeId],
+    requested_angle_degrees: f64,
+) -> Result<(&'a [HingeAngle], CanonicalHingeAngles), StackedFoldPathDiagnosticErrorV1> {
     let source_absolute = initial_pose.hinge_angles();
     if source_absolute.iter().any(|hinge| {
         moving_hinges.contains(&hinge.edge())
@@ -3017,14 +3046,7 @@ pub fn diagnose_collective_hinge_path_v1(
             .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?,
     )
     .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?;
-    diagnose_collective_hinge_path_from_pose_v1(
-        model,
-        initial_pose,
-        source_absolute,
-        target_absolute.as_slice(),
-        paper_thickness_mm,
-        limits,
-    )
+    Ok((source_absolute, target_absolute))
 }
 
 /// Diagnoses a collective path whose endpoints are explicit absolute hinge
@@ -3038,6 +3060,26 @@ pub fn diagnose_collective_hinge_path_from_pose_v1(
     target_absolute: &[HingeAngle],
     paper_thickness_mm: f64,
     limits: StackedFoldPathDiagnosticLimitsV1,
+) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
+    diagnose_collective_hinge_path_from_pose_with_optional_cache_v1(
+        model,
+        initial_pose,
+        source_absolute,
+        target_absolute,
+        paper_thickness_mm,
+        limits,
+        None,
+    )
+}
+
+fn diagnose_collective_hinge_path_from_pose_with_optional_cache_v1(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    source_absolute: &[HingeAngle],
+    target_absolute: &[HingeAngle],
+    paper_thickness_mm: f64,
+    limits: StackedFoldPathDiagnosticLimitsV1,
+    pair_cache: Option<&PositiveEndpointPairCacheUseV1<'_>>,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
     if initial_pose.hinge_angles() != source_absolute
         || source_absolute.len() != target_absolute.len()
@@ -3078,9 +3120,11 @@ pub fn diagnose_collective_hinge_path_from_pose_v1(
         path_excursion_degrees,
         paper_thickness_mm,
         limits,
+        pair_cache,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diagnose_collective_hinge_path_absolute_inner_v1(
     model: &MaterialTreeKinematicsModel,
     initial_pose: &MaterialTreePose,
@@ -3089,6 +3133,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
     path_excursion_degrees: f64,
     paper_thickness_mm: f64,
     limits: StackedFoldPathDiagnosticLimitsV1,
+    pair_cache: Option<&PositiveEndpointPairCacheUseV1<'_>>,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
     if limits.sample_intervals == 0 || limits.sample_intervals > MAX_STACKED_FOLD_PATH_SAMPLES_V1 {
         return Err(StackedFoldPathDiagnosticErrorV1::InvalidLimits);
@@ -3218,75 +3263,78 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                 None
             };
             all_positive_thickness_outer_shells &= if positive_two_hinge_topology {
-                endpoint_candidates.as_ref().is_some()
-                    && prepare_swept_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|boundary| {
-                        revalidate_tree_hinge_thickness_boundaries_v1(
-                            &boundary,
+                let boundary_proven =
+                    prepare_swept_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|boundary| {
+                            revalidate_tree_hinge_thickness_boundaries_v1(
+                                &boundary,
+                                bound,
+                                paper_thickness_mm,
+                            )
+                            .is_some_and(|observations| observations.len() == model.hinges().len())
+                        });
+                if let (Some(endpoint_candidates), true) =
+                    (endpoint_candidates.as_ref(), boundary_proven)
+                {
+                    let expected_pairs =
+                        model.face_ids().len() * model.face_ids().len().saturating_sub(1) / 2;
+                    let mut exact_pairs = Vec::new();
+                    for (index, first) in model.face_ids().iter().enumerate() {
+                        for second in model.face_ids().iter().skip(index + 1) {
+                            let adjacent = model.hinges().iter().any(|hinge| {
+                                (hinge.left_face() == *first && hinge.right_face() == *second)
+                                    || (hinge.left_face() == *second
+                                        && hinge.right_face() == *first)
+                            });
+                            if adjacent || !endpoint_candidates.contains(&(*first, *second)) {
+                                continue;
+                            }
+                            positive_endpoint_memo_pair_entries += 1;
+                            if faces_share_material_vertex_v1(model, *first, *second)
+                                || endpoint_topology.as_ref().is_some_and(|memo| {
+                                    memo.enumerated_pairs() == expected_pairs
+                                        && memo.proves_shared_vertex_pair(*first, *second)
+                                })
+                            {
+                                continue;
+                            }
+                            exact_pairs.push((*first, *second));
+                        }
+                    }
+                    positive_endpoint_exact_pair_calls = exact_pairs.len();
+                    if let Some(cache) = pair_cache {
+                        prove_positive_endpoint_pairs_with_cache_v1(
                             bound,
                             paper_thickness_mm,
-                        )
-                        .is_some_and(|observations| observations.len() == model.hinges().len())
-                            && model.face_ids().iter().enumerate().all(|(index, first)| {
-                                model.face_ids().iter().skip(index + 1).all(|second| {
-                                    let adjacent = model.hinges().iter().any(|hinge| {
-                                        (hinge.left_face() == *first
-                                            && hinge.right_face() == *second)
-                                            || (hinge.left_face() == *second
-                                                && hinge.right_face() == *first)
-                                    });
-                                    adjacent
-                                        || {
-                                            let mut pair = (*first, *second);
-                                            if pair.1.canonical_bytes() < pair.0.canonical_bytes() {
-                                                pair = (pair.1, pair.0);
-                                            }
-                                            if !endpoint_candidates
-                                                .as_ref()
-                                                .is_some_and(|candidates| {
-                                                    candidates.contains(&pair)
-                                                })
-                                            {
-                                                return true;
-                                            }
-                                            positive_endpoint_memo_pair_entries += 1;
-                                            faces_share_material_vertex_v1(
-                                                model, *first, *second,
-                                            ) || endpoint_topology.as_ref().is_some_and(|memo| {
-                                                memo.enumerated_pairs()
-                                                    == model.face_ids().len()
-                                                        * model
-                                                            .face_ids()
-                                                            .len()
-                                                            .saturating_sub(1)
-                                                        / 2
-                                                    && memo.proves_shared_vertex_pair(*first, *second)
-                                            })
-                                                || {
-                                                    positive_endpoint_exact_pair_calls += 1;
-                                                    prepare_positive_thickness_pair_separation_v1(
-                                                        bound,
-                                                        paper_thickness_mm,
-                                                        *first,
-                                                        *second,
-                                                        limits.static_collision,
-                                                    )
-                                                    .is_ok_and(|capability| {
-                                                        capability.is_some_and(|capability| {
-                                                            revalidate_positive_thickness_pair_separation_v1(
-                                                                &capability,
-                                                                bound,
-                                                                paper_thickness_mm,
-                                                            )
-                                                        })
-                                                    })
-                                                }
-                                        }
+                            &exact_pairs,
+                            expected_pairs,
+                            cache,
+                        )?
+                    } else {
+                        exact_pairs.iter().all(|(first, second)| {
+                            prepare_positive_thickness_pair_separation_v1(
+                                bound,
+                                paper_thickness_mm,
+                                *first,
+                                *second,
+                                limits.static_collision,
+                            )
+                            .is_ok_and(|capability| {
+                                capability.is_some_and(|capability| {
+                                    revalidate_positive_thickness_pair_separation_v1(
+                                        &capability,
+                                        bound,
+                                        paper_thickness_mm,
+                                    )
                                 })
                             })
-                    })
+                        })
+                    }
+                } else {
+                    false
+                }
             } else {
                 prepare_single_hinge_thickness_boundary_v1(bound, paper_thickness_mm)
                     .ok()
@@ -5802,6 +5850,12 @@ mod tests {
 
     #[path = "interval_tree_certificate_tests.rs"]
     mod interval_tree_certificate_tests;
+    #[path = "pair_proof_cache_cancellation_tests.rs"]
+    mod pair_proof_cache_cancellation_tests;
+    #[path = "pair_proof_cache_invalidation_tests.rs"]
+    mod pair_proof_cache_invalidation_tests;
+    #[path = "pair_proof_cache_production_tests.rs"]
+    mod pair_proof_cache_production_tests;
 
     #[test]
     fn wedge_prism_aabb_encloses_both_complete_rings_and_has_sound_exact_gap() {
@@ -9967,10 +10021,12 @@ mod tests {
         .expect("thirteen-hinge triangular tree")
     }
 
-    fn fourteen_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+    fn fourteen_hinge_triangle_model_with_leaf_offset(
+        leaf_x_offset: f64,
+    ) -> MaterialTreeKinematicsModel {
         let points = [
             (0., 0.),
-            (4., 0.),
+            (4. + leaf_x_offset, 0.),
             (7., 1.),
             (10., 3.),
             (12., 6.),
@@ -10034,6 +10090,10 @@ mod tests {
             TreeKinematicsLimits::default(),
         )
         .expect("fourteen-hinge triangular tree")
+    }
+
+    fn fourteen_hinge_triangle_model() -> MaterialTreeKinematicsModel {
+        fourteen_hinge_triangle_model_with_leaf_offset(0.0)
     }
 
     fn fifteen_hinge_triangle_model_with_edge_order(

@@ -161,6 +161,73 @@ fn parallel_face_pair_proof_work_total_independent_of_thread_count() {
 }
 
 #[test]
+fn exact_pair_cache_session_matches_canonical_scan_without_issuing_model_authority() {
+    let model = fan_model(false);
+    let pose = fan_pose(&model);
+    let bound = model.bind_pose(&pose).unwrap();
+    let session =
+        prepare_positive_thickness_exact_pair_cache_session_v1(bound, 0.1).expect("exact session");
+    let sequential =
+        diagnose_bound_positive_thickness_prism_pairs_v1(bound, 0.1, FAN_PAIR_COUNT).unwrap();
+
+    assert_eq!(
+        session.complete_face_snapshots_v1().len(),
+        model.face_ids().len()
+    );
+    for expected in sequential {
+        let observed = session
+            .analyze_pair_v1(expected.second_face, expected.first_face)
+            .expect("canonical pair observation");
+        assert_eq!(observed.diagnostic, expected);
+        assert!(
+            observed
+                .work
+                .additive_counters()
+                .iter()
+                .any(|counter| *counter != 0),
+            "a cacheable cold proof must retain non-zero logical work"
+        );
+    }
+}
+
+#[test]
+fn exact_pair_cache_limits_cover_the_complete_cold_pair_batch() {
+    let model = fan_model(false);
+    let pose = fan_pose(&model);
+    let session = prepare_positive_thickness_exact_pair_cache_session_v1(
+        model.bind_pose(&pose).unwrap(),
+        0.1,
+    )
+    .unwrap();
+    let limits = positive_thickness_exact_pair_cache_work_limits_v1(FAN_PAIR_COUNT).unwrap();
+    let mut additive = [0usize; crate::PROOF_CACHE_ADDITIVE_WORK_COUNTERS_V1];
+    let mut maximum = [0usize; crate::PROOF_CACHE_MAXIMUM_WORK_COUNTERS_V1];
+    for (index, first) in model.face_ids().iter().enumerate() {
+        for second in &model.face_ids()[index + 1..] {
+            let work = session.analyze_pair_v1(*first, *second).unwrap().work;
+            for (sum, observed) in additive.iter_mut().zip(work.additive_counters()) {
+                *sum = sum.checked_add(*observed).unwrap();
+            }
+            for (largest, observed) in maximum.iter_mut().zip(work.maximum_counters()) {
+                *largest = (*largest).max(*observed);
+            }
+        }
+    }
+    assert!(
+        additive
+            .iter()
+            .zip(limits.additive_counters())
+            .all(|(actual, limit)| actual <= limit)
+    );
+    assert!(
+        maximum
+            .iter()
+            .zip(limits.maximum_counters())
+            .all(|(actual, limit)| actual <= limit)
+    );
+}
+
+#[test]
 fn parallel_face_pair_proof_merge_order_is_canonical_not_completion_order() {
     let model = fan_model(false);
     let pose = fan_pose(&model);

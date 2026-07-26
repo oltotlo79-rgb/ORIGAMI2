@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  formatStaticMeshExportBytes,
   normalizeStaticMeshExportPreviewResponse,
   normalizeStaticMeshExportSaveResponse,
   staticMeshExportWarningMessage,
@@ -170,6 +171,25 @@ test('loss messages explicitly disclose mid-surface and STL limitations', () => 
   assert.match(
     staticMeshExportWarningMessage('stl_printability_not_guaranteed', 'ja'),
     /3Dプリント可能性を保証しません/,
+  )
+  assert.equal(
+    staticMeshExportWarningMessage(
+      'stl_printability_not_guaranteed',
+      'unsupported' as never,
+    ),
+    staticMeshExportWarningMessage('stl_printability_not_guaranteed', 'ja'),
+  )
+})
+
+test('byte formatting preserves decimal units and falls back to Japanese', () => {
+  assert.equal(formatStaticMeshExportBytes(999, 'ja'), '999 B')
+  assert.equal(formatStaticMeshExportBytes(1_500, 'en'), '1.5 KB')
+  assert.equal(formatStaticMeshExportBytes(2_500_000, 'ja'), '2.5 MB')
+  assert.equal(formatStaticMeshExportBytes(-1, 'ja'), '不明')
+  assert.equal(formatStaticMeshExportBytes(-1, 'en'), 'Unknown')
+  assert.equal(
+    formatStaticMeshExportBytes(-1, 'unsupported' as never),
+    '不明',
   )
 })
 

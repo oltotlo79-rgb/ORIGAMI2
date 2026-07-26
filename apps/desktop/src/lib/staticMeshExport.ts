@@ -1,5 +1,12 @@
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
-import type { Locale } from './i18n.ts'
+import {
+  selectLocalizedText,
+  type Locale,
+} from './i18n.ts'
+import {
+  STATIC_MESH_EXPORT_PRESENTATION_TEXT,
+  STATIC_MESH_EXPORT_WARNING_TEXT,
+} from './staticMeshExportText.ts'
 
 export type StaticMeshExportFormat = 'obj' | 'stl' | 'glb'
 
@@ -303,10 +310,17 @@ export function formatStaticMeshExportBytes(
   locale: Locale,
 ) {
   if (!isSafeNonNegativeInteger(bytes)) {
-    return locale === 'ja' ? '不明' : 'Unknown'
+    return selectLocalizedText(
+      locale,
+      STATIC_MESH_EXPORT_PRESENTATION_TEXT.unknownByteCount,
+    )
   }
   if (bytes < 1_000) {
-    return `${bytes.toLocaleString(locale === 'ja' ? 'ja-JP' : 'en-US')} B`
+    const numberLocale = selectLocalizedText(
+      locale,
+      STATIC_MESH_EXPORT_PRESENTATION_TEXT.numberLocale,
+    )
+    return `${bytes.toLocaleString(numberLocale)} B`
   }
   if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`
   return `${(bytes / 1_000_000).toFixed(1)} MB`
@@ -316,41 +330,7 @@ export function staticMeshExportWarningMessage(
   warning: StaticMeshExportWarning,
   locale: Locale,
 ) {
-  const copy = {
-    ja: {
-      mid_surface_only:
-        '出力は現在姿勢の紙の中央面だけです。紙の表面・裏面を持つ立体ではありません。',
-      no_thickness_solid:
-        '設定した紙厚は形状へ反映されません。層ずらし、厚み付きソリッド、閉じた多様体は含みません。',
-      independent_face_solids:
-        '紙厚は面ごとの閉じた立体として出力します。折り目で隣接する立体の和集合や隙間・重なりの除去は保証しません。',
-      no_textures_animation:
-        'GLBには紙色を含め、紙厚付き形状では表裏色を分けます。テクスチャ、カメラ、折りアニメーションは含みません。',
-      no_project_semantics:
-        '折り線、山谷、面ID、編集履歴、折り手順などORIGAMI2固有情報は含みません。',
-      stl_triangle_soup_facet_normals:
-        'STLは頂点indexと頂点法線を保持しません。各三角形が独立したtriangle soupになり、法線は面ごとのfacet normalへ置き換わります。',
-      stl_printability_not_guaranteed:
-        'STL出力は3Dプリント可能性を保証しません。面ごとの立体は折り目で重なりや隙間が生じるため、スライサーで確認してください。',
-    },
-    en: {
-      mid_surface_only:
-        'The export contains only the paper mid-surface in the current pose. It is not a solid with front and back surfaces.',
-      no_thickness_solid:
-        'Configured paper thickness is not applied to geometry. Layer offsets, a thickness solid, and a closed manifold are not included.',
-      independent_face_solids:
-        'Paper thickness is exported as one closed solid per face. The solids are not unioned, and hinge gaps or overlaps are not removed.',
-      no_textures_animation:
-        'GLB includes paper colors and distinguishes front and back on thickness geometry. Textures, camera, and folding animation are not included.',
-      no_project_semantics:
-        'Creases, mountain/valley assignments, face IDs, edit history, folding steps, and other ORIGAMI2 semantics are not included.',
-      stl_triangle_soup_facet_normals:
-        'STL does not preserve vertex indices or vertex normals. It stores independent triangle soup with one facet normal per triangle.',
-      stl_printability_not_guaranteed:
-        'STL export does not guarantee 3D printability. Per-face solids may overlap or leave hinge gaps and must be checked in a slicer.',
-    },
-  } as const
-  return copy[locale][warning]
+  return selectLocalizedText(locale, STATIC_MESH_EXPORT_WARNING_TEXT[warning])
 }
 
 function normalizeWarnings(

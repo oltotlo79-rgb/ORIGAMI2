@@ -9,6 +9,7 @@ const appSource = [
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/StaticMeshExportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/staticMeshExportDialogText.ts')
+const exportTextSource = readSource('../src/lib/staticMeshExportText.ts')
 const nativeSource = readSource('../src-tauri/src/lib.rs')
 const nativeExportSource = readSource('../src-tauri/src/mesh_export.rs')
 
@@ -64,8 +65,12 @@ test('UI explicitly discloses mid-surface-only and all STL limitations', () => {
   assert.match(dialogSource, /staticMeshExportWarningMessage/u)
   assert.match(nativeExportSource, /StlTriangleSoupFacetNormals/u)
   assert.match(
-    readSource('../src/lib/staticMeshExport.ts'),
+    exportTextSource,
     /頂点indexと頂点法線を保持しません[\s\S]*triangle soup[\s\S]*facet normal/u,
+  )
+  assert.match(
+    readSource('../src/lib/staticMeshExport.ts'),
+    /STATIC_MESH_EXPORT_WARNING_TEXT/u,
   )
   assert.match(dialogSource, /warningsAcknowledged/u)
   assert.match(dialogSource, /aria-modal="true"/u)

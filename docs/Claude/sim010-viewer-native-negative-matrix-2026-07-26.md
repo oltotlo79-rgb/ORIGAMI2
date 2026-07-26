@@ -1,8 +1,8 @@
 # Claude 追加作業指示: SIM-010 native viewer 残存 negative matrix
 
-作成日: 2026-07-26  
-対象 repository: `C:\Users\oltot\Documents\git-projects\ORIGAMI2`  
-対象 branch: `main`  
+作成日: 2026-07-26
+対象 repository: `C:\Users\oltot\Documents\git-projects\ORIGAMI2`
+対象 branch: `main`
 remote push: 禁止
 
 ## 1. 目的

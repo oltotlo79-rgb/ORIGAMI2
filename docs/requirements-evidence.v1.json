@@ -213,7 +213,8 @@
       "id": "EDT-009",
       "status": "部分実装",
       "commits": [
-        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
+        "327518c360e142d754d0c21c2680b7389d36042e"
       ],
       "evidence": [
         {

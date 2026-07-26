@@ -1174,6 +1174,15 @@ impl CurrentNonFlatLayerOrderViewResponseV1 {
     }
 }
 
+/// The shared dense-grid cycle fixture, included for the graph issuer test.
+///
+/// Another module already includes the same file. Both inclusions are test-only
+/// and neither can reference the other, so the duplicate is deliberate.
+#[cfg(test)]
+#[allow(clippy::duplicate_mod)]
+#[path = "../../../../test-support/dense_grid_cycle.rs"]
+mod viewer_dense_grid_cycle_test_support;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2554,5 +2563,222 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(first.pose.model_id, live.semantic_pose().model_id());
+    }
+
+    // -- graph issuer positive ---------------------------------------------
+
+    /// The canonical dense-grid cycle fold angle, in degrees.
+    ///
+    /// The same magnitude the existing cycle regressions use, so the closed
+    /// endpoint stays inside the certified neighbourhood.
+    fn canonical_cycle_step_degrees() -> f64 {
+        2.0 * (1.0_f64).atan2(100.0).to_degrees()
+    }
+
+    /// Builds a project whose applied pose is a closed non-flat graph pose.
+    ///
+    /// Only production constructors are used: the shared 3x3 Miura pattern, the
+    /// canonical pose authority path, and the core graph revalidation entry
+    /// point. No proof field is written directly.
+    fn non_flat_graph_project() -> ProjectState {
+        let step = canonical_cycle_step_degrees();
+        let mut failures = Vec::new();
+        for mask in 0..(1usize << 3) {
+            // Every candidate starts from a fresh project; a rejected pending
+            // state is never carried into the next candidate.
+            let (pattern, mut paper, horizontal, _vertical) =
+                super::viewer_dense_grid_cycle_test_support::miura_authority_pattern(3, 3);
+            paper.thickness_mm = 0.1;
+            let moving = horizontal.into_iter().take(3).collect::<Vec<_>>();
+            let mut project = ProjectState::new_with_paper(pattern, paper);
+            let topology = project
+                .editor
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let snapshot = topology
+                .simulation_snapshot()
+                .expect("the shared fixture yields a simulation snapshot");
+            // The fixed face is chosen canonically, never by storage order.
+            let fixed = snapshot
+                .faces
+                .iter()
+                .min_by_key(|face| (face.key.0, face.id.canonical_bytes()))
+                .expect("at least one face")
+                .id;
+            let mut angles = snapshot
+                .hinge_adjacency
+                .iter()
+                .map(|hinge| {
+                    let Some(index) = moving.iter().position(|edge| *edge == hinge.edge) else {
+                        // An inactive hinge is explicitly positive zero.
+                        return (hinge.edge, 0.0_f64);
+                    };
+                    let mountain = hinge.assignment == ori_topology::FoldAssignment::Mountain;
+                    let flip = mask & (1 << index) != 0;
+                    (hinge.edge, if mountain ^ flip { -step } else { step })
+                })
+                .collect::<Vec<_>>();
+            angles.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+            if let Err(error) = crate::applied_pose::tests::install_pose_authority_with_angles(
+                &mut project,
+                angles,
+                fixed,
+            ) {
+                failures.push(format!("mask {mask}: pose {error:?}"));
+                continue;
+            }
+            let Some(pose) = project.editor.current_applied_pose() else {
+                failures.push(format!("mask {mask}: no applied pose"));
+                continue;
+            };
+            let fixed_face = pose
+                .fixed_face()
+                .expect("the committed pose fixes one face");
+            let committed = CanonicalHingeAngles::new(
+                pose.hinge_angles()
+                    .iter()
+                    .map(|angle| {
+                        HingeAngle::new(angle.edge(), angle.angle_degrees())
+                            .expect("a committed hinge angle is representable")
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .expect("the committed hinge vector is canonical");
+            let flat = match crate::global_flat_foldability::reanalyze_current_flat_layer_order(
+                &project,
+            ) {
+                Ok(flat) => flat,
+                Err(_) => {
+                    failures.push(format!("mask {mask}: flat layer order"));
+                    continue;
+                }
+            };
+            // The graph entry point only; a tree fallback would not be a graph
+            // issuer positive.
+            let proof = match ori_core::revalidate_current_graph_non_flat_layer_order_v1(
+                ori_core::RevalidateCurrentGraphNonFlatLayerOrderRequestV1 {
+                    identity_namespace: project.project_id,
+                    revision: project.editor.revision(),
+                    pattern: project.editor.pattern(),
+                    paper: project.editor.paper(),
+                    fixed_face,
+                    hinge_angles: &committed,
+                    current_flat: &flat,
+                    expected_archive: None,
+                    max_face_pairs: ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+                },
+            ) {
+                Ok(proof) => proof,
+                Err(error) => {
+                    failures.push(format!("mask {mask}: graph revalidation {error:?}"));
+                    continue;
+                }
+            };
+            project.current_layer_evidence = Some(CurrentLayerEvidence::NonFlat(proof));
+            return project;
+        }
+        panic!("no closed graph candidate succeeded: {failures:?}");
+    }
+
+    #[test]
+    fn a_closed_graph_issuer_yields_a_read_only_graph_view() {
+        let project = non_flat_graph_project();
+
+        // The live pose authority really is a closed graph issuer.
+        let capability = capture_current_applied_pose_capability(&project)
+            .expect("the capability is capturable")
+            .expect("the project owns an applied pose");
+        let live = revalidate_current_applied_pose_capability(&project, &capability)
+            .expect("the capability revalidates")
+            .expect("the capability is still current");
+        assert!(
+            live.graph().is_some(),
+            "the live issuer must be a closed graph"
+        );
+        assert_eq!(live.semantic_pose().model_id(), GRAPH_POSE_MODEL_ID_V1);
+        assert_eq!(issuer_kind(&live).unwrap(), PoseIssuerKindV1::Graph);
+
+        let response = view(&project);
+        assert_eq!(response.pose.model_id, GRAPH_POSE_MODEL_ID_V1);
+        assert_eq!(response.pose.model_id, live.semantic_pose().model_id());
+        assert!(response.read_only);
+        assert!(!response.authorizes_project_mutation);
+
+        let proof = match project.current_layer_evidence.as_ref() {
+            Some(CurrentLayerEvidence::NonFlat(proof)) => proof,
+            _ => panic!("the fixture must own non-flat evidence"),
+        };
+        // The response registry is exactly the proof registry.
+        let mut proof_faces = proof
+            .material_faces()
+            .iter()
+            .map(|face| face.face_id)
+            .collect::<Vec<_>>();
+        proof_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        let response_faces = response
+            .faces
+            .iter()
+            .map(|face| face.face_id.clone())
+            .collect::<Vec<_>>();
+        let expected_faces = proof_faces
+            .iter()
+            .map(|face| wire_id(face).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(response_faces, expected_faces);
+        assert_eq!(response.faces.len(), proof.material_faces().len());
+        assert_eq!(response.pose.hinge_angles.len(), proof.hinge_angles().len());
+        assert_eq!(response.cells.len(), proof.overlap_cell_count());
+        assert_eq!(
+            response.work.face_pair_order_count,
+            proof.face_pair_order_count()
+        );
+        assert_eq!(response.work.material_face_count, response.faces.len());
+        assert_eq!(response.work.overlap_cell_count, response.cells.len());
+
+        for face in &response.faces {
+            validate_axis_derivation_v1(
+                face.projection.dropped_world_axis,
+                face.projection.plane_axes,
+            )
+            .expect("the plane axes are derived from the dropped axis");
+        }
+        for cell in &response.cells {
+            assert_ne!(cell.lower_face_id, cell.upper_face_id);
+            assert_eq!(
+                cell.projection.rounded_boundary_uv_mm.len(),
+                cell.projection.exact_boundary_uv.len()
+            );
+        }
+
+        // Two consecutive reads are identical in value and in bytes.
+        let repeated = view(&project);
+        assert_eq!(response, repeated);
+        assert_eq!(
+            serde_json::to_vec(&response).unwrap(),
+            serde_json::to_vec(&repeated).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_graph_issuer_view_still_refuses_every_stale_binding() {
+        let project = non_flat_graph_project();
+        let base = canonical_request(&project);
+        let mut foreign_instance = base.clone();
+        foreign_instance.expected_project_instance_id = ProjectId::new();
+        let mut stale_revision = base.clone();
+        stale_revision.expected_revision = base.expected_revision + 1;
+        let mut wrong_face = base.clone();
+        wrong_face.expected_applied_pose.fixed_face_id = FaceId::new();
+        let mut one_ulp = base.clone();
+        let angle = &mut one_ulp.expected_applied_pose.hinge_angles[0];
+        angle.angle_degrees = f64::from_bits(angle.angle_degrees.to_bits() ^ 1);
+        for request in [foreign_instance, stale_revision, wrong_face, one_ulp] {
+            let error = build_current_non_flat_layer_order_view_v1(&project, &request)
+                .expect_err("a stale binding is refused for a graph issuer too");
+            assert_eq!(
+                category(error),
+                CurrentNonFlatLayerOrderViewErrorCategoryV1::StaleAuthority
+            );
+        }
     }
 }

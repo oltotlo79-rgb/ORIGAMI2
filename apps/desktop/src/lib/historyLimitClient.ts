@@ -140,18 +140,6 @@ export function createHistoryLimitClient(
 
 export const historyLimitClient = createHistoryLimitClient()
 
-export function getHistoryEntryLimit(
-  expected: HistoryLimitExpectedProjectBinding,
-): Promise<HistoryLimitSettings> {
-  return historyLimitClient.get(expected)
-}
-
-export function setHistoryEntryLimit(
-  request: SetHistoryEntryLimitRequest,
-): Promise<HistoryLimitSettings> {
-  return historyLimitClient.set(request)
-}
-
 /**
  * Strictly admits an exact, data-only V1 settings DTO and returns a detached,
  * frozen value. Accessors, symbols, class instances, and hostile proxies are

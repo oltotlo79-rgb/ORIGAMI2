@@ -25,7 +25,7 @@ test('constraint commands use instance, document, and revision bindings end to e
     assert.match(native, new RegExp(`\\n\\s*${command},`, 'u'))
   }
   for (const clientFunction of [
-    functionSection(client, 'export function analyzeGeometricConstraints(', 'export function openProject('),
+    functionSection(client, 'export function analyzeGeometricConstraints(', 'export function previewCreasePatternExport('),
     functionSection(client, 'export function addEdgeOrientationConstraint(', 'export function removeGeometricConstraint('),
     functionSection(client, 'export function removeGeometricConstraint(', 'export function undo('),
   ]) {

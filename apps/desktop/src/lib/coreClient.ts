@@ -36,7 +36,6 @@ import {
   type GeometricConstraintKindV1,
   type GeometricConstraintPreflightResponseV1,
   type GeometricConstraintPreflightResultV1,
-  type GeometricConstraintRecordV1,
 } from './geometricConstraints.ts'
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 import { isExpectedNativeEditSnapshot } from './projectSnapshotBinding.ts'
@@ -159,7 +158,6 @@ export type PaperSnapshot = {
 }
 
 export type GeometricConstraintKind = GeometricConstraintKindV1
-export type GeometricConstraintRecord = GeometricConstraintRecordV1
 export type GeometricConstraintDocument = GeometricConstraintDocumentV1
 export type GeometricConstraintPreflightResult = GeometricConstraintPreflightResultV1
 export type GeometricConstraintPreflightResponse = GeometricConstraintPreflightResponseV1
@@ -4063,11 +4061,6 @@ export function applyDyadicPosePathPreviewV1(request: Readonly<{
   })
 }
 
-export function cancelDyadicPosePathPreviewV1(previewToken: string): Promise<void> {
-  if (!isCanonicalNonNilUuid(previewToken)) return Promise.reject(new Error('invalid dyadic preview token'))
-  return invoke<void>('cancel_dyadic_pose_path_preview_v1', { request: { previewToken } })
-}
-
 export function proposeCurrentCyclePoseV1(
   request: CurrentCyclePosePreviewRequestV1,
 ): Promise<CurrentCyclePosePreviewResponseV1> {
@@ -4524,18 +4517,6 @@ export function analyzeGeometricConstraints(
     }
     return normalized
   })
-}
-
-export function openProject() {
-  return invoke<ProjectFileResponse>('open_project')
-}
-
-export function saveProject() {
-  return invoke<ProjectFileResponse>('save_project')
-}
-
-export function saveProjectAs() {
-  return invoke<ProjectFileResponse>('save_project_as')
 }
 
 export function previewCreasePatternExport(

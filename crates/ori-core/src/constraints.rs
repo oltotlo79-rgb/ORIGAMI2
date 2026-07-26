@@ -456,6 +456,14 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
+    /// Two exact, distinct pattern edges share the validated `FixedAngle`
+    /// vertex; one is constrained horizontal and the other vertical. At exact
+    /// orientation residual zero, production `abs(cross).atan2(dot)` can reach
+    /// only the enumerated zero-cross, right-angle, straight-angle, or
+    /// non-finite classes, including underflow, overflow, and collapse. The
+    /// conflict is emitted only when the shared fixed-angle residual rejects
+    /// every class. Stored-degree inequality, tolerance, and current
+    /// coordinates are never evidence.
     PerpendicularOrientationsWithFixedNonRightAngle {
         horizontal_edge: EdgeId,
         vertical_edge: EdgeId,
@@ -2425,13 +2433,9 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             );
         }
 
-        // Keep the legacy candidate classification, but do not promote it:
-        // signed zero and angle conversion/wrapping can make other stored
-        // angles satisfy the implemented binary64 residual.
-        let angle = angles.iter().find(|assignment| {
-            assignment.value.to_bits() != 0.0_f64.to_bits()
-                && assignment.value.to_bits() != 90.0_f64.to_bits()
-        });
+        let angle = angles
+            .iter()
+            .find(|assignment| fixed_angle_rejects_perpendicular_binary64_v1(assignment.value));
         let perpendicular_orientation = horizontal
             .get(&pair.first)
             .zip(vertical.get(&pair.second))
@@ -3050,8 +3054,8 @@ pub(crate) fn length_ratio_residual_binary64_v1(
 /// Evaluates the V1 fixed-angle residual in the exact operation order used by
 /// the numerical solver.
 ///
-/// Direct proofs call the same helper when signed-zero collapse leaves
-/// `atan2` with either zero or pi as its only finite outcome.
+/// Direct proofs call the same helper only with actual-angle classes generated
+/// through the production `abs(cross).atan2(dot)` operation.
 pub(crate) fn fixed_angle_residual_binary64_v1(actual_radians: f64, angle_degrees: f64) -> f64 {
     let difference = actual_radians - angle_degrees.to_radians();
     (difference + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI)
@@ -3081,6 +3085,38 @@ fn fixed_angle_rejects_zero_cross_binary64_v1(angle_degrees: f64) -> bool {
     .into_iter()
     .all(|dot| {
         let actual = 0.0_f64.atan2(dot);
+        let residual = fixed_angle_residual_binary64_v1(actual, angle_degrees);
+        !residual.is_finite() || residual != 0.0
+    })
+}
+
+/// Returns whether the shared production residual rejects every result class
+/// reachable from one exact horizontal and one exact vertical residual.
+///
+/// Their production dot is signed zero or NaN. Their absolute cross can be
+/// positive finite, `+0.0` after collapse or product underflow, positive
+/// infinity after product overflow, or NaN after a non-finite intermediate.
+/// Representative binary64 operands intentionally go through platform
+/// `atan2`; no stored-degree comparison or epsilon stands in for that call.
+fn fixed_angle_rejects_perpendicular_binary64_v1(angle_degrees: f64) -> bool {
+    debug_assert!(angle_degrees.is_finite() && (0.0..=180.0).contains(&angle_degrees));
+    [
+        (0.0, 0.0),
+        (0.0, -0.0),
+        (f64::from_bits(1), 0.0),
+        (f64::from_bits(1), -0.0),
+        (1.0, 0.0),
+        (1.0, -0.0),
+        (f64::MAX, 0.0),
+        (f64::MAX, -0.0),
+        (f64::INFINITY, 0.0),
+        (f64::INFINITY, -0.0),
+        (f64::NAN, 0.0),
+        (1.0, f64::NAN),
+    ]
+    .into_iter()
+    .all(|(absolute_cross, dot)| {
+        let actual = absolute_cross.atan2(dot);
         let residual = fixed_angle_residual_binary64_v1(actual, angle_degrees);
         !residual.is_finite() || residual != 0.0
     })
@@ -3720,6 +3756,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
             | DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle { .. }
+            | DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle { .. }
             | DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure { .. }
             | DirectConstraintConflictKindV1::ZeroLengthClosureReachesNondegenerateProvider { .. }
     )
@@ -4353,6 +4390,18 @@ mod ratio_cycle_limits_tests;
 mod ratio_cycle_tests;
 
 #[cfg(test)]
+#[path = "constraints_perpendicular_angle_limits_tests.rs"]
+mod perpendicular_angle_limits_tests;
+
+#[cfg(test)]
+#[path = "constraints_perpendicular_angle_tests.rs"]
+mod perpendicular_angle_tests;
+
+#[cfg(test)]
+#[path = "constraints_preflight_contract_tests.rs"]
+mod preflight_contract_tests;
+
+#[cfg(test)]
 #[path = "constraints_same_orientation_angle_limits_tests.rs"]
 mod same_orientation_angle_limits_tests;
 
@@ -4367,14 +4416,14 @@ mod tests {
 
     use super::*;
 
-    struct Fixture {
-        pattern: CreasePattern,
-        vertices: [VertexId; 7],
-        edges: [EdgeId; 6],
+    pub(super) struct Fixture {
+        pub(super) pattern: CreasePattern,
+        pub(super) vertices: [VertexId; 7],
+        pub(super) edges: [EdgeId; 6],
     }
 
     impl Fixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let vertices = std::array::from_fn(|_| VertexId::new());
             let positions = [
                 Point2::new(0.0, 0.0),
@@ -4419,7 +4468,7 @@ mod tests {
             }
         }
 
-        fn all_kinds(&self) -> Vec<GeometricConstraintKindV1> {
+        pub(super) fn all_kinds(&self) -> Vec<GeometricConstraintKindV1> {
             vec![
                 GeometricConstraintKindV1::FixedLength {
                     edge: self.edges[0],
@@ -4475,14 +4524,14 @@ mod tests {
         }
     }
 
-    fn record(constraint: GeometricConstraintKindV1) -> GeometricConstraintRecordV1 {
+    pub(super) fn record(constraint: GeometricConstraintKindV1) -> GeometricConstraintRecordV1 {
         GeometricConstraintRecordV1 {
             id: ConstraintId::new(),
             constraint,
         }
     }
 
-    fn document(
+    pub(super) fn document(
         constraints: impl IntoIterator<Item = GeometricConstraintRecordV1>,
     ) -> GeometricConstraintDocumentV1 {
         GeometricConstraintDocumentV1 {
@@ -4491,7 +4540,7 @@ mod tests {
         }
     }
 
-    fn prepare<'pattern>(
+    pub(super) fn prepare<'pattern>(
         fixture: &'pattern Fixture,
         document: &GeometricConstraintDocumentV1,
     ) -> Result<GeometricConstraintSetV1<'pattern>, GeometricConstraintErrorV1> {
@@ -8928,171 +8977,7 @@ mod tests {
         assert_solver_required(&forward);
     }
 
-    #[test]
-    fn no_direct_conflict_and_unknown_are_distinct_canonical_native_outputs() {
-        let fixture = Fixture::new();
-        let checked = prepare(
-            &fixture,
-            &document([
-                record(GeometricConstraintKindV1::FixedLength {
-                    edge: fixture.edges[0],
-                    length_mm: 1.0,
-                }),
-                record(GeometricConstraintKindV1::Horizontal {
-                    edge: fixture.edges[0],
-                }),
-            ]),
-        )
-        .expect("valid checked constraints");
-        assert_eq!(checked.preflight(), ConstraintPreflightV1::NoDirectConflict);
-
-        let solver_required = record(GeometricConstraintKindV1::PointOnLine {
-            vertex: fixture.vertices[2],
-            line_edge: fixture.edges[5],
-        });
-        let unchecked = prepare(&fixture, &document([solver_required.clone()]))
-            .expect("valid solver-required constraint");
-        let outcome = unchecked.preflight();
-        assert_eq!(
-            outcome,
-            ConstraintPreflightV1::Unknown {
-                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
-                unchecked_constraint_ids: vec![solver_required.id],
-            }
-        );
-        let wire = serde_json::to_string(&outcome).expect("serialize preflight result");
-        let expected_wire = format!(
-            r#"{{"status":"unknown","reason":"solver_required_constraint_kinds","unchecked_constraint_ids":["{}"]}}"#,
-            uuid_string(solver_required.id)
-        );
-        assert_eq!(wire, expected_wire);
-        assert_eq!(
-            serde_json::from_str::<Value>(&wire).expect("native output is valid JSON"),
-            json!({
-                "status": "unknown",
-                "reason": "solver_required_constraint_kinds",
-                "unchecked_constraint_ids": [uuid_string(solver_required.id)],
-            })
-        );
-    }
-
-    #[test]
-    fn storage_order_geometry_order_and_unordered_operand_property_are_invariant() {
-        let fixture = Fixture::new();
-        let mut records = fixture
-            .all_kinds()
-            .into_iter()
-            .map(record)
-            .collect::<Vec<_>>();
-        records.push(record(GeometricConstraintKindV1::FixedLength {
-            edge: fixture.edges[0],
-            length_mm: 21.0,
-        }));
-
-        let baseline = prepare(&fixture, &document(records.clone())).expect("baseline");
-        let baseline_outcome = baseline.preflight();
-
-        let mut reordered_pattern = fixture.pattern.clone();
-        reordered_pattern.vertices.reverse();
-        reordered_pattern.edges.reverse();
-        let reordered_fixture = Fixture {
-            pattern: reordered_pattern,
-            vertices: fixture.vertices,
-            edges: fixture.edges,
-        };
-
-        let mut seed = 0x9e37_79b9_u64;
-        for _ in 0..128 {
-            deterministic_shuffle(&mut records, &mut seed);
-            for record in &mut records {
-                reverse_unordered_operands(&mut record.constraint);
-            }
-            let candidate =
-                prepare(&reordered_fixture, &document(records.clone())).expect("permutation");
-            assert_eq!(candidate.constraints(), baseline.constraints());
-            assert_eq!(candidate.preflight(), baseline_outcome);
-        }
-    }
-
-    #[test]
-    fn validation_error_selection_is_invariant_to_storage_permutations() {
-        let fixture = Fixture::new();
-        let missing_a = EdgeId::new();
-        let missing_b = EdgeId::new();
-        let first = record(GeometricConstraintKindV1::Horizontal { edge: missing_a });
-        let second = record(GeometricConstraintKindV1::Vertical { edge: missing_b });
-        let expected_id = if first.id.canonical_bytes() < second.id.canonical_bytes() {
-            first.id
-        } else {
-            second.id
-        };
-        let forward = prepare(&fixture, &document([first.clone(), second.clone()]))
-            .expect_err("both documents contain missing references");
-        let reverse = prepare(&fixture, &document([second, first]))
-            .expect_err("both documents contain missing references");
-        assert_eq!(forward, reverse);
-        assert!(matches!(
-            forward,
-            GeometricConstraintErrorV1::MissingEdge { constraint, .. }
-                if constraint == expected_id
-        ));
-    }
-
-    #[test]
-    fn validation_normalizes_unordered_operands_before_selecting_an_error() {
-        let fixture = Fixture::new();
-        let first_missing = EdgeId::new();
-        let second_missing = EdgeId::new();
-        let constraint_id = ConstraintId::new();
-        let forward = GeometricConstraintRecordV1 {
-            id: constraint_id,
-            constraint: GeometricConstraintKindV1::EqualLength {
-                first_edge: first_missing,
-                second_edge: second_missing,
-            },
-        };
-        let reverse = GeometricConstraintRecordV1 {
-            id: constraint_id,
-            constraint: GeometricConstraintKindV1::EqualLength {
-                first_edge: second_missing,
-                second_edge: first_missing,
-            },
-        };
-        let forward_error =
-            prepare(&fixture, &document([forward])).expect_err("both references are missing");
-        let reverse_error =
-            prepare(&fixture, &document([reverse])).expect_err("both references are missing");
-        assert_eq!(forward_error, reverse_error);
-
-        let canonical_first = if first_missing.canonical_bytes() < second_missing.canonical_bytes()
-        {
-            first_missing
-        } else {
-            second_missing
-        };
-        assert_eq!(
-            forward_error,
-            GeometricConstraintErrorV1::MissingEdge {
-                constraint: constraint_id,
-                role: ConstraintEdgeRoleV1::First,
-                edge: canonical_first,
-            }
-        );
-    }
-
-    #[test]
-    fn prepared_set_borrows_and_identifies_its_exact_source_pattern() {
-        let fixture = Fixture::new();
-        let prepared = prepare(&fixture, &document([])).expect("empty constraints are valid");
-        assert!(std::ptr::eq(prepared.source_pattern(), &fixture.pattern));
-        assert!(prepared.is_for_pattern(&fixture.pattern));
-
-        let equal_but_distinct_pattern = fixture.pattern.clone();
-        assert_eq!(equal_but_distinct_pattern, fixture.pattern);
-        assert!(!prepared.is_for_pattern(&equal_but_distinct_pattern));
-    }
-
-    fn sorted_ids(ids: &[ConstraintId]) -> Vec<ConstraintId> {
+    pub(super) fn sorted_ids(ids: &[ConstraintId]) -> Vec<ConstraintId> {
         let mut result = ids.to_vec();
         canonicalize_constraint_ids(&mut result);
         result
@@ -9102,14 +8987,14 @@ mod tests {
         actual == sorted_ids(expected)
     }
 
-    fn uuid_string<T: Serialize>(id: T) -> String {
+    pub(super) fn uuid_string<T: Serialize>(id: T) -> String {
         serde_json::to_string(&id)
             .expect("serialize UUID-backed ID")
             .trim_matches('"')
             .to_owned()
     }
 
-    fn deterministic_shuffle<T>(items: &mut [T], state: &mut u64) {
+    pub(super) fn deterministic_shuffle<T>(items: &mut [T], state: &mut u64) {
         for index in (1..items.len()).rev() {
             *state = state
                 .wrapping_mul(6_364_136_223_846_793_005)
@@ -9119,7 +9004,7 @@ mod tests {
         }
     }
 
-    fn reverse_unordered_operands(constraint: &mut GeometricConstraintKindV1) {
+    pub(super) fn reverse_unordered_operands(constraint: &mut GeometricConstraintKindV1) {
         match constraint {
             GeometricConstraintKindV1::FixedAngle {
                 first_edge,
@@ -9151,296 +9036,6 @@ mod tests {
             | GeometricConstraintKindV1::RotationalSymmetry { .. }
             | GeometricConstraintKindV1::LengthRatio { .. } => {}
         }
-    }
-
-    #[test]
-    fn bounded_direct_oracle_limit_is_the_complete_nonempty_subset_count() {
-        assert_eq!(MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1, 16);
-        assert_eq!(MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1, 65_535);
-        assert_eq!(
-            MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1,
-            (1_usize << MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1) - 1
-        );
-    }
-
-    #[test]
-    fn bounded_direct_oracle_returns_cardinality_smallest_proof_core_at_four_eight_sixteen() {
-        for count in [4, 8, 16] {
-            let fixture = Fixture::new();
-            let mut records = vec![
-                record(GeometricConstraintKindV1::Horizontal {
-                    edge: fixture.edges[0],
-                }),
-                record(GeometricConstraintKindV1::Vertical {
-                    edge: fixture.edges[0],
-                }),
-                record(GeometricConstraintKindV1::FixedLength {
-                    edge: fixture.edges[0],
-                    length_mm: 1.0,
-                }),
-            ];
-            records.extend((3..count).map(|index| {
-                record(GeometricConstraintKindV1::Horizontal {
-                    edge: fixture.edges[index % 6],
-                })
-            }));
-            let prepared = prepare(&fixture, &document(records)).unwrap();
-            let BoundedDirectMusV1::ProvenUnsatisfiable {
-                constraint_ids,
-                oracle_calls,
-            } = find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("the exact direct theorem must return a bounded oracle proof core")
-            };
-            assert_eq!(constraint_ids.len(), 3);
-            assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
-            for removed in &constraint_ids {
-                let subset = prepared
-                    .constraints
-                    .iter()
-                    .filter(|record| constraint_ids.contains(&record.id) && record.id != *removed)
-                    .cloned()
-                    .collect();
-                let candidate = GeometricConstraintSetV1 {
-                    source_pattern: &fixture.pattern,
-                    constraints: subset,
-                    max_preflight_checks: prepared.max_preflight_checks,
-                };
-                assert!(!matches!(
-                    preflight_direct_conflicts_v1(&candidate),
-                    ConstraintPreflightV1::DirectConflict { .. }
-                ));
-            }
-        }
-        let fixture = Fixture::new();
-        let records = (0..17).map(|index| {
-            record(GeometricConstraintKindV1::Horizontal {
-                edge: fixture.edges[index % 6],
-            })
-        });
-        let prepared = prepare(&fixture, &document(records)).unwrap();
-        assert_eq!(
-            find_bounded_direct_mus_v1(&prepared),
-            BoundedDirectMusV1::Unknown { oracle_calls: 0 }
-        );
-    }
-
-    #[test]
-    fn rounded_length_ratio_cause_is_bounded_at_four_eight_sixteen_and_preserved_at_seventeen() {
-        for count in [4, 8, 16, 17] {
-            let fixture = Fixture::new();
-            let numerator = record(GeometricConstraintKindV1::FixedLength {
-                edge: fixture.edges[0],
-                length_mm: 0.3,
-            });
-            let denominator = record(GeometricConstraintKindV1::FixedLength {
-                edge: fixture.edges[1],
-                length_mm: 0.1,
-            });
-            let ratio = record(GeometricConstraintKindV1::LengthRatio {
-                numerator_edge: fixture.edges[0],
-                denominator_edge: fixture.edges[1],
-                ratio: 3.0,
-            });
-            let expected_ids = sorted_ids(&[numerator.id, denominator.id, ratio.id]);
-            let mut records = vec![numerator, denominator, ratio];
-            records.extend((3..count).map(|index| {
-                record(GeometricConstraintKindV1::Horizontal {
-                    edge: fixture.edges[index % fixture.edges.len()],
-                })
-            }));
-            let prepared =
-                prepare(&fixture, &document(records)).expect("bounded rounded-residual cause");
-            assert!(
-                matches!(
-                    prepared.preflight(),
-                    ConstraintPreflightV1::DirectConflict {
-                        ref conflicts
-                    } if conflicts.len() == 1
-                        && matches!(
-                            conflicts[0].conflict(),
-                            DirectConstraintConflictKindV1::
-                                LengthRatioWithIncompatibleFixedLengths { .. }
-                        )
-                        && conflicts[0].constraint_ids() == expected_ids
-                ),
-                "{count}: the direct proof itself must survive every document size"
-            );
-
-            if count == 17 {
-                assert_eq!(
-                    find_bounded_direct_mus_v1(&prepared),
-                    BoundedDirectMusV1::Unknown { oracle_calls: 0 },
-                    "seventeen records keep the direct proof but skip bounded minimization"
-                );
-                continue;
-            }
-
-            let BoundedDirectMusV1::ProvenUnsatisfiable {
-                constraint_ids,
-                oracle_calls,
-            } = find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("{count}: the rounded residual theorem must feed the bounded oracle")
-            };
-            assert_eq!(constraint_ids, expected_ids, "{count}");
-            assert!(
-                oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1,
-                "{count}"
-            );
-        }
-    }
-
-    #[test]
-    fn different_ratio_product_cause_is_bounded_at_four_eight_sixteen_and_preserved_at_seventeen() {
-        for count in [4, 8, 16, 17] {
-            let fixture = Fixture::new();
-            let fixed = record(GeometricConstraintKindV1::FixedLength {
-                edge: fixture.edges[1],
-                length_mm: 1.0,
-            });
-            let first = record(GeometricConstraintKindV1::LengthRatio {
-                numerator_edge: fixture.edges[0],
-                denominator_edge: fixture.edges[1],
-                ratio: 2.0,
-            });
-            let second = record(GeometricConstraintKindV1::LengthRatio {
-                numerator_edge: fixture.edges[0],
-                denominator_edge: fixture.edges[1],
-                ratio: 3.0,
-            });
-            let expected_ids = sorted_ids(&[fixed.id, first.id, second.id]);
-            let mut records = vec![fixed, first, second];
-            records.extend((3..count).map(|index| {
-                record(GeometricConstraintKindV1::Horizontal {
-                    edge: fixture.edges[index % fixture.edges.len()],
-                })
-            }));
-            let prepared =
-                prepare(&fixture, &document(records)).expect("bounded ratio-product cause");
-            assert!(
-                matches!(
-                    prepared.preflight(),
-                    ConstraintPreflightV1::DirectConflict {
-                        ref conflicts
-                    } if conflicts.len() == 1
-                        && matches!(
-                            conflicts[0].conflict(),
-                            DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
-                        )
-                        && conflicts[0].constraint_ids() == expected_ids
-                ),
-                "{count}: the direct proof itself must survive every document size"
-            );
-
-            if count == 17 {
-                assert_eq!(
-                    find_bounded_direct_mus_v1(&prepared),
-                    BoundedDirectMusV1::Unknown { oracle_calls: 0 },
-                    "seventeen records keep the proof but skip bounded minimization"
-                );
-                continue;
-            }
-
-            let BoundedDirectMusV1::ProvenUnsatisfiable {
-                constraint_ids,
-                oracle_calls,
-            } = find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("{count}: the ratio-product theorem must feed the bounded oracle")
-            };
-            assert_eq!(constraint_ids, expected_ids, "{count}");
-            assert!(
-                oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1,
-                "{count}"
-            );
-        }
-    }
-
-    #[test]
-    fn perpendicular_orientations_and_nonright_angle_remain_solver_required_at_oracle_boundaries() {
-        for count in [4, 8, 16] {
-            let fixture = Fixture::new();
-            let mut records = vec![
-                record(GeometricConstraintKindV1::Horizontal {
-                    edge: fixture.edges[0],
-                }),
-                record(GeometricConstraintKindV1::Vertical {
-                    edge: fixture.edges[1],
-                }),
-                record(GeometricConstraintKindV1::FixedAngle {
-                    vertex: fixture.vertices[0],
-                    first_edge: fixture.edges[1],
-                    second_edge: fixture.edges[0],
-                    angle_degrees: 45.0,
-                }),
-            ];
-            records.extend((3..count).map(|index| {
-                record(GeometricConstraintKindV1::EqualLength {
-                    first_edge: fixture.edges[index % 6],
-                    second_edge: fixture.edges[(index + 1) % 6],
-                })
-            }));
-            let prepared = prepare(&fixture, &document(records)).unwrap();
-            assert_solver_required(&prepared.preflight());
-            assert_bounded_direct_oracle_unknown(&prepared);
-        }
-    }
-
-    #[test]
-    fn perpendicular_exact_orientations_allow_collapse_zero_and_nonzero_right_angle() {
-        let fixture = Fixture::new();
-        for compatible_angle in [0.0, 90.0] {
-            let prepared = prepare(
-                &fixture,
-                &document([
-                    record(GeometricConstraintKindV1::Horizontal {
-                        edge: fixture.edges[0],
-                    }),
-                    record(GeometricConstraintKindV1::Vertical {
-                        edge: fixture.edges[1],
-                    }),
-                    record(GeometricConstraintKindV1::FixedAngle {
-                        vertex: fixture.vertices[0],
-                        first_edge: fixture.edges[0],
-                        second_edge: fixture.edges[1],
-                        angle_degrees: compatible_angle,
-                    }),
-                ]),
-            )
-            .unwrap();
-            assert!(!matches!(
-                prepared.preflight(),
-                ConstraintPreflightV1::DirectConflict { .. }
-            ));
-        }
-    }
-
-    #[test]
-    fn perpendicular_fixed_angle_conflict_is_symmetric_deterministic_and_covers_180() {
-        let fixture = Fixture::new();
-        let mut records = vec![
-            record(GeometricConstraintKindV1::Vertical {
-                edge: fixture.edges[0],
-            }),
-            record(GeometricConstraintKindV1::Horizontal {
-                edge: fixture.edges[1],
-            }),
-            record(GeometricConstraintKindV1::FixedAngle {
-                vertex: fixture.vertices[0],
-                first_edge: fixture.edges[0],
-                second_edge: fixture.edges[1],
-                angle_degrees: 180.0,
-            }),
-        ];
-        let expected = prepare(&fixture, &document(records.clone()))
-            .unwrap()
-            .preflight();
-        assert_solver_required(&expected);
-
-        records.reverse();
-        let permuted = prepare(&fixture, &document(records)).unwrap().preflight();
-        assert_eq!(permuted, expected);
     }
 
     #[test]

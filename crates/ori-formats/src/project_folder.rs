@@ -18,12 +18,8 @@ use unicode_normalization::UnicodeNormalization;
 use crate::{
     CURRENT_FORMAT_VERSION, FormatError, LAYER_EVIDENCE_SCHEMA_VERSION_V1,
     MAX_EDITOR_HISTORY_JSON_BYTES, MAX_LAYER_EVIDENCE_JSON_BYTES_V1, MAX_PROJECT_JSON_BYTES,
-    ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
-    ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-    ORI2_FEATURE_LAYER_EVIDENCE_V1, ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-    ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, Ori2ProjectArchive, ProjectDocument, ProjectJsonLimits,
-    read_layer_evidence_archive_v1, read_project_json_with_limits, write_layer_evidence_archive_v1,
-    write_project_json,
+    Ori2ProjectArchive, ProjectDocument, ProjectJsonLimits, read_layer_evidence_archive_v1,
+    read_project_json_with_limits, write_layer_evidence_archive_v1, write_project_json,
 };
 
 pub const PROJECT_FOLDER_CONTAINER_IDENTIFIER: &str = "ORIGAMI2_EXPANDED_FOLDER";
@@ -424,9 +420,9 @@ pub fn write_project_folder_v1_with_limits(
     let manifest = ProjectFolderManifestV1 {
         container: PROJECT_FOLDER_CONTAINER_IDENTIFIER.to_owned(),
         container_version: CURRENT_PROJECT_FOLDER_VERSION,
-        required_features: required_features(
+        required_features: crate::ori2::required_features_for_project_archive_v1(
             &archive.document,
-            history_bytes.is_some(),
+            history,
             layer_evidence_bytes.is_some(),
         ),
         required_roles: roles.iter().map(|role| role.as_str().to_owned()).collect(),
@@ -500,7 +496,7 @@ pub fn read_project_folder_v1_with_limits(
     let unsupported_features = manifest
         .required_features
         .iter()
-        .filter(|feature| !is_known_feature(feature))
+        .filter(|feature| !crate::ori2::is_known_required_feature_v1(feature))
         .cloned()
         .collect::<Vec<_>>();
     if !unsupported_features.is_empty() {
@@ -560,13 +556,6 @@ pub fn read_project_folder_v1_with_limits(
             max_input_size: project_limit as usize,
         },
     )?;
-    let expected_features = required_features(&project, has_history, has_layer_evidence);
-    if manifest.required_features != expected_features {
-        return Err(ProjectFolderError::RequiredFeaturesMismatch {
-            expected: expected_features,
-            actual: manifest.required_features.clone(),
-        });
-    }
     let project_sha256 = sha256_hex(&project_entry.bytes);
 
     let editor_history = if has_history {
@@ -592,6 +581,17 @@ pub fn read_project_folder_v1_with_limits(
     } else {
         None
     };
+    let expected_features = crate::ori2::required_features_for_project_archive_v1(
+        &project,
+        editor_history.as_ref(),
+        has_layer_evidence,
+    );
+    if manifest.required_features != expected_features {
+        return Err(ProjectFolderError::RequiredFeaturesMismatch {
+            expected: expected_features,
+            actual: manifest.required_features.clone(),
+        });
+    }
     let layer_evidence = if has_layer_evidence {
         let entry = entry_by_path(entries, PROJECT_FOLDER_LAYER_EVIDENCE_PATH)?;
         Some(
@@ -793,58 +793,6 @@ fn canonical_roles(has_history: bool, has_layer_evidence: bool) -> Vec<FolderRol
     }
     roles.push(FolderRole::Preview);
     roles
-}
-
-fn required_features(
-    document: &ProjectDocument,
-    has_history: bool,
-    has_layer_evidence: bool,
-) -> Vec<String> {
-    let mut features = Vec::new();
-    if !document.instruction_timeline.steps.is_empty() {
-        features.push(ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned());
-    }
-    if document
-        .instruction_timeline
-        .steps
-        .iter()
-        .any(|step| step.pose.model == ori_domain::InstructionPoseModel::DeclarativeOnlyV1)
-    {
-        features.push(ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1.to_owned());
-    }
-    if !document.numeric_expressions.is_empty() {
-        features.push(ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned());
-    }
-    if !document.geometric_constraints.is_empty() {
-        features.push(ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned());
-    }
-    if !document.layers.is_default() {
-        features.push(ORI2_FEATURE_LAYERS_V1.to_owned());
-    }
-    if !document.reference_model_assets.is_empty() {
-        features.push(ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1.to_owned());
-    }
-    if has_history {
-        features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
-    }
-    if has_layer_evidence {
-        features.push(ORI2_FEATURE_LAYER_EVIDENCE_V1.to_owned());
-    }
-    features
-}
-
-fn is_known_feature(feature: &str) -> bool {
-    matches!(
-        feature,
-        ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
-            | ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1
-            | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
-            | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
-            | ORI2_FEATURE_LAYERS_V1
-            | ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
-            | ORI2_FEATURE_EDITOR_HISTORY_V1
-            | ORI2_FEATURE_LAYER_EVIDENCE_V1
-    )
 }
 
 fn is_known_role(role: &str) -> bool {
@@ -1285,6 +1233,11 @@ fn canonical_number(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
+        ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_FEATURE_LAYERS_V1,
+        ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1,
+    };
     use ori_domain::{
         AssetId, CreasePattern, Edge, EdgeId, InstructionPose, InstructionPoseModel,
         InstructionStep, InstructionStepId, ProjectId, Vertex,

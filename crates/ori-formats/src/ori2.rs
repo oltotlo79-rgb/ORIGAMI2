@@ -27,6 +27,7 @@ pub const ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1: &str = "geometric_constraints_v
 pub const ORI2_FEATURE_LAYERS_V1: &str = "layers_v1";
 pub const ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1: &str = "reference_model_assets_v1";
 pub const ORI2_FEATURE_EDITOR_HISTORY_V1: &str = "editor_history_v1";
+pub const ORI2_FEATURE_SPECULATIVE_UNPROVEN_FOLD_V1: &str = "speculative_unproven_fold_v1";
 pub const ORI2_FEATURE_LAYER_EVIDENCE_V1: &str = "layer_evidence_v1";
 pub const MAX_EDITOR_HISTORY_JSON_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_LAYER_EVIDENCE_JSON_BYTES_V1: usize = 16 * 1024 * 1024;
@@ -234,11 +235,7 @@ impl Ori2ProjectArchive {
 pub struct Ori2Manifest {
     pub container: String,
     pub container_version: u32,
-    /// Semantic set of format features required to read the project.
-    ///
-    /// Readers accept known values in any order and tolerate duplicates for
-    /// backward compatibility. Writers emit each value once in canonical
-    /// format-defined order.
+    /// Canonical, duplicate-free feature vector required to read the project.
     #[serde(default)]
     pub required_features: Vec<String>,
     pub project: Ori2ProjectEntry,
@@ -299,6 +296,8 @@ struct MigratableEditorHistory {
     undo_stack: serde_json::Value,
     #[serde(default)]
     redo_stack: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speculative_unproven_applied_base_v1: Option<serde_json::Value>,
 }
 
 /// Migrates the two supported legacy history generations without weakening
@@ -340,6 +339,83 @@ impl Ori2Manifest {
             editor_history: None,
             layer_evidence: None,
         }
+    }
+}
+
+pub(crate) fn required_features_for_project_archive_v1(
+    document: &ProjectDocument,
+    editor_history: Option<&EditorHistoryV1>,
+    has_layer_evidence: bool,
+) -> Vec<String> {
+    let mut required_features = Vec::new();
+    if !document.instruction_timeline.steps.is_empty() {
+        required_features.push(ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned());
+    }
+    if document
+        .instruction_timeline
+        .steps
+        .iter()
+        .any(|step| step.pose.model == ori_domain::InstructionPoseModel::DeclarativeOnlyV1)
+    {
+        required_features.push(ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1.to_owned());
+    }
+    if !document.numeric_expressions.is_empty() {
+        required_features.push(ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned());
+    }
+    if !document.geometric_constraints.is_empty() {
+        required_features.push(ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned());
+    }
+    if !document.layers.is_default() {
+        required_features.push(ORI2_FEATURE_LAYERS_V1.to_owned());
+    }
+    if !document.reference_model_assets.is_empty() {
+        required_features.push(ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1.to_owned());
+    }
+    if let Some(history) = editor_history {
+        required_features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
+        if history.requires_speculative_unproven_fold_feature_v1() {
+            required_features.push(ORI2_FEATURE_SPECULATIVE_UNPROVEN_FOLD_V1.to_owned());
+        }
+    }
+    if has_layer_evidence {
+        required_features.push(ORI2_FEATURE_LAYER_EVIDENCE_V1.to_owned());
+    }
+    required_features
+}
+
+pub(crate) fn is_known_required_feature_v1(feature: &str) -> bool {
+    matches!(
+        feature,
+        ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
+            | ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1
+            | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
+            | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
+            | ORI2_FEATURE_LAYERS_V1
+            | ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
+            | ORI2_FEATURE_EDITOR_HISTORY_V1
+            | ORI2_FEATURE_SPECULATIVE_UNPROVEN_FOLD_V1
+            | ORI2_FEATURE_LAYER_EVIDENCE_V1
+    )
+}
+
+fn validate_required_features_with_allowlist_v1(
+    manifest: &Ori2Manifest,
+    is_known: impl Fn(&str) -> bool,
+) -> Result<(), FormatError> {
+    let mut unsupported_features = manifest
+        .required_features
+        .iter()
+        .filter(|feature| !is_known(feature))
+        .cloned()
+        .collect::<Vec<_>>();
+    unsupported_features.sort_unstable();
+    unsupported_features.dedup();
+    if unsupported_features.is_empty() {
+        Ok(())
+    } else {
+        Err(FormatError::UnsupportedRequiredFeatures {
+            features: unsupported_features,
+        })
     }
 }
 
@@ -444,36 +520,11 @@ fn write_project_archive_parts(
         ensure_layer_evidence_entry_size(bytes.len() as u64, limits)?;
     }
 
-    let mut required_features = Vec::new();
-    if !document.instruction_timeline.steps.is_empty() {
-        required_features.push(ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned());
-    }
-    if document
-        .instruction_timeline
-        .steps
-        .iter()
-        .any(|step| step.pose.model == ori_domain::InstructionPoseModel::DeclarativeOnlyV1)
-    {
-        required_features.push(ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1.to_owned());
-    }
-    if !document.numeric_expressions.is_empty() {
-        required_features.push(ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned());
-    }
-    if !document.geometric_constraints.is_empty() {
-        required_features.push(ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned());
-    }
-    if !document.layers.is_default() {
-        required_features.push(ORI2_FEATURE_LAYERS_V1.to_owned());
-    }
-    if !document.reference_model_assets.is_empty() {
-        required_features.push(ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1.to_owned());
-    }
-    if history_bytes.is_some() {
-        required_features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
-    }
-    if layer_evidence_bytes.is_some() {
-        required_features.push(ORI2_FEATURE_LAYER_EVIDENCE_V1.to_owned());
-    }
+    let required_features = required_features_for_project_archive_v1(
+        document,
+        editor_history,
+        layer_evidence_bytes.is_some(),
+    );
     let mut manifest =
         Ori2Manifest::new(&project_bytes, document.format_version, required_features);
     if let Some(bytes) = &history_bytes {
@@ -749,6 +800,17 @@ pub fn read_project_archive_ori2_with_limits(
         Some(descriptor) => Some(read_layer_evidence_entry(&mut archive, descriptor, limits)?),
         None => None,
     };
+    let expected_features = required_features_for_project_archive_v1(
+        &project,
+        editor_history.as_ref(),
+        layer_evidence.is_some(),
+    );
+    if manifest.required_features != expected_features {
+        return Err(FormatError::RequiredFeaturesMismatch {
+            expected: expected_features,
+            actual: manifest.required_features,
+        });
+    }
     Ok(Ori2ProjectArchive {
         document: project,
         editor_history,
@@ -1011,31 +1073,7 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
             latest: CURRENT_ORI2_CONTAINER_VERSION,
         });
     }
-    let mut unsupported_features = manifest
-        .required_features
-        .iter()
-        .filter(|feature| {
-            !matches!(
-                feature.as_str(),
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
-                    | ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1
-                    | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
-                    | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
-                    | ORI2_FEATURE_LAYERS_V1
-                    | ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
-                    | ORI2_FEATURE_EDITOR_HISTORY_V1
-                    | ORI2_FEATURE_LAYER_EVIDENCE_V1
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    unsupported_features.sort_unstable();
-    unsupported_features.dedup();
-    if !unsupported_features.is_empty() {
-        return Err(FormatError::UnsupportedRequiredFeatures {
-            features: unsupported_features,
-        });
-    }
+    validate_required_features_with_allowlist_v1(manifest, is_known_required_feature_v1)?;
     if manifest.project.path != ORI2_PROJECT_PATH {
         return Err(FormatError::InvalidManifestProjectPath {
             found: manifest.project.path.clone(),
@@ -1237,6 +1275,11 @@ fn is_lowercase_sha256_hex(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[path = "speculative_unproven_feature_test_support.rs"]
+    mod speculative_unproven_feature_test_support;
+    #[path = "speculative_unproven_feature_tests.rs"]
+    mod speculative_unproven_feature_tests;
 
     fn layer_evidence_fixture() -> LayerEvidenceArchiveV1 {
         LayerEvidenceArchiveV1 {
@@ -2917,65 +2960,25 @@ mod tests {
     }
 
     #[test]
-    fn required_features_are_a_semantic_set_and_unknown_errors_are_canonical() {
+    fn required_features_are_canonical_and_unknown_errors_are_canonical() {
         let project = write_project_json(&sample_document()).expect("project JSON");
-        let permutations = [
-            [
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
+        for features in [
+            vec![ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned()],
+            vec![
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned(),
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned(),
             ],
-            [
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
-                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-            ],
-            [
-                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
-            ],
-            [
-                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-            ],
-            [
-                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-            ],
-            [
-                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
-                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-            ],
-        ];
-        for features in permutations {
-            let manifest =
-                manifest_for_features(&project, features.map(str::to_owned).into_iter().collect());
+        ] {
+            let manifest = manifest_for_features(&project, features);
             let bytes = raw_zip(&[
                 (ORI2_MANIFEST_PATH, &manifest),
                 (ORI2_PROJECT_PATH, &project),
             ]);
-            read_project_ori2(&bytes).expect("known feature permutation");
+            assert!(matches!(
+                read_project_ori2(&bytes),
+                Err(FormatError::RequiredFeaturesMismatch { .. })
+            ));
         }
-
-        let duplicate_manifest = manifest_for_features(
-            &project,
-            vec![
-                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned(),
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
-                ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned(),
-                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned(),
-                ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned(),
-            ],
-        );
-        let duplicate_bytes = raw_zip(&[
-            (ORI2_MANIFEST_PATH, &duplicate_manifest),
-            (ORI2_PROJECT_PATH, &project),
-        ]);
-        read_project_ori2(&duplicate_bytes).expect("duplicate known features remain compatible");
 
         let unknown_manifest = manifest_for_features(
             &project,

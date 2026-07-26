@@ -95,11 +95,12 @@ pub use ori2::{
     ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
     ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
     ORI2_FEATURE_LAYER_EVIDENCE_V1, ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-    ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, ORI2_LAYER_EVIDENCE_PATH, ORI2_MANIFEST_PATH,
-    ORI2_PROJECT_PATH, Ori2EditorHistoryEntry, Ori2LayerEvidenceEntry, Ori2Limits, Ori2Manifest,
-    Ori2ProjectArchive, Ori2ProjectEntry, read_layer_evidence_archive_v1,
-    read_project_archive_ori2, read_project_archive_ori2_with_limits, read_project_ori2,
-    read_project_ori2_with_limits, write_layer_evidence_archive_v1, write_project_archive_ori2,
+    ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, ORI2_FEATURE_SPECULATIVE_UNPROVEN_FOLD_V1,
+    ORI2_LAYER_EVIDENCE_PATH, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH, Ori2EditorHistoryEntry,
+    Ori2LayerEvidenceEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive, Ori2ProjectEntry,
+    read_layer_evidence_archive_v1, read_project_archive_ori2,
+    read_project_archive_ori2_with_limits, read_project_ori2, read_project_ori2_with_limits,
+    write_layer_evidence_archive_v1, write_project_archive_ori2,
     write_project_archive_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
 };
 pub use project_folder::{
@@ -468,6 +469,13 @@ pub enum FormatError {
     UnsupportedRequiredFeatures { features: Vec<String> },
     #[error(".ori2 project content requires manifest feature {feature:?}")]
     MissingRequiredFeature { feature: &'static str },
+    #[error(
+        ".ori2 required features do not match archive content (expected {expected:?}, actual {actual:?})"
+    )]
+    RequiredFeaturesMismatch {
+        expected: Vec<String>,
+        actual: Vec<String>,
+    },
     #[error(".ori2 manifest references an invalid project path: {found:?}")]
     InvalidManifestProjectPath { found: String },
     #[error(".ori2 manifest references an invalid editor-history path: {found:?}")]

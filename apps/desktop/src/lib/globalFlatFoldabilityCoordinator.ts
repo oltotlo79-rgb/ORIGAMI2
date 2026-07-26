@@ -11,6 +11,7 @@ import {
 } from './globalFlatFoldability.ts'
 import {
   GlobalFlatFoldabilityNativeError,
+  type GlobalFlatFoldabilityNativeBegin,
   type GlobalFlatFoldabilityNativeContext,
   type GlobalFlatFoldabilityNativeTransport,
 } from './globalFlatFoldabilityNative.ts'
@@ -19,6 +20,8 @@ export const GLOBAL_FLAT_FOLDABILITY_POLL_INTERVAL_MS = 250
 
 export type GlobalFlatFoldabilityContext =
   GlobalFlatFoldabilityNativeContext
+export type GlobalFlatFoldabilityBeginResponse =
+  GlobalFlatFoldabilityNativeBegin
 export type GlobalFlatFoldabilityTransport =
   GlobalFlatFoldabilityNativeTransport
 

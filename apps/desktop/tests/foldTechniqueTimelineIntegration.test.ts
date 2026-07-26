@@ -11,7 +11,10 @@ const dialog = [
   source('../src/components/FoldTechniqueTimelinePreviewDialog.tsx'),
   source('../src/lib/foldTechniqueTimelinePreviewDialogText.ts'),
 ].join('\n')
-const proposal = source('../src/lib/foldTechniqueTimelineProposal.ts')
+const proposal = [
+  source('../src/lib/foldTechniqueTimelineProposal.ts'),
+  source('../src/lib/foldTechniqueTimelineProposalText.ts'),
+].join('\n')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 

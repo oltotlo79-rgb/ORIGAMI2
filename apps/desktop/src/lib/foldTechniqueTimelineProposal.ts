@@ -9,7 +9,16 @@ import {
   type FoldTechniqueOperationV1,
   type FoldTechniqueTemplateV1,
 } from './foldTechniqueEditor.ts'
-import type { Locale } from './i18n.ts'
+import {
+  FOLD_TECHNIQUE_TIMELINE_PROPOSAL_TEXT as TEXT,
+} from './foldTechniqueTimelineProposalText.ts'
+import {
+  DEFAULT_LOCALE,
+  formatLocalizedText,
+  isLocale,
+  selectLocalizedText,
+  type Locale,
+} from './i18n.ts'
 
 export const NAMED_TECHNIQUE_TIMELINE_PROPOSAL_SCHEMA_VERSION_V1 = 1 as const
 export const MAX_NAMED_TECHNIQUE_TIMELINE_PROPOSAL_BYTES = 2 * 1024 * 1024
@@ -134,11 +143,13 @@ function proposalUnits(
   const units: ProposalUnit[] = [{
     sourceKind: 'technique',
     sourceId: technique.id,
-    title: localized(locale, `技法: ${techniqueName}`, `Technique: ${techniqueName}`),
-    description: sourceDescription(
+    title: formatLocalizedText(
       locale,
-      '技法・出典情報',
-      'Technique and provenance',
+      TEXT.techniqueTitle,
+      { name: techniqueName },
+    ),
+    description: sourceDescription(
+      selectLocalizedText(locale, TEXT.techniqueAndProvenance),
       {
         schema: 'origami2_named_technique_timeline_source_v1',
         package_id: document.package_id,
@@ -151,10 +162,9 @@ function proposalUnits(
         },
       },
     ),
-    caution: localized(
+    caution: selectLocalizedText(
       locale,
-      '説明専用の案です。3D姿勢や折り操作は実行しません。',
-      'This is a description-only proposal. It does not apply a 3D pose or execute a fold.',
+      TEXT.descriptionOnlyProposal,
     ),
   }]
 
@@ -163,11 +173,13 @@ function proposalUnits(
     units.push({
       sourceKind: 'parameter',
       sourceId: parameter.id,
-      title: localized(locale, `設定: ${name}`, `Parameter: ${name}`),
-      description: sourceDescription(
+      title: formatLocalizedText(
         locale,
-        '設定値の定義',
-        'Parameter definition',
+        TEXT.parameterTitle,
+        { name },
+      ),
+      description: sourceDescription(
+        selectLocalizedText(locale, TEXT.parameterDefinition),
         parameter,
       ),
       caution: '',
@@ -177,21 +189,18 @@ function proposalUnits(
     units.push({
       sourceKind: 'precondition',
       sourceId: precondition.id,
-      title: localized(
+      title: formatLocalizedText(
         locale,
-        `前提条件: ${precondition.id}`,
-        `Precondition: ${precondition.id}`,
+        TEXT.preconditionTitle,
+        { id: precondition.id },
       ),
       description: sourceDescription(
-        locale,
-        '実行前に確認する条件',
-        'Condition to check before folding',
+        selectLocalizedText(locale, TEXT.preconditionCondition),
         precondition,
       ),
-      caution: localized(
+      caution: selectLocalizedText(
         locale,
-        'この条件は自動判定しません。折り手が内容を確認してください。',
-        'This condition is not evaluated automatically. The folder must verify it.',
+        TEXT.preconditionCaution,
       ),
     })
   }
@@ -204,14 +213,12 @@ function proposalUnits(
     units.push({
       sourceKind: 'operation',
       sourceId: operation.id,
-      title: localized(
+      title: formatLocalizedText(
         locale,
-        `操作 ${index + 1}: ${operationName}`,
-        `Operation ${index + 1}: ${operationName}`,
+        TEXT.operationTitle,
+        { index: index + 1, name: operationName },
       ),
       description: sourceDescription(
-        locale,
-        operationSummary(operation, locale),
         operationSummary(operation, locale),
         operation,
       ),
@@ -222,13 +229,11 @@ function proposalUnits(
 }
 
 function sourceDescription(
-  locale: Locale,
-  japaneseHeading: string,
-  englishHeading: string,
+  heading: string,
   source: unknown,
 ) {
   return [
-    localized(locale, japaneseHeading, englishHeading),
+    heading,
     'source-json-v1:',
     JSON.stringify(source),
   ].join('\n')
@@ -280,24 +285,24 @@ function operationSummary(
       return localizedText(
         operation.action.instructions,
         locale,
-        localized(locale, '文章による折り指示', 'Written folding cue'),
+        selectLocalizedText(locale, TEXT.writtenFoldingCue),
       )
     case 'layer_selective_manipulation':
       return localizedText(
         operation.action.instructions,
         locale,
-        localized(locale, '層を選ぶ操作の説明', 'Layer-selective instruction'),
+        selectLocalizedText(locale, TEXT.layerSelectiveInstruction),
       )
     case 'straight_line_stacked_fold':
-      return localized(locale, '一直線の折り重ね', 'Straight-line stacked fold')
+      return selectLocalizedText(locale, TEXT.straightLineStackedFold)
     case 'inside_reverse_fold':
-      return localized(locale, '中割り折り', 'Inside reverse fold')
+      return selectLocalizedText(locale, TEXT.insideReverseFold)
     case 'outside_reverse_fold':
-      return localized(locale, 'かぶせ折り', 'Outside reverse fold')
+      return selectLocalizedText(locale, TEXT.outsideReverseFold)
     case 'sink_fold':
       return operation.action.sink_kind === 'open'
-        ? localized(locale, '開いた沈め折り', 'Open sink fold')
-        : localized(locale, '閉じた沈め折り', 'Closed sink fold')
+        ? selectLocalizedText(locale, TEXT.openSinkFold)
+        : selectLocalizedText(locale, TEXT.closedSinkFold)
   }
 }
 
@@ -306,23 +311,21 @@ function operationCaution(
   locale: Locale,
 ) {
   if (operation.execution_support.status === 'unsupported_physical_operation') {
-    return localized(
+    return formatLocalizedText(
       locale,
-      `未対応の物理操作（${operation.execution_support.operation}）です。説明テンプレートとしてのみ追加し、自動実行しません。`,
-      `Unsupported physical operation (${operation.execution_support.operation}). It is added only as an explanation template and is never auto-executed.`,
+      TEXT.unsupportedPhysicalOperation,
+      { operation: operation.execution_support.operation },
     )
   }
   if (operation.action.kind === 'straight_line_stacked_fold') {
-    return localized(
+    return selectLocalizedText(
       locale,
-      '折り重ね物理コマンドは実行しません。層・折り線を確認してから別途操作してください。',
-      'No stacked-fold physical command is executed. Verify the layers and fold line before performing it separately.',
+      TEXT.stackedFoldNotExecuted,
     )
   }
-  return localized(
+  return selectLocalizedText(
     locale,
-    '説明専用ステップです。3D姿勢は変更しません。',
-    'This is a description-only step. It does not change the 3D pose.',
+    TEXT.descriptionOnlyStep,
   )
 }
 
@@ -331,13 +334,10 @@ function localizedText(
   locale: Locale,
   fallback: string,
 ) {
-  return entries.find((entry) => entry.locale === locale)?.text
+  const supportedLocale = isLocale(locale) ? locale : DEFAULT_LOCALE
+  return entries.find((entry) => entry.locale === supportedLocale)?.text
     ?? entries.find((entry) => entry.locale === 'ja')?.text
     ?? entries.find((entry) => entry.locale === 'en')?.text
     ?? entries[0]?.text
     ?? fallback
-}
-
-function localized(locale: Locale, japanese: string, english: string) {
-  return locale === 'ja' ? japanese : english
 }

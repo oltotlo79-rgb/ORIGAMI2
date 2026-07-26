@@ -1,4 +1,11 @@
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
+import {
+  hasValidStackedFoldApplyContractV1,
+  type StackedFoldApplyModeV1,
+} from './stackedFoldApplyContract.ts'
+import {
+  snapshotStackedFoldReadWireValue,
+} from './stackedFoldReadWireSnapshot.ts'
 
 export type StackedFoldFixedSide = 'left' | 'right'
 export type StackedFoldRotationDirection = 'positive' | 'negative'
@@ -225,7 +232,10 @@ export type StackedFoldReadResponse = Readonly<{
     authorizesProjectMutation: false
   }> | null
   transactionProposal: Readonly<{
+    applyContractVersion: 1
+    applyMode: StackedFoldApplyModeV1
     transactionToken: string | null
+    speculativeUnprovenAvailable: boolean
     sourceProjectId: string
     sourceRevision: number
     targetRevision: number
@@ -266,11 +276,19 @@ export type StackedFoldReadResponse = Readonly<{
   }>
 }>
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  try {
+    return Object.getPrototypeOf(value) === Object.prototype
+  } catch {
+    return false
+  }
+}
 
 const isCount = (value: unknown): value is number =>
-  Number.isSafeInteger(value) && (value as number) >= 0
+  Number.isSafeInteger(value) && (value as number) >= 0 && !Object.is(value, -0)
 
 const isFinitePoint = (value: unknown): value is [number, number, number] =>
   Array.isArray(value) &&
@@ -287,6 +305,22 @@ const isFinitePoint2 = (value: unknown): value is [number, number] =>
 
 const allCounts = (value: Record<string, unknown>, fields: readonly string[]): boolean =>
   fields.every((field) => isCount(value[field]))
+
+const checkedCountSum = (
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): number | null => {
+  let sum = 0
+  for (const field of fields) {
+    const count = value[field]
+    if (
+      !isCount(count)
+      || count > Number.MAX_SAFE_INTEGER - sum
+    ) return null
+    sum += count
+  }
+  return sum
+}
 
 const hasExactKeys = (value: Record<string, unknown>, fields: readonly string[]): boolean => {
   const keys = Object.keys(value)
@@ -445,6 +479,9 @@ export function normalizeStackedFoldReadResponse(
     | 'requestedAngleDegrees'
   >,
 ): StackedFoldReadResponse | null {
+  const wire = snapshotStackedFoldReadWireValue(value)
+  if (!wire) return null
+  value = wire.value
   if (
     !isRecord(value) ||
     !isRecord(value.binding) ||
@@ -480,10 +517,8 @@ export function normalizeStackedFoldReadResponse(
   ] as const
   const endpointCountsValid = allCounts(endpointCollision, endpointCountFields)
   const endpointPairSum = endpointCountsValid
-    ? endpointCountFields
-        .slice(1)
-        .reduce((sum, field) => sum + Number(endpointCollision[field]), 0)
-    : -1
+    ? checkedCountSum(endpointCollision, endpointCountFields.slice(1))
+    : null
   if (
     !hasExactKeys(value, [
       'guardModelId',
@@ -596,7 +631,10 @@ export function normalizeStackedFoldReadResponse(
       certifiedGraph.authorizesProjectMutation === false
     )) ||
     !hasExactKeys(transaction, [
+      'applyContractVersion',
+      'applyMode',
       'transactionToken',
+      'speculativeUnprovenAvailable',
       'sourceProjectId',
       'sourceRevision',
       'targetRevision',
@@ -696,6 +734,7 @@ export function normalizeStackedFoldReadResponse(
       'targetHingeCount',
     ]) ||
     !endpointCountsValid ||
+    endpointPairSum === null ||
     endpointPairSum !== endpointCollision.expectedPairCount ||
     endpointCollision.hasBlockingHold !==
       (Number(endpointCollision.penetratingPairCount) > 0 ||
@@ -767,6 +806,13 @@ export function normalizeStackedFoldReadResponse(
       (transaction.transactionToken !== null &&
         transaction.failureClasses.length === 0 &&
         transaction.authorizesProjectMutation) ||
+    !hasValidStackedFoldApplyContractV1({
+      transaction,
+      endpointCollision,
+      continuousPath,
+      flatEndpointLayerOrder: layerOrder,
+      certifiedPathGraph: certifiedGraph,
+    }) ||
     !allCounts(work, [
       'scannedCells',
       'totalBoundaryVertices',

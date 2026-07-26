@@ -234,7 +234,10 @@ describe('stacked-fold read boundary', () => {
       },
       certifiedPathGraph: null,
       transactionProposal: {
+        applyContractVersion: 1,
+        applyMode: 'none',
         transactionToken: null,
+        speculativeUnprovenAvailable: false,
         sourceProjectId: projectId,
         sourceRevision: 3,
         targetRevision: 4,
@@ -300,10 +303,13 @@ describe('stacked-fold read boundary', () => {
       ...graphResponse,
       continuousPath: {
         ...graphResponse.continuousPath,
+        continuousCertificateModelId:
+          'stacked_fold_cycle_interval_zero_thickness_continuous_certificate_v1',
         continuousClearanceCertified: true,
       },
       transactionProposal: {
         ...graphResponse.transactionProposal,
+        applyMode: 'certified',
         transactionToken: faceId,
         timelineStepCount: graphResponse.certifiedPathGraph.edges.length,
         readyForAtomicApply: true,
@@ -329,10 +335,13 @@ describe('stacked-fold read boundary', () => {
       ...response,
       continuousPath: {
         ...response.continuousPath,
+        continuousCertificateModelId:
+          'stacked_fold_single_hinge_zero_thickness_continuous_certificate_v1',
         continuousClearanceCertified: true,
       },
       transactionProposal: {
         ...response.transactionProposal,
+        applyMode: 'certified',
         transactionToken: faceId,
         readyForAtomicApply: true,
         failureClasses: [],

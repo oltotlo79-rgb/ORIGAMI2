@@ -21,10 +21,33 @@ vi.mock('../src/lib/diagnosticsShare.ts', () => ({
   saveDiagnosticsSharePreview: vi.fn(),
 }))
 
+const PREVIEW_JSON = JSON.stringify({
+  schema: 'origami2.redacted-diagnostics.v2',
+  unexpected: [],
+  speculativeUnprovenFolds: {
+    applied: {
+      awaitingProof: 0,
+      proofBlocked: 0,
+      unknownEvidenceInsufficient: 0,
+      unknownResourceLimit: 0,
+      unknownCancelled: 0,
+      unknownDeadlineReached: 0,
+    },
+    unappliedRedo: {
+      awaitingProof: 0,
+      proofBlocked: 0,
+      unknownEvidenceInsufficient: 0,
+      unknownResourceLimit: 0,
+      unknownCancelled: 0,
+      unknownDeadlineReached: 0,
+    },
+  },
+})
+
 const PREVIEW = Object.freeze({
   preview_generation: 7,
-  json: '{"schema":"origami2.redacted-diagnostics.v1","unexpected":[]}',
-  byte_length: 61,
+  json: PREVIEW_JSON,
+  byte_length: new TextEncoder().encode(PREVIEW_JSON).byteLength,
 })
 
 const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(
@@ -66,7 +89,7 @@ beforeEach(() => {
   vi.mocked(prepareDiagnosticsSharePreview).mockResolvedValue(PREVIEW)
   vi.mocked(saveDiagnosticsSharePreview).mockResolvedValue({
     preview_generation: 7,
-    byte_length: 61,
+    byte_length: PREVIEW.byte_length,
     canceled: false,
   })
 })

@@ -1,8 +1,13 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { CurrentNonFlatLayerOrderViewer } from './CurrentNonFlatLayerOrderViewer.tsx'
+import { ProofProgressPanel } from './ProofProgressPanel.tsx'
+import {
+  SpeculativeStackedFoldApplyControl,
+} from './SpeculativeStackedFoldApplyControl.tsx'
 import type { FoldPreviewAppliedPoseSnapshot } from '../lib/foldPreviewAppliedPose.ts'
 import {
   applyStackedFoldTransaction,
+  applySpeculativeStackedFoldTransaction,
   applyNamedBookFoldTransaction,
   applyNamedReverseFoldTransaction,
   applyNamedLayerSelectiveTransaction,
@@ -49,6 +54,15 @@ import type {
 import { isCycleScheduleRequestV1 } from '../lib/stackedFoldRead'
 import type { LayerOrderViewerCell } from '../lib/currentLayerOrderView'
 import type { FoldTechniqueFileDocumentV1 } from '../lib/foldTechniqueEditor'
+import {
+  createStackedFoldProofProgressModel,
+  shouldRenderStackedFoldProofProgress,
+  speculativeStackedFoldApplyIsCurrent,
+} from '../lib/stackedFoldProofProgress.ts'
+import {
+  reconcileSpeculativeStackedFoldApplyV1,
+  type SpeculativeStackedFoldReconciliationAuthorityV1,
+} from '../lib/speculativeStackedFoldReconciliation.ts'
 
 type SelectedLine = Readonly<{
   id: string
@@ -103,7 +117,12 @@ type View =
         | 'cycle_path_cancelled'
         | 'cycle_path_collision'
     }>
-  | Readonly<{ kind: 'refresh_failed' }>
+  | Readonly<{ kind: 'refresh_failed'; outcome: 'applied' }>
+  | Readonly<{
+      kind: 'refresh_failed'
+      outcome: 'speculative_unknown'
+      authority: SpeculativeStackedFoldReconciliationAuthorityV1
+    }>
 
 export function StackedFoldPanel({
   locale,
@@ -213,6 +232,7 @@ export function StackedFoldPanel({
     namedBookFold?.techniqueId, namedBookFold?.document])
   const dyadicGraphSequenceRef = useRef(0)
   const [confirmed, setConfirmed] = useState(false)
+  const [speculativeConfirmed, setSpeculativeConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
   const applyInFlightRef = useRef(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
@@ -317,6 +337,7 @@ export function StackedFoldPanel({
     cancelToken(tokenRef.current)
     tokenRef.current = null
     setConfirmed(false)
+    setSpeculativeConfirmed(false)
     setSelectedCell(null)
     setSelectedFace(null)
     setHoveredFace(null)
@@ -507,6 +528,7 @@ export function StackedFoldPanel({
       }
     }
     setConfirmed(false)
+    setSpeculativeConfirmed(false)
     const progressRequestId =
       `${snapshot.project_instance_id}:${snapshot.revision}:${++progressSequenceRef.current}`
     progressRequestRef.current = progressRequestId
@@ -554,32 +576,93 @@ export function StackedFoldPanel({
   }
 
   async function apply() {
+    const speculativeReady = view.kind === 'ready'
+      && speculativeStackedFoldApplyIsCurrent(
+        view.response,
+        snapshot,
+        tokenRef.current,
+      )
     if (
       view.kind !== 'ready' ||
-      !view.response.transactionProposal.readyForAtomicApply ||
-      !confirmed ||
+      disabled ||
+      (
+        view.response.transactionProposal.applyMode === 'certified'
+          ? !view.response.transactionProposal.readyForAtomicApply || !confirmed
+          : !speculativeReady || !speculativeConfirmed || namedBookFold !== null
+      ) ||
       applying || applyInFlightRef.current || unsupportedNamedPhysicalFold || (namedBasicFold
         && basicFoldTimelinePreview?.transactionToken !== view.response.transactionProposal.transactionToken)
     ) return
     const token = view.response.transactionProposal.transactionToken
     if (!token || token !== tokenRef.current) return
+    const speculative =
+      view.response.transactionProposal.applyMode === 'speculative_unproven'
+    const speculativeAuthority = speculative
+      ? Object.freeze({
+          projectInstanceId: snapshot.project_instance_id,
+          projectId: snapshot.project_id,
+          sourceRevision: snapshot.revision,
+          targetRevision: view.response.transactionProposal.targetRevision,
+        })
+      : null
     applyInFlightRef.current = true
     setApplying(true)
     let committed = false
-    try {
-      await applyTransaction(token)
-      committed = true
+    const publishApplied = (next: ProjectSnapshot) => {
       tokenRef.current = null
       setBasicFoldTimelinePreview(null)
       setBasicFoldTimelinePreviewError(false)
-      const next = await refreshSnapshot()
       onApplied(next)
       setView({ kind: 'idle' })
       setConfirmed(false)
+      setSpeculativeConfirmed(false)
+    }
+    try {
+      if (speculative) {
+        // Native speculative tokens are one-shot and are consumed before its
+        // live reauthorization. Mirror that fail-closed boundary in the UI so
+        // any stale-authority or apply failure requires a fresh proof.
+        tokenRef.current = null
+        setSpeculativeConfirmed(false)
+        try {
+          await applySpeculativeStackedFoldTransaction({
+            transactionToken: token,
+            explicitConfirmation: true,
+          })
+        } catch {
+          const reconciliation =
+            await reconcileSpeculativeStackedFoldApplyV1(
+              refreshSnapshot,
+              speculativeAuthority!,
+            )
+          if (reconciliation.kind === 'committed') {
+            committed = true
+            publishApplied(reconciliation.snapshot)
+          } else if (reconciliation.kind === 'unchanged') {
+            setView({ kind: 'failed', reason: 'apply' })
+          } else {
+            setView({
+              kind: 'refresh_failed',
+              outcome: 'speculative_unknown',
+              authority: speculativeAuthority!,
+            })
+          }
+          return
+        }
+      } else {
+        await applyTransaction(token)
+      }
+      committed = true
+      const next = await refreshSnapshot()
+      publishApplied(next)
     } catch {
-      setView(committed
-        ? { kind: 'refresh_failed' }
-        : { kind: 'ready', response: view.response, applyFailed: true })
+      setView(
+        committed
+          ? { kind: 'refresh_failed', outcome: 'applied' }
+          : speculative
+            ? { kind: 'failed', reason: 'apply' }
+            : { kind: 'ready', response: view.response, applyFailed: true },
+      )
     } finally {
       applyInFlightRef.current = false
       setApplying(false)
@@ -843,18 +926,48 @@ export function StackedFoldPanel({
   }
 
   async function retryRefresh() {
+    const failedView = view
+    if (failedView.kind !== 'refresh_failed') return
     setApplying(true)
     try {
-      onApplied(await refreshSnapshot())
-      setView({ kind: 'idle' })
+      if (failedView.outcome === 'speculative_unknown') {
+        const reconciliation =
+          await reconcileSpeculativeStackedFoldApplyV1(
+            refreshSnapshot,
+            failedView.authority,
+          )
+        if (reconciliation.kind === 'committed') {
+          onApplied(reconciliation.snapshot)
+          setView({ kind: 'idle' })
+        } else if (reconciliation.kind === 'unchanged') {
+          setView({ kind: 'failed', reason: 'apply' })
+        } else {
+          setView(failedView)
+        }
+      } else {
+        onApplied(await refreshSnapshot())
+        setView({ kind: 'idle' })
+      }
     } catch {
-      setView({ kind: 'refresh_failed' })
+      setView(failedView)
     } finally {
       setApplying(false)
     }
   }
 
-  const ready = view.kind === 'ready' && view.response.transactionProposal.readyForAtomicApply
+  const ready = view.kind === 'ready'
+    && view.response.transactionProposal.applyMode === 'certified'
+    && view.response.transactionProposal.readyForAtomicApply
+  const speculativeReady = view.kind === 'ready'
+    && speculativeStackedFoldApplyIsCurrent(
+      view.response,
+      snapshot,
+      tokenRef.current,
+    )
+  const proofProgressModel = useMemo(
+    () => createStackedFoldProofProgressModel(view, snapshot),
+    [view, snapshot],
+  )
   const certificateModelText = view.kind === 'ready'
     ? describeCertificateModel(
         view.response.continuousPath.continuousCertificateModelId,
@@ -1317,7 +1430,11 @@ export function StackedFoldPanel({
       )}
       {view.kind === 'refresh_failed' && (
         <div role="alert">
-          <p>{text(TEXT.theStackedFoldWasAppliedButTheRefreshedProjectCould)}</p>
+          <p>{text(
+            view.outcome === 'applied'
+              ? TEXT.theStackedFoldWasAppliedButTheRefreshedProjectCould
+              : TEXT.theSpeculativeApplyOutcomeCouldNotBeConfirmed,
+          )}</p>
           <button type="button" disabled={applying} onClick={() => void retryRefresh()}>
             {text(TEXT.retryRefresh)}
           </button>
@@ -1512,28 +1629,53 @@ export function StackedFoldPanel({
             )}
             </div>
           )}
-          <label>
-            <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)} />
-            {text(TEXT.iReviewedTheCertifiedChanges)}
-          </label>
-          <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)}>
-            {applying
-              ? text(TEXT.applying)
-              : namedBookFold
-                ? namedBookFold.kind === 'layer' || namedBookFold.kind === 'layer_selective'
-                  ? text(TEXT.applyNamedLayerTechnique)
-                  : namedBookFold.kind === 'sink'
-                  ? text(TEXT.applyNamedSinkFold)
-                  : namedBookFold.kind === 'accordion'
-                  ? text(TEXT.applyNamedAccordionFold)
-                  : namedBookFold.kind === 'reverse' || namedBookFold.kind === 'inside_reverse'
-                    || namedBookFold.kind === 'outside_reverse'
-                  ? text(TEXT.applyNamedReverseFold)
-                  : text(TEXT.applyNamedBookFold)
-                : text(TEXT.applyStackedFold)}
-          </button>
-          {!ready && <p className="muted">{text(TEXT.applyIsDisabledBecauseTheCaseIsNotFullyCertified)}</p>}
+          {view.response.transactionProposal.applyMode === 'certified' && (
+            <>
+              <label>
+                <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)} />
+                {text(TEXT.iReviewedTheCertifiedChanges)}
+              </label>
+              <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)}>
+                {applying
+                  ? text(TEXT.applying)
+                  : namedBookFold
+                    ? namedBookFold.kind === 'layer' || namedBookFold.kind === 'layer_selective'
+                      ? text(TEXT.applyNamedLayerTechnique)
+                      : namedBookFold.kind === 'sink'
+                      ? text(TEXT.applyNamedSinkFold)
+                      : namedBookFold.kind === 'accordion'
+                      ? text(TEXT.applyNamedAccordionFold)
+                      : namedBookFold.kind === 'reverse' || namedBookFold.kind === 'inside_reverse'
+                        || namedBookFold.kind === 'outside_reverse'
+                      ? text(TEXT.applyNamedReverseFold)
+                      : text(TEXT.applyNamedBookFold)
+                    : text(TEXT.applyStackedFold)}
+              </button>
+            </>
+          )}
+          {view.response.transactionProposal.applyMode === 'speculative_unproven'
+            && speculativeReady && !disabled && !applying && namedBookFold === null && (
+            <SpeculativeStackedFoldApplyControl
+              locale={locale}
+              confirmed={speculativeConfirmed}
+              disabled={applyInFlightRef.current}
+              onConfirmedChange={setSpeculativeConfirmed}
+              onApply={() => void apply()}
+            />
+          )}
+          {view.response.transactionProposal.applyMode === 'none' && (
+            <p className="muted">
+              {text(TEXT.applyIsDisabledBecauseTheCaseIsNotFullyCertified)}
+            </p>
+          )}
         </div>
+      )}
+      {shouldRenderStackedFoldProofProgress(proofProgressModel) && (
+        <ProofProgressPanel
+          locale={locale}
+          model={proofProgressModel}
+          disabled={disabled || applying}
+        />
       )}
       <CurrentNonFlatLayerOrderViewer
         locale={locale}

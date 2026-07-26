@@ -3,11 +3,18 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   DIAGNOSTIC_SCOPES,
   MAX_SERIALIZED_DIAGNOSTICS_BYTES,
-  REDACTED_DIAGNOSTICS_SCHEMA,
 } from './diagnostics.ts'
+import type {
+  UnprovenHistoryStatusCountsView,
+} from './proofProgressModel.ts'
+import {
+  unprovenHistorySummaryFromSnapshotV1,
+} from './speculativeUnprovenWire.ts'
 
 const MAX_U32 = 0xffff_ffff
 const UTF8_ENCODER = new TextEncoder()
+export const REDACTED_DIAGNOSTICS_SHARE_SCHEMA =
+  'origami2.redacted-diagnostics.v2' as const
 const COUNT_BUCKETS = new Set([
   '0',
   '1',
@@ -155,29 +162,67 @@ function validateSaveResult(
 function isCanonicalDiagnosticsJson(json: string) {
   try {
     const parsed: unknown = JSON.parse(json)
-    const root = readExactDataFields(parsed, ['schema', 'unexpected'])
+    const root = readExactDataFields(parsed, [
+      'schema',
+      'unexpected',
+      'speculativeUnprovenFolds',
+    ])
     if (!root) return false
-    const [schema, unexpected] = root
+    const [schema, unexpected, speculativeUnprovenFolds] = root
     if (
-      schema !== REDACTED_DIAGNOSTICS_SCHEMA
+      schema !== REDACTED_DIAGNOSTICS_SHARE_SCHEMA
       || !Array.isArray(unexpected)
       || unexpected.length !== DIAGNOSTIC_SCOPES.length
     ) return false
+    const canonicalUnexpected: Array<{
+      scope: string
+      count: string
+    }> = []
     for (let index = 0; index < DIAGNOSTIC_SCOPES.length; index += 1) {
       const entry = readExactDataFields(unexpected[index], [
         'scope',
         'count',
       ])
+      const count = entry?.[1]
       if (
         !entry
         || entry[0] !== DIAGNOSTIC_SCOPES[index]
-        || typeof entry[1] !== 'string'
-        || !COUNT_BUCKETS.has(entry[1])
+        || typeof count !== 'string'
+        || !COUNT_BUCKETS.has(count)
       ) return false
+      canonicalUnexpected.push({
+        scope: DIAGNOSTIC_SCOPES[index],
+        count,
+      })
     }
-    return JSON.stringify(parsed) === json
+    const summary = unprovenHistorySummaryFromSnapshotV1({
+      speculativeUnprovenFolds,
+    })
+    if (summary.kind !== 'known') return false
+    const canonical = {
+      schema: REDACTED_DIAGNOSTICS_SHARE_SCHEMA,
+      unexpected: canonicalUnexpected,
+      speculativeUnprovenFolds: {
+        applied: canonicalUnprovenCounts(summary.applied),
+        unappliedRedo: canonicalUnprovenCounts(summary.unappliedRedo),
+      },
+    }
+    return JSON.stringify(canonical) === json
   } catch {
     return false
+  }
+}
+
+function canonicalUnprovenCounts(
+  counts: UnprovenHistoryStatusCountsView,
+) {
+  return {
+    awaitingProof: counts.awaitingProof,
+    proofBlocked: counts.proofBlocked,
+    unknownEvidenceInsufficient: counts.unknownEvidenceInsufficient,
+    unknownResourceLimit: counts.unknownResourceLimit,
+    unknownCancelled: counts.unknownCancelled,
+    unknownDeadlineReached: counts.unknownDeadlineReached,
   }
 }
 
@@ -189,6 +234,7 @@ function readExactDataFields(
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       return null
     }
+    if (Object.getPrototypeOf(value) !== Object.prototype) return null
     const keys = Reflect.ownKeys(value)
     if (
       keys.length !== expectedKeys.length

@@ -52,6 +52,11 @@ export type StackedFoldReadCoordinatorOptions = Readonly<{
   onState?(state: StackedFoldReadCoordinatorState): void
 }>
 
+type StackedFoldReadFailureReason = Extract<
+  StackedFoldReadCoordinatorResult,
+  { status: 'failed' }
+>['reason']
+
 type ActiveRead = {
   generation: number
   settled: boolean
@@ -75,6 +80,31 @@ function authorityMatches(
     authority.projectId === request.expectedProjectId &&
     authority.revision === request.expectedRevision
   )
+}
+
+function nativeFailureReason(error: unknown): StackedFoldReadFailureReason {
+  if (typeof error !== 'object' || error === null) return 'native_failure'
+  let descriptor: PropertyDescriptor | undefined
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(error, 'reason')
+  } catch {
+    return 'native_failure'
+  }
+  if (!descriptor || !descriptor.enumerable || !('value' in descriptor)) {
+    return 'native_failure'
+  }
+  switch (descriptor.value) {
+    case 'cycle_nonclosing':
+    case 'cycle_path_uncertified':
+    case 'cycle_path_unsupported':
+    case 'cycle_path_resource_limit':
+    case 'cycle_path_no_certified_path':
+    case 'cycle_path_cancelled':
+    case 'cycle_path_collision':
+      return descriptor.value
+    default:
+      return 'native_failure'
+  }
 }
 
 export function createStackedFoldReadCoordinator(
@@ -227,17 +257,7 @@ export function createStackedFoldReadCoordinator(
               })
               return
             }
-            const reason =
-              typeof error === 'object' && error !== null && 'reason' in error &&
-              (error.reason === 'cycle_nonclosing' ||
-                error.reason === 'cycle_path_uncertified' ||
-                error.reason === 'cycle_path_unsupported' ||
-                error.reason === 'cycle_path_resource_limit' ||
-                error.reason === 'cycle_path_no_certified_path' ||
-                error.reason === 'cycle_path_cancelled' ||
-                error.reason === 'cycle_path_collision')
-                ? error.reason
-                : 'native_failure'
+            const reason = nativeFailureReason(error)
             publish(
               {
                 status: 'failed',

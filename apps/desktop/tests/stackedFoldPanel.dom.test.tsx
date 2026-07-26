@@ -170,7 +170,10 @@ const ready = {
     overlapCellCount: 1,
   },
   transactionProposal: {
+    applyContractVersion: 1 as const,
+    applyMode: 'certified' as const,
     transactionToken: token,
+    speculativeUnprovenAvailable: false,
     sourceProjectId: project,
     sourceRevision: 3,
     targetRevision: 4,
@@ -339,7 +342,7 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(previewButton)
     expect(transport.basicPreview).toHaveBeenCalledTimes(1)
     expect(previewButton.getAttribute('aria-busy')).toBe('true')
-    expect(screen.getByRole('status').textContent).toContain('Building certified timeline')
+    expect(screen.getByText('Building certified timeline…')).toBeTruthy()
 
     rerender(<StackedFoldPanel {...props} namedBookFold={{ ...props.namedBookFold,
       techniqueId: 'valley', kind: 'valley' }} />)
@@ -374,14 +377,16 @@ describe('StackedFoldPanel', () => {
       transitionLimit: 64,
       authorizesProjectMutation: false,
     })
-    expect((await screen.findByRole('status')).textContent).toBe(
+    expect(await screen.findByText(
       'Explored states 2/32; transitions 3/64',
-    )
+    )).toBeTruthy()
     fireEvent.click(await screen.findByRole('button', {
       name: 'Cancel path analysis',
     }))
     expect(transport.cancelRead).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.queryByText(
+      'Explored states 2/32; transitions 3/64',
+    )).toBeNull()
     expect(screen.queryByRole('button', { name: 'Apply stacked fold' })).toBeNull()
   })
 

@@ -10,6 +10,7 @@ import {
 import {
   createDiagnosticsShareClient,
   DiagnosticsShareUnavailableError,
+  REDACTED_DIAGNOSTICS_SHARE_SCHEMA,
   type DiagnosticsSharePreview,
 } from '../src/lib/diagnosticsShare.ts'
 
@@ -57,6 +58,10 @@ test('prepare rejects malformed, noncanonical, mismatched, and oversized JSON', 
   const parsed = JSON.parse(validJson) as {
     schema: string
     unexpected: Array<{ scope: string; count: string }>
+    speculativeUnprovenFolds: {
+      applied: Record<string, number>
+      unappliedRedo: Record<string, number>
+    }
   }
   const cases: unknown[] = [
     null,
@@ -67,7 +72,15 @@ test('prepare rejects malformed, noncanonical, mismatched, and oversized JSON', 
     { ...preview(1, validJson), byte_length: 1 },
     preview(1, ` ${validJson}`),
     preview(1, '{bad json'),
+    preview(1, JSON.stringify({
+      ...parsed,
+      schema: 'origami2.redacted-diagnostics.v1',
+    })),
     preview(1, JSON.stringify({ ...parsed, extra: true })),
+    preview(1, JSON.stringify({
+      schema: parsed.schema,
+      unexpected: parsed.unexpected,
+    })),
     preview(1, JSON.stringify({
       ...parsed,
       unexpected: parsed.unexpected.slice(0, -1),
@@ -84,6 +97,50 @@ test('prepare rejects malformed, noncanonical, mismatched, and oversized JSON', 
         index === 1 ? { ...entry, count: '2' } : entry
       )),
     })),
+    preview(1, JSON.stringify({
+      ...parsed,
+      speculativeUnprovenFolds: {
+        ...parsed.speculativeUnprovenFolds,
+        applied: {
+          ...parsed.speculativeUnprovenFolds.applied,
+          futureStatus: 1,
+        },
+      },
+    })),
+    preview(1, JSON.stringify({
+      ...parsed,
+      speculativeUnprovenFolds: {
+        ...parsed.speculativeUnprovenFolds,
+        applied: {
+          ...parsed.speculativeUnprovenFolds.applied,
+          awaitingProof: Number.MAX_SAFE_INTEGER + 1,
+        },
+      },
+    })),
+    preview(1, JSON.stringify({
+      ...parsed,
+      speculativeUnprovenFolds: {
+        ...parsed.speculativeUnprovenFolds,
+        applied: {
+          ...parsed.speculativeUnprovenFolds.applied,
+          awaitingProof: Number.MAX_SAFE_INTEGER,
+          proofBlocked: 1,
+        },
+      },
+    })),
+    preview(1, JSON.stringify({
+      ...parsed,
+      speculativeUnprovenFolds: {
+        ...parsed.speculativeUnprovenFolds,
+        projectPath: 'C:\\private\\project.ori2',
+      },
+    })),
+    preview(1, JSON.stringify({
+      speculativeUnprovenFolds: parsed.speculativeUnprovenFolds,
+      schema: parsed.schema,
+      unexpected: parsed.unexpected,
+    })),
+    preview(1, validJson.replace('"awaitingProof":1', '"awaitingProof":-0')),
     {
       preview_generation: 1,
       json: 'x'.repeat(MAX_SERIALIZED_DIAGNOSTICS_BYTES + 1),
@@ -120,7 +177,7 @@ test('prepare contains hostile records and getters without reading them', async 
     const client = createDiagnosticsShareClient({ invoke: () => value })
     await assert.rejects(client.preparePreview(), fixedUnavailable)
   }
-  assert.deepEqual(accesses, ['ownKeys'])
+  assert.deepEqual(accesses, [])
 })
 
 test('save sends only the validated generation and accepts a matching result', async () => {
@@ -229,7 +286,31 @@ function diagnosticsJson() {
   for (const scope of DIAGNOSTIC_SCOPES) {
     diagnostics.reportUnexpected(scope)
   }
-  return diagnostics.serialize()
+  const stored = JSON.parse(diagnostics.serialize()) as {
+    unexpected: Array<{ scope: string; count: string }>
+  }
+  return JSON.stringify({
+    schema: REDACTED_DIAGNOSTICS_SHARE_SCHEMA,
+    unexpected: stored.unexpected,
+    speculativeUnprovenFolds: {
+      applied: {
+        awaitingProof: 1,
+        proofBlocked: 2,
+        unknownEvidenceInsufficient: 3,
+        unknownResourceLimit: 4,
+        unknownCancelled: 5,
+        unknownDeadlineReached: 6,
+      },
+      unappliedRedo: {
+        awaitingProof: 7,
+        proofBlocked: 8,
+        unknownEvidenceInsufficient: 9,
+        unknownResourceLimit: 10,
+        unknownCancelled: 11,
+        unknownDeadlineReached: 12,
+      },
+    },
+  })
 }
 
 function preview(

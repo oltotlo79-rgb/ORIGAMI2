@@ -10,7 +10,7 @@ import {
 } from '../src/lib/stackedFoldPanelText.ts'
 
 test('stacked-fold panel catalog is complete and deeply frozen', () => {
-  assert.equal(Object.keys(TEXT).length, 161)
+  assert.equal(Object.keys(TEXT).length, 162)
   assert.equal(Object.isFrozen(TEXT), true)
 
   for (const entry of Object.values(TEXT)) {
@@ -127,6 +127,6 @@ test('StackedFoldPanel has no inline localized pair left', () => {
   assert.doesNotMatch(source, /\bconst t\s*=/u)
   assert.equal(
     source.match(/TEXT\.[A-Za-z_$][A-Za-z0-9_$]*/gu)?.length,
-    178,
+    179,
   )
 })

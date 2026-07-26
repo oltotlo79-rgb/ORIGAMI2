@@ -174,6 +174,10 @@ export const STACKED_FOLD_PANEL_TEXT = Object.freeze({
     '折り重ねは適用済みですが、最新表示を取得できませんでした。',
     'The stacked fold was applied, but the refreshed project could not be loaded.',
   ),
+  theSpeculativeApplyOutcomeCouldNotBeConfirmed: localized(
+    '投機的適用の成否を確認できません。適用を再実行せず、最新表示を再取得してください。',
+    'The speculative Apply outcome could not be confirmed. Do not retry Apply; reload the latest project state.',
+  ),
   retryRefresh: localized('最新表示を再取得', 'Retry refresh'),
   editingARequestedAngleBuildsCanonicalLinearCandidateV1InternallyNativeRe: localized(
     '要求角度を変更すると、正規順序のlinearCandidateV1が内部で構築されます。初期角度はnative姿勢へbit単位で再検証されます。',

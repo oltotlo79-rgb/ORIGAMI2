@@ -102,6 +102,52 @@ test('rejects malformed and hostile native layer mutation snapshots', () => {
   assert.equal(getterCalls, 0)
 })
 
+test('requires the exact native unproven-history summary and preserves it', () => {
+  const base = validBaseSnapshot()
+  const source = validSnapshot()
+  source.speculativeUnprovenFolds.applied.awaitingProof = 1
+  assert.equal(normalizeProjectLayerMutationSnapshot(source, base), null)
+
+  const missing = validSnapshot() as Record<string, unknown>
+  delete missing.speculativeUnprovenFolds
+  assert.equal(normalizeProjectLayerMutationSnapshot(missing, base), null)
+
+  const unknown = validSnapshot()
+  Object.assign(unknown.speculativeUnprovenFolds.applied, {
+    futureCertified: 1,
+  })
+  assert.equal(normalizeProjectLayerMutationSnapshot(unknown, base), null)
+
+  let getterCalls = 0
+  const accessor = validSnapshot()
+  Object.defineProperty(
+    accessor.speculativeUnprovenFolds.applied,
+    'awaitingProof',
+    {
+      enumerable: true,
+      get() {
+        getterCalls += 1
+        throw new Error('private native detail')
+      },
+    },
+  )
+  assert.equal(normalizeProjectLayerMutationSnapshot(accessor, base), null)
+  assert.equal(getterCalls, 0)
+
+  const admitted = normalizeProjectLayerMutationSnapshot(
+    validSnapshot(),
+    base,
+  )
+  assert.deepEqual(
+    admitted?.speculativeUnprovenFolds,
+    base.speculativeUnprovenFolds,
+  )
+  assert.notEqual(
+    admitted?.speculativeUnprovenFolds,
+    base.speculativeUnprovenFolds,
+  )
+})
+
 test('strictly admits the optional path-certificate DTO and rejects unknown or malformed fields', () => {
   const valid = validSnapshot()
   const validBase = validBaseSnapshot()
@@ -364,10 +410,31 @@ function validSnapshot() {
       edges: [],
       faces: [],
     },
+    annotations: {},
+    underlays: {},
     fold_model_fingerprint: 'a'.repeat(64),
+    reference_model_assets: [],
     can_undo: true,
     can_redo: false,
     cutting_allowed: false,
+    speculativeUnprovenFolds: {
+      applied: {
+        awaitingProof: 0,
+        proofBlocked: 0,
+        unknownEvidenceInsufficient: 0,
+        unknownResourceLimit: 0,
+        unknownCancelled: 0,
+        unknownDeadlineReached: 0,
+      },
+      unappliedRedo: {
+        awaitingProof: 0,
+        proofBlocked: 0,
+        unknownEvidenceInsufficient: 0,
+        unknownResourceLimit: 0,
+        unknownCancelled: 0,
+        unknownDeadlineReached: 0,
+      },
+    },
   }
 }
 

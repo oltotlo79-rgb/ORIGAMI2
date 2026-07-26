@@ -64,6 +64,17 @@ import {
   normalizeGeometricConstraintSolvePreview,
   type GeometricConstraintSolvePreview,
 } from './geometricConstraintSolvePreview.ts'
+import type {
+  UnprovenHistoryStatusCountsView,
+} from './proofProgressModel.ts'
+import {
+  unprovenHistorySummaryFromSnapshotV1,
+} from './speculativeUnprovenWire.ts'
+export {
+  applySpeculativeStackedFoldTransaction,
+  normalizeSpeculativeStackedFoldApplyRequestV1,
+  type SpeculativeStackedFoldApplyRequestV1,
+} from './speculativeStackedFoldClient.ts'
 
 export type CurrentCyclePosePreviewRequestV1 = Readonly<{
   progressRequestId?: string
@@ -208,6 +219,7 @@ export type ProjectSnapshot = {
   }
   fold_model_fingerprint: string
   reference_model_assets?: Array<{ asset_id: string; sha256: number[] }>
+  speculativeUnprovenFolds?: unknown
 }
 
 export type ProjectOccGuard = Readonly<{
@@ -6106,20 +6118,21 @@ const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
   'geometric_constraints',
   'project_layers',
   'element_metadata',
+  'annotations',
+  'underlays',
   'fold_model_fingerprint',
   'can_undo',
   'can_redo',
   'cutting_allowed',
+  'reference_model_assets',
+  'speculativeUnprovenFolds',
 ] as const
 
 function normalizeProjectLayerMutationBaseSnapshot(
   value: unknown,
 ): ProjectSnapshot | null {
-  const source = snapshotCoreDataRecord(value)
-  if (!source) return null
-  const { reference_model_assets: referenceAssetsValue, ...baseValue } = source
   const record = exactCoreDataRecord(
-    baseValue,
+    value,
     PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS,
   )
   if (
@@ -6144,6 +6157,8 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !isCoreDataRecord(record.numeric_expressions)
     || !isCoreDataRecord(record.geometric_constraints)
     || !isCoreDataRecord(record.element_metadata)
+    || !isCoreDataRecord(record.annotations)
+    || !isCoreDataRecord(record.underlays)
     || typeof record.fold_model_fingerprint !== 'string'
     || !/^[0-9a-f]{64}$/u.test(record.fold_model_fingerprint)
     || typeof record.can_undo !== 'boolean'
@@ -6151,6 +6166,10 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || typeof record.cutting_allowed !== 'boolean'
   ) return null
 
+  const unprovenSummary = normalizeProjectSnapshotUnprovenSummary(
+    record.speculativeUnprovenFolds,
+  )
+  if (!unprovenSummary) return null
   const beginnerDesignProfile = normalizeBeginnerDesignProfile(
     record.beginner_design_profile,
   )
@@ -6164,7 +6183,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !Array.isArray(creasePattern.vertices)
     || !Array.isArray(creasePattern.edges)
   ) return null
-  const referenceAssets = referenceAssetsValue === undefined ? [] : referenceAssetsValue
+  const referenceAssets = record.reference_model_assets
   if (!Array.isArray(referenceAssets) || referenceAssets.length > 8) return null
   const referenceModelAssets = (referenceAssets as unknown[]).map((value) =>
     exactCoreDataRecord(value, ['asset_id', 'sha256'] as const))
@@ -6198,13 +6217,17 @@ function normalizeProjectLayerMutationBaseSnapshot(
     project_layers: projectLayers,
     element_metadata:
       record.element_metadata as ProjectSnapshot['element_metadata'],
+    annotations: record.annotations as ProjectSnapshot['annotations'],
+    underlays: record.underlays as ProjectSnapshot['underlays'],
     fold_model_fingerprint: record.fold_model_fingerprint,
     reference_model_assets: referenceModelAssets.map((asset) => ({
-      asset_id: String(asset?.asset_id), sha256: [...(asset?.sha256 as number[])],
+      asset_id: String(asset!.asset_id),
+      sha256: [...(asset!.sha256 as number[])],
     })),
     can_undo: record.can_undo,
     can_redo: record.can_redo,
     cutting_allowed: record.cutting_allowed,
+    speculativeUnprovenFolds: unprovenSummary,
   })
 }
 
@@ -6275,9 +6298,21 @@ export function normalizeProjectLayerMutationSnapshot(
     value,
     PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS,
   )
+  const baseUnprovenSummary = base
+    ? normalizeProjectSnapshotUnprovenSummary(base.speculativeUnprovenFolds)
+    : null
+  const responseUnprovenSummary = record
+    ? normalizeProjectSnapshotUnprovenSummary(record.speculativeUnprovenFolds)
+    : null
   if (
     !base
     || !record
+    || !baseUnprovenSummary
+    || !responseUnprovenSummary
+    || !sameProjectSnapshotUnprovenSummary(
+      responseUnprovenSummary,
+      baseUnprovenSummary,
+    )
     || record.project_instance_id !== base.project_instance_id
     || record.project_id !== base.project_id
     || record.name !== base.name
@@ -6319,11 +6354,50 @@ export function normalizeProjectLayerMutationSnapshot(
     geometric_constraints: base.geometric_constraints,
     project_layers: projectLayers,
     element_metadata: base.element_metadata,
+    annotations: base.annotations,
+    underlays: base.underlays,
     fold_model_fingerprint: base.fold_model_fingerprint,
+    reference_model_assets: base.reference_model_assets,
     can_undo: record.can_undo,
     can_redo: record.can_redo,
     cutting_allowed: base.cutting_allowed,
+    speculativeUnprovenFolds: baseUnprovenSummary,
   })
+}
+
+type ProjectSnapshotUnprovenSummary = Readonly<{
+  applied: UnprovenHistoryStatusCountsView
+  unappliedRedo: UnprovenHistoryStatusCountsView
+}>
+
+function normalizeProjectSnapshotUnprovenSummary(
+  value: unknown,
+): ProjectSnapshotUnprovenSummary | null {
+  const summary = unprovenHistorySummaryFromSnapshotV1({
+    speculativeUnprovenFolds: value,
+  })
+  if (summary.kind !== 'known') return null
+  return Object.freeze({
+    applied: summary.applied,
+    unappliedRedo: summary.unappliedRedo,
+  })
+}
+
+function sameProjectSnapshotUnprovenSummary(
+  left: ProjectSnapshotUnprovenSummary,
+  right: ProjectSnapshotUnprovenSummary,
+): boolean {
+  const keys = [
+    'awaitingProof',
+    'proofBlocked',
+    'unknownEvidenceInsufficient',
+    'unknownResourceLimit',
+    'unknownCancelled',
+    'unknownDeadlineReached',
+  ] as const
+  return keys.every((key) =>
+    left.applied[key] === right.applied[key]
+    && left.unappliedRedo[key] === right.unappliedRedo[key])
 }
 
 export function admitProjectLayerMutationSnapshot(

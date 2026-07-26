@@ -97,7 +97,10 @@ const response = (revision = 3): StackedFoldReadResponse =>
     },
     certifiedPathGraph: null,
     transactionProposal: {
+      applyContractVersion: 1,
+      applyMode: 'none',
       transactionToken: null,
+      speculativeUnprovenAvailable: false,
       sourceProjectId: PROJECT,
       sourceRevision: revision,
       targetRevision: revision + 1,
@@ -111,7 +114,10 @@ const response = (revision = 3): StackedFoldReadResponse =>
       timelineCompleteHingeAngleCount: 1,
       requestedAngleDegrees: 180,
       readyForAtomicApply: false,
-      failureClasses: ['continuous_path_uncertified'],
+      failureClasses: [
+        'continuous_path_uncertified',
+        'target_layer_order_unavailable',
+      ],
       authorizesProjectMutation: false,
     },
     work: {
@@ -311,4 +317,60 @@ test('closed failure vocabulary preserves bounded cycle failure reasons', async 
     })
     assert.deepEqual(await coordinator.read(request()), { status: 'failed', reason })
   }
+})
+
+test('native failure classification reads only one own data reason field', async () => {
+  const readFailure = async (error: unknown) => {
+    const coordinator = createStackedFoldReadCoordinator({
+      transport: async () => {
+        throw error
+      },
+      getAuthority: () => ({
+        projectInstanceId: INSTANCE,
+        projectId: PROJECT,
+        revision: 3,
+      }),
+    })
+    return coordinator.read(request())
+  }
+
+  let getterCalls = 0
+  const accessor = Object.defineProperty({}, 'reason', {
+    enumerable: true,
+    get() {
+      getterCalls += 1
+      throw new Error('secret native detail')
+    },
+  })
+  assert.deepEqual(await readFailure(accessor), {
+    status: 'failed',
+    reason: 'native_failure',
+  })
+  assert.equal(getterCalls, 0)
+  assert.deepEqual(await readFailure(Object.create({
+    reason: 'cycle_path_collision',
+  })), {
+    status: 'failed',
+    reason: 'native_failure',
+  })
+
+  let proxyGetCalls = 0
+  const proxied = new Proxy({ reason: 'cycle_path_cancelled' }, {
+    get() {
+      proxyGetCalls += 1
+      throw new Error('secret native detail')
+    },
+  })
+  assert.deepEqual(await readFailure(proxied), {
+    status: 'failed',
+    reason: 'cycle_path_cancelled',
+  })
+  assert.equal(proxyGetCalls, 0)
+
+  const revocable = Proxy.revocable({ reason: 'cycle_nonclosing' }, {})
+  revocable.revoke()
+  assert.deepEqual(await readFailure(revocable.proxy), {
+    status: 'failed',
+    reason: 'native_failure',
+  })
 })

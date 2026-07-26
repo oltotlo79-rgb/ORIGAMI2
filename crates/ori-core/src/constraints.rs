@@ -376,6 +376,10 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
+    /// `EqualLength` forces both edge lengths to the same positive binary64
+    /// value supplied by one consistent `FixedLength`. Evaluating the joined
+    /// `LengthRatio` in the solver's exact multiplication-then-subtraction
+    /// order produces a non-zero or non-finite residual at that forced value.
     EqualLengthWithNonUnitRatioAndFixedLength {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -2334,29 +2338,16 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
         }
     }
     for (pair, equal_ids) in &equal_lengths {
-        let fixed = fixed_lengths
-            .get(&pair.first)
-            .and_then(ScalarGroupSummary::consistent_assignment)
-            .or_else(|| {
-                fixed_lengths
-                    .get(&pair.second)
-                    .and_then(ScalarGroupSummary::consistent_assignment)
-            });
-        let ratio = ratios
-            .get(&(pair.first, pair.second))
-            .into_iter()
-            .chain(ratios.get(&(pair.second, pair.first)))
-            .flatten()
-            .filter(|assignment| assignment.value.to_bits() != 1.0_f64.to_bits())
-            .min_by_key(|assignment| assignment.id.canonical_bytes());
-        if let (Some(equal_id), Some(fixed), Some(ratio)) = (equal_ids.first(), fixed, ratio) {
+        if let Some(witness) =
+            equal_length_ratio_fixed_witness_v1(*pair, equal_ids, &fixed_lengths, &ratios)
+        {
             push_conflict(
                 &mut conflicts,
                 DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength {
                     first_edge: edge_ids[&pair.first],
                     second_edge: edge_ids[&pair.second],
                 },
-                [*equal_id, fixed.id, ratio.id],
+                witness,
             );
         }
     }
@@ -2798,6 +2789,56 @@ fn consistent_scalar_assignment(assignments: &[ScalarAssignment]) -> Option<Scal
                 .min_by_key(|assignment| assignment.id.canonical_bytes())
                 .expect("non-empty assignments have a minimum")
         })
+}
+
+/// Returns the canonical three-record proof that one exact equal-length join
+/// makes a ratio residual impossible at a consistent fixed binary64 length.
+///
+/// A zero fixed-length residual forces the named edge length to `fixed.value`;
+/// the equal-length residual then forces the other edge to that same binary64
+/// value. Both ratio orientations consequently use the same forced numerator
+/// and denominator. Stored inequality from one is not evidence: only the
+/// production multiplication-then-subtraction result is.
+fn equal_length_ratio_fixed_witness_v1(
+    pair: EdgePairKey,
+    equal_ids: &[ConstraintId],
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    ratios: &BTreeMap<(CanonicalId, CanonicalId), Vec<ScalarAssignment>>,
+) -> Option<[ConstraintId; 3]> {
+    let equal_id = equal_ids
+        .iter()
+        .copied()
+        .min_by_key(ConstraintId::canonical_bytes)?;
+    let fixed = [pair.first, pair.second]
+        .into_iter()
+        .filter_map(|edge| {
+            fixed_lengths
+                .get(&edge)
+                .and_then(ScalarGroupSummary::consistent_assignment)
+        })
+        .filter(|assignment| assignment.value.is_finite() && assignment.value > 0.0);
+    let ratio = ratios
+        .get(&(pair.first, pair.second))
+        .into_iter()
+        .chain(ratios.get(&(pair.second, pair.first)))
+        .flatten()
+        .copied()
+        .filter(|assignment| assignment.value.is_finite() && assignment.value > 0.0);
+
+    fixed
+        .flat_map(|fixed| {
+            ratio
+                .clone()
+                .filter(move |ratio| {
+                    length_ratio_residual_binary64_v1(fixed.value, ratio.value, fixed.value) != 0.0
+                })
+                .map(move |ratio| {
+                    let mut ids = [equal_id, fixed.id, ratio.id];
+                    ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+                    ids
+                })
+        })
+        .min_by(|left, right| canonical_id_slice_cmp(left, right))
 }
 
 /// Returns the canonical ratio pair whose implemented denominator products
@@ -3837,6 +3878,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
             | DirectConstraintConflictKindV1::HorizontalAndVertical { .. }
             | DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
+            | DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength { .. }
             | DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths { .. }
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
@@ -4443,6 +4485,10 @@ fn canonical_id_slice_cmp(left: &[ConstraintId], right: &[ConstraintId]) -> std:
         .map(ConstraintId::canonical_bytes)
         .cmp(right.iter().map(ConstraintId::canonical_bytes))
 }
+
+#[cfg(test)]
+#[path = "constraints_equal_ratio_fixed_tests.rs"]
+mod equal_ratio_fixed_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6705,7 +6751,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_length_non_unit_ratio_candidate_is_irredundant_but_solver_required() {
+    fn equal_length_ratio_rounded_residual_conflict_is_irredundant() {
         let fixture = Fixture::new();
         let fixed = record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[0],
@@ -6723,8 +6769,25 @@ mod tests {
         let records = [fixed.clone(), equal.clone(), ratio.clone()];
         let prepared = prepare(&fixture, &document(records.clone()))
             .expect("the individually valid constraints prepare");
-        assert_solver_required(&prepared.preflight());
-        assert_bounded_direct_oracle_unknown(&prepared);
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict { ref conflicts }
+                if conflicts.len() == 1
+                    && matches!(
+                        conflicts[0].conflict(),
+                        DirectConstraintConflictKindV1::
+                            EqualLengthWithNonUnitRatioAndFixedLength { .. }
+                    )
+                    && conflicts[0].constraint_ids()
+                        == sorted_ids(&[fixed.id, equal.id, ratio.id])
+        ));
+        assert!(matches!(
+            find_bounded_direct_mus_v1(&prepared),
+            BoundedDirectMusV1::ProvenUnsatisfiable {
+                ref constraint_ids,
+                ..
+            } if constraint_ids == &sorted_ids(&[fixed.id, equal.id, ratio.id])
+        ));
 
         for removed in 0..records.len() {
             let subset = records
@@ -6739,7 +6802,7 @@ mod tests {
                     prepared.preflight(),
                     ConstraintPreflightV1::DirectConflict { .. }
                 ),
-                "removing any candidate record must withdraw that quarantined candidate"
+                "removing any cause record must withdraw the rounded-residual proof"
             );
         }
     }

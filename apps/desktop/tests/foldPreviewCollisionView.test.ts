@@ -10,6 +10,7 @@ import {
   describeCollisionSummary,
   type CollisionSummary,
 } from '../src/lib/foldPreviewCollisionView.ts'
+import type { Locale } from '../src/lib/i18n.ts'
 
 type ReadyCollisionSummary = Extract<CollisionSummary, { kind: 'ready' }>
 
@@ -402,6 +403,40 @@ test('English covers every safety hold and allowed topology presentation', () =>
   assert.match(description, /Indeterminate results require safety review/u)
   assert.match(description, /approximate mid-surface check/u)
   assert.match(description, /continuous-path checking is shown separately/u)
+})
+
+test('unknown locales fall back to Japanese without reflecting non-numeric native values', () => {
+  const unsupported = 'fr' as Locale
+  assert.equal(collisionBadgeText(null, unsupported), '衝突判定中')
+
+  const nativeValue = Object.freeze({
+    source: 'native-private-value',
+  }) as unknown as number
+  const malformed = ready({
+    totalCandidates: 1,
+    narrowInteractions: nativeValue,
+  })
+  const accessible = describeCollisionSummary(
+    malformed,
+    true,
+    'unverified',
+    unsupported,
+  )
+  const compact = describeCollisionSummary(
+    malformed,
+    false,
+    'unverified',
+    unsupported,
+  )
+
+  assert.doesNotMatch(accessible, /native-private-value/u)
+  assert.doesNotMatch(compact, /native-private-value/u)
+  assert.match(accessible, /\{narrowInteractions\}/u)
+  assert.match(compact, /\{narrowInteractions\}/u)
+  assert.equal(
+    collisionBadgeText(malformed, unsupported),
+    '広域 1 → 狭域相互作用 0',
+  )
 })
 
 function ready(overrides: Partial<ReadyCollisionSummary> = {}): ReadyCollisionSummary {

@@ -49,6 +49,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 
+#[cfg(test)]
+use super::stacked_fold_even_cycle_candidates::{
+    EvenCycleCandidatesRequestV1, read_even_cycle_candidates_inner_v1,
+};
 use super::{
     AppState,
     applied_pose::{
@@ -63,7 +67,7 @@ use super::{
     lock_project,
 };
 
-const UNAVAILABLE_MESSAGE: &str =
+pub(super) const UNAVAILABLE_MESSAGE: &str =
     "The current pose and certified layer order cannot prepare a stacked-fold proposal.";
 const INVALID_REQUEST_MESSAGE: &str = "The stacked-fold line request is invalid.";
 const ANALYSIS_FAILED_MESSAGE: &str =
@@ -74,7 +78,7 @@ const CYCLE_PATH_UNSUPPORTED_MESSAGE: &str = "stacked_fold_cycle_path_unsupporte
 const CYCLE_PATH_RESOURCE_MESSAGE: &str = "stacked_fold_cycle_path_resource_limit";
 const CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE: &str = "stacked_fold_cycle_path_no_certified_path";
 const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
-const STALE_MESSAGE: &str =
+pub(super) const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
 const FLAT_ENDPOINT_COLLISION_THICKNESS_MM_V1: f64 = 0.0;
@@ -230,47 +234,6 @@ pub(super) struct LiveHingeRegistryResponseV1 {
     graph_fingerprint_sha256: String,
     entries: Vec<LiveGraphHingeAngleDto>,
     authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct EvenCycleCandidatesRequestV1 {
-    expected_project_instance_id: ProjectId,
-    expected_project_id: ProjectId,
-    expected_revision: u64,
-    max_pair_tests: usize,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct EvenCycleCandidatesResponseV1 {
-    version: u32,
-    project_instance_id: ProjectId,
-    project_id: ProjectId,
-    revision: u64,
-    status: &'static str,
-    reason: &'static str,
-    candidates: Vec<EvenCycleCandidateDtoV1>,
-    kawasaki_endpoints: Vec<KawasakiEndpointCandidateDtoV1>,
-    authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct KawasakiEndpointCandidateDtoV1 {
-    version: u32,
-    endpoint_denominator: u64,
-    closure_status: &'static str,
-    collision_status: &'static str,
-    authorizes_apply: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EvenCycleCandidateDtoV1 {
-    version: u32,
-    edges: [ori_domain::EdgeId; 2],
-    reason: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2354,111 +2317,6 @@ fn dyadic_graph_response(
     }
 }
 
-#[tauri::command]
-pub(super) fn read_even_cycle_candidates_v1(
-    app_state: State<'_, AppState>,
-    request: EvenCycleCandidatesRequestV1,
-) -> Result<EvenCycleCandidatesResponseV1, String> {
-    read_even_cycle_candidates_inner_v1(&app_state, request)
-}
-
-fn read_even_cycle_candidates_inner_v1(
-    app_state: &AppState,
-    request: EvenCycleCandidatesRequestV1,
-) -> Result<EvenCycleCandidatesResponseV1, String> {
-    let project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
-    if project.instance_id != request.expected_project_instance_id
-        || project.project_id != request.expected_project_id
-        || project.editor.revision() != request.expected_revision
-    {
-        return Err(STALE_MESSAGE.to_owned());
-    }
-    let pose_capability = project
-        .applied_pose_authority
-        .capture_capability(&project)
-        .ok()
-        .flatten();
-    let graph = pose_capability
-        .as_ref()
-        .and_then(|capability| capability.graph());
-    let (status, reason, candidates) = match graph {
-        None => (
-            "unsupported",
-            "current_pose_is_not_a_material_hinge_graph",
-            Vec::new(),
-        ),
-        Some((geometry, audit, _)) => {
-            match ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
-                geometry,
-                audit,
-                request.max_pair_tests,
-            ) {
-                Ok(pairs) if pairs.is_empty() => {
-                    ("none", "no_same_assignment_opposite_pair", Vec::new())
-                }
-                Ok(pairs) => ("ready", "same_assignment_geometrically_opposite", pairs),
-                Err(ori_kinematics::KinematicsError::ResourceLimitExceeded) => {
-                    ("resource_limit", "pair_test_limit_exceeded", Vec::new())
-                }
-                Err(_) => (
-                    "unsupported",
-                    "not_a_bounded_even_single_vertex_cycle",
-                    Vec::new(),
-                ),
-            }
-        }
-    };
-    let kawasaki_endpoints = graph.map_or_else(Vec::new, |(geometry, audit, pose)| {
-        [1_u64, 2, 4, 8, 16]
-            .into_iter()
-            .filter_map(|endpoint_denominator| {
-                let generated = ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
-                    geometry, audit, pose.fixed_face(), endpoint_denominator,
-                    production_cycle_schedule_limits_v1(),
-                ).ok()?;
-                let closure = geometry.prove_simultaneous_cycle_basis_schedule_closure_v1(
-                    audit, pose.fixed_face(), generated.schedule(),
-                    ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
-                    CycleBasisLimitsV1::default(),
-                    DyadicIntervalClosureLimitsV1 {
-                        max_depth: 16, max_leaves: 65_536, max_work: 1_048_576,
-                        schedule_limits: production_cycle_schedule_limits_v1(),
-                    },
-                ).ok()?;
-                let continuous = diagnose_scheduled_cycle_path_v1(
-                    geometry, audit, pose.fixed_face(), &generated, closure.closure(), 32,
-                );
-                let certified = continuous.continuous_certificate_model_id().is_some();
-                Some(KawasakiEndpointCandidateDtoV1 {
-                    version: 1,
-                    endpoint_denominator,
-                    closure_status: "certified",
-                    collision_status: if certified { "certified" } else { "uncertified" },
-                    authorizes_apply: false,
-                })
-            })
-            .collect()
-    });
-    Ok(EvenCycleCandidatesResponseV1 {
-        version: 1,
-        project_instance_id: project.instance_id,
-        project_id: project.project_id,
-        revision: project.editor.revision(),
-        status,
-        reason,
-        candidates: candidates
-            .into_iter()
-            .map(|edges| EvenCycleCandidateDtoV1 {
-                version: 1,
-                edges,
-                reason: "same_assignment_geometrically_opposite",
-            })
-            .collect(),
-        kawasaki_endpoints,
-        authorizes_project_mutation: false,
-    })
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LinearCandidateRequestV1 {
@@ -3715,7 +3573,7 @@ fn bounded_primitive_endpoint_ratio_for_angle_v1(
         .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)
 }
 
-fn production_cycle_schedule_limits_v1() -> CycleScheduleLimitsV1 {
+pub(super) fn production_cycle_schedule_limits_v1() -> CycleScheduleLimitsV1 {
     let defaults = CycleScheduleLimitsV1::default();
     CycleScheduleLimitsV1 {
         max_hinges: 256,
@@ -11544,20 +11402,18 @@ mod tests {
                 super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
             let endpoint_read = read_even_cycle_candidates_inner_v1(
                 &state,
-                EvenCycleCandidatesRequestV1 {
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    max_pair_tests: 6,
-                },
+                EvenCycleCandidatesRequestV1::for_test(instance, project_id, revision, 6),
             )
             .unwrap();
-            assert_eq!(endpoint_read.kawasaki_endpoints.len(), 5);
-            assert!(endpoint_read.kawasaki_endpoints.iter().all(|candidate| {
-                candidate.closure_status == "certified"
-                    && candidate.collision_status == "uncertified"
-                    && !candidate.authorizes_apply
-            }));
+            let endpoint_outcomes = endpoint_read.kawasaki_endpoint_outcomes_for_test();
+            assert_eq!(endpoint_outcomes.len(), 5);
+            assert!(endpoint_outcomes.iter().all(
+                |(closure_status, collision_status, authorizes_apply)| {
+                    *closure_status == "certified"
+                        && *collision_status == "uncertified"
+                        && !*authorizes_apply
+                }
+            ));
             let result = propose_current_cycle_pose_inner(
                 None,
                 &state,

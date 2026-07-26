@@ -32,7 +32,8 @@ pub use applied_pose::{
     prepare_applied_pose_v1, prepare_closed_graph_applied_pose_v1,
 };
 pub use constraint_exactification::{
-    CurrentRuntimeExactConstraintAssignmentV1, exactify_axis_aligned_constraint_preview_v1,
+    CurrentRuntimeExactConstraintAssignmentV1, construct_single_constraint_exact_assignment_v1,
+    exactify_axis_aligned_constraint_preview_v1,
 };
 pub use constraint_semantic_mus::{
     BoundedCurrentRuntimeSemanticMusV1, BoundedSemanticMusLimitsV1,

@@ -9,8 +9,14 @@ use crate::{
     prepare_geometric_constraints_v1,
 };
 
-/// Explicit assignment obtained from a numerical preview and independently
-/// re-certified in the complete current-runtime binary64 residual language.
+mod singleton_constructive;
+
+pub(crate) use singleton_constructive::MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1;
+pub use singleton_constructive::construct_single_constraint_exact_assignment_v1;
+
+/// Explicit assignment obtained from a bounded native construction or
+/// numerical preview and independently re-certified in the complete
+/// current-runtime binary64 residual language.
 ///
 /// The assignment is observation-only. It is not bound to a project or
 /// revision, does not authorize mutation, and is not replayable across
@@ -203,3 +209,7 @@ impl CanonicalDisjointSet {
         self.parents[maximum] = minimum;
     }
 }
+
+#[cfg(test)]
+#[path = "constraint_singleton_constructive_tests.rs"]
+mod singleton_constructive_tests;

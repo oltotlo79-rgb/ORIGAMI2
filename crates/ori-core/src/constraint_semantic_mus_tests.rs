@@ -172,6 +172,10 @@ fn direct_core_is_promoted_only_after_every_deletion_has_an_independent_exact_as
     assert_eq!(certificate.deletion_witness_checks(), 3);
     assert_eq!(certificate.current_assignment_witness_count(), 1);
     assert_eq!(certificate.axis_exactification_witness_count(), 2);
+    assert_eq!(
+        certificate.single_constraint_constructive_witness_count(),
+        0,
+    );
     assert!(certificate.deletion_witness_work() > 0);
     assert!(
         certificate.deletion_witness_work() <= MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK_V1,
@@ -229,69 +233,6 @@ fn certificate_is_invariant_to_pattern_and_document_storage_order() {
         certify_bounded_current_runtime_semantic_mus_v1(&reversed),
         expected,
     );
-}
-
-#[test]
-fn direct_proof_without_every_deletion_witness_remains_unknown() {
-    let start = VertexId::new();
-    let end = VertexId::new();
-    let edge = EdgeId::new();
-    let pattern = CreasePattern {
-        vertices: vec![
-            Vertex {
-                id: start,
-                position: Point2::new(0.0, 0.0),
-            },
-            Vertex {
-                id: end,
-                position: Point2::new(1.0, 0.0),
-            },
-        ],
-        edges: vec![Edge {
-            id: edge,
-            start,
-            end,
-            kind: EdgeKind::Auxiliary,
-        }],
-    };
-    let records = vec![
-        record(GeometricConstraintKindV1::FixedLength {
-            edge,
-            length_mm: 1.0,
-        }),
-        record(GeometricConstraintKindV1::FixedLength {
-            edge,
-            length_mm: 2.0,
-        }),
-    ];
-    let prepared = prepared(&pattern, records);
-    assert!(matches!(
-        find_bounded_direct_mus_v1(&prepared),
-        BoundedDirectMusV1::ProvenUnsatisfiable { .. }
-    ));
-    let expected_direct_core = prepared
-        .constraints()
-        .iter()
-        .map(|record| record.id)
-        .collect::<Vec<_>>();
-    let outcome = certify_bounded_current_runtime_semantic_mus_v1(&prepared);
-    assert_eq!(outcome.direct_core_constraint_ids(), expected_direct_core);
-    assert!(
-        outcome
-            .direct_core_constraint_ids()
-            .windows(2)
-            .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
-    );
-    assert!(matches!(
-        outcome,
-        BoundedCurrentRuntimeSemanticMusV1::Unknown {
-            reason: BoundedSemanticMusUnknownReasonV1::DeletionWitnessUnavailable,
-            direct_oracle_calls: 3,
-            deletion_witness_checks: 1 | 2,
-            certified_deletion_witnesses: 0 | 1,
-            ..
-        }
-    ));
 }
 
 #[test]
@@ -405,6 +346,7 @@ fn zero_invalid_limits_and_overflowed_work_math_never_start_a_witness_phase() {
     );
     assert!(
         crate::constraint_semantic_mus::witness_phase_work_for_test(
+            usize::MAX,
             usize::MAX,
             usize::MAX,
             usize::MAX,
@@ -538,3 +480,6 @@ fn direct_oracle_hard_bound_remains_separate_from_witness_work() {
         },
     );
 }
+
+#[path = "constraint_semantic_mus_tests/singleton_phase.rs"]
+mod singleton_phase;

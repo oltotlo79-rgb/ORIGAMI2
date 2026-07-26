@@ -62,6 +62,7 @@ const SIMPLE_KEYS = [
   'analysisFailed',
   'directConflictCount',
   'unknownStatus',
+  'provenSatisfiable',
   'noDirectConflict',
   'unanalyzed',
   'directConflictCauses',
@@ -176,7 +177,7 @@ test('geometric constraint panel catalog is exact, closed, and deeply frozen', (
   }
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    'c9a0ef3febc2b530c716b99367b6418a2b0669893d8284e4a6b37f2fc3594687',
+    '6d63334bbd63f04d7ba5061413626dbf917933eeec9d4836845cb089d3b53c62',
   )
   assert.equal(Object.hasOwn(TEXT, 'ja'), false)
   assert.equal(TEXT.title.ja, '幾何制約')
@@ -199,6 +200,10 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
     },
     directConflictCount: { ja: ['count'], en: ['count'] },
     unknownStatus: { ja: ['reason'], en: ['reason'] },
+    provenSatisfiable: {
+      ja: ['constraintCount', 'equationCount'],
+      en: ['constraintCount', 'equationCount'],
+    },
     causingConstraints: { ja: ['ids'], en: ['ids'] },
     additionalDirectConflicts: { ja: ['count'], en: ['count'] },
     uncheckedConstraints: { ja: ['ids'], en: ['ids'] },

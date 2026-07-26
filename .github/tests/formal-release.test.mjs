@@ -811,10 +811,20 @@ test('Windows CI executes native recovery close and diagnostics persistence cont
 test('CI requires the production C6 dyadic browser and exact native lifecycle', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const desktopPackage = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'))
-  const nativeRead = readFileSync(
-    join(root, 'apps/desktop/src-tauri/src/stacked_fold_read.rs'),
-    'utf8',
-  )
+  const nativeRead = [
+    readFileSync(
+      join(root, 'apps/desktop/src-tauri/src/stacked_fold_read.rs'),
+      'utf8',
+    ),
+    readFileSync(
+      join(root, 'apps/desktop/src-tauri/src/stacked_fold_dyadic_scope_tests.rs'),
+      'utf8',
+    ),
+    readFileSync(
+      join(root, 'apps/desktop/src-tauri/src/stacked_fold_cycle_schedule_tests.rs'),
+      'utf8',
+    ),
+  ].join('\n')
   const browserRead = readFileSync(
     join(root, 'apps/desktop/scripts/dyadic-panel-browser-e2e.mjs'),
     'utf8',

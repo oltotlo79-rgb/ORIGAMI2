@@ -1,6 +1,3 @@
-use super::tests::lock_stacked_fold_read_generation_test;
-use super::*;
-
 #[test]
 fn open_cut_seam_strict_dyadic_preflight_is_unsupported_no_op() {
     use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};

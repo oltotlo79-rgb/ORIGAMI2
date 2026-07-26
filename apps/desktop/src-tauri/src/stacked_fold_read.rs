@@ -19,9 +19,6 @@ mod stacked_fold_dyadic_graph_wire;
 pub(super) mod stacked_fold_dyadic_preview;
 #[path = "stacked_fold_dyadic_scope.rs"]
 mod stacked_fold_dyadic_scope;
-#[cfg(test)]
-#[path = "stacked_fold_dyadic_scope_tests.rs"]
-mod stacked_fold_dyadic_scope_tests;
 #[path = "stacked_fold_read_wire.rs"]
 mod stacked_fold_read_wire;
 
@@ -3427,6 +3424,10 @@ mod theta_cycle_test_support;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Keep the established `stacked_fold_read::tests::*` exact-filter surface
+    // while storing the large strict-scope fixture family separately.
+    include!("stacked_fold_dyadic_scope_tests.rs");
 
     #[test]
     fn exact_flat_endpoint_defers_until_zero_thickness_layer_order_diagnosis() {

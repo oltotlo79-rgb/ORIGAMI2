@@ -1,9 +1,9 @@
 # Claude実装指示: SIM-010 native viewer のgraph issuer正規positiveを完成する
 
-作成日: 2026-07-26  
-対象repository: `C:\Users\oltot\Documents\git-projects\ORIGAMI2`  
-対象branch: `main`  
-前提報告: `docs/Codex/claude-sim010-viewer-negative-matrix-report-2026-07-26.md`  
+作成日: 2026-07-26
+対象repository: `C:\Users\oltot\Documents\git-projects\ORIGAMI2`
+対象branch: `main`
+前提報告: `docs/Codex/claude-sim010-viewer-negative-matrix-report-2026-07-26.md`
 前提commit: `ccc6026902513e987918cb80bf8fa08f640da2db`
 
 ## 1. 目的

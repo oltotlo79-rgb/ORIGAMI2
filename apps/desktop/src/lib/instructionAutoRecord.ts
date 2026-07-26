@@ -4,7 +4,11 @@ import {
   createInstructionPoseDraft,
   type InstructionPoseDraft,
 } from './instructionTimeline.ts'
-import type { Locale } from './i18n.ts'
+import {
+  formatLocalizedText,
+  type Locale,
+} from './i18n.ts'
+import { INSTRUCTION_AUTO_RECORD_TEXT } from './instructionAutoRecordText.ts'
 
 export type InstructionAutoRecordPlan = Readonly<{
   sequence: number
@@ -42,9 +46,11 @@ export function planInstructionAutoRecord(input: Readonly<{
   const stepNumber = snapshot.instruction_timeline.steps.length + 1
   return Object.freeze({
     sequence: input.sequence,
-    title: input.locale === 'en'
-      ? `Auto-recorded step ${stepNumber}`
-      : `自動記録 手順 ${stepNumber}`,
+    title: formatLocalizedText(
+      input.locale,
+      INSTRUCTION_AUTO_RECORD_TEXT.stepTitle,
+      { step: stepNumber },
+    ),
     pose,
   })
 }

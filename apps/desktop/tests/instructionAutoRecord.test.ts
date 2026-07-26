@@ -4,6 +4,7 @@ import test from 'node:test'
 import type { ProjectSnapshot } from '../src/lib/coreClient.ts'
 import type { FoldPreviewAppliedPoseSnapshot } from '../src/lib/foldPreviewAppliedPose.ts'
 import { planInstructionAutoRecord } from '../src/lib/instructionAutoRecord.ts'
+import { INSTRUCTION_AUTO_RECORD_TEXT } from '../src/lib/instructionAutoRecordText.ts'
 
 const snapshot = {
   project_id: 'project',
@@ -36,6 +37,25 @@ test('plans exactly one editable step for a completed manual 3D edit', () => {
     fixedFace: 'face',
     hingeAngles: [{ edge: 'hinge', angle_degrees: 90 }],
   })
+})
+
+test('auto-recorded titles use a frozen bilingual catalog with Japanese fallback', () => {
+  assert.equal(Object.isFrozen(INSTRUCTION_AUTO_RECORD_TEXT), true)
+  assert.deepEqual(INSTRUCTION_AUTO_RECORD_TEXT.stepTitle, {
+    ja: '自動記録 手順 {step}',
+    en: 'Auto-recorded step {step}',
+  })
+  assert.equal(Object.isFrozen(INSTRUCTION_AUTO_RECORD_TEXT.stepTitle), true)
+
+  const plan = planInstructionAutoRecord({
+    enabled: true,
+    sequence: 4,
+    lastRecordedSequence: 3,
+    snapshot,
+    appliedPose: pose,
+    locale: 'unsupported' as never,
+  })
+  assert.equal(plan?.title, '自動記録 手順 1')
 })
 
 test('does not record enablement, playback, running, or stale poses', () => {

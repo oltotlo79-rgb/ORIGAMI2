@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import type { InstructionTimeline } from '../src/lib/coreClient.ts'
@@ -591,6 +592,22 @@ test('localizes timeline notices, capture guidance, validation, and durations li
   assert.equal(formatInstructionDuration(1_500), '1.5秒')
   assert.equal(formatInstructionDuration(1_500, 'en'), '1.5 seconds')
   assert.equal(formatInstructionDuration(90_000, 'en'), '1:30')
+  assert.equal(
+    formatInstructionDuration(1_500, 'unsupported' as never),
+    '1.5秒',
+  )
+})
+
+test('duration formatting delegates its number locale to localized text', () => {
+  const source = readFileSync(
+    new URL('../src/lib/instructionTimeline.ts', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /DURATION_NUMBER_LOCALE/u)
+  assert.doesNotMatch(
+    source,
+    /locale\s*[!=]==?\s*['"](?:ja|en)['"]/u,
+  )
 })
 
 test('admits declarative-only steps but never treats them as a playable 3D pose', () => {

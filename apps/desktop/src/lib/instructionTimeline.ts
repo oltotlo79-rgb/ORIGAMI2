@@ -568,7 +568,7 @@ export function formatInstructionDuration(
   const totalSeconds = Math.max(0, durationMs) / 1_000
   if (totalSeconds < 60) {
     const formatted = totalSeconds.toLocaleString(
-      locale === 'en' ? 'en-US' : 'ja-JP',
+      selectLocalizedText(locale, DURATION_NUMBER_LOCALE),
       { maximumFractionDigits: 1 },
     )
     return formatLocalizedText(locale, DURATION_SECONDS, { seconds: formatted })
@@ -702,6 +702,7 @@ const CAPTURE_STATUS_TEXT = Object.freeze({
   ),
 }) satisfies Readonly<Record<InstructionCaptureStatus, LocalizedText>>
 const DURATION_SECONDS = localized('{seconds}秒', '{seconds} seconds')
+const DURATION_NUMBER_LOCALE = localized('ja-JP', 'en-US')
 
 function parseTimeline(
   value: unknown,

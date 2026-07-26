@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const appSource = [
   readSource('../src/App.tsx'),
+  readSource('../src/lib/useStaticMeshExportWorkflow.ts'),
   readSource('../src/lib/appText.ts'),
 ].join('\n')
 const clientSource = readSource('../src/lib/coreClient.ts')
@@ -19,6 +20,15 @@ test('toolbar exposes a completed-pose-only 3D export dialog', () => {
   assert.match(appSource, /\|\| meshExportOpen/u)
   assert.match(appSource, /\{meshExportOpen && \(\s*<StaticMeshExportDialog/u)
   assert.match(appSource, /text\(APP_TEXT\.export3D\)/u)
+  assert.match(
+    appSource,
+    /buttonRef: meshExportButtonRef/u,
+  )
+  assert.match(appSource, /foldPreviewAppliedPoseKey\(pose\)/u)
+  assert.match(
+    appSource,
+    /scheduleFocus\(\(\) => buttonRef\.current\?\.focus\(\)\)/u,
+  )
 })
 
 test('native IPC stages bytes privately and exposes no path or geometry arrays', () => {

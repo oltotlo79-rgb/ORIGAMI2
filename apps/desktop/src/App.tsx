@@ -19,7 +19,6 @@ import {
   type CreaseCanvasRenderMetrics,
   type CreaseLine,
   type PaperBounds,
-  type PaperPolygonPoint,
 } from './components/CreaseCanvas'
 import { CreaseExportDialog } from './components/CreaseExportDialog'
 import { AnnotationPanel } from './components/AnnotationPanel'
@@ -183,7 +182,6 @@ import {
   type GeometricConstraintKind,
   type ProjectTopologyResponse,
   type InstructionVisual,
-  type RgbaColor,
   type ElementMetadata,
   type ElementMetadataTarget,
   type ValidationSnapshot,
@@ -204,7 +202,6 @@ import {
   saveProjectFolderAs,
 } from './lib/projectFolderClient'
 import {
-  creasePatternExportFormatLabel,
   type CreasePatternExportFormat,
   type CreasePatternExportPreview,
 } from './lib/creaseExport'
@@ -213,7 +210,6 @@ import {
   INSTRUCTION_EXPORT_PROJECTION_PROFILE,
   createInstructionExportError,
   instructionExportErrorMessage,
-  instructionExportFormatLabel,
   type InstructionExportFormat,
   type InstructionExportPhase,
   type InstructionExportPreview,
@@ -302,7 +298,6 @@ import {
   ratioReferenceAxis,
   readLengthInputMillimetres,
   resolveLengthDisplayUnit,
-  type ResolvedLengthDisplayUnit,
 } from './lib/lengthUnit'
 import {
   ANGLE_SNAP_PRESETS,
@@ -323,9 +318,6 @@ import {
 } from './lib/renderBenchmark'
 import {
   createLocalFlatFoldabilityPresentation,
-  localFlatFoldabilityConditionLabel,
-  localFlatFoldabilityReasonLabel,
-  type LocalFlatFoldabilityPresentation,
 } from './lib/localFlatFoldabilityPresentation'
 import {
   DEFAULT_GLOBAL_FLAT_FOLDABILITY_TIME_PRESET,
@@ -388,6 +380,48 @@ import { GenericBodyOutlineEditor } from './components/GenericBodyOutlineEditor'
 import { BeginnerShapeCanvasPreview } from './components/BeginnerShapeCanvasPreview'
 import { RecognitionContourCopyAction } from './components/RecognitionContourCopyAction'
 import { BeginnerGridProgressStatus } from './components/BeginnerGridProgressStatus'
+import {
+  formatBytes,
+  lineKindLabel,
+  localFlatFoldabilityCoreStatus,
+  localizedCreaseExportFormatLabel,
+  localizedInstructionExportFormatLabel,
+  localizedLocalFlatFoldabilityConditionLabel,
+  localizedLocalFlatFoldabilityReasonLabel,
+  localizedLocalFlatFoldabilitySummary,
+  normalizeFoldAngle,
+  toolLabel,
+  validationIssueLabel,
+} from './lib/appPresentation'
+import {
+  formatAngleDegrees,
+  formatLineMeasurementLabel,
+  formatMeasurementValue,
+  measureCreaseLine,
+  resolvePaperBounds,
+  resolvePaperPolygon,
+  resolveRectangularPaperSize,
+  resolveUniqueParallelReference,
+} from './lib/appGeometry'
+import {
+  findElementMetadata,
+  hasControlCharacter,
+  parseHexColor,
+  rgbaToCss,
+  rgbaToHex,
+} from './lib/appElementMetadata'
+import {
+  evaluateDisplayLengthExpression,
+  finiteNumberExpressionSource,
+  millimetreExpressionSource,
+  newProjectExpressionErrorMessage,
+} from './lib/appNumericExpression'
+import {
+  isEditingText,
+  namedBookFoldPalette,
+  nextFoldTechniqueRequestId,
+  selectedNamedBookFold,
+} from './lib/appFoldTechnique'
 
 const SNAP_OPTIONS: ReadonlyArray<{
   kind: keyof SnapSettings
@@ -10655,76 +10689,6 @@ function sameRecoveryCandidate(
     && candidate.status === 'invalid'
 }
 
-function lineKindLabel(kind: CreaseLine['kind'], locale: Locale) {
-  const labels: Readonly<Record<CreaseLine['kind'], LocalizedText>> = {
-    mountain: APP_TEXT.mountainFold,
-    valley: APP_TEXT.valleyFold,
-    auxiliary: APP_TEXT.auxiliaryLine,
-    boundary: APP_TEXT.boundaryEdge,
-    cut: APP_TEXT.cutLine,
-  }
-  return selectLocalizedText(locale, labels[kind])
-}
-
-function normalizeFoldAngle(value: number) {
-  if (!Number.isFinite(value)) return null
-  return Math.min(180, Math.max(0, value))
-}
-
-function formatBytes(bytes: number, locale: Locale) {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return selectLocalizedText(locale, APP_TEXT.unknownSize)
-  }
-  if (bytes < 1_000) return `${bytes} B`
-  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`
-  return `${(bytes / 1_000_000).toFixed(2)} MB`
-}
-
-function toolLabel(tool: string, locale: Locale) {
-  const labels: Readonly<Record<string, LocalizedText>> = {
-    select: APP_TEXT.select,
-    vertex: APP_TEXT.vertex,
-    mountain: APP_TEXT.mountainFold,
-    valley: APP_TEXT.valleyFold,
-    auxiliary: APP_TEXT.auxiliaryLine,
-    cut: APP_TEXT.cut,
-    measure: APP_TEXT.measure,
-  }
-  const label = labels[tool]
-  return label
-    ? selectLocalizedText(locale, label)
-    : selectLocalizedText(locale, APP_TEXT.unknownTool)
-}
-
-function validationIssueLabel(code: string, locale: Locale) {
-  const labels: Readonly<Record<string, LocalizedText>> = {
-    non_finite_vertex: APP_TEXT.nonFiniteVertexCoordinates,
-    duplicate_vertex: APP_TEXT.duplicateVerticesAtTheSamePosition,
-    missing_endpoint: APP_TEXT.lineReferencesAMissingEndpoint,
-    zero_length_edge: APP_TEXT.zeroLengthLine,
-    unsplit_intersection: APP_TEXT.unsplitIntersectionOrOverlap,
-    intersection_calculation_failed: APP_TEXT.intersectionCalculationFailed,
-    non_finite_thickness: APP_TEXT.paperThicknessIsNotFinite,
-    negative_thickness: APP_TEXT.paperThicknessMustBeAtLeast0Mm,
-    too_few_boundary_vertices: APP_TEXT.paperBoundaryNeedsAtLeastThreeVertices,
-    duplicate_boundary_vertex: APP_TEXT.paperBoundaryContainsADuplicateVertex,
-    missing_boundary_vertex: APP_TEXT.paperBoundaryReferencesAMissingVertex,
-    non_finite_boundary_vertex: APP_TEXT.paperBoundaryVertexCoordinatesAreNotFinite,
-    missing_boundary_edge: APP_TEXT.paperBoundaryEdgesAreMissing,
-    duplicate_boundary_edge: APP_TEXT.paperBoundaryContainsADuplicateEdge,
-    unexpected_boundary_edge: APP_TEXT.paperBoundaryContainsAnUnexpectedEdge,
-    zero_length_boundary_edge: APP_TEXT.paperBoundaryContainsAZeroLengthEdge,
-    boundary_self_intersection: APP_TEXT.paperBoundaryIntersectsItself,
-    boundary_intersection_calculation_failed: APP_TEXT.paperBoundaryIntersectionTestFailed,
-    zero_area_boundary: APP_TEXT.paperBoundaryHasZeroArea,
-    boundary_area_calculation_failed: APP_TEXT.paperBoundaryAreaCalculationFailed,
-  }
-  const label = labels[code]
-  return label
-    ? selectLocalizedText(locale, label)
-    : selectLocalizedText(locale, APP_TEXT.unknownGeometryValidationIssue)
-}
-
 function topologyIssueLocations(
   issue: ProjectTopologyResponse['issues'][number]['kind'],
 ) {
@@ -10780,378 +10744,8 @@ function topologyIssueLabel(
   return selectLocalizedText(locale, labels[issue.kind])
 }
 
-function localFlatFoldabilityCoreStatus(
-  presentation: LocalFlatFoldabilityPresentation,
-  locale: Locale,
-) {
-  if (presentation.kind === 'invalid') {
-    return selectLocalizedText(locale, APP_TEXT.localResultUnavailable)
-  }
-  if (presentation.kind === 'blocked') {
-    return selectLocalizedText(locale, APP_TEXT.localAnalysisBlockedByGeometryIssues)
-  }
-  if (presentation.reportStatus === 'necessary_conditions_satisfied') {
-    return formatLocalizedText(locale, APP_TEXT.localNecessaryConditionsSatisfiedAtCountVertices, { count: presentation.counts.satisfied })
-  }
-  if (presentation.reportStatus === 'not_applicable') {
-    return selectLocalizedText(locale, APP_TEXT.noVerticesEligibleForLocalAnalysis)
-  }
-  if (presentation.reportStatus === 'violated') {
-    return formatLocalizedText(locale, APP_TEXT.localNecessaryConditionsViolatedAtCountVertices, { count: presentation.counts.violated })
-  }
-  return formatLocalizedText(locale, APP_TEXT.localResultIndeterminateAtCountVertices, { count: presentation.counts.indeterminate })
-}
-
-function localizedLocalFlatFoldabilityConditionLabel(
-  condition: Parameters<typeof localFlatFoldabilityConditionLabel>[0],
-  locale: Locale,
-) {
-  if (locale === 'ja') return localFlatFoldabilityConditionLabel(condition)
-  return {
-    satisfied: 'Satisfied',
-    violated: 'Violated',
-    not_applicable: 'Not applicable',
-    indeterminate: 'Indeterminate',
-  }[condition]
-}
-
-function localizedLocalFlatFoldabilityReasonLabel(
-  reason: Parameters<typeof localFlatFoldabilityReasonLabel>[0],
-  maxExactFoldDegree: number,
-  locale: Locale,
-) {
-  if (locale === 'ja') {
-    return localFlatFoldabilityReasonLabel(reason, maxExactFoldDegree)
-  }
-  switch (reason) {
-    case 'paper_boundary':
-      return 'Paper boundary vertices are outside the current local model.'
-    case 'cut_incident':
-      return 'Vertices incident to a cut line are outside the current local model.'
-    case 'fold_degree_limit':
-      return formatLocalizedText(locale, APP_TEXT.indeterminateBecauseTheFoldDegreeExceedsTheExactLimitLimit, { limit: maxExactFoldDegree })
-    case 'no_incident_fold_edges':
-      return 'Not applicable because there are no incident mountain or valley folds.'
-    case null:
-      return ''
-  }
-}
-
-function localizedLocalFlatFoldabilitySummary(
-  presentation: LocalFlatFoldabilityPresentation,
-  locale: Locale,
-) {
-  if (presentation.kind === 'invalid') {
-    return selectLocalizedText(locale, APP_TEXT.theLocalFlatFoldabilityResultCouldNotBeVerifiedAnd)
-  }
-  if (presentation.kind === 'blocked') {
-    return selectLocalizedText(locale, APP_TEXT.localFlatFoldabilityWasNotEvaluatedBecauseThePrecedingGeometry)
-  }
-  const detail = formatLocalizedText(locale, APP_TEXT.satisfiedSatisfiedViolatedViolatedNotApplicableNotApplicableIndeterminat, {
-    satisfied: presentation.counts.satisfied,
-    violated: presentation.counts.violated,
-    notApplicable: presentation.counts.notApplicable,
-    indeterminate: presentation.counts.indeterminate,
-  })
-  switch (presentation.reportStatus) {
-    case 'necessary_conditions_satisfied':
-      return formatLocalizedText(locale, APP_TEXT.localNecessaryConditionsAreSatisfiedWithinTheSupportedScopeDetail, { detail })
-    case 'not_applicable':
-      return formatLocalizedText(locale, APP_TEXT.noVerticesAreEligibleForTheCurrentLocalConditionsDetail, { detail })
-    case 'violated':
-      return formatLocalizedText(locale, APP_TEXT.someVerticesViolateTheLocalNecessaryConditionsDetail, { detail })
-    case 'indeterminate':
-      return formatLocalizedText(locale, APP_TEXT.someVerticesHaveIndeterminateLocalNecessaryConditionsDetail, { detail })
-  }
-}
-
-function localizedCreaseExportFormatLabel(
-  format: CreasePatternExportFormat,
-  locale: Locale,
-) {
-  if (locale === 'ja') return creasePatternExportFormatLabel(format)
-  return format === 'dxf'
-    ? 'DXF (AutoCAD 2007)'
-    : creasePatternExportFormatLabel(format)
-}
-
-function localizedInstructionExportFormatLabel(
-  format: InstructionExportFormat,
-  locale: Locale,
-) {
-  if (locale === 'ja') return instructionExportFormatLabel(format)
-  return format === 'svg_zip'
-    ? 'SVG images ZIP'
-    : instructionExportFormatLabel(format)
-}
-
 function reportValidationUnexpected() {
   reportUnexpected('app.validation')
-}
-
-function resolvePaperBounds(snapshot: ProjectSnapshot | null): PaperBounds | undefined {
-  if (!snapshot) return undefined
-  const positions = new Map(
-    snapshot.crease_pattern.vertices.map((vertex) => [vertex.id, vertex.position]),
-  )
-  const points = snapshot.paper.boundary_vertices.flatMap((id) => {
-    const point = positions.get(id)
-    return point ? [point] : []
-  })
-  if (points.length < 2) return undefined
-
-  const bounds = points.reduce<PaperBounds>((current, point) => ({
-    minX: Math.min(current.minX, point.x),
-    minY: Math.min(current.minY, point.y),
-    maxX: Math.max(current.maxX, point.x),
-    maxY: Math.max(current.maxY, point.y),
-  }), {
-    minX: Number.POSITIVE_INFINITY,
-    minY: Number.POSITIVE_INFINITY,
-    maxX: Number.NEGATIVE_INFINITY,
-    maxY: Number.NEGATIVE_INFINITY,
-  })
-  if (
-    !Object.values(bounds).every(Number.isFinite) ||
-    bounds.maxX <= bounds.minX ||
-    bounds.maxY <= bounds.minY
-  ) return undefined
-  return bounds
-}
-
-function resolvePaperPolygon(snapshot: ProjectSnapshot | null): PaperPolygonPoint[] {
-  if (!snapshot) return []
-  const positions = new Map(
-    snapshot.crease_pattern.vertices.map((vertex) => [vertex.id, vertex.position]),
-  )
-  const points: PaperPolygonPoint[] = []
-  for (const id of snapshot.paper.boundary_vertices) {
-    const position = positions.get(id)
-    if (!position) return []
-    points.push({ id, x: position.x, y: position.y })
-  }
-  return points
-}
-
-type RectangularPaperSize = {
-  width: number
-  height: number
-}
-
-function resolveRectangularPaperSize(
-  snapshot: ProjectSnapshot | null,
-): RectangularPaperSize | null {
-  if (!snapshot) return null
-  const boundaryIds = snapshot.paper.boundary_vertices
-  if (boundaryIds.length !== 4 || new Set(boundaryIds).size !== 4) return null
-
-  const positions = new Map(
-    snapshot.crease_pattern.vertices.map((vertex) => [vertex.id, vertex.position]),
-  )
-  const points: Array<{ x: number; y: number }> = []
-  for (const id of boundaryIds) {
-    const point = positions.get(id)
-    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null
-    points.push(point)
-  }
-
-  const minX = Math.min(...points.map((point) => point.x))
-  const minY = Math.min(...points.map((point) => point.y))
-  const maxX = Math.max(...points.map((point) => point.x))
-  const maxY = Math.max(...points.map((point) => point.y))
-  const width = maxX - minX
-  const height = maxY - minY
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    return null
-  }
-
-  const corners = new Set<string>()
-  for (const point of points) {
-    const horizontalSide = point.x === minX ? 'left' : point.x === maxX ? 'right' : null
-    const verticalSide = point.y === minY ? 'top' : point.y === maxY ? 'bottom' : null
-    if (!horizontalSide || !verticalSide) return null
-    corners.add(`${horizontalSide}:${verticalSide}`)
-  }
-  if (corners.size !== 4) return null
-
-  for (let index = 0; index < points.length; index += 1) {
-    const current = points[index]
-    const next = points[(index + 1) % points.length]
-    const sharesX = current.x === next.x
-    const sharesY = current.y === next.y
-    if (sharesX === sharesY) return null
-  }
-
-  return { width, height }
-}
-
-type LineMeasurement = {
-  deltaX: number
-  deltaY: number
-  length: number
-  angleDegrees: number
-}
-
-function resolveUniqueParallelReference(
-  lines: readonly CreaseLine[],
-  referenceEdgeId: string | null,
-) {
-  if (!referenceEdgeId) return null
-  let reference: CreaseLine | null = null
-  for (const line of lines) {
-    if (line.id !== referenceEdgeId) continue
-    if (reference) return null
-    reference = line
-  }
-  if (
-    !reference
-    || ![reference.x1, reference.y1, reference.x2, reference.y2].every(Number.isFinite)
-    || (reference.x1 === reference.x2 && reference.y1 === reference.y2)
-  ) return null
-  return reference
-}
-
-function measureCreaseLine(
-  line: Pick<CreaseLine, 'x1' | 'y1' | 'x2' | 'y2'>,
-): LineMeasurement | null {
-  if (![line.x1, line.y1, line.x2, line.y2].every(Number.isFinite)) return null
-  const rawDeltaX = line.x2 - line.x1
-  const rawDeltaY = line.y2 - line.y1
-  if (!Number.isFinite(rawDeltaX) || !Number.isFinite(rawDeltaY)) return null
-  const deltaX = Object.is(rawDeltaX, -0) ? 0 : rawDeltaX
-  const deltaY = Object.is(rawDeltaY, -0) ? 0 : rawDeltaY
-  const length = Math.hypot(deltaX, deltaY)
-  if (!Number.isFinite(length) || length <= 0) return null
-  const rawAngle = Math.atan2(deltaY, deltaX) * 180 / Math.PI
-  if (!Number.isFinite(rawAngle)) return null
-  const angleDegrees = Object.is(rawAngle, -0) ? 0 : rawAngle
-  return { deltaX, deltaY, length, angleDegrees }
-}
-
-function formatMeasurementValue(
-  value: number | null | undefined,
-  unit: string,
-  maximumFractionDigits = 3,
-  locale: Locale = 'ja',
-) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return selectLocalizedText(locale, APP_TEXT.unavailable2)
-  }
-  const normalized = Object.is(value, -0) ? 0 : value
-  return `${normalized.toLocaleString(
-    locale === 'ja' ? 'ja-JP' : 'en-US',
-    { maximumFractionDigits },
-  )}${unit}`
-}
-
-function formatAngleDegrees(value: number) {
-  if (!Number.isFinite(value)) return '—'
-  if (value !== 0 && Math.abs(value) < 0.000001) return value.toExponential(3)
-  return String(Number(value.toFixed(6)))
-}
-
-function formatLineMeasurementLabel(
-  measurement: LineMeasurement | null,
-  unit: ReturnType<typeof resolveLengthDisplayUnit>,
-  locale: Locale,
-) {
-  if (!measurement) {
-    return selectLocalizedText(locale, APP_TEXT.unavailable2)
-  }
-  return `${formatLength(measurement.length, unit, locale)} / ${
-    formatMeasurementValue(measurement.angleDegrees, '°', 2, locale)
-  }`
-}
-
-function rgbaToCss(color: RgbaColor | undefined) {
-  if (!color) return '#fffdf9'
-  return `rgba(${color.red}, ${color.green}, ${color.blue}, ${color.alpha / 255})`
-}
-
-function rgbaToHex(color: RgbaColor | undefined, fallback = '#fffdf9') {
-  if (!color) return fallback
-  const channels = [color.red, color.green, color.blue]
-  if (!channels.every(Number.isFinite)) return fallback
-  const toHex = (channel: number) => Math.round(Math.min(255, Math.max(0, channel)))
-    .toString(16)
-    .padStart(2, '0')
-  return `#${toHex(color.red)}${toHex(color.green)}${toHex(color.blue)}`
-}
-
-function parseHexColor(value: string): RgbaColor | null {
-  if (!/^#[0-9a-f]{6}$/iu.test(value)) return null
-  return {
-    red: Number.parseInt(value.slice(1, 3), 16),
-    green: Number.parseInt(value.slice(3, 5), 16),
-    blue: Number.parseInt(value.slice(5, 7), 16),
-    alpha: 255,
-  }
-}
-
-function findElementMetadata(
-  document: ProjectSnapshot['element_metadata'],
-  target: ElementMetadataTarget,
-): ElementMetadata | null {
-  if (target.kind === 'vertex') {
-    return document.vertices.find((record) => record.vertex === target.id)?.metadata ?? null
-  }
-  if (target.kind === 'edge') {
-    return document.edges.find((record) => record.edge === target.id)?.metadata ?? null
-  }
-  return document.faces.find((record) => record.face === target.id)?.metadata ?? null
-}
-
-function hasControlCharacter(value: string) {
-  return [...value].some((character) => {
-    const codePoint = character.codePointAt(0) ?? 0
-    return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159)
-  })
-}
-
-function newProjectExpressionErrorMessage(
-  error: unknown,
-  locale: Locale,
-) {
-  const category = numericExpressionNativeErrorCategory(error)
-  if (!category) return null
-  switch (category) {
-    case 'invalid_request':
-      return selectLocalizedText(locale, APP_TEXT.theWidthOrHeightExpressionIsEmptyOrExceedsAn)
-    case 'invalid_expression':
-      return selectLocalizedText(locale, APP_TEXT.theWidthOrHeightExpressionCouldNotBeParsed)
-    case 'resource_limit':
-      return selectLocalizedText(locale, APP_TEXT.evaluationStoppedBecauseTheWidthOrHeightExpressionIsToo)
-    case 'result_out_of_range':
-      return selectLocalizedText(locale, APP_TEXT.theWidthOrHeightCannotBeSafelyUsedAsA)
-    case 'native_unavailable':
-      return selectLocalizedText(locale, APP_TEXT.creatingAProjectFromExpressionsIsAvailableInTheDesktop)
-    case 'invalid_response':
-    case 'stale_response':
-    case 'internal_failure':
-      return selectLocalizedText(locale, APP_TEXT.theEvaluatedWidthOrHeightResultCouldNotBeUsed)
-  }
-}
-
-async function evaluateDisplayLengthExpression(
-  source: string,
-  unit: ResolvedLengthDisplayUnit,
-) {
-  const adopted = await evaluateFiniteNumericExpression(source)
-  const millimetres = adopted.value * unit.millimetresPerUnit
-  if (!Number.isFinite(millimetres)) {
-    throw new Error('display length expression overflow')
-  }
-  return millimetres === 0 ? 0 : millimetres
-}
-
-function millimetreExpressionSource(source: string, millimetresPerUnit: number) {
-  if (millimetresPerUnit === 1) return source
-  return `(${source}) * ${finiteNumberExpressionSource(millimetresPerUnit)}`
-}
-
-function finiteNumberExpressionSource(value: number) {
-  if (!Number.isFinite(value)) throw new Error('non-finite expression source')
-  return String(value === 0 ? 0 : value)
 }
 
 function editExpressionErrorMessage(error: unknown) {
@@ -11163,85 +10757,6 @@ function editExpressionErrorMessage(error: unknown) {
     return appMessage(APP_TEXT.evaluationStoppedBecauseTheExpressionIsTooComplex)
   }
   return appMessage(APP_TEXT.enterAFiniteExpressionUsingDecimalsFractionsSquareRootsPi)
-}
-
-function isEditingText(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.matches('input, textarea')) return true
-  return target.isContentEditable || Boolean(target.closest('[contenteditable="true"]'))
-}
-
-function nextFoldTechniqueRequestId(reference: { current: number }): number {
-  const next = reference.current >= 0xffff_ffff
-    ? 1
-    : reference.current + 1
-  reference.current = next
-  return next
-}
-
-function selectedNamedBookFold(
-  document: FoldTechniqueFileDocumentV1 | null,
-  techniqueIndex: number,
-  locale: Locale,
-  selectedCreaseKind?: CreaseLine['kind'],
-) {
-  const technique = document?.techniques[techniqueIndex]
-  if (!technique) return null
-  const physical = technique.operations.filter(
-    (operation) => [
-      'straight_line_stacked_fold', 'inside_reverse_fold', 'outside_reverse_fold',
-      'sink_fold',
-      'layer_selective_manipulation',
-    ].includes(operation.action.kind),
-  )
-  const isReverse = physical[0]?.action.kind === 'inside_reverse_fold'
-    || physical[0]?.action.kind === 'outside_reverse_fold'
-  const isAccordion = physical.length >= 3
-    && physical.every((operation) => operation.action.kind === 'straight_line_stacked_fold')
-  const isSink = physical[0]?.action.kind === 'sink_fold'
-  const isLayer = physical[0]?.action.kind === 'layer_selective_manipulation'
-  const isMountain = selectedCreaseKind === 'mountain'
-  const isValley = selectedCreaseKind === 'valley'
-  const isCrimp = physical.length === 2
-    && physical.every((operation) => operation.action.kind === 'straight_line_stacked_fold')
-  if ((!isAccordion && !isCrimp && physical.length !== 1) || (!isReverse && !isAccordion && !isCrimp && !isSink && !isLayer && technique.operations.some(
-      (operation) => operation.execution_support.status
-        === 'unsupported_physical_operation',
-    ))) return null
-  return Object.freeze({
-    document,
-    techniqueId: technique.id,
-    name: technique.names.find((entry) => entry.locale === locale)?.text
-      ?? technique.names.find((entry) => entry.locale === 'ja')?.text
-      ?? technique.names[0]?.text
-      ?? technique.id,
-    kind: isAccordion ? 'accordion' as const
-      : physical[0]?.action.kind === 'inside_reverse_fold' ? 'inside_reverse' as const
-      : physical[0]?.action.kind === 'outside_reverse_fold' ? 'outside_reverse' as const
-      : isCrimp ? 'crimp' as const
-      : isSink ? 'sink' as const : isLayer ? 'layer_selective' as const
-      : isMountain ? 'mountain' as const : isValley ? 'valley' as const
-      : 'book' as const,
-  })
-}
-
-function namedBookFoldPalette(
-  document: FoldTechniqueFileDocumentV1 | null,
-  locale: Locale,
-  selectedCreaseKind?: CreaseLine['kind'],
-) {
-  if (!document) return []
-  return document.techniques.map((technique, index) => {
-    const admitted = selectedNamedBookFold(document, index, locale, selectedCreaseKind)
-    return Object.freeze({
-      techniqueId: technique.id,
-      name: technique.names.find((entry) => entry.locale === locale)?.text
-        ?? technique.names.find((entry) => entry.locale === 'ja')?.text
-        ?? technique.names[0]?.text
-        ?? technique.id,
-      supported: admitted !== null && admitted.techniqueId === technique.id,
-    })
-  })
 }
 
 export default App

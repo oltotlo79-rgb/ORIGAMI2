@@ -33,19 +33,20 @@ test('app text catalog is closed and deeply frozen', () => {
   )
 })
 
-test('App references the catalog for every fixed localized object', () => {
-  const path = new URL('../src/App.tsx', import.meta.url)
-  const source = readFileSync(path, 'utf8')
-  const sourceFile = ts.createSourceFile(
-    path.pathname,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX,
-  )
+test('App and its extracted helpers reference the catalog for every fixed localized object', () => {
+  const paths = [
+    new URL('../src/App.tsx', import.meta.url),
+    new URL('../src/lib/appGeometry.ts', import.meta.url),
+    new URL('../src/lib/appNumericExpression.ts', import.meta.url),
+    new URL('../src/lib/appPresentation.ts', import.meta.url),
+  ]
+  const sources = paths.map((path) => ({
+    path,
+    source: readFileSync(path, 'utf8'),
+  }))
   let inlineFixedLocalizedObjects = 0
 
-  const visit = (node: ts.Node) => {
+  const visit = (node: ts.Node): void => {
     if (ts.isObjectLiteralExpression(node)) {
       const fixedLocales = new Set<string>()
       let fixedOnly = true
@@ -77,11 +78,24 @@ test('App references the catalog for every fixed localized object', () => {
     }
     ts.forEachChild(node, visit)
   }
-  visit(sourceFile)
+  for (const { path, source } of sources) {
+    visit(ts.createSourceFile(
+      path.pathname,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      path.pathname.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    ))
+  }
 
   assert.equal(inlineFixedLocalizedObjects, 0)
   assert.equal(
-    source.match(/APP_TEXT\.[A-Za-z_$][A-Za-z0-9_$]*/gu)?.length,
+    sources.reduce(
+      (count, { source }) => (
+        count + (source.match(/APP_TEXT\.[A-Za-z_$][A-Za-z0-9_$]*/gu)?.length ?? 0)
+      ),
+      0,
+    ),
     935,
   )
 })

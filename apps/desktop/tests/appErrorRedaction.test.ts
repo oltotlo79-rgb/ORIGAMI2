@@ -4,6 +4,8 @@ import test from 'node:test'
 
 const appSource = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/appNumericExpression.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/appPresentation.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
 ].join('\n')
 

@@ -34,7 +34,9 @@ use super::{AppState, ProjectState, lock_project, wire_id};
 pub(super) const CURRENT_NON_FLAT_LAYER_ORDER_VIEW_MODEL_ID_V1: &str =
     "native_stacked_fold_non_flat_planar_order_v1";
 
-const POSE_MODEL_ID_V1: &str = "tree_absolute_hinge_angles_v1";
+/// The two admissible applied-pose model IDs, one per issuer kind.
+const TREE_POSE_MODEL_ID_V1: &str = ori_core::APPLIED_POSE_MODEL_ID_V1;
+const GRAPH_POSE_MODEL_ID_V1: &str = ori_core::CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1;
 
 const FACE_DOMAIN_V1: &[u8] = b"origami2.non_flat_layer_view.v1.face";
 const EXACT_BOUNDARY_DOMAIN_V1: &[u8] = b"origami2.non_flat_layer_view.v1.exact_boundary";
@@ -313,15 +315,19 @@ fn exact_rational_dto(
     })
 }
 
-fn frame_exact(hasher: &mut Sha256, value: &ExactRationalDtoV1) {
+/// Frames one exact rational for hashing.
+///
+/// The preimage uses the canonical raw magnitude bytes, never their hex
+/// rendering, so the digest is independent of the wire encoding.
+fn frame_exact(hasher: &mut Sha256, value: &ExactRationalValue) {
     let sign_tag: u8 = match value.sign {
-        "negative" => 0,
-        "zero" => 1,
-        _ => 2,
+        ExactSign::Negative => 0,
+        ExactSign::Zero => 1,
+        ExactSign::Positive => 2,
     };
     hasher.update([sign_tag]);
-    frame(hasher, value.numerator_magnitude_hex.as_bytes());
-    frame(hasher, value.denominator_magnitude_hex.as_bytes());
+    frame(hasher, &value.numerator_magnitude_be);
+    frame(hasher, &value.denominator_be);
 }
 
 /// Rejoins the current project, applied pose, and non-flat evidence.
@@ -368,6 +374,18 @@ fn build_current_non_flat_layer_order_view_v1(
     if proof.authorizes_apply_stacked_fold() {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::internal());
     }
+    // The proof must describe this exact project, revision, and fold model.
+    if proof.model_id() != ori_core::STACKED_FOLD_NON_FLAT_LAYER_ORDER_MODEL_ID_V1 {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    if wire_id(&proof.identity_namespace())
+        .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::internal())?
+        != project_id
+        || proof.target_revision() != revision
+        || proof.target_fingerprint().to_hex() != fingerprint
+    {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::stale());
+    }
     validate_non_flat_layer_order_structure_v1(proof)
         .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::invalid())?;
     preflight_view_resources(proof)?;
@@ -384,8 +402,10 @@ fn build_current_non_flat_layer_order_view_v1(
         .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::stale)?;
 
     let pose = build_pose_dto(proof, &view, generation, request)?;
-    let (faces, world_points) = build_faces(proof, &view)?;
-    let (cells, exact_points) = build_cells(proof, &faces)?;
+    // One aggregate accumulator: the 8 MiB ceiling covers the whole response.
+    let mut magnitude_bytes = 0usize;
+    let (faces, world_points) = build_faces(proof, &view, &mut magnitude_bytes)?;
+    let (cells, exact_points) = build_cells(proof, &faces, &mut magnitude_bytes)?;
     let response = CurrentNonFlatLayerOrderViewResponseV1 {
         version: 1,
         model_id: CURRENT_NON_FLAT_LAYER_ORDER_VIEW_MODEL_ID_V1,
@@ -464,6 +484,16 @@ fn build_pose_dto(
     if semantic.fixed_face() != Some(fixed) {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::stale());
     }
+    // The response pose model ID follows the issuer kind; a graph pose never
+    // carries the tree model ID.
+    let pose_model_id = match (view.tree(), view.graph()) {
+        (Some(_), None) => TREE_POSE_MODEL_ID_V1,
+        (None, Some(_)) => GRAPH_POSE_MODEL_ID_V1,
+        _ => return Err(CurrentNonFlatLayerOrderViewErrorV1::internal()),
+    };
+    if semantic.model_id() != pose_model_id {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::stale());
+    }
     let mut hinge_angles = Vec::with_capacity(proof.hinge_angles().len());
     for angle in proof.hinge_angles() {
         let edge_id =
@@ -493,6 +523,19 @@ fn build_pose_dto(
     {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
     }
+    // The revalidated semantic pose must carry the same hinge vector, compared
+    // by edge ID, length, canonical order, and exact bits.
+    let semantic_angles = semantic.hinge_angles();
+    if semantic_angles.len() != proof.hinge_angles().len() {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::stale());
+    }
+    for (proof_angle, applied) in proof.hinge_angles().iter().zip(semantic_angles) {
+        if proof_angle.edge() != applied.edge()
+            || proof_angle.angle_degrees().to_bits() != applied.angle_degrees().to_bits()
+        {
+            return Err(CurrentNonFlatLayerOrderViewErrorV1::stale());
+        }
+    }
     if hinge_angles
         .iter()
         .all(|angle| angle.angle_degrees == 0.0 || angle.angle_degrees == 180.0)
@@ -500,7 +543,7 @@ fn build_pose_dto(
         return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
     }
     Ok(CurrentNonFlatLayerOrderPoseDtoV1 {
-        model_id: POSE_MODEL_ID_V1,
+        model_id: pose_model_id,
         generation: generation.to_string(),
         fixed_face_id,
         hinge_angles,
@@ -510,6 +553,7 @@ fn build_pose_dto(
 fn build_faces(
     proof: &StackedFoldNonFlatLayerOrderV1,
     view: &CurrentAppliedPoseView<'_>,
+    magnitude_bytes: &mut usize,
 ) -> Result<(Vec<CurrentNonFlatLayerOrderFaceDtoV1>, usize), CurrentNonFlatLayerOrderViewErrorV1> {
     let mut face_ids = proof
         .material_faces()
@@ -520,8 +564,19 @@ fn build_faces(
     if face_ids.is_empty() || face_ids.len() > MAX_FACES_V1 {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
     }
+    // The proof material faces and the live model faces must be the same set:
+    // a missing face and an extra live face are both refused.
+    let mut live_face_ids = match (view.tree(), view.graph()) {
+        (Some((model, _)), None) => model.face_ids().to_vec(),
+        (None, Some((geometry, _, _))) => geometry.face_ids().to_vec(),
+        _ => return Err(CurrentNonFlatLayerOrderViewErrorV1::internal()),
+    };
+    live_face_ids.sort_unstable_by_key(FaceId::canonical_bytes);
+    live_face_ids.dedup();
+    if live_face_ids != face_ids {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
     let mut total_points = 0usize;
-    let mut magnitude_bytes = 0usize;
     let mut faces = Vec::with_capacity(face_ids.len());
     for face_id in face_ids {
         let folded = proof
@@ -540,12 +595,12 @@ fn build_faces(
         let (dropped, plane) = axis_tag(axis)?;
         let transform = folded.source_to_plane();
         let exact = ExactAffineDtoV1 {
-            m00: exact_rational_dto(&transform.m00, &mut magnitude_bytes)?,
-            m01: exact_rational_dto(&transform.m01, &mut magnitude_bytes)?,
-            m10: exact_rational_dto(&transform.m10, &mut magnitude_bytes)?,
-            m11: exact_rational_dto(&transform.m11, &mut magnitude_bytes)?,
-            tx: exact_rational_dto(&transform.tx, &mut magnitude_bytes)?,
-            ty: exact_rational_dto(&transform.ty, &mut magnitude_bytes)?,
+            m00: exact_rational_dto(&transform.m00, magnitude_bytes)?,
+            m01: exact_rational_dto(&transform.m01, magnitude_bytes)?,
+            m10: exact_rational_dto(&transform.m10, magnitude_bytes)?,
+            m11: exact_rational_dto(&transform.m11, magnitude_bytes)?,
+            tx: exact_rational_dto(&transform.tx, magnitude_bytes)?,
+            ty: exact_rational_dto(&transform.ty, magnitude_bytes)?,
         };
         let wire_face_id =
             wire_id(&face_id).map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::internal())?;
@@ -563,7 +618,12 @@ fn build_faces(
             frame(&mut hasher, tag.as_bytes());
         }
         for value in [
-            &exact.m00, &exact.m01, &exact.m10, &exact.m11, &exact.tx, &exact.ty,
+            &transform.m00,
+            &transform.m01,
+            &transform.m10,
+            &transform.m11,
+            &transform.tx,
+            &transform.ty,
         ] {
             frame_exact(&mut hasher, value);
         }
@@ -639,9 +699,9 @@ fn world_boundary(
 fn build_cells(
     proof: &StackedFoldNonFlatLayerOrderV1,
     faces: &[CurrentNonFlatLayerOrderFaceDtoV1],
+    magnitude_bytes: &mut usize,
 ) -> Result<(Vec<CurrentNonFlatLayerOrderCellDtoV1>, usize), CurrentNonFlatLayerOrderViewErrorV1> {
     let mut total_points = 0usize;
-    let mut magnitude_bytes = 0usize;
     let mut cells = Vec::with_capacity(proof.overlap_cells().len());
     for (cell, pair) in proof.overlap_cells().iter().zip(proof.face_pair_orders()) {
         if cell.lower_face() != pair.lower_face() || cell.upper_face() != pair.upper_face() {
@@ -697,8 +757,8 @@ fn build_cells(
             }
             rounded.push([canonical_finite(point.x)?, canonical_finite(point.y)?]);
             exact.push(ExactPointDtoV1 {
-                u: exact_rational_dto(&value.x, &mut magnitude_bytes)?,
-                v: exact_rational_dto(&value.y, &mut magnitude_bytes)?,
+                u: exact_rational_dto(&value.x, magnitude_bytes)?,
+                v: exact_rational_dto(&value.y, magnitude_bytes)?,
             });
         }
         let mut boundary_hasher = Sha256::new();
@@ -708,9 +768,9 @@ fn build_cells(
             frame(&mut boundary_hasher, tag.as_bytes());
         }
         frame_count(&mut boundary_hasher, exact.len());
-        for point in &exact {
-            frame_exact(&mut boundary_hasher, &point.u);
-            frame_exact(&mut boundary_hasher, &point.v);
+        for value in cell.exact_boundary() {
+            frame_exact(&mut boundary_hasher, &value.x);
+            frame_exact(&mut boundary_hasher, &value.y);
         }
         let exact_digest = boundary_hasher.finalize();
         let mut cell_hasher = Sha256::new();

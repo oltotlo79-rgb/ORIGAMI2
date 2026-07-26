@@ -2637,6 +2637,21 @@ html[data-theme='dark'] .global-flat-foldability-caution {
   stroke-width: 3;
 }
 
+.non-flat-layer-viewer-face-lower {
+  stroke-dasharray: 6 3;
+  stroke-width: 3;
+}
+
+.non-flat-layer-viewer-face-upper {
+  stroke-dasharray: 2 2;
+  stroke-width: 3;
+}
+
+.non-flat-layer-viewer-face-role {
+  margin-inline-start: 0.5rem;
+  font-size: 0.85em;
+}
+
 .non-flat-layer-viewer-cell {
   fill: currentColor;
   fill-opacity: 0.2;

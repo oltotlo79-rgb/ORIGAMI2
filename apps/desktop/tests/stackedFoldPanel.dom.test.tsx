@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StackedFoldPanel } from '../src/components/StackedFoldPanel'
 import type { ProjectSnapshot } from '../src/lib/coreClient'
 
+const nativeInvoke = vi.hoisted(() => vi.fn())
+vi.mock('@tauri-apps/api/core', () => ({ invoke: nativeInvoke }))
+
 const transport = vi.hoisted(() => ({
   preview: vi.fn(),
   basicPreview: vi.fn(),
@@ -205,6 +208,9 @@ afterEach(() => {
 })
 
 beforeEach(() => {
+  // The default native transport is unavailable, exactly as in a browser-only
+  // render; only the viewer tests below install a response.
+  nativeInvoke.mockRejectedValue(new Error('no native transport'))
   transport.progress = null
   transport.cycleProgress = null
   transport.cancelRead.mockResolvedValue(undefined)
@@ -1351,5 +1357,87 @@ describe('StackedFoldPanel', () => {
     })
     expect(screen.getByRole('button', { name: 'Prove from current pose' }))
       .toHaveProperty('disabled', true)
+  })
+})
+
+describe('StackedFoldPanel non-flat layer order viewer', () => {
+  const face = '018f47a2-4b7a-7cc1-8abc-0000000000a1'
+  const edge = '018f47a2-4b7a-7cc1-8abc-0000000000b1'
+  const fingerprint = 'f'.repeat(64)
+  const boundSnapshot = {
+    ...snapshot,
+    fold_model_fingerprint: fingerprint,
+  } as ProjectSnapshot
+  const stablePose = {
+    state: 'stable',
+    projectId: project,
+    revision: 3,
+    fixedFaceId: face,
+    hingeAngles: [{ edgeId: edge, angleDegrees: 61.25 }],
+  }
+
+  /** Only the viewer command; the panel drives other native reads too. */
+  const viewerCalls = () => nativeInvoke.mock.calls
+    .filter((call) => call[0] === 'get_current_non_flat_layer_order_view_v1')
+
+  function renderPanel(appliedPose: unknown, locale: 'en' | 'ja' = 'en') {
+    return render(
+      <StackedFoldPanel
+        locale={locale}
+        snapshot={boundSnapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+        appliedPose={appliedPose as never}
+      />,
+    )
+  }
+
+  it('mounts exactly one non-flat viewer for a bound applied pose', async () => {
+    nativeInvoke.mockResolvedValue(null)
+    renderPanel(stablePose)
+    const viewers = await screen.findAllByRole('region', {
+      name: 'Applied non-flat layer order (read-only)',
+    })
+    expect(viewers).toHaveLength(1)
+    await waitFor(() => expect(viewerCalls()).toHaveLength(1))
+  })
+
+  it('omits the viewer when no applied pose is provided', () => {
+    renderPanel(undefined)
+    expect(screen.queryByRole('region', {
+      name: 'Applied non-flat layer order (read-only)',
+    })).toBeNull()
+    expect(viewerCalls()).toHaveLength(0)
+  })
+
+  it('omits the viewer when the applied pose is not bound to the snapshot', () => {
+    renderPanel({ ...stablePose, revision: 4 })
+    expect(screen.queryByRole('region', {
+      name: 'Applied non-flat layer order (read-only)',
+    })).toBeNull()
+    expect(viewerCalls()).toHaveLength(0)
+  })
+
+  it('keeps the apply transport untouched while the viewer is mounted', async () => {
+    nativeInvoke.mockResolvedValue(null)
+    const { rerender } = renderPanel(stablePose)
+    await waitFor(() => expect(viewerCalls()).toHaveLength(1))
+    expect(transport.apply).not.toHaveBeenCalled()
+    expect(transport.preview).not.toHaveBeenCalled()
+    rerender(
+      <StackedFoldPanel
+        locale="ja"
+        snapshot={boundSnapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+        appliedPose={stablePose as never}
+      />,
+    )
+    await screen.findByRole('region', { name: '適用済み非平坦層順（読み取り専用）' })
+    expect(viewerCalls()).toHaveLength(1)
+    expect(transport.apply).not.toHaveBeenCalled()
+    expect(transport.preview).not.toHaveBeenCalled()
   })
 })

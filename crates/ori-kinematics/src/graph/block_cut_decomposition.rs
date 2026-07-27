@@ -1,4 +1,98 @@
-use super::*;
+use std::collections::HashMap;
+
+use ori_domain::EdgeId;
+
+use super::{
+    MaterialHingeGraphAudit,
+    exact_generator_word::{
+        AuthenticatedGraphV1, CanonicalInfiniteLineV1, authenticate_graph_v1,
+        exact_generator_line_v1,
+    },
+};
+use crate::{CanonicalCycleScheduleV1, MaterialHingeGraphGeometry};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContractedProfileClassV1 {
+    Nonconstant,
+    ConstantAngle(u64),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ContractedActiveEdgeV1 {
+    edge: EdgeId,
+    left: usize,
+    right: usize,
+    profile_class: ContractedProfileClassV1,
+    line: CanonicalInfiniteLineV1,
+    sign: i8,
+}
+
+impl ContractedActiveEdgeV1 {
+    pub(super) const fn edge(&self) -> EdgeId {
+        self.edge
+    }
+
+    pub(super) const fn left(&self) -> usize {
+        self.left
+    }
+
+    pub(super) const fn right(&self) -> usize {
+        self.right
+    }
+
+    pub(super) const fn profile_class(&self) -> ContractedProfileClassV1 {
+        self.profile_class
+    }
+
+    pub(super) const fn line(&self) -> &CanonicalInfiniteLineV1 {
+        &self.line
+    }
+
+    pub(super) const fn sign(&self) -> i8 {
+        self.sign
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TarjanBiconnectedBlockV1 {
+    edge_indices: Vec<usize>,
+    vertices: Vec<usize>,
+    bridge: bool,
+}
+
+impl TarjanBiconnectedBlockV1 {
+    pub(super) fn edge_indices(&self) -> &[usize] {
+        &self.edge_indices
+    }
+
+    pub(super) fn vertices(&self) -> &[usize] {
+        &self.vertices
+    }
+
+    pub(super) const fn is_bridge(&self) -> bool {
+        self.bridge
+    }
+
+    pub(super) const fn is_cyclic(&self) -> bool {
+        !self.bridge
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ContractedBlockCutV1 {
+    active_edges: Vec<ContractedActiveEdgeV1>,
+    blocks: Vec<TarjanBiconnectedBlockV1>,
+}
+
+impl ContractedBlockCutV1 {
+    pub(super) fn active_edges(&self) -> &[ContractedActiveEdgeV1] {
+        &self.active_edges
+    }
+
+    pub(super) fn blocks(&self) -> &[TarjanBiconnectedBlockV1] {
+        &self.blocks
+    }
+}
 
 struct DisjointFacesV1 {
     parent: Vec<usize>,
@@ -67,11 +161,11 @@ fn canonical_initial_angle_bits_v1(
     (initial_by_edge.len() == geometry.hinges().len()).then_some(initial_by_edge)
 }
 
-pub(super) fn prepare_active_quotient_v1(
+fn prepare_active_edges_v1(
     geometry: &MaterialHingeGraphGeometry,
     graph: &AuthenticatedGraphV1,
     schedule: &CanonicalCycleScheduleV1,
-) -> Option<(usize, Vec<ActiveQuotientEdgeV1>)> {
+) -> Option<(usize, Vec<ContractedActiveEdgeV1>)> {
     let initial_by_edge = canonical_initial_angle_bits_v1(geometry, schedule)?;
     let mut classes = Vec::new();
     classes.try_reserve_exact(graph.hinges().len()).ok()?;
@@ -87,10 +181,10 @@ pub(super) fn prepare_active_quotient_v1(
                 disjoint.union(record.left(), record.right())?;
                 None
             } else {
-                Some(ActiveScheduleClassV1::ConstantAngle(initial.to_bits()))
+                Some(ContractedProfileClassV1::ConstantAngle(initial.to_bits()))
             }
         } else {
-            Some(ActiveScheduleClassV1::CollectiveNonconstant)
+            Some(ContractedProfileClassV1::Nonconstant)
         };
         classes.push(class);
     }
@@ -137,12 +231,11 @@ pub(super) fn prepare_active_quotient_v1(
         if !matches!(sign, -1 | 1) {
             return None;
         }
-        active.push(ActiveQuotientEdgeV1 {
-            geometry_index: record.geometry_index(),
+        active.push(ContractedActiveEdgeV1 {
             edge: hinge.edge(),
             left,
             right,
-            schedule_class,
+            profile_class: schedule_class,
             line,
             sign,
         });
@@ -150,9 +243,9 @@ pub(super) fn prepare_active_quotient_v1(
     (!active.is_empty() && component_count >= 2).then_some((component_count, active))
 }
 
-pub(super) fn decompose_active_edge_blocks_v1(
+fn decompose_active_edge_blocks_v1(
     component_count: usize,
-    active: &[ActiveQuotientEdgeV1],
+    active: &[ContractedActiveEdgeV1],
 ) -> Option<Vec<Vec<usize>>> {
     if !(2..=10_001).contains(&component_count)
         || active.is_empty()
@@ -197,7 +290,7 @@ pub(super) fn decompose_active_edge_blocks_v1(
     }
     for neighbors in &mut adjacency {
         neighbors
-            .sort_unstable_by_key(|(face, edge)| (*face, active[*edge].edge.canonical_bytes()));
+            .sort_unstable_by_key(|(face, edge)| (*face, active[*edge].edge().canonical_bytes()));
     }
 
     let mut discovery = Vec::new();
@@ -310,16 +403,13 @@ pub(super) fn decompose_active_edge_blocks_v1(
         blocks[block].push(edge);
     }
     for block in &mut blocks {
-        block.sort_unstable_by_key(|edge| active[*edge].edge.canonical_bytes());
+        block.sort_unstable_by_key(|edge| active[*edge].edge().canonical_bytes());
     }
-    blocks.sort_unstable_by_key(|block| active[block[0]].edge.canonical_bytes());
+    blocks.sort_unstable_by_key(|block| active[block[0]].edge().canonical_bytes());
     Some(blocks)
 }
 
-pub(super) fn block_vertices_v1(
-    active: &[ActiveQuotientEdgeV1],
-    block: &[usize],
-) -> Option<Vec<usize>> {
+fn block_vertices_v1(active: &[ContractedActiveEdgeV1], block: &[usize]) -> Option<Vec<usize>> {
     let capacity = block.len().checked_mul(2)?;
     let mut vertices = Vec::new();
     vertices.try_reserve_exact(capacity).ok()?;
@@ -331,4 +421,40 @@ pub(super) fn block_vertices_v1(
     vertices.sort_unstable();
     vertices.dedup();
     (!vertices.is_empty()).then_some(vertices)
+}
+
+pub(super) fn prepare_contracted_block_cut_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    schedule: &CanonicalCycleScheduleV1,
+) -> Option<ContractedBlockCutV1> {
+    let graph = authenticate_graph_v1(geometry, audit)?;
+    let (component_count, active_edges) = prepare_active_edges_v1(geometry, &graph, schedule)?;
+    let raw_blocks = decompose_active_edge_blocks_v1(component_count, &active_edges)?;
+    let vertex_entry_limit = active_edges.len().checked_mul(2)?;
+    let mut vertex_entries = 0usize;
+    let mut blocks = Vec::new();
+    blocks.try_reserve_exact(raw_blocks.len()).ok()?;
+    for edge_indices in raw_blocks {
+        let vertices = block_vertices_v1(&active_edges, &edge_indices)?;
+        let bridge = edge_indices.len() == 1;
+        if (bridge && vertices.len() != 2)
+            || (!bridge && (edge_indices.len() < 2 || edge_indices.len() < vertices.len()))
+        {
+            return None;
+        }
+        vertex_entries = vertex_entries.checked_add(vertices.len())?;
+        if vertex_entries > vertex_entry_limit {
+            return None;
+        }
+        blocks.push(TarjanBiconnectedBlockV1 {
+            edge_indices,
+            vertices,
+            bridge,
+        });
+    }
+    (!blocks.is_empty()).then_some(ContractedBlockCutV1 {
+        active_edges,
+        blocks,
+    })
 }

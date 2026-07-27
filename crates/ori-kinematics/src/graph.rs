@@ -11,6 +11,8 @@ use crate::{
 };
 
 mod block_cut_coaxial;
+mod block_cut_decomposition;
+mod block_cut_free_word;
 mod bridge_motion;
 mod coaxial_profile_lattice;
 mod dense_grid;
@@ -18,6 +20,7 @@ mod exact_cut_carrier;
 mod exact_generator_word;
 
 use block_cut_coaxial::block_cut_coaxial_cycle_closure_premises_v1;
+use block_cut_free_word::block_cut_free_word_cycle_closure_premises_v1;
 use bridge_motion::bridge_only_motion_cycle_closure_premises_v1;
 use coaxial_profile_lattice::coaxial_profile_lattice_cycle_closure_premises_v1;
 use dense_grid::dense_parallel_grid_cycle_closure_premises_v1;
@@ -626,6 +629,9 @@ impl MaterialHingeGraphGeometry {
                 self, audit, fixed_face, schedule, tolerance,
             )
             || block_cut_coaxial_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+            || block_cut_free_word_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
             || collective_flat_stack_cycle_closure_premises_v1(

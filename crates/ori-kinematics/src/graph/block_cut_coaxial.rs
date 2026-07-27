@@ -4,18 +4,13 @@ use ori_domain::{EdgeId, FaceId};
 
 use super::{
     MaterialHingeGraphAudit,
-    exact_generator_word::{
-        AuthenticatedGraphV1, CanonicalInfiniteLineV1, authenticate_graph_v1,
-        exact_generator_line_v1,
+    block_cut_decomposition::{
+        ContractedActiveEdgeV1, ContractedBlockCutV1, ContractedProfileClassV1,
+        prepare_contracted_block_cut_v1,
     },
+    exact_generator_word::CanonicalInfiniteLineV1,
 };
 use crate::{CanonicalCycleScheduleV1, MaterialHingeGraphGeometry};
-
-mod decomposition;
-
-use decomposition::{
-    block_vertices_v1, decompose_active_edge_blocks_v1, prepare_active_quotient_v1,
-};
 
 const MAX_BLOCK_CUT_COAXIAL_PROFILES_PER_BLOCK_V1: usize = 64;
 const MAX_BLOCK_CUT_COAXIAL_STORAGE_V1: usize =
@@ -25,27 +20,10 @@ const MAX_BLOCK_CUT_COAXIAL_WORK_V1: usize =
 const MAX_BLOCK_CUT_COAXIAL_CLASSIFICATION_WORK_V1: usize =
     ori_domain::MAX_INSTRUCTION_HINGES_PER_STEP * MAX_BLOCK_CUT_COAXIAL_PROFILES_PER_BLOCK_V1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActiveScheduleClassV1 {
-    CollectiveNonconstant,
-    ConstantAngle(u64),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum BlockProfileKeyV1 {
     CollectiveNonconstant,
     ConstantAngle(u64),
-}
-
-#[derive(Debug, Clone)]
-struct ActiveQuotientEdgeV1 {
-    geometry_index: usize,
-    edge: EdgeId,
-    left: usize,
-    right: usize,
-    schedule_class: ActiveScheduleClassV1,
-    line: CanonicalInfiniteLineV1,
-    sign: i8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +91,7 @@ fn insert_profile_v1(
 }
 
 fn exact_block_lattice_potential_v1(
-    active: &[ActiveQuotientEdgeV1],
+    active: &[ContractedActiveEdgeV1],
     block: &[usize],
     vertices: &[usize],
     profiles: &[BlockProfileKeyV1],
@@ -140,8 +118,8 @@ fn exact_block_lattice_potential_v1(
     for edge in block {
         let edge = &active[*edge];
         let (Ok(left), Ok(right)) = (
-            vertices.binary_search(&edge.left),
-            vertices.binary_search(&edge.right),
+            vertices.binary_search(&edge.left()),
+            vertices.binary_search(&edge.right()),
         ) else {
             return false;
         };
@@ -180,20 +158,20 @@ fn exact_block_lattice_potential_v1(
     for edge_index in block {
         let edge = &active[*edge_index];
         let (Ok(left), Ok(right), Some(profile)) = (
-            vertices.binary_search(&edge.left),
-            vertices.binary_search(&edge.right),
-            profile_by_edge.get(&edge.edge).copied(),
+            vertices.binary_search(&edge.left()),
+            vertices.binary_search(&edge.right()),
+            profile_by_edge.get(&edge.edge()).copied(),
         ) else {
             return false;
         };
         let Ok(profile) = profiles.binary_search(&profile) else {
             return false;
         };
-        adjacency[left].push((right, profile, edge.sign, edge.edge));
-        let Some(reverse_sign) = edge.sign.checked_neg() else {
+        adjacency[left].push((right, profile, edge.sign(), edge.edge()));
+        let Some(reverse_sign) = edge.sign().checked_neg() else {
             return false;
         };
-        adjacency[right].push((left, profile, reverse_sign, edge.edge));
+        adjacency[right].push((left, profile, reverse_sign, edge.edge()));
     }
     for neighbors in &mut adjacency {
         neighbors.sort_unstable_by_key(|(vertex, profile, sign, edge)| {
@@ -270,11 +248,11 @@ fn exact_block_lattice_potential_v1(
 }
 
 fn prove_cyclic_blocks_v1(
-    geometry: &MaterialHingeGraphGeometry,
     schedule: &CanonicalCycleScheduleV1,
-    active: &[ActiveQuotientEdgeV1],
-    blocks: &[Vec<usize>],
+    decomposition: &ContractedBlockCutV1,
 ) -> bool {
+    let active = decomposition.active_edges();
+    let blocks = decomposition.blocks();
     let mut cyclic_edges = Vec::new();
     if cyclic_edges.try_reserve_exact(active.len()).is_err() {
         return false;
@@ -282,26 +260,17 @@ fn prove_cyclic_blocks_v1(
     cyclic_edges.resize(active.len(), false);
     let mut cyclic_block_count = 0usize;
     for block in blocks {
-        let Some(vertices) = block_vertices_v1(active, block) else {
-            return false;
-        };
-        if block.len() == 1 {
-            if vertices.len() != 2 {
-                return false;
-            }
+        if block.is_bridge() {
             continue;
         }
-        // In an undirected edge-biconnected block, E >= V is the explicit
-        // indication that the block carries cycle constraints. E < V would
-        // signal a malformed decomposition rather than a bridge.
-        if block.len() < vertices.len() {
+        if block.edge_indices().len() < block.vertices().len() {
             return false;
         }
         cyclic_block_count = match cyclic_block_count.checked_add(1) {
             Some(value) => value,
             None => return false,
         };
-        for edge in block {
+        for edge in block.edge_indices() {
             if cyclic_edges[*edge] {
                 return false;
             }
@@ -313,7 +282,7 @@ fn prove_cyclic_blocks_v1(
     }
 
     let cyclic_nonconstant = active.iter().enumerate().any(|(edge, value)| {
-        cyclic_edges[edge] && value.schedule_class == ActiveScheduleClassV1::CollectiveNonconstant
+        cyclic_edges[edge] && value.profile_class() == ContractedProfileClassV1::Nonconstant
     });
     let moving = if cyclic_nonconstant {
         let Some(edges) = schedule.collective_profile_edges_v1() else {
@@ -327,8 +296,8 @@ fn prove_cyclic_blocks_v1(
             return false;
         }
         if active.iter().any(|edge| {
-            moving.contains(&edge.edge)
-                != (edge.schedule_class == ActiveScheduleClassV1::CollectiveNonconstant)
+            moving.contains(&edge.edge())
+                != (edge.profile_class() == ContractedProfileClassV1::Nonconstant)
         }) {
             return false;
         }
@@ -348,31 +317,30 @@ fn prove_cyclic_blocks_v1(
             // carrier or profile equality is read for a bridge block.
             continue;
         }
-        let profile = match edge.schedule_class {
-            ActiveScheduleClassV1::CollectiveNonconstant => {
+        let profile = match edge.profile_class() {
+            ContractedProfileClassV1::Nonconstant => {
                 if moving
                     .as_ref()
-                    .is_none_or(|moving| !moving.contains(&edge.edge))
+                    .is_none_or(|moving| !moving.contains(&edge.edge()))
                 {
                     return false;
                 }
                 BlockProfileKeyV1::CollectiveNonconstant
             }
-            ActiveScheduleClassV1::ConstantAngle(bits) => BlockProfileKeyV1::ConstantAngle(bits),
+            ContractedProfileClassV1::ConstantAngle(bits) => BlockProfileKeyV1::ConstantAngle(bits),
         };
-        if profile_by_edge.insert(edge.edge, profile).is_some() {
+        if profile_by_edge.insert(edge.edge(), profile).is_some() {
             return false;
         }
     }
 
     for block in blocks {
-        if block.len() == 1 {
+        if block.is_bridge() {
             continue;
         }
-        let Some(vertices) = block_vertices_v1(active, block) else {
-            return false;
-        };
-        if block.len() < vertices.len() {
+        let edge_indices = block.edge_indices();
+        let vertices = block.vertices();
+        if edge_indices.len() < vertices.len() {
             return false;
         }
         let mut profiles = Vec::new();
@@ -383,19 +351,16 @@ fn prove_cyclic_blocks_v1(
             return false;
         }
         let mut reference_line: Option<&CanonicalInfiniteLineV1> = None;
-        for edge in block {
+        for edge in edge_indices {
             let edge = &active[*edge];
-            if reference_line.is_some_and(|reference| reference != &edge.line) {
+            if reference_line.is_some_and(|reference| reference != edge.line()) {
                 return false;
             }
-            reference_line = Some(&edge.line);
-            let Some(profile) = profile_by_edge.get(&edge.edge).copied() else {
+            reference_line = Some(edge.line());
+            let Some(profile) = profile_by_edge.get(&edge.edge()).copied() else {
                 return false;
             };
             if insert_profile_v1(&mut profiles, profile, &mut totals).is_none() {
-                return false;
-            }
-            if geometry.hinges().get(edge.geometry_index).is_none() {
                 return false;
             }
         }
@@ -403,8 +368,8 @@ fn prove_cyclic_blocks_v1(
         if reference_line.is_none()
             || !exact_block_lattice_potential_v1(
                 active,
-                block,
-                &vertices,
+                edge_indices,
+                vertices,
                 &profiles,
                 &profile_by_edge,
                 &mut totals,
@@ -439,17 +404,10 @@ pub(super) fn block_cut_coaxial_cycle_closure_premises_v1(
     {
         return false;
     }
-    let Some(graph) = authenticate_graph_v1(geometry, audit) else {
+    let Some(decomposition) = prepare_contracted_block_cut_v1(geometry, audit, schedule) else {
         return false;
     };
-    let Some((component_count, active)) = prepare_active_quotient_v1(geometry, &graph, schedule)
-    else {
-        return false;
-    };
-    let Some(blocks) = decompose_active_edge_blocks_v1(component_count, &active) else {
-        return false;
-    };
-    prove_cyclic_blocks_v1(geometry, schedule, &active, &blocks)
+    prove_cyclic_blocks_v1(schedule, &decomposition)
 }
 
 #[cfg(test)]

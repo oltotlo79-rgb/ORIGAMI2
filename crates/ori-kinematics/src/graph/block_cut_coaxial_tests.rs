@@ -6,6 +6,7 @@ use super::*;
 use crate::{
     CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1, Point3, TreeHinge,
     graph::{
+        block_cut_decomposition::prepare_contracted_block_cut_v1,
         coaxial_profile_lattice::coaxial_profile_lattice_cycle_closure_premises_v1,
         exact_cut_carrier::exact_cut_carrier_cycle_closure_premises_v1,
         exact_generator_word::exact_generator_word_cycle_closure_premises_v1,
@@ -62,18 +63,12 @@ fn block_cut_certifies_distinct_carrier_commutator_blocks_without_cross_commutin
     }
 
     let schedule = polynomial_schedule_v1(&fixture, ScheduleMutationV1::None);
-    let graph = authenticate_graph_v1(&fixture.geometry, &fixture.audit).unwrap();
-    let (components, active) =
-        prepare_active_quotient_v1(&fixture.geometry, &graph, &schedule).unwrap();
-    let blocks = decompose_active_edge_blocks_v1(components, &active).unwrap();
-    let mut shapes = blocks
+    let decomposition =
+        prepare_contracted_block_cut_v1(&fixture.geometry, &fixture.audit, &schedule).unwrap();
+    let mut shapes = decomposition
+        .blocks()
         .iter()
-        .map(|block| {
-            (
-                block.len(),
-                block_vertices_v1(&active, block).unwrap().len(),
-            )
-        })
+        .map(|block| (block.edge_indices().len(), block.vertices().len()))
         .collect::<Vec<_>>();
     shapes.sort_unstable();
     assert_eq!(shapes, vec![(1, 2), (4, 4), (4, 4)]);
@@ -162,14 +157,11 @@ fn block_cut_contains_the_exact_cut_parallel_sign_case_after_zero_contraction() 
         &schedule,
         0.0,
     ));
-    let graph = authenticate_graph_v1(&fixture.geometry, &fixture.audit).unwrap();
-    let (components, active) =
-        prepare_active_quotient_v1(&fixture.geometry, &graph, &schedule).unwrap();
-    assert_eq!(components, 2);
-    let blocks = decompose_active_edge_blocks_v1(components, &active).unwrap();
-    assert_eq!(blocks.len(), 1);
-    assert_eq!(blocks[0].len(), 2);
-    assert_eq!(block_vertices_v1(&active, &blocks[0]).unwrap().len(), 2);
+    let decomposition =
+        prepare_contracted_block_cut_v1(&fixture.geometry, &fixture.audit, &schedule).unwrap();
+    assert_eq!(decomposition.blocks().len(), 1);
+    assert_eq!(decomposition.blocks()[0].edge_indices().len(), 2);
+    assert_eq!(decomposition.blocks()[0].vertices().len(), 2);
 
     let fixture = exact_cut_fixture_v1(false);
     let schedule = polynomial_schedule_v1(&fixture, ScheduleMutationV1::None);

@@ -3,7 +3,13 @@ use ori_topology::FoldAssignment;
 
 use super::test_support::*;
 use super::*;
-use crate::{Point3, TreeHinge};
+use crate::{
+    Point3, TreeHinge,
+    graph::{
+        block_cut_decomposition::prepare_contracted_block_cut_v1,
+        exact_generator_word::authenticate_graph_v1,
+    },
+};
 
 fn native_block_cactus_fixture_v1() -> BlockCutFixtureV1 {
     const EDGES_PER_BLOCK: usize = 4;
@@ -138,13 +144,11 @@ fn block_cut_accepts_native_ten_thousand_edge_cactus_and_rejects_one_over() {
         0.0,
     ));
 
-    let graph = authenticate_graph_v1(&fixture.geometry, &fixture.audit).unwrap();
-    let (components, active) =
-        prepare_active_quotient_v1(&fixture.geometry, &graph, &schedule).unwrap();
-    let blocks = decompose_active_edge_blocks_v1(components, &active).unwrap();
-    assert_eq!(blocks.len(), 2_500);
-    assert!(blocks.iter().all(|block| {
-        block.len() == 4 && block_vertices_v1(&active, block).is_some_and(|faces| faces.len() == 4)
+    let decomposition =
+        prepare_contracted_block_cut_v1(&fixture.geometry, &fixture.audit, &schedule).unwrap();
+    assert_eq!(decomposition.blocks().len(), 2_500);
+    assert!(decomposition.blocks().iter().all(|block| {
+        block.edge_indices().len() == 4 && block.vertices().len() == 4 && !block.is_bridge()
     }));
 
     let mut one_over_hinges = fixture.geometry.hinges().to_vec();

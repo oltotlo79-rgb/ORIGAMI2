@@ -22,13 +22,13 @@ pub(super) struct CanonicalInfiniteLineV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum ExactGeneratorProfileV1 {
+pub(super) enum ExactGeneratorProfileV1 {
     CollectiveNonconstant,
     ConstantAngle(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct ExactGeneratorKeyV1 {
+pub(super) struct ExactGeneratorKeyV1 {
     line: CanonicalInfiniteLineV1,
     profile: ExactGeneratorProfileV1,
 }
@@ -91,7 +91,7 @@ struct ReducedWordNodeV1 {
     last: i32,
 }
 
-struct ReducedWordInternerV1 {
+pub(super) struct ReducedWordInternerV1 {
     nodes: Vec<ReducedWordNodeV1>,
     // Hashing only locates candidates. Rust's HashMap confirms complete
     // `(prefix, signed generator)` key equality before a word ID is reused, so
@@ -100,8 +100,14 @@ struct ReducedWordInternerV1 {
     limit: usize,
 }
 
+impl ExactGeneratorKeyV1 {
+    pub(super) fn new(line: CanonicalInfiniteLineV1, profile: ExactGeneratorProfileV1) -> Self {
+        Self { line, profile }
+    }
+}
+
 impl ReducedWordInternerV1 {
-    fn prepare(limit: usize) -> Option<Self> {
+    pub(super) fn prepare(limit: usize) -> Option<Self> {
         if limit == 0 || limit > MAX_EXACT_GENERATOR_WORD_NODES_V1 {
             return None;
         }
@@ -118,7 +124,7 @@ impl ReducedWordInternerV1 {
         })
     }
 
-    fn append(&mut self, word: usize, signed_generator: i32) -> Option<usize> {
+    pub(super) fn append(&mut self, word: usize, signed_generator: i32) -> Option<usize> {
         if signed_generator == 0 {
             return Some(word);
         }

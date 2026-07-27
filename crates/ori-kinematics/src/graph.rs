@@ -11,11 +11,13 @@ use crate::{
 };
 
 mod bridge_motion;
+mod coaxial_profile_lattice;
 mod dense_grid;
 mod exact_cut_carrier;
 mod exact_generator_word;
 
 use bridge_motion::bridge_only_motion_cycle_closure_premises_v1;
+use coaxial_profile_lattice::coaxial_profile_lattice_cycle_closure_premises_v1;
 use dense_grid::dense_parallel_grid_cycle_closure_premises_v1;
 use exact_cut_carrier::exact_cut_carrier_cycle_closure_premises_v1;
 use exact_generator_word::exact_generator_word_cycle_closure_premises_v1;
@@ -616,6 +618,9 @@ impl MaterialHingeGraphGeometry {
                 self, audit, fixed_face, schedule, tolerance,
             )
             || exact_generator_word_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+            || coaxial_profile_lattice_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
             || collective_flat_stack_cycle_closure_premises_v1(

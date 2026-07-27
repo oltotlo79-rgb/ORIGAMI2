@@ -16,7 +16,7 @@ const MAX_EXACT_GENERATOR_WORD_ADJACENCY_ENTRIES_V1: usize = MAX_EXACT_GENERATOR
 const MAX_EXACT_GENERATOR_WORD_NODES_V1: usize = MAX_EXACT_GENERATOR_WORD_ADJACENCY_ENTRIES_V1 + 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct CanonicalInfiniteLineV1 {
+pub(super) struct CanonicalInfiniteLineV1 {
     direction_bits: [u64; 3],
     exact_moment: [BigRational; 3],
 }
@@ -34,14 +34,14 @@ struct ExactGeneratorKeyV1 {
 }
 
 #[derive(Debug, Clone)]
-struct AuthenticatedHingeV1 {
+pub(super) struct AuthenticatedHingeV1 {
     geometry_index: usize,
     left: usize,
     right: usize,
 }
 
 #[derive(Debug)]
-struct AuthenticatedGraphV1 {
+pub(super) struct AuthenticatedGraphV1 {
     faces: Vec<FaceId>,
     hinges: Vec<AuthenticatedHingeV1>,
     adjacency_entry_limit: usize,
@@ -55,6 +55,34 @@ struct PendingLabelV1 {
     edge: EdgeId,
     generator: Option<ExactGeneratorKeyV1>,
     generator_sign: i8,
+}
+
+impl AuthenticatedHingeV1 {
+    pub(super) const fn geometry_index(&self) -> usize {
+        self.geometry_index
+    }
+
+    pub(super) const fn left(&self) -> usize {
+        self.left
+    }
+
+    pub(super) const fn right(&self) -> usize {
+        self.right
+    }
+}
+
+impl AuthenticatedGraphV1 {
+    pub(super) fn faces(&self) -> &[FaceId] {
+        &self.faces
+    }
+
+    pub(super) fn hinges(&self) -> &[AuthenticatedHingeV1] {
+        &self.hinges
+    }
+
+    pub(super) const fn adjacency_entry_limit(&self) -> usize {
+        self.adjacency_entry_limit
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -179,7 +207,7 @@ fn exact_binary64_cross_v1(first: [f64; 3], second: [f64; 3]) -> Option<[BigRati
 /// becomes the inverse free-group label. Consequently label negation maps to
 /// the rigid-transform group inverse for every schedule parameter, not merely
 /// at selected angles.
-fn exact_generator_line_v1(hinge: &TreeHinge) -> Option<(CanonicalInfiniteLineV1, i8)> {
+pub(super) fn exact_generator_line_v1(hinge: &TreeHinge) -> Option<(CanonicalInfiniteLineV1, i8)> {
     let axis = point_components_v1(hinge.axis());
     let delta = subtract(hinge.end(), hinge.start()).ok()?;
     let expected_axis = scale(delta, 1.0 / length(delta).ok()?).ok()?;
@@ -238,7 +266,7 @@ fn exact_constant_profile_v1(angle_bits: u64) -> Option<Option<ExactGeneratorPro
     }
 }
 
-fn authenticate_graph_v1(
+pub(super) fn authenticate_graph_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
 ) -> Option<AuthenticatedGraphV1> {

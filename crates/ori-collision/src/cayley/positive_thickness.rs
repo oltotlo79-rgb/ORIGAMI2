@@ -84,6 +84,7 @@ mod exact_prism;
 mod parallel_scan;
 mod projected_pair_authority;
 mod shared_hinge_corridor_admission;
+mod shared_hinge_pair_session;
 mod shared_hinge_solid_classification;
 mod shared_hinge_topology_margin;
 
@@ -98,6 +99,7 @@ use projected_pair_authority::{
     ProjectedPairAuthorityV1, prepare_projected_pair_authority_v1,
     revalidate_projected_pair_authority_v1,
 };
+use shared_hinge_pair_session::prepare_shared_hinge_pair_diagnostic_session_v1;
 
 const STAGE: CayleyStage = CayleyStage::Containment;
 const SCALAR_INPUT_RATIONALS: usize = 13;
@@ -1895,10 +1897,13 @@ fn exact_hinge_binds_face_pair_vertices_v1(
         && hinge.endpoint_vertices.contains(&shared_vertices[1])
 }
 
-/// Runs the complete private solid classifier for the sole hinge of a
-/// two-face pose and exports only its sanitized semantic cell.
+/// Runs the established bounded private solid-classifier entry and exports
+/// only its sanitized semantic cell.
 ///
-/// Multi-hinge callers must use
+/// The standalone entry remains limited to the established two-face and
+/// three-face parents. Larger trees require a whole-exact private session and
+/// cannot reach the static whole-pose proof until its separate aggregation
+/// boundary consumes that session. Multi-hinge callers must use
 /// [`diagnose_bound_shared_hinge_solid_for_edge_v1`] with an authenticated
 /// edge. Unsupported geometry returns `Ok(None)` and remains an explicit
 /// indeterminate pair at the caller.
@@ -1911,6 +1916,25 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
 
 pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
     bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+    target_edge: Option<EdgeId>,
+) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingeSolidDiagnosticErrorV1> {
+    if !matches!(
+        (bound.model().face_ids().len(), bound.model().hinges().len()),
+        (2, 1) | (3, 2)
+    ) {
+        return Ok(None);
+    }
+    let Some(session) = prepare_shared_hinge_pair_diagnostic_session_v1(bound, paper_thickness_mm)?
+    else {
+        return Ok(None);
+    };
+    session.diagnose(target_edge)
+}
+
+fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
+    exact: &RationalCayleyTreePose<'pose>,
+    bound: BoundMaterialTreePose<'pose>,
     paper_thickness_mm: f64,
     target_edge: Option<EdgeId>,
 ) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingeSolidDiagnosticErrorV1> {
@@ -1936,6 +1960,9 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
     };
 
     if !positive_finite_binary64(paper_thickness_mm)
+        || !exact.is_for(bound)
+        || exact.faces.len() != bound.model().face_ids().len()
+        || exact.hinges.len() != bound.model().hinges().len()
         || bound.model().face_ids() != bound.pose().face_ids()
         || bound.model().hinges() != bound.pose().hinges()
     {
@@ -1961,16 +1988,6 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
     let mut face_pair = [target_hinge.left_face(), target_hinge.right_face()];
     face_pair.sort_unstable_by_key(FaceId::canonical_bytes);
 
-    let exact = match prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default()) {
-        Ok(exact) => exact,
-        Err(CayleyError::ResourceLimitExceeded { .. }) => {
-            return Err(SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded);
-        }
-        Err(CayleyError::InvariantFailure { .. } | CayleyError::BoundTreeInconsistent { .. }) => {
-            return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
-        }
-        Err(_) => return Ok(None),
-    };
     if exact.hinges[target_hinge_index].angle_magnitude_bits == 90.0_f64.to_bits() {
         // At exactly 90 degrees the centered slabs meet the finite corridor
         // boundary. Reversing the canonical hinge endpoint can change the
@@ -1987,7 +2004,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
         }));
     }
     let prerequisite_analysis = analyze_single_triangular_hinge_prerequisites_for_edge_v1(
-        &exact,
+        exact,
         paper_thickness_mm,
         Some(target_edge),
         SingleTriangularHingePrerequisiteLimits::default(),
@@ -2006,7 +2023,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
         .map(|prerequisite| {
             analyze_axis_aligned_ef_boundary_v1(
                 prerequisite,
-                &exact,
+                exact,
                 bound,
                 paper_thickness_mm,
                 AxisAlignedEfBoundaryLimits::default(),
@@ -2020,7 +2037,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
     let exact_e_analysis = analyze_exact_e_finite_hinge_corridor_v1(
         &prerequisite_analysis,
         ef,
-        &exact,
+        exact,
         bound,
         paper_thickness_mm,
         ExactEFiniteHingeCorridorLimits::default(),
@@ -2030,7 +2047,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
         &prerequisite_analysis,
         ef,
         &exact_e_analysis,
-        &exact,
+        exact,
         bound,
         paper_thickness_mm,
         DirectFFiniteHingeCorridorLimits::default(),
@@ -2041,7 +2058,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
         ef,
         &exact_e_analysis,
         &direct_f_analysis,
-        &exact,
+        exact,
         bound,
         paper_thickness_mm,
         SharedHingeCorridorAdmissionLimitsV1::default(),
@@ -2050,7 +2067,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
     let margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
         &prerequisite_analysis,
         ef,
-        &exact,
+        exact,
         bound,
         paper_thickness_mm,
         SharedHingeNativeExactTopologyMarginLimitsV1::default(),
@@ -2063,7 +2080,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
         &direct_f_analysis,
         &admission_analysis,
         &margin_analysis,
-        &exact,
+        exact,
         bound,
         paper_thickness_mm,
         SharedHingeSolidClassificationLimitsV1::default(),
@@ -2094,7 +2111,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
                 direct_f,
                 admission,
                 None,
-                &exact,
+                exact,
                 bound,
                 paper_thickness_mm,
             )
@@ -2107,7 +2124,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
                     direct_f,
                     None,
                     margin,
-                    &exact,
+                    exact,
                     bound,
                     paper_thickness_mm,
                 )
@@ -2128,7 +2145,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
                 prerequisite,
                 ef,
                 margin,
-                &exact,
+                exact,
                 bound,
                 paper_thickness_mm,
             )
@@ -2645,6 +2662,9 @@ mod tests {
 
     #[path = "projected_pair_authority_tests.rs"]
     mod projected_pair_authority_tests;
+
+    #[path = "general_tree_pair_diagnostic_tests.rs"]
+    mod general_tree_pair_diagnostic_tests;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ResultKind {

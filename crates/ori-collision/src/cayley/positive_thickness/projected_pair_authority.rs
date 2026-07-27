@@ -8,10 +8,9 @@
 //! canonical excluded-face set, the full parent counts, the bit-exact angle
 //! and thickness, and the native affine transform bits.
 //!
-//! Only the established two-face/one-hinge parent and the first projected
-//! three-face/two-hinge parent are admitted.  Every larger parent remains
-//! fail-closed.  The authority is intentionally non-cloneable and
-//! non-serializable.
+//! Parent cardinality is independent of the pair, but remains bounded by the
+//! established positive-thickness tree hard cap. The authority is
+//! intentionally non-cloneable and non-serializable.
 
 use ori_domain::EdgeId;
 use ori_kinematics::{
@@ -22,11 +21,48 @@ use ori_kinematics::{
 
 use super::*;
 
-const LEGACY_PARENT_FACE_COUNT: usize = 2;
-const LEGACY_PARENT_HINGE_COUNT: usize = 1;
-const PROJECTED_PARENT_FACE_COUNT: usize = 3;
-const PROJECTED_PARENT_HINGE_COUNT: usize = 2;
 const PAIR_FACE_COUNT: usize = 2;
+const MIN_PARENT_FACE_COUNT: usize = PAIR_FACE_COUNT;
+const MIN_PARENT_HINGE_COUNT: usize = 1;
+const HARD_MAX_PARENT_HINGE_COUNT: usize = MAX_COMPOSED_THICKNESS_HINGES_V1;
+const HARD_MAX_PARENT_FACE_COUNT: usize = HARD_MAX_PARENT_HINGE_COUNT + 1;
+const HARD_MAX_EXCLUDED_FACE_INDEXES: usize = HARD_MAX_PARENT_FACE_COUNT - PAIR_FACE_COUNT;
+const HARD_MAX_EXCLUDED_FACE_INDEX_BINDINGS: usize =
+    HARD_MAX_PARENT_HINGE_COUNT * HARD_MAX_EXCLUDED_FACE_INDEXES;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ProjectedPairAuthorityLimitsV1 {
+    pub(super) max_parent_faces: usize,
+    pub(super) max_parent_hinges: usize,
+    pub(super) max_excluded_face_indexes: usize,
+    pub(super) max_excluded_face_index_bindings: usize,
+}
+
+impl Default for ProjectedPairAuthorityLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_parent_faces: HARD_MAX_PARENT_FACE_COUNT,
+            max_parent_hinges: HARD_MAX_PARENT_HINGE_COUNT,
+            max_excluded_face_indexes: HARD_MAX_EXCLUDED_FACE_INDEXES,
+            max_excluded_face_index_bindings: HARD_MAX_EXCLUDED_FACE_INDEX_BINDINGS,
+        }
+    }
+}
+
+impl ProjectedPairAuthorityLimitsV1 {
+    pub(super) fn clamped_to_hard(self) -> Self {
+        Self {
+            max_parent_faces: self.max_parent_faces.min(HARD_MAX_PARENT_FACE_COUNT),
+            max_parent_hinges: self.max_parent_hinges.min(HARD_MAX_PARENT_HINGE_COUNT),
+            max_excluded_face_indexes: self
+                .max_excluded_face_indexes
+                .min(HARD_MAX_EXCLUDED_FACE_INDEXES),
+            max_excluded_face_index_bindings: self
+                .max_excluded_face_index_bindings
+                .min(HARD_MAX_EXCLUDED_FACE_INDEX_BINDINGS),
+        }
+    }
+}
 
 /// Non-cloneable authority that projects one pair without replacing its
 /// whole-parent issuer.
@@ -41,6 +77,8 @@ pub(super) struct ProjectedPairAuthorityV1<'exact, 'pose> {
     edge: EdgeId,
     full_face_count: usize,
     full_hinge_count: usize,
+    excluded_face_index_bindings: usize,
+    limits: ProjectedPairAuthorityLimitsV1,
     angle_bits: u64,
     paper_thickness_bits: u64,
     exact_binary64_affine_bits: [[[u64; 4]; 3]; PAIR_FACE_COUNT],
@@ -95,6 +133,23 @@ pub(super) fn prepare_projected_pair_authority_v1<'exact, 'pose>(
     edge: EdgeId,
     paper_thickness_mm: f64,
 ) -> Option<ProjectedPairAuthorityV1<'exact, 'pose>> {
+    prepare_projected_pair_authority_with_limits_v1(
+        exact,
+        bound,
+        edge,
+        paper_thickness_mm,
+        ProjectedPairAuthorityLimitsV1::default(),
+    )
+}
+
+pub(super) fn prepare_projected_pair_authority_with_limits_v1<'exact, 'pose>(
+    exact: &'exact RationalCayleyTreePose<'pose>,
+    bound: BoundMaterialTreePose<'pose>,
+    edge: EdgeId,
+    paper_thickness_mm: f64,
+    limits: ProjectedPairAuthorityLimitsV1,
+) -> Option<ProjectedPairAuthorityV1<'exact, 'pose>> {
+    let limits = limits.clamped_to_hard();
     if !positive_finite_binary64(paper_thickness_mm)
         || exact.version != RATIONAL_CAYLEY_TREE_POSE_V1
         || !exact.is_for(bound)
@@ -108,8 +163,9 @@ pub(super) fn prepare_projected_pair_authority_v1<'exact, 'pose>(
 
     let full_face_count = bound.model().face_ids().len();
     let full_hinge_count = bound.model().hinges().len();
-    if !supported_parent_counts(full_face_count, full_hinge_count)
-        || exact.faces.len() != full_face_count
+    let excluded_face_index_bindings =
+        projected_tree_counts_fit_limits_v1(full_face_count, full_hinge_count, limits)?;
+    if exact.faces.len() != full_face_count
         || exact.hinges.len() != full_hinge_count
         || bound.pose().hinge_angles().len() != full_hinge_count
         || exact.faces.iter().any(|face| face.boundary.len() != 3)
@@ -124,7 +180,14 @@ pub(super) fn prepare_projected_pair_authority_v1<'exact, 'pose>(
 
     let projection = prepare_material_hinge_pair_projection_v1(bound, edge).ok()?;
     let input = revalidate_material_hinge_pair_projection_v1(&projection, bound)?;
-    if !input_matches_whole_exact_parent(&input, exact, bound, full_face_count, full_hinge_count) {
+    if !input_matches_whole_exact_parent(
+        &input,
+        exact,
+        bound,
+        full_face_count,
+        full_hinge_count,
+        limits,
+    ) {
         return None;
     }
 
@@ -137,6 +200,8 @@ pub(super) fn prepare_projected_pair_authority_v1<'exact, 'pose>(
         edge: input.edge,
         full_face_count,
         full_hinge_count,
+        excluded_face_index_bindings,
+        limits,
         angle_bits: input.angle_degrees.to_bits(),
         paper_thickness_bits: paper_thickness_mm.to_bits(),
         exact_binary64_affine_bits: input.exact_binary64_affine_bits,
@@ -150,6 +215,12 @@ pub(super) fn revalidate_projected_pair_authority_v1(
     bound: BoundMaterialTreePose<'_>,
     paper_thickness_mm: f64,
 ) -> Option<RevalidatedProjectedPairAuthorityV1> {
+    let limits = authority.limits.clamped_to_hard();
+    let excluded_face_index_bindings = projected_tree_counts_fit_limits_v1(
+        authority.full_face_count,
+        authority.full_hinge_count,
+        limits,
+    )?;
     if !positive_finite_binary64(paper_thickness_mm)
         || !std::ptr::eq(authority.exact, exact)
         || !std::ptr::eq(authority.bound.model(), bound.model())
@@ -160,7 +231,8 @@ pub(super) fn revalidate_projected_pair_authority_v1(
         || authority.full_hinge_count != exact.hinges.len()
         || authority.full_hinge_count != bound.model().hinges().len()
         || authority.full_hinge_count != bound.pose().hinge_angles().len()
-        || !supported_parent_counts(authority.full_face_count, authority.full_hinge_count)
+        || authority.excluded_face_index_bindings != excluded_face_index_bindings
+        || authority.limits != limits
         || exact.version != RATIONAL_CAYLEY_TREE_POSE_V1
         || !exact.is_for(bound)
     {
@@ -180,6 +252,7 @@ pub(super) fn revalidate_projected_pair_authority_v1(
             bound,
             authority.full_face_count,
             authority.full_hinge_count,
+            limits,
         )
     {
         return None;
@@ -194,12 +267,39 @@ pub(super) fn revalidate_projected_pair_authority_v1(
     })
 }
 
-fn supported_parent_counts(face_count: usize, hinge_count: usize) -> bool {
-    matches!(
-        (face_count, hinge_count),
-        (LEGACY_PARENT_FACE_COUNT, LEGACY_PARENT_HINGE_COUNT)
-            | (PROJECTED_PARENT_FACE_COUNT, PROJECTED_PARENT_HINGE_COUNT)
-    )
+pub(super) fn checked_excluded_face_index_binding_count(
+    face_count: usize,
+    hinge_count: usize,
+) -> Option<usize> {
+    let excluded_per_pair = face_count.checked_sub(PAIR_FACE_COUNT)?;
+    hinge_count.checked_mul(excluded_per_pair)
+}
+
+pub(super) fn projected_tree_counts_fit_limits_v1(
+    face_count: usize,
+    hinge_count: usize,
+    limits: ProjectedPairAuthorityLimitsV1,
+) -> Option<usize> {
+    let limits = limits.clamped_to_hard();
+    let excluded_face_indexes = face_count.checked_sub(PAIR_FACE_COUNT)?;
+    let excluded_face_index_bindings =
+        checked_excluded_face_index_binding_count(face_count, hinge_count)?;
+    (supported_parent_counts(face_count, hinge_count, limits)
+        && excluded_face_indexes <= limits.max_excluded_face_indexes
+        && excluded_face_index_bindings <= limits.max_excluded_face_index_bindings)
+        .then_some(excluded_face_index_bindings)
+}
+
+fn supported_parent_counts(
+    face_count: usize,
+    hinge_count: usize,
+    limits: ProjectedPairAuthorityLimitsV1,
+) -> bool {
+    face_count >= MIN_PARENT_FACE_COUNT
+        && hinge_count >= MIN_PARENT_HINGE_COUNT
+        && face_count <= limits.max_parent_faces
+        && hinge_count <= limits.max_parent_hinges
+        && hinge_count.checked_add(1) == Some(face_count)
 }
 
 fn input_matches_whole_exact_parent(
@@ -208,8 +308,9 @@ fn input_matches_whole_exact_parent(
     bound: BoundMaterialTreePose<'_>,
     full_face_count: usize,
     full_hinge_count: usize,
+    limits: ProjectedPairAuthorityLimitsV1,
 ) -> bool {
-    if !supported_parent_counts(full_face_count, full_hinge_count)
+    if !supported_parent_counts(full_face_count, full_hinge_count, limits)
         || input.face_indexes[0] == input.face_indexes[1]
         || input
             .face_indexes
@@ -225,10 +326,12 @@ fn input_matches_whole_exact_parent(
             .rest_positions
             .iter()
             .any(|positions| positions.len() != 3)
-        || input.excluded_face_indexes
-            != (0..full_face_count)
-                .filter(|index| !input.face_indexes.contains(index))
-                .collect::<Vec<_>>()
+        || input.excluded_face_indexes.len() > limits.max_excluded_face_indexes
+        || !excluded_face_indexes_are_complete(
+            &input.excluded_face_indexes,
+            input.face_indexes,
+            full_face_count,
+        )
         || input.exact_binary64_affine_bits != input.world_transforms.map(binary64_affine_bits)
     {
         return false;
@@ -281,6 +384,32 @@ fn input_matches_whole_exact_parent(
         && input.angle_degrees.to_bits() == exact_hinge.angle_magnitude_bits
 }
 
+fn excluded_face_indexes_are_complete(
+    excluded_face_indexes: &[usize],
+    selected_face_indexes: [usize; PAIR_FACE_COUNT],
+    full_face_count: usize,
+) -> bool {
+    if selected_face_indexes[0] == selected_face_indexes[1]
+        || selected_face_indexes
+            .iter()
+            .any(|index| *index >= full_face_count)
+        || excluded_face_indexes.len() != full_face_count.saturating_sub(PAIR_FACE_COUNT)
+    {
+        return false;
+    }
+    let mut excluded_slot = 0;
+    for face_index in 0..full_face_count {
+        if selected_face_indexes.contains(&face_index) {
+            continue;
+        }
+        if excluded_face_indexes.get(excluded_slot) != Some(&face_index) {
+            return false;
+        }
+        excluded_slot += 1;
+    }
+    excluded_slot == excluded_face_indexes.len()
+}
+
 fn binary64_affine_bits(transform: RigidTransform) -> [[u64; 4]; 3] {
     let rows = transform.rotation_rows();
     let translation = transform.translation();
@@ -316,12 +445,38 @@ impl ProjectedPairAuthorityV1<'_, '_> {
         self.excluded_face_indexes.clear();
     }
 
+    pub(super) fn remove_last_excluded_face_for_test(&mut self) {
+        self.excluded_face_indexes.pop();
+    }
+
+    pub(super) fn duplicate_first_excluded_face_for_test(&mut self) {
+        if let Some(first) = self.excluded_face_indexes.first().copied() {
+            self.excluded_face_indexes.push(first);
+        }
+    }
+
+    pub(super) fn reverse_excluded_faces_for_test(&mut self) {
+        self.excluded_face_indexes.reverse();
+    }
+
+    pub(super) fn append_selected_face_to_excluded_for_test(&mut self) {
+        self.excluded_face_indexes.push(self.face_indexes[0]);
+    }
+
+    pub(super) fn append_out_of_range_excluded_face_for_test(&mut self) {
+        self.excluded_face_indexes.push(self.full_face_count);
+    }
+
     pub(super) fn replace_first_face_with_excluded_for_test(&mut self) {
         self.face_indexes[0] = self
             .excluded_face_indexes
             .first()
             .copied()
             .unwrap_or(usize::MAX);
+    }
+
+    pub(super) fn swap_selected_faces_for_test(&mut self) {
+        self.face_indexes.swap(0, 1);
     }
 
     pub(super) fn invalidate_hinge_index_for_test(&mut self) {
@@ -338,6 +493,10 @@ impl ProjectedPairAuthorityV1<'_, '_> {
 
     pub(super) fn increment_full_hinge_count_for_test(&mut self) {
         self.full_hinge_count = self.full_hinge_count.saturating_add(1);
+    }
+
+    pub(super) fn increment_excluded_binding_work_for_test(&mut self) {
+        self.excluded_face_index_bindings = self.excluded_face_index_bindings.saturating_add(1);
     }
 
     pub(super) fn increment_angle_bits_for_test(&mut self) {

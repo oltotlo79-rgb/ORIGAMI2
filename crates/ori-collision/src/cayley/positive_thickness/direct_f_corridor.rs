@@ -826,15 +826,22 @@ fn calculate_direct_f_finite_hinge_corridor_v1<
     }
 
     charge_fixed_work(work, limits)?;
-    let left_face_index = prerequisite.left_face_index;
-    let right_face_index = prerequisite.right_face_index;
-    let hinge_index = prerequisite.hinge_index;
-    if exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
+    let Some(pair_scope) = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    ) else {
+        return Ok(DirectFFiniteHingeCorridorResult::Unresolved);
+    };
+    let [left_face_index, right_face_index] = pair_scope.face_indexes();
+    let hinge_index = pair_scope.hinge_index();
+    if exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
         || left_face_index == right_face_index
-        || left_face_index >= FACE_COUNT
-        || right_face_index >= FACE_COUNT
-        || hinge_index >= HINGE_COUNT
+        || left_face_index >= exact.faces.len()
+        || right_face_index >= exact.faces.len()
+        || hinge_index >= exact.hinges.len()
     {
         return Ok(DirectFFiniteHingeCorridorResult::Unresolved);
     }
@@ -852,7 +859,7 @@ fn calculate_direct_f_finite_hinge_corridor_v1<
     let first_face = reconstruct_direct_f_face(
         exact,
         bound,
-        0,
+        left_face_index,
         &sealed_face_transforms[0],
         &half_thickness,
         local_meter,
@@ -860,16 +867,12 @@ fn calculate_direct_f_finite_hinge_corridor_v1<
     let second_face = reconstruct_direct_f_face(
         exact,
         bound,
-        1,
+        right_face_index,
         &sealed_face_transforms[1],
         &half_thickness,
         local_meter,
     )?;
-    let (left_face, right_face) = if left_face_index == 0 {
-        (&first_face, &second_face)
-    } else {
-        (&second_face, &first_face)
-    };
+    let (left_face, right_face) = (&first_face, &second_face);
     if left_face.face != exact.faces[left_face_index].face
         || right_face.face != exact.faces[right_face_index].face
     {
@@ -1063,13 +1066,12 @@ fn reconstruct_direct_f_hinge_axis(
     if native_hinge.edge() != exact_hinge.edge {
         return Ok(None);
     }
-    let parent_face_index = exact
-        .faces
+    let parent_pair_slot = sealed_face_transforms
         .iter()
-        .position(|face| face.face == exact_hinge.parent)
+        .position(|transform| transform.face == exact_hinge.parent)
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let expected_parent = sealed_face_transforms
-        .get(parent_face_index)
+        .get(parent_pair_slot)
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let hinge_parent_native = bound
         .pose()
@@ -1087,7 +1089,7 @@ fn reconstruct_direct_f_hinge_axis(
     let rest_start = lift_point3(native_hinge.start(), meter)?;
     let rest_end = lift_point3(native_hinge.end(), meter)?;
     let parent_transform = lifted_face_transforms
-        .get(parent_face_index)
+        .get(parent_pair_slot)
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let axis_start = apply_exact_transform(parent_transform, &rest_start, meter)?;
     let axis_end = apply_exact_transform(parent_transform, &rest_end, meter)?;
@@ -1550,9 +1552,21 @@ pub(super) fn revalidate_direct_f_finite_hinge_corridor_v1<
     {
         return None;
     }
-    for (face_index, exact_face) in exact.faces.iter().enumerate() {
+    let pair_scope = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    )?;
+    if exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+    {
+        return None;
+    }
+    for (pair_slot, face_index) in pair_scope.face_indexes().into_iter().enumerate() {
+        let exact_face = exact.faces.get(face_index)?;
         if capture_face_transform_bits(bound, exact_face.face)?
-            != capability.binary64_face_transforms[face_index]
+            != capability.binary64_face_transforms[pair_slot]
         {
             return None;
         }
@@ -1562,12 +1576,12 @@ pub(super) fn revalidate_direct_f_finite_hinge_corridor_v1<
         exact_hinge.parent,
         bound.pose().hinge_parent_transform(exact_hinge.edge)?,
     );
-    let parent_face_index = exact
-        .faces
+    let parent_pair_slot = capability
+        .binary64_face_transforms
         .iter()
-        .position(|face| face.face == exact_hinge.parent)?;
+        .position(|transform| transform.face == exact_hinge.parent)?;
     if current_hinge_parent != capability.hinge_parent_transform
-        || current_hinge_parent != capability.binary64_face_transforms[parent_face_index]
+        || current_hinge_parent != capability.binary64_face_transforms[parent_pair_slot]
     {
         return None;
     }

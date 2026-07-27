@@ -648,20 +648,29 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
     let Some(fixed_face) = exact.fixed_face else {
         return Ok(SharedHingeNativeExactTopologyMarginResultV1::Unresolved);
     };
-    let Some(exact_hinge) = exact.hinges.first() else {
+    let Some(pair_scope) = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    ) else {
         return Ok(SharedHingeNativeExactTopologyMarginResultV1::Unresolved);
     };
-    let Some(native_hinge) = bound.model().hinges().first() else {
+    let [left_face_index, right_face_index] = pair_scope.face_indexes();
+    let Some(exact_hinge) = exact.hinges.get(pair_scope.hinge_index()) else {
+        return Ok(SharedHingeNativeExactTopologyMarginResultV1::Unresolved);
+    };
+    let Some(native_hinge) = bound.model().hinges().get(pair_scope.hinge_index()) else {
         return Ok(SharedHingeNativeExactTopologyMarginResultV1::Unresolved);
     };
     let native_angles = bound.pose().hinge_angles();
-    let Some(native_angle) = native_angles.first().copied() else {
+    let Some(native_angle) = native_angles.get(pair_scope.hinge_index()).copied() else {
         return Ok(SharedHingeNativeExactTopologyMarginResultV1::Unresolved);
     };
-    if exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
-        || bound.model().face_ids().len() != FACE_COUNT
-        || native_angles.len() != HINGE_COUNT
+    if exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+        || bound.model().face_ids().len() != pair_scope.full_face_count()
+        || native_angles.len() != pair_scope.full_hinge_count()
         || bound.pose().fixed_face() != Some(fixed_face)
         || native_hinge.edge() != exact_hinge.edge
         || native_angle.edge() != exact_hinge.edge
@@ -689,7 +698,7 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
             exact,
             bound,
             exact_hinge,
-            0,
+            left_face_index,
             &direct_transforms[0],
             &half_thickness,
             meter,
@@ -698,16 +707,16 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
             exact,
             bound,
             exact_hinge,
-            1,
+            right_face_index,
             &direct_transforms[1],
             &half_thickness,
             meter,
         )?,
     ];
-    if faces[0].identity.face != exact.faces[0].face
-        || faces[1].identity.face != exact.faces[1].face
-        || faces[prerequisite.left_face_index].identity.face != native_hinge.left_face()
-        || faces[prerequisite.right_face_index].identity.face != native_hinge.right_face()
+    if faces[0].identity.face != exact.faces[left_face_index].face
+        || faces[1].identity.face != exact.faces[right_face_index].face
+        || faces[0].identity.face != native_hinge.left_face()
+        || faces[1].identity.face != native_hinge.right_face()
         || meter.compare_rational(
             &faces[0].source_halfspace_support,
             &BigRational::zero(),
@@ -848,10 +857,9 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
     let exact_axis_start = clone_point(&exact_endpoints[0], meter)?;
     let exact_axis = exact_between(&exact_endpoints[0], &exact_endpoints[1], meter)?;
     let exact_length_squared = exact_dot(&exact_axis, &exact_axis, meter)?;
-    let parent_face_index = exact
-        .faces
+    let parent_face_index = faces
         .iter()
-        .position(|face| face.face == exact_hinge.parent)
+        .position(|face| face.identity.face == exact_hinge.parent)
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let parent_start_index = faces[parent_face_index]
         .identity
@@ -895,7 +903,6 @@ fn calculate_shared_hinge_native_exact_topology_margin_v1<'prerequisite, 'ef, 'e
         &direct_axis,
         &direct_length_squared,
         &faces,
-        prerequisite,
         &half_thickness,
         &point_margin,
         &normal_margin,
@@ -1877,7 +1884,6 @@ fn scan_corridor_component_errors(
     direct_axis: &ExactVector3,
     direct_length_squared: &BigRational,
     faces: &[ReconstructedFaceTopology; FACE_COUNT],
-    prerequisite: &AuthenticatedSingleTriangularHingePrerequisitesV1<'_, '_>,
     half_thickness: &BigRational,
     point_margin: &BigRational,
     normal_margin: &BigRational,
@@ -1886,10 +1892,10 @@ fn scan_corridor_component_errors(
     meter: &mut WorkMeter<'_>,
     violations: &mut ViolationAccumulator,
 ) -> Result<ScannedCorridorComponentsV1, CayleyError> {
-    let exact_left = &faces[prerequisite.left_face_index].exact_normal;
-    let exact_right = &faces[prerequisite.right_face_index].exact_normal;
-    let direct_left = &faces[prerequisite.left_face_index].direct_normal;
-    let direct_right = &faces[prerequisite.right_face_index].direct_normal;
+    let exact_left = &faces[0].exact_normal;
+    let exact_right = &faces[1].exact_normal;
+    let direct_left = &faces[0].direct_normal;
+    let direct_right = &faces[1].direct_normal;
     let exact_normal_dot = exact_dot(exact_left, exact_right, meter)?;
     let direct_normal_dot = exact_dot(direct_left, direct_right, meter)?;
     let one = BigRational::one();
@@ -2413,29 +2419,36 @@ pub(super) fn revalidate_shared_hinge_native_exact_topology_margin_v1<
         'pose,
     >,
 > {
-    let exact_hinge = exact.hinges.first()?;
-    let native_hinge = bound.model().hinges().first()?;
+    let pair_scope = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    )?;
+    let [left_face_index, right_face_index] = pair_scope.face_indexes();
+    let exact_hinge = exact.hinges.get(pair_scope.hinge_index())?;
+    let native_hinge = bound.model().hinges().get(pair_scope.hinge_index())?;
     let native_angles = bound.pose().hinge_angles();
-    let native_angle = native_angles.first().copied()?;
+    let native_angle = native_angles.get(pair_scope.hinge_index()).copied()?;
     let live_face_topology = [
         live_face_topology(
             exact,
             bound,
-            0,
+            left_face_index,
             exact_hinge.edge,
             exact_hinge.endpoint_vertices,
         )?,
         live_face_topology(
             exact,
             bound,
-            1,
+            right_face_index,
             exact_hinge.edge,
             exact_hinge.endpoint_vertices,
         )?,
     ];
     let live_face_transforms = [
-        capture_face_transform(bound, exact.faces.first()?.face)?,
-        capture_face_transform(bound, exact.faces.get(1)?.face)?,
+        capture_face_transform(bound, exact.faces.get(left_face_index)?.face)?,
+        capture_face_transform(bound, exact.faces.get(right_face_index)?.face)?,
     ];
     let live_hinge_parent_transform =
         capture_hinge_parent_transform(bound, exact_hinge.edge, exact_hinge.parent)?;
@@ -2450,9 +2463,9 @@ pub(super) fn revalidate_shared_hinge_native_exact_topology_margin_v1<
         || !capability.bound.pose().same_instance(bound.pose())
         || !exact.is_for(bound)
         || exact.version != RATIONAL_CAYLEY_TREE_POSE_V1
-        || exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
-        || native_angles.len() != HINGE_COUNT
+        || exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+        || native_angles.len() != pair_scope.full_hinge_count()
         || exact.fixed_face != Some(capability.fixed_face)
         || bound.pose().fixed_face() != Some(capability.fixed_face)
         || capability.face_topology != live_face_topology

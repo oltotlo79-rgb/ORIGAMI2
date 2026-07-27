@@ -440,15 +440,22 @@ fn calculate_exact_e_finite_hinge_corridor_v1<'prerequisite, 'ef, 'exact, 'pose>
     }
 
     charge_fixed_work(work, limits)?;
-    let left_face_index = prerequisite.left_face_index;
-    let right_face_index = prerequisite.right_face_index;
-    let hinge_index = prerequisite.hinge_index;
+    let Some(pair_scope) = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    ) else {
+        return Ok(ExactEFiniteHingeCorridorResult::Unresolved);
+    };
+    let [left_face_index, right_face_index] = pair_scope.face_indexes();
+    let hinge_index = pair_scope.hinge_index();
     if left_face_index == right_face_index
-        || exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
-        || left_face_index >= FACE_COUNT
-        || right_face_index >= FACE_COUNT
-        || hinge_index >= HINGE_COUNT
+        || exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+        || left_face_index >= exact.faces.len()
+        || right_face_index >= exact.faces.len()
+        || hinge_index >= exact.hinges.len()
     {
         return Ok(ExactEFiniteHingeCorridorResult::Unresolved);
     }
@@ -956,6 +963,20 @@ pub(super) fn revalidate_exact_e_finite_hinge_corridor_v1<
             paper_thickness_mm,
         )
         .is_none()
+    {
+        return None;
+    }
+    let pair_scope = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    )?;
+    if capability.left_face_index != pair_scope.face_indexes()[0]
+        || capability.right_face_index != pair_scope.face_indexes()[1]
+        || capability.hinge_index != pair_scope.hinge_index()
+        || exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
     {
         return None;
     }

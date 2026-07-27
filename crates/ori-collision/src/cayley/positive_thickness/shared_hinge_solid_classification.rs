@@ -1104,7 +1104,17 @@ fn calculate_shared_hinge_solid_classification_v1<
         ));
     }
 
-    let face_count = exact.faces.len();
+    let Some(pair_scope) = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    ) else {
+        return Ok(SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
+            SharedHingeEvidenceUnavailableReasonV1::AuthorityOrSealMismatch,
+        ));
+    };
+    let face_count = FACE_COUNT;
     let expected_pairs = face_count
         .checked_mul(face_count.saturating_sub(1))
         .and_then(|twice| twice.checked_div(2))
@@ -1112,13 +1122,15 @@ fn calculate_shared_hinge_solid_classification_v1<
             stage: STAGE,
             resource: "shared_hinge_classification_pair_count",
         })?;
-    if face_count != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
+    if exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
         || expected_pairs != UNORDERED_FACE_PAIR_COUNT
-        || prerequisite.left_face_index == prerequisite.right_face_index
-        || prerequisite.left_face_index >= face_count
-        || prerequisite.right_face_index >= face_count
-        || prerequisite.hinge_index >= HINGE_COUNT
+        || pair_scope.face_indexes()[0] == pair_scope.face_indexes()[1]
+        || pair_scope
+            .face_indexes()
+            .iter()
+            .any(|index| *index >= exact.faces.len())
+        || pair_scope.hinge_index() >= exact.hinges.len()
     {
         return Ok(SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
             SharedHingeEvidenceUnavailableReasonV1::IncompletePairCoverage,
@@ -1203,19 +1215,19 @@ fn calculate_shared_hinge_solid_classification_v1<
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let exact_hinge = exact
         .hinges
-        .first()
+        .get(pair_scope.hinge_index())
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let native_hinge = bound
         .model()
         .hinges()
-        .first()
+        .get(pair_scope.hinge_index())
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let native_angles = bound.pose().hinge_angles();
     let native_angle = native_angles
-        .first()
+        .get(pair_scope.hinge_index())
         .copied()
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
-    if native_angles.len() != HINGE_COUNT
+    if native_angles.len() != pair_scope.full_hinge_count()
         || bound.pose().fixed_face() != Some(fixed_face)
         || exact_hinge.edge != native_hinge.edge()
         || native_angle.edge() != exact_hinge.edge
@@ -1226,6 +1238,11 @@ fn calculate_shared_hinge_solid_classification_v1<
         ));
     }
 
+    let Some(face_ids) = pair_scope.face_ids(exact) else {
+        return Ok(SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
+            SharedHingeEvidenceUnavailableReasonV1::AuthorityOrSealMismatch,
+        ));
+    };
     let binary64_face_transforms = direct_f_corridor.binary64_face_transforms;
     let hinge_parent_transform = direct_f_corridor.hinge_parent_transform_bits();
     let prior_work = PriorWorkSealV1 {
@@ -1244,7 +1261,7 @@ fn calculate_shared_hinge_solid_classification_v1<
             bound,
             paper_thickness_bits: paper_thickness_mm.to_bits(),
             fixed_face,
-            face_ids: [exact.faces[0].face, exact.faces[1].face],
+            face_ids,
             hinge_edge: exact_hinge.edge,
             hinge_parent: exact_hinge.parent,
             hinge_child: exact_hinge.child,
@@ -1322,12 +1339,24 @@ fn calculate_independent_shared_hinge_solid_classification_v1<
             SharedHingeEvidenceUnavailableReasonV1::AuthorityOrSealMismatch,
         ));
     }
-    if exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
-        || prerequisite.left_face_index == prerequisite.right_face_index
-        || prerequisite.left_face_index >= FACE_COUNT
-        || prerequisite.right_face_index >= FACE_COUNT
-        || prerequisite.hinge_index >= HINGE_COUNT
+    let Some(pair_scope) = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    ) else {
+        return Ok(SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
+            SharedHingeEvidenceUnavailableReasonV1::AuthorityOrSealMismatch,
+        ));
+    };
+    if exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+        || pair_scope.face_indexes()[0] == pair_scope.face_indexes()[1]
+        || pair_scope
+            .face_indexes()
+            .iter()
+            .any(|index| *index >= exact.faces.len())
+        || pair_scope.hinge_index() >= exact.hinges.len()
     {
         return Ok(SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
             SharedHingeEvidenceUnavailableReasonV1::IncompletePairCoverage,
@@ -1418,19 +1447,19 @@ fn calculate_independent_shared_hinge_solid_classification_v1<
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let exact_hinge = exact
         .hinges
-        .first()
+        .get(pair_scope.hinge_index())
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let native_hinge = bound
         .model()
         .hinges()
-        .first()
+        .get(pair_scope.hinge_index())
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
     let native_angles = bound.pose().hinge_angles();
     let native_angle = native_angles
-        .first()
+        .get(pair_scope.hinge_index())
         .copied()
         .ok_or(CayleyError::InvariantFailure { stage: STAGE })?;
-    if native_angles.len() != HINGE_COUNT
+    if native_angles.len() != pair_scope.full_hinge_count()
         || bound.pose().fixed_face() != Some(fixed_face)
         || exact_hinge.edge != native_hinge.edge()
         || native_angle.edge() != exact_hinge.edge
@@ -1441,6 +1470,11 @@ fn calculate_independent_shared_hinge_solid_classification_v1<
         ));
     }
 
+    let Some(face_ids) = pair_scope.face_ids(exact) else {
+        return Ok(SharedHingeSolidClassificationResultV1::EvidenceUnavailable(
+            SharedHingeEvidenceUnavailableReasonV1::AuthorityOrSealMismatch,
+        ));
+    };
     Ok(
         SharedHingeSolidClassificationResultV1::IndependentlyClassified(Box::new(
             IndependentSharedHingeSolidClassificationRecordV1 {
@@ -1451,7 +1485,7 @@ fn calculate_independent_shared_hinge_solid_classification_v1<
                 bound,
                 paper_thickness_bits: paper_thickness_mm.to_bits(),
                 fixed_face,
-                face_ids: [exact.faces[0].face, exact.faces[1].face],
+                face_ids,
                 hinge_edge: exact_hinge.edge,
                 hinge_parent: exact_hinge.parent,
                 hinge_child: exact_hinge.child,
@@ -2010,10 +2044,17 @@ pub(super) fn revalidate_shared_hinge_solid_classification_v1<
         'pose,
     >,
 > {
-    let exact_hinge = exact.hinges.first()?;
-    let native_hinge = bound.model().hinges().first()?;
+    let pair_scope = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    )?;
+    let exact_hinge = exact.hinges.get(pair_scope.hinge_index())?;
+    let native_hinge = bound.model().hinges().get(pair_scope.hinge_index())?;
     let native_angles = bound.pose().hinge_angles();
-    let native_angle = native_angles.first().copied()?;
+    let native_angle = native_angles.get(pair_scope.hinge_index()).copied()?;
+    let face_ids = pair_scope.face_ids(exact)?;
     if !positive_finite_binary64(paper_thickness_mm)
         || record.sealed_work.as_ref() != Some(&record.work)
         || record.sealed_snapshot.as_ref() != Some(&record.snapshot)
@@ -2028,12 +2069,12 @@ pub(super) fn revalidate_shared_hinge_solid_classification_v1<
         || !record.bound.pose().same_instance(bound.pose())
         || !exact.is_for(bound)
         || exact.version != RATIONAL_CAYLEY_TREE_POSE_V1
-        || exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
-        || native_angles.len() != HINGE_COUNT
+        || exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+        || native_angles.len() != pair_scope.full_hinge_count()
         || exact.fixed_face != Some(record.fixed_face)
         || bound.pose().fixed_face() != Some(record.fixed_face)
-        || record.face_ids != [exact.faces[0].face, exact.faces[1].face]
+        || record.face_ids != face_ids
         || record.hinge_edge != exact_hinge.edge
         || record.hinge_edge != native_hinge.edge()
         || record.hinge_parent != exact_hinge.parent
@@ -2181,10 +2222,17 @@ pub(super) fn revalidate_independent_shared_hinge_solid_classification_v1<
     >,
 > {
     let sealed_geometry = record.sealed_geometry.as_ref()?;
-    let exact_hinge = exact.hinges.first()?;
-    let native_hinge = bound.model().hinges().first()?;
+    let pair_scope = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    )?;
+    let exact_hinge = exact.hinges.get(pair_scope.hinge_index())?;
+    let native_hinge = bound.model().hinges().get(pair_scope.hinge_index())?;
     let native_angles = bound.pose().hinge_angles();
-    let native_angle = native_angles.first().copied()?;
+    let native_angle = native_angles.get(pair_scope.hinge_index()).copied()?;
+    let face_ids = pair_scope.face_ids(exact)?;
     let live_snapshot = independent_classification_snapshot(
         record.exact_report,
         record.direct_report,
@@ -2208,12 +2256,12 @@ pub(super) fn revalidate_independent_shared_hinge_solid_classification_v1<
         || !record.bound.pose().same_instance(bound.pose())
         || !exact.is_for(bound)
         || exact.version != RATIONAL_CAYLEY_TREE_POSE_V1
-        || exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
-        || native_angles.len() != HINGE_COUNT
+        || exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+        || native_angles.len() != pair_scope.full_hinge_count()
         || exact.fixed_face != Some(record.fixed_face)
         || bound.pose().fixed_face() != Some(record.fixed_face)
-        || record.face_ids != [exact.faces[0].face, exact.faces[1].face]
+        || record.face_ids != face_ids
         || record.hinge_edge != exact_hinge.edge
         || record.hinge_edge != native_hinge.edge()
         || record.hinge_parent != exact_hinge.parent

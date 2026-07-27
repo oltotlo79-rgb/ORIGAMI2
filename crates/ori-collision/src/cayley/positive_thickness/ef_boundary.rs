@@ -353,15 +353,22 @@ fn calculate_axis_aligned_ef_boundary_v1<'prerequisite, 'exact, 'pose>(
         return Ok(None);
     }
 
-    let left_face_index = prerequisite.left_face_index;
-    let right_face_index = prerequisite.right_face_index;
-    let hinge_index = prerequisite.hinge_index;
-    if exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
+    let Some(pair_scope) = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    ) else {
+        return Ok(None);
+    };
+    let [left_face_index, right_face_index] = pair_scope.face_indexes();
+    let hinge_index = pair_scope.hinge_index();
+    if exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
         || left_face_index == right_face_index
-        || left_face_index >= FACE_COUNT
-        || right_face_index >= FACE_COUNT
-        || hinge_index >= HINGE_COUNT
+        || left_face_index >= exact.faces.len()
+        || right_face_index >= exact.faces.len()
+        || hinge_index >= exact.hinges.len()
         || exact.faces.iter().any(|face| face.boundary.len() != 3)
     {
         return Ok(None);
@@ -369,9 +376,9 @@ fn calculate_axis_aligned_ef_boundary_v1<'prerequisite, 'exact, 'pose>(
     charge_fixed_work(work, limits)?;
 
     let binary64_face_transforms = [
-        capture_binary64_transform_bits(bound, exact.faces[0].face)
+        capture_binary64_transform_bits(bound, exact.faces[left_face_index].face)
             .ok_or(CayleyError::InvariantFailure { stage: STAGE })?,
-        capture_binary64_transform_bits(bound, exact.faces[1].face)
+        capture_binary64_transform_bits(bound, exact.faces[right_face_index].face)
             .ok_or(CayleyError::InvariantFailure { stage: STAGE })?,
     ];
 
@@ -386,7 +393,7 @@ fn calculate_axis_aligned_ef_boundary_v1<'prerequisite, 'exact, 'pose>(
         calculate_face_bounds(
             exact,
             bound,
-            0,
+            left_face_index,
             &binary64_face_transforms[0],
             &half_thickness,
             meter,
@@ -394,7 +401,7 @@ fn calculate_axis_aligned_ef_boundary_v1<'prerequisite, 'exact, 'pose>(
         calculate_face_bounds(
             exact,
             bound,
-            1,
+            right_face_index,
             &binary64_face_transforms[1],
             &half_thickness,
             meter,
@@ -724,16 +731,26 @@ pub(super) fn revalidate_axis_aligned_ef_boundary_v1<'capability, 'prerequisite,
             paper_thickness_mm,
         )
         .is_none()
-        || capability.faces.len() != exact.faces.len()
     {
         return None;
     }
-    for face_index in 0..FACE_COUNT {
+    let pair_scope = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    )?;
+    if exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+    {
+        return None;
+    }
+    for (pair_slot, face_index) in pair_scope.face_indexes().into_iter().enumerate() {
         let exact_face = exact.faces.get(face_index)?;
-        if capability.faces[face_index].face != exact_face.face
-            || capability.binary64_face_transforms[face_index].face != exact_face.face
+        if capability.faces[pair_slot].face != exact_face.face
+            || capability.binary64_face_transforms[pair_slot].face != exact_face.face
             || capture_binary64_transform_bits(bound, exact_face.face)?
-                != capability.binary64_face_transforms[face_index]
+                != capability.binary64_face_transforms[pair_slot]
         {
             return None;
         }

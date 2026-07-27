@@ -511,16 +511,24 @@ fn calculate_shared_hinge_corridor_admission_v1<
     let Some(fixed_face) = exact.fixed_face else {
         return Ok(SharedHingeCorridorAdmissionResultV1::Unresolved);
     };
-    let Some(exact_hinge) = exact.hinges.first() else {
+    let Some(pair_scope) = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    ) else {
+        return Ok(SharedHingeCorridorAdmissionResultV1::Unresolved);
+    };
+    let Some(exact_hinge) = exact.hinges.get(pair_scope.hinge_index()) else {
         return Ok(SharedHingeCorridorAdmissionResultV1::Unresolved);
     };
     let native_angles = bound.pose().hinge_angles();
-    let Some(native_angle) = native_angles.first().copied() else {
+    let Some(native_angle) = native_angles.get(pair_scope.hinge_index()).copied() else {
         return Ok(SharedHingeCorridorAdmissionResultV1::Unresolved);
     };
-    if exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
-        || native_angles.len() != HINGE_COUNT
+    if exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+        || native_angles.len() != pair_scope.full_hinge_count()
         || bound.pose().fixed_face() != Some(fixed_face)
         || native_angle.edge() != exact_hinge.edge
         || native_angle.angle_degrees().to_bits() != exact_hinge.angle_magnitude_bits
@@ -543,7 +551,9 @@ fn calculate_shared_hinge_corridor_admission_v1<
 
     let binary64_face_transforms = direct_f_corridor.binary64_face_transforms;
     let hinge_parent_transform = direct_f_corridor.hinge_parent_transform_bits();
-    let face_ids = [exact.faces[0].face, exact.faces[1].face];
+    let Some(face_ids) = pair_scope.face_ids(exact) else {
+        return Ok(SharedHingeCorridorAdmissionResultV1::Unresolved);
+    };
     Ok(SharedHingeCorridorAdmissionResultV1::Admitted(Box::new(
         SharedHingeCorridorAdmissionCapabilityV1 {
             prerequisite,
@@ -792,9 +802,16 @@ pub(super) fn revalidate_shared_hinge_corridor_admission_v1<
 > {
     let exact_boundary = exact_e_corridor.corridor_boundary()?;
     let direct_boundary = direct_f_corridor.corridor_boundary();
-    let exact_hinge = exact.hinges.first()?;
+    let pair_scope = revalidate_projected_pair_authority_v1(
+        &prerequisite.pair_authority,
+        exact,
+        bound,
+        paper_thickness_mm,
+    )?;
+    let exact_hinge = exact.hinges.get(pair_scope.hinge_index())?;
     let native_angles = bound.pose().hinge_angles();
-    let native_angle = native_angles.first().copied()?;
+    let native_angle = native_angles.get(pair_scope.hinge_index()).copied()?;
+    let face_ids = pair_scope.face_ids(exact)?;
     if !positive_finite_binary64(paper_thickness_mm)
         || capability.sealed_work().is_none()
         || !std::ptr::eq(capability.prerequisite, prerequisite)
@@ -806,12 +823,12 @@ pub(super) fn revalidate_shared_hinge_corridor_admission_v1<
         || capability.bound.model() != bound.model()
         || !capability.bound.pose().same_instance(bound.pose())
         || !exact.is_for(bound)
-        || exact.faces.len() != FACE_COUNT
-        || exact.hinges.len() != HINGE_COUNT
-        || native_angles.len() != HINGE_COUNT
+        || exact.faces.len() != pair_scope.full_face_count()
+        || exact.hinges.len() != pair_scope.full_hinge_count()
+        || native_angles.len() != pair_scope.full_hinge_count()
         || exact.fixed_face != Some(capability.fixed_face)
         || bound.pose().fixed_face() != Some(capability.fixed_face)
-        || capability.face_ids != [exact.faces[0].face, exact.faces[1].face]
+        || capability.face_ids != face_ids
         || capability.hinge_edge != exact_hinge.edge
         || capability.hinge_parent != exact_hinge.parent
         || capability.hinge_child != exact_hinge.child

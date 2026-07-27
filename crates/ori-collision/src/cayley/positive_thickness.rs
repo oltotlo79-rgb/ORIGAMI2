@@ -82,6 +82,7 @@ mod ef_boundary;
 mod exact_e_corridor;
 mod exact_prism;
 mod parallel_scan;
+mod projected_pair_authority;
 mod shared_hinge_corridor_admission;
 mod shared_hinge_solid_classification;
 mod shared_hinge_topology_margin;
@@ -92,6 +93,10 @@ pub(crate) use parallel_scan::{
     diagnose_bound_positive_thickness_prism_pairs_v1,
     positive_thickness_exact_pair_cache_work_limits_v1,
     prepare_positive_thickness_exact_pair_cache_session_v1,
+};
+use projected_pair_authority::{
+    ProjectedPairAuthorityV1, prepare_projected_pair_authority_v1,
+    revalidate_projected_pair_authority_v1,
 };
 
 const STAGE: CayleyStage = CayleyStage::Containment;
@@ -701,6 +706,7 @@ enum SingleTriangularHingePrerequisiteError {
 #[derive(Debug)]
 struct AuthenticatedSingleTriangularHingePrerequisitesV1<'exact, 'pose> {
     exact: &'exact RationalCayleyTreePose<'pose>,
+    pair_authority: Box<ProjectedPairAuthorityV1<'exact, 'pose>>,
     paper_thickness_bits: u64,
     left_face_index: usize,
     right_face_index: usize,
@@ -899,6 +905,22 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
     {
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     }
+    let Some(pair_authority) =
+        prepare_projected_pair_authority_v1(exact, bound, target_edge, paper_thickness_mm)
+    else {
+        return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
+    };
+    let Some(pair_scope) =
+        revalidate_projected_pair_authority_v1(&pair_authority, exact, bound, paper_thickness_mm)
+    else {
+        return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
+    };
+    if pair_scope.face_indexes() != [indexes.left_face_index, indexes.right_face_index]
+        || pair_scope.hinge_index() != indexes.hinge_index
+        || pair_scope.edge() != target_edge
+    {
+        return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
+    }
     validate_exact_pose_rational_inputs(exact, indexes, limits, work, meter)?;
 
     let rest_start = exact_point_at_stage(point3_array(source_hinge.start()), meter)?;
@@ -1014,6 +1036,7 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
     Ok(SingleTriangularHingePrerequisiteResult::Authenticated(
         AuthenticatedSingleTriangularHingePrerequisitesV1 {
             exact,
+            pair_authority: Box::new(pair_authority),
             paper_thickness_bits: paper_thickness_mm.to_bits(),
             left_face_index: indexes.left_face_index,
             right_face_index: indexes.right_face_index,
@@ -1038,11 +1061,20 @@ fn revalidate_single_triangular_hinge_prerequisites_v1<'capability, 'exact, 'pos
     let right = exact.faces.get(capability.right_face_index)?;
     let exact_hinge = exact.hinges.get(capability.hinge_index)?;
     let source_hinge = exact.bound.model().hinges().get(capability.hinge_index)?;
+    let pair_scope = revalidate_projected_pair_authority_v1(
+        &capability.pair_authority,
+        exact,
+        exact.bound,
+        paper_thickness_mm,
+    )?;
     if exact.version != RATIONAL_CAYLEY_TREE_POSE_V1
         || exact_hinge.edge != source_hinge.edge()
         || left.face != source_hinge.left_face()
         || right.face != source_hinge.right_face()
         || exact_hinge.endpoint_vertices[0] == exact_hinge.endpoint_vertices[1]
+        || pair_scope.face_indexes() != [capability.left_face_index, capability.right_face_index]
+        || pair_scope.hinge_index() != capability.hinge_index
+        || pair_scope.edge() != exact_hinge.edge
     {
         return None;
     }
@@ -2611,6 +2643,9 @@ mod tests {
     };
     use super::*;
 
+    #[path = "projected_pair_authority_tests.rs"]
+    mod projected_pair_authority_tests;
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ResultKind {
         Fits,
@@ -3292,26 +3327,39 @@ mod tests {
             .is_none(),
             "equal geometry from another exact object must not pass pointer rebinding"
         );
-        let swapped_face_indexes = AuthenticatedSingleTriangularHingePrerequisitesV1 {
-            exact: &exact,
-            paper_thickness_bits: 0.1_f64.to_bits(),
-            left_face_index: capability.right_face_index,
-            right_face_index: capability.left_face_index,
-            hinge_index: capability.hinge_index,
+        let swapped_analysis = analyze_single_triangular_hinge_prerequisites_v1(
+            &exact,
+            0.1,
+            SingleTriangularHingePrerequisiteLimits::default(),
+        )
+        .unwrap();
+        let SingleTriangularHingePrerequisiteResult::Authenticated(mut swapped_face_indexes) =
+            swapped_analysis.result
+        else {
+            panic!("second 0.1 mm fixture must authenticate");
         };
+        std::mem::swap(
+            &mut swapped_face_indexes.left_face_index,
+            &mut swapped_face_indexes.right_face_index,
+        );
         assert!(revalidate_single_triangular_hinge_prerequisites_v1(
             &swapped_face_indexes,
             &exact,
             0.1,
         )
         .is_none());
-        let out_of_range_hinge = AuthenticatedSingleTriangularHingePrerequisitesV1 {
-            exact: &exact,
-            paper_thickness_bits: 0.1_f64.to_bits(),
-            left_face_index: capability.left_face_index,
-            right_face_index: capability.right_face_index,
-            hinge_index: usize::MAX,
+        let out_of_range_analysis = analyze_single_triangular_hinge_prerequisites_v1(
+            &exact,
+            0.1,
+            SingleTriangularHingePrerequisiteLimits::default(),
+        )
+        .unwrap();
+        let SingleTriangularHingePrerequisiteResult::Authenticated(mut out_of_range_hinge) =
+            out_of_range_analysis.result
+        else {
+            panic!("third 0.1 mm fixture must authenticate");
         };
+        out_of_range_hinge.hinge_index = usize::MAX;
         assert!(
             revalidate_single_triangular_hinge_prerequisites_v1(&out_of_range_hinge, &exact, 0.1,)
                 .is_none()

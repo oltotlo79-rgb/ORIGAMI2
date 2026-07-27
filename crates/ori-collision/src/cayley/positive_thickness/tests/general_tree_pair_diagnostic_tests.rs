@@ -194,11 +194,12 @@ fn general_tree_projection_limits_cover_exact_one_short_hard_cap_and_overflow() 
     let pose = uniform_tree_pose(&model, 0.0, model.face_ids()[0]);
     let bound = model.bind_pose(&pose).expect("bound four-face pose");
     let expected_bindings = 6;
-    let mut exact_limits = ProjectedPairAuthorityLimitsV1::default();
-    exact_limits.max_parent_faces = 4;
-    exact_limits.max_parent_hinges = 3;
-    exact_limits.max_excluded_face_indexes = 2;
-    exact_limits.max_excluded_face_index_bindings = expected_bindings;
+    let exact_limits = ProjectedPairAuthorityLimitsV1 {
+        max_parent_faces: 4,
+        max_parent_hinges: 3,
+        max_excluded_face_indexes: 2,
+        max_excluded_face_index_bindings: expected_bindings,
+    };
     let exact_session =
         prepare_shared_hinge_pair_diagnostic_session_with_limits_v1(bound, 0.1, exact_limits)
             .expect("exact limits")

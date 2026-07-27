@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use num_rational::BigRational;
+use num_traits::Zero;
 use ori_domain::{EdgeId, FaceId};
 use ori_topology::FoldAssignment;
 
@@ -19,6 +20,49 @@ const MAX_EXACT_GENERATOR_WORD_NODES_V1: usize = MAX_EXACT_GENERATOR_WORD_ADJACE
 pub(super) struct CanonicalInfiniteLineV1 {
     direction_bits: [u64; 3],
     exact_moment: [BigRational; 3],
+}
+
+/// Proves that two exact Plücker lines meet at one point and have
+/// perpendicular directions.
+///
+/// With `m = p × d`, the reciprocal product
+/// `d₁·m₂ + d₂·m₁` vanishes exactly iff two nonparallel lines are coplanar.
+/// Nonparallel coplanar lines have one intersection point. All operands are
+/// exact rationals reconstructed from native binary64 geometry.
+pub(super) fn exact_perpendicular_intersection_v1(
+    first: &CanonicalInfiniteLineV1,
+    second: &CanonicalInfiniteLineV1,
+) -> bool {
+    let direction = |bits: [u64; 3]| {
+        let [Some(x), Some(y), Some(z)] =
+            bits.map(|value| BigRational::from_float(f64::from_bits(value)))
+        else {
+            return None;
+        };
+        Some([x, y, z])
+    };
+    let Some(first_direction) = direction(first.direction_bits) else {
+        return false;
+    };
+    let Some(second_direction) = direction(second.direction_bits) else {
+        return false;
+    };
+    let dot = |left: &[BigRational; 3], right: &[BigRational; 3]| {
+        &left[0] * &right[0] + &left[1] * &right[1] + &left[2] * &right[2]
+    };
+    let cross = [
+        &first_direction[1] * &second_direction[2] - &first_direction[2] * &second_direction[1],
+        &first_direction[2] * &second_direction[0] - &first_direction[0] * &second_direction[2],
+        &first_direction[0] * &second_direction[1] - &first_direction[1] * &second_direction[0],
+    ];
+    if !dot(&first_direction, &second_direction).is_zero()
+        || cross.iter().all(|value| value.is_zero())
+    {
+        return false;
+    }
+    let reciprocal =
+        dot(&first_direction, &second.exact_moment) + dot(&second_direction, &first.exact_moment);
+    reciprocal.is_zero()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

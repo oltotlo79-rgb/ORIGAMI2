@@ -85,6 +85,22 @@ jobs:
       - name: Verify lockfile content before tests and release build
         run: node .github/scripts/dependency_policy.mjs
 
+      - name: Verify frozen transcendental dependency features
+        shell: bash
+        run: |
+          set -euo pipefail
+          feature_tree="$(cargo tree --workspace --locked -e features -i libm)"
+          printf '%s\n' "$feature_tree"
+          test "$(printf '%s\n' "$feature_tree" | sed -n '1p')" = "libm v0.2.16"
+          if grep -F 'libm feature "arch"' <<< "$feature_tree"; then
+            exit 1
+          fi
+
+      - name: Verify frozen transcendental golden bits on the release target
+        env:
+          ORI_REQUIRE_SUPPORTED_TRANSCENDENTAL_TARGET: "1"
+        run: cargo test --release -p ori-numeric --locked --lib deterministic_transcendental
+
       - name: Test frontend
         working-directory: apps/desktop
         run: npm test

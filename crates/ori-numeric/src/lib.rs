@@ -7,11 +7,21 @@
 //! interval at the requested binary precision instead of silently rounding to
 //! `f64`. The original expression text is retained for project persistence.
 
+mod deterministic_transcendental;
+
 use num_bigint::{BigInt, BigUint, Sign};
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+
+pub use deterministic_transcendental::{
+    DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1, DeterministicTranscendentalError,
+    deterministic_atan2_v1, deterministic_cos_v1, deterministic_degrees_to_radians_v1,
+    deterministic_hypot_v1, deterministic_polar_endpoint_v2, deterministic_radians_to_degrees_v1,
+    deterministic_sin_cos_degrees_v1, deterministic_sin_cos_v1, deterministic_sin_v1,
+    deterministic_transcendental_model_supported_v1,
+};
 
 pub const MIN_PRECISION_BITS: usize = 32;
 pub const MAX_PRECISION_BITS: usize = 512;

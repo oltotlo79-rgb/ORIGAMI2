@@ -25,6 +25,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: 1.90.0
+      - name: Verify frozen transcendental dependency features
+        shell: bash
+        run: |
+          set -euo pipefail
+          feature_tree="$(cargo tree --workspace --locked -e features -i libm)"
+          printf '%s\n' "$feature_tree"
+          test "$(printf '%s\n' "$feature_tree" | sed -n '1p')" = "libm v0.2.16"
+          if grep -F 'libm feature "arch"' <<< "$feature_tree"; then
+            exit 1
+          fi
+      - name: Verify frozen transcendental golden bits on Linux
+        env:
+          ORI_REQUIRE_SUPPORTED_TRANSCENDENTAL_TARGET: "1"
+        run: cargo test --release -p ori-numeric --locked --lib deterministic_transcendental
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.11.1

@@ -382,6 +382,10 @@ test('release-gating CI uses exact toolchains and digest-verified external tools
   assert.match(workflow, /verify_rustsec_warning_ledger\.mjs "\$audit_report" "\$review_report" > "\$allowed_warnings_file"/u)
   assert.match(workflow, /name: rustsec-warning-review[\s\S]*retention-days: 7/u)
   assert.match(workflow, /cargo audit --db "\$database" --no-fetch --json/u)
+  assert.match(
+    workflow,
+    /dependency-advisory-audit:[\s\S]*?runs-on: ubuntu-latest[\s\S]*?Verify frozen transcendental dependency features[\s\S]*?cargo tree --workspace --locked -e features -i libm[\s\S]*?libm feature "arch"[\s\S]*?Verify frozen transcendental golden bits on Linux[\s\S]*?ORI_REQUIRE_SUPPORTED_TRANSCENDENTAL_TARGET: "1"[\s\S]*?cargo test --release -p ori-numeric --locked --lib deterministic_transcendental/u,
+  )
   assert.doesNotMatch(workflow, /npx (?!--no-install)/u)
   for (const command of workflow.matchAll(/cargo test[^\r\n]*/gu)) {
     assert.match(command[0], /--locked/u)
@@ -391,9 +395,92 @@ test('release-gating CI uses exact toolchains and digest-verified external tools
 test('formal builds cannot resolve undeclared npm or Cargo inputs', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   assert.match(workflow, /npm ci[\s\S]*cargo metadata --locked --no-deps --format-version 1/u)
+  assert.match(
+    workflow,
+    /Freeze Cargo lock resolution[\s\S]*?Verify frozen transcendental dependency features[\s\S]*?cargo tree --workspace --locked -e features -i libm[\s\S]*?libm feature "arch"[\s\S]*?ORI_REQUIRE_SUPPORTED_TRANSCENDENTAL_TARGET: "1"[\s\S]*?cargo test --release -p ori-numeric --locked --lib deterministic_transcendental[\s\S]*?dependency_policy\.mjs/u,
+  )
   assert.equal(workflow.match(/npx --no-install tauri/gu)?.length ?? 0, 2)
   assert.doesNotMatch(workflow, /npx tauri|npm install/u)
   assert.ok(workflow.indexOf('dependency_policy.mjs') < workflow.indexOf('Build Windows portable executable'))
+})
+
+test('production releases gate the frozen transcendental kernel before artifact builds', () => {
+  const workflows = [
+    {
+      buildStep: 'Build Windows portable executable',
+      name: 'release.yml',
+      prerequisite: 'Freeze Cargo lock resolution before release build',
+    },
+    {
+      buildStep: 'Build unsigned Windows NSIS installer',
+      name: 'release-windows.yml',
+      prerequisite: 'Verify lockfile content before tests and release build',
+    },
+  ]
+
+  for (const { buildStep, name, prerequisite } of workflows) {
+    const workflow = readFileSync(
+      join(root, '.github/workflows', name),
+      'utf8',
+    )
+    const prerequisiteIndex = workflow.indexOf(prerequisite)
+    const featureGateIndex = workflow.indexOf(
+      'Verify frozen transcendental dependency features',
+    )
+    const goldenGateIndex = workflow.indexOf(
+      'Verify frozen transcendental golden bits on the release target',
+    )
+    const buildIndex = workflow.indexOf(buildStep)
+
+    assert.notEqual(prerequisiteIndex, -1, `${name}: missing locked prerequisite`)
+    assert.notEqual(featureGateIndex, -1, `${name}: missing feature gate`)
+    assert.notEqual(goldenGateIndex, -1, `${name}: missing golden gate`)
+    assert.notEqual(buildIndex, -1, `${name}: missing artifact build`)
+    assert.equal(
+      workflow.match(/Verify frozen transcendental dependency features/gu)
+        ?.length ?? 0,
+      1,
+      `${name}: feature gate must be unique`,
+    )
+    assert.equal(
+      workflow.match(
+        /Verify frozen transcendental golden bits on the release target/gu,
+      )?.length ?? 0,
+      1,
+      `${name}: golden gate must be unique`,
+    )
+    assert.ok(
+      prerequisiteIndex < featureGateIndex
+        && featureGateIndex < goldenGateIndex
+        && goldenGateIndex < buildIndex,
+      `${name}: locked input, feature, golden, and build order`,
+    )
+
+    const featureGate = workflow.slice(featureGateIndex, goldenGateIndex)
+    assert.match(featureGate, /shell: bash/u, name)
+    assert.match(
+      featureGate,
+      /cargo tree --workspace --locked -e features -i libm/u,
+      name,
+    )
+    assert.match(
+      featureGate,
+      /test "\$\(printf '%s\\n' "\$feature_tree" \| sed -n '1p'\)" = "libm v0\.2\.16"/u,
+      name,
+    )
+    assert.match(
+      featureGate,
+      /grep -F 'libm feature "arch"' <<< "\$feature_tree"/u,
+      name,
+    )
+
+    const goldenGate = workflow.slice(goldenGateIndex, buildIndex)
+    assert.match(
+      goldenGate,
+      /env:\s*\r?\n\s+ORI_REQUIRE_SUPPORTED_TRANSCENDENTAL_TARGET: "1"\s*\r?\n\s+run: cargo test --release -p ori-numeric --locked --lib deterministic_transcendental/u,
+      name,
+    )
+  }
 })
 
 test('all direct and nested action runtimes match the audited Node.js 24 inventory', () => {

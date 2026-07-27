@@ -1,4 +1,5 @@
 * text=auto
+Cargo.lock text eol=lf
 *.rs text eol=lf
 *.ts text eol=lf
 *.tsx text eol=lf

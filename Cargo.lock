@@ -2537,6 +2537,7 @@ dependencies = [
 name = "ori-numeric"
 version = "0.1.0"
 dependencies = [
+ "libm",
  "num-bigint",
  "num-rational",
  "num-traits",

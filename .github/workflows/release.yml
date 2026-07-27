@@ -155,6 +155,20 @@ jobs:
       - name: Freeze Cargo lock resolution before release build
         shell: bash
         run: cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
+      - name: Verify frozen transcendental dependency features
+        shell: bash
+        run: |
+          set -euo pipefail
+          feature_tree="$(cargo tree --workspace --locked -e features -i libm)"
+          printf '%s\n' "$feature_tree"
+          test "$(printf '%s\n' "$feature_tree" | sed -n '1p')" = "libm v0.2.16"
+          if grep -F 'libm feature "arch"' <<< "$feature_tree"; then
+            exit 1
+          fi
+      - name: Verify frozen transcendental golden bits on the release target
+        env:
+          ORI_REQUIRE_SUPPORTED_TRANSCENDENTAL_TARGET: "1"
+        run: cargo test --release -p ori-numeric --locked --lib deterministic_transcendental
       - name: Verify lockfile content before release build
         run: node .github/scripts/dependency_policy.mjs
       - name: Build Windows portable executable

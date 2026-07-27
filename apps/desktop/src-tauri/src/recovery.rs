@@ -21,7 +21,7 @@ use super::{
         FRONTEND_MAX_SAFE_INTEGER_U64, RecoveryPersistenceError, RecoveryProjectLoad,
         clear_recovery_document, inspect_recovery_project, persist_recovery_project,
     },
-    snapshot, validate_loaded_numeric_expression_bindings,
+    snapshot, validate_loaded_numeric_expression_archive,
 };
 
 pub(super) const RECOVERY_SCHEMA_VERSION: u32 = 1;
@@ -499,8 +499,7 @@ impl CachedRecoveryCandidate {
                 recovery_id: RecoveryId::new(),
             },
             RecoveryStartup::Available(candidate)
-                if validate_loaded_numeric_expression_bindings(&candidate.project.document)
-                    .is_ok()
+                if validate_loaded_numeric_expression_archive(&candidate.project).is_ok()
                     && crate::restore_archive_editor(&candidate.project).is_ok() =>
             {
                 Self::Available {

@@ -11,10 +11,16 @@ import {
   type Locale,
 } from '../lib/i18n.ts'
 import {
+  isUnverifiedLegacyV1EdgeGeometryBinding,
+} from '../lib/edgeGeometryReferences.ts'
+import {
   formatLengthInput,
   type ResolvedLengthDisplayUnit,
 } from '../lib/lengthUnit.ts'
 import { MAX_NUMERIC_EXPRESSION_SOURCE_BYTES } from '../lib/numericExpressionNative.ts'
+import {
+  isUnverifiedLegacyV1PolarConstructionBinding,
+} from '../lib/polarConstructionExpressions.ts'
 import type { CompassConstructionCircle } from './CreaseCanvas.tsx'
 
 type SelectedVertex = ProjectSnapshot['crease_pattern']['vertices'][number]
@@ -132,6 +138,24 @@ export function SelectedVertexInspector({
               : text(APP_TEXT.deleteVertex)}
           </button>
         </div>
+        {isUnverifiedLegacyV1EdgeGeometryBinding(expression) ? (
+          <p
+            className="muted"
+            role="note"
+            data-unverified-legacy-edge-geometry-binding
+          >
+            {text(APP_TEXT.legacyV1EdgeGeometryReferenceIsUnverified)}
+          </p>
+        ) : null}
+        {isUnverifiedLegacyV1PolarConstructionBinding(expression) ? (
+          <p
+            className="muted"
+            role="note"
+            data-unverified-legacy-polar-construction-binding
+          >
+            {text(APP_TEXT.legacyV1PolarConstructionIsUnverified)}
+          </p>
+        ) : null}
         {expression?.polar_construction ? (
           <p className="muted" data-vertex-polar-expression>
             {formattedText(

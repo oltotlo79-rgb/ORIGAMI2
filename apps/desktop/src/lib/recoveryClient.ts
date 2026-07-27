@@ -9,9 +9,13 @@ import type {
   VertexCoordinateExpressionTransition,
 } from './coreClient.ts'
 import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
   matchesProjectOccGuard,
   normalizeBeginnerDesignProfile,
 } from './coreClient.ts'
+import {
+  sourcesUseValidEdgeGeometryReferences,
+} from './edgeGeometryReferences.ts'
 import { normalizeGeometricConstraintDocument } from './geometricConstraints.ts'
 import { parseInstructionVisual } from './instructionTimeline.ts'
 import { normalizeProjectLayerDocument } from './projectLayers.ts'
@@ -1512,6 +1516,7 @@ function parseVertexCoordinateExpression(
   const record = snapshotDataRecord(value)
   if (!record || Object.keys(record).some((key) => ![
     'schema_version',
+    'transcendental_model_id',
     'vertex',
     'x_source',
     'y_source',
@@ -1522,8 +1527,27 @@ function parseVertexCoordinateExpression(
   const polar = record.polar_construction === undefined
     ? undefined
     : parsePolarVertexConstruction(record.polar_construction)
+  const usesValidEdgeGeometryReferences = (
+    typeof record.x_source === 'string'
+    && typeof record.y_source === 'string'
+    && sourcesUseValidEdgeGeometryReferences(
+      record.x_source,
+      record.y_source,
+    )
+  )
+  const validVersionedModel = (
+    record.schema_version === 1
+    && record.transcendental_model_id === undefined
+  ) || (
+    record.schema_version === 2
+    && record.transcendental_model_id === DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+    && (
+      usesValidEdgeGeometryReferences
+      || (polar !== undefined && polar !== null)
+    )
+  )
   if (
-    record.schema_version !== 1
+    !validVersionedModel
     || !isCanonicalNonNilUuid(record.vertex)
     || typeof record.x_source !== 'string'
     || typeof record.y_source !== 'string'
@@ -1534,14 +1558,9 @@ function parseVertexCoordinateExpression(
     || (record.polar_construction !== undefined && !polar)
   ) return null
   return {
-    schema_version: 1,
-    vertex: record.vertex,
-    x_source: record.x_source,
-    y_source: record.y_source,
-    adopted_x_mm: record.adopted_x_mm,
-    adopted_y_mm: record.adopted_y_mm,
+    ...record,
     ...(polar ? { polar_construction: polar } : {}),
-  }
+  } as unknown as VertexCoordinateExpressionBinding
 }
 
 function parsePolarVertexConstruction(

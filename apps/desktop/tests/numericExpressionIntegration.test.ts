@@ -97,7 +97,7 @@ test('the first user-input slice connects both new-paper dimensions without trus
   )
   assert.match(
     nativeLib,
-    /let archive = load_project_archive_from_path\(&path\)\?;[\s\S]*?validate_loaded_numeric_expression_bindings\(&archive\.document\)\?;[\s\S]*?ProjectState::from_project_archive\(archive, path\)\?/u,
+    /let archive = load_project_archive_from_path\(&path\)\?;[\s\S]*?validate_loaded_numeric_expression_archive\(&archive\)\?;[\s\S]*?ProjectState::from_project_archive\(archive, path\)\?/u,
   )
   assert.match(
     nativeLib,
@@ -236,6 +236,18 @@ test('vertex and polar construction expressions retain source, ID, and native au
   assert.match(
     nativeTests,
     /vertex_coordinate_expressions_follow_native_history_and_archive_round_trip/u,
+  )
+  assert.match(
+    patternEditNative,
+    /add_connected_vertex[\s\S]*?deterministic_polar_endpoint_with_model_support[\s\S]*?VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2[\s\S]*?DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1/u,
+  )
+  assert.match(
+    nativeLib,
+    /VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1[\s\S]*?deterministic_polar_endpoint_v2/u,
+  )
+  assert.match(
+    recovery,
+    /record\.schema_version === 2[\s\S]*?DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1[\s\S]*?polar !== undefined/u,
   )
 })
 

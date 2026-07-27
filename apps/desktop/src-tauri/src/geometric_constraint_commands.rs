@@ -100,6 +100,7 @@ pub(super) fn preview_geometric_constraint_solve(
         project.editor.geometric_constraints(),
         &solved,
         None,
+        None,
     );
     let mut slot = state
         .3
@@ -155,6 +156,7 @@ pub(super) fn preview_geometric_constraint_edge_solve(
         project.editor.geometric_constraints(),
         &solved,
         None,
+        None,
     );
     *state
         .3
@@ -195,6 +197,7 @@ pub(super) fn preview_geometric_constraint_expression_solve(
         project.editor.geometric_constraints(),
         &solved,
         Some(&project.numeric_expressions.vertex_coordinates),
+        Some(&drivers),
     );
     *state
         .3
@@ -206,14 +209,79 @@ pub(super) fn preview_geometric_constraint_expression_solve(
 pub(super) fn reevaluate_saved_vertex_expressions(
     project: &ProjectState,
 ) -> Result<Vec<(VertexId, Point2)>, String> {
+    reevaluate_saved_vertex_expressions_with_legacy_policy(
+        project,
+        LegacyEdgeGeometryReferencePolicy::ReevaluateDeterministically,
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn reevaluate_saved_vertex_expressions_with_model_support_for_test(
+    project: &ProjectState,
+    deterministic_model_supported: bool,
+) -> Result<Vec<(VertexId, Point2)>, String> {
+    reevaluate_saved_vertex_expressions_with_legacy_policy(
+        project,
+        LegacyEdgeGeometryReferencePolicy::ReevaluateDeterministically,
+        deterministic_model_supported,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn reevaluate_saved_vertex_expressions_for_archive_load(
+    project: &ProjectState,
+) -> Result<Vec<(VertexId, Point2)>, String> {
+    reevaluate_saved_vertex_expressions_for_archive_load_with_model_support(
+        project,
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    )
+}
+
+pub(super) fn reevaluate_saved_vertex_expressions_for_archive_load_with_model_support(
+    project: &ProjectState,
+    deterministic_model_supported: bool,
+) -> Result<Vec<(VertexId, Point2)>, String> {
+    reevaluate_saved_vertex_expressions_with_legacy_policy(
+        project,
+        LegacyEdgeGeometryReferencePolicy::AdoptPersistedCoordinate,
+        deterministic_model_supported,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyEdgeGeometryReferencePolicy {
+    ReevaluateDeterministically,
+    AdoptPersistedCoordinate,
+}
+
+fn reevaluate_saved_vertex_expressions_with_legacy_policy(
+    project: &ProjectState,
+    legacy_policy: LegacyEdgeGeometryReferencePolicy,
+    deterministic_model_supported: bool,
+) -> Result<Vec<(VertexId, Point2)>, String> {
     if project.numeric_expressions.vertex_coordinates.is_empty()
         || project.numeric_expressions.vertex_coordinates.len()
             > ConstraintSolveLimitsV1::default().max_vertices
     {
         return Err("saved numeric expression set is empty or too large".to_owned());
     }
+    if legacy_policy == LegacyEdgeGeometryReferencePolicy::ReevaluateDeterministically
+        && !deterministic_model_supported
+        && project
+            .numeric_expressions
+            .vertex_coordinates
+            .iter()
+            .any(|binding| binding.x_source.contains("e.") || binding.y_source.contains("e."))
+    {
+        return Err("deterministic geometry reference model is unsupported".to_owned());
+    }
     let mut seen = HashSet::new();
     for binding in &project.numeric_expressions.vertex_coordinates {
+        validate_saved_vertex_expression_transcendental_model_with_support(
+            binding,
+            deterministic_model_supported,
+        )?;
         if !seen.insert(binding.vertex) {
             return Err("saved numeric expressions contain a cycle or duplicate".to_owned());
         }
@@ -231,6 +299,7 @@ pub(super) fn reevaluate_saved_vertex_expressions(
             &mut visiting,
             &mut work,
             0,
+            legacy_policy,
         )?;
         let y = resolve_saved_coordinate(
             project,
@@ -240,10 +309,32 @@ pub(super) fn reevaluate_saved_vertex_expressions(
             &mut visiting,
             &mut work,
             0,
+            legacy_policy,
         )?;
         drivers.push((binding.vertex, Point2::new(x, y)));
     }
     Ok(drivers)
+}
+
+pub(super) fn validate_saved_vertex_expression_transcendental_model_with_support(
+    binding: &VertexCoordinateExpressions,
+    deterministic_model_supported: bool,
+) -> Result<(), String> {
+    match (
+        binding.schema_version,
+        binding.transcendental_model_id.as_deref(),
+    ) {
+        (ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1, None) => Ok(()),
+        (
+            ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2,
+            Some(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1),
+        ) if deterministic_model_supported
+            && (binding.uses_edge_geometry_reference() || binding.polar_construction.is_some()) =>
+        {
+            Ok(())
+        }
+        _ => Err("saved numeric expression transcendental model is invalid".to_owned()),
+    }
 }
 
 const MAX_SAVED_EXPRESSION_DEPENDENCY_DEPTH: usize = 64;
@@ -257,6 +348,7 @@ fn resolve_saved_coordinate(
     visiting: &mut HashSet<(VertexId, bool)>,
     work: &mut usize,
     depth: usize,
+    legacy_policy: LegacyEdgeGeometryReferencePolicy,
 ) -> Result<f64, String> {
     let key = (vertex, y_axis);
     if let Some(value) = memo.get(&key) {
@@ -276,15 +368,38 @@ fn resolve_saved_coordinate(
         } else {
             &binding.x_source
         };
-        let expanded =
-            expand_saved_vertex_references(project, source, memo, visiting, work, depth)?;
+        let expanded = expand_saved_vertex_references_with_legacy_policy(
+            project,
+            source,
+            memo,
+            visiting,
+            work,
+            depth,
+            legacy_policy,
+        )?;
         let pair = if y_axis {
             evaluate_finite_millimetre_pair("0".to_owned(), expanded)
         } else {
             evaluate_finite_millimetre_pair(expanded, "0".to_owned())
         }
         .map_err(|error| error.user_input_message().to_owned())?;
-        if y_axis { pair.1 } else { pair.0 }
+        let evaluated = if y_axis { pair.1 } else { pair.0 };
+        if legacy_policy == LegacyEdgeGeometryReferencePolicy::AdoptPersistedCoordinate
+            && ((binding.polar_construction.is_some()
+                && binding.schema_version
+                    == ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1
+                && binding.transcendental_model_id.is_none())
+                || (binding.uses_legacy_edge_geometry_reference_v1()
+                    && source_uses_edge_geometry_reference(source)))
+        {
+            if y_axis {
+                binding.adopted_y_mm
+            } else {
+                binding.adopted_x_mm
+            }
+        } else {
+            evaluated
+        }
     } else {
         let point = project
             .editor
@@ -301,6 +416,7 @@ fn resolve_saved_coordinate(
     Ok(value)
 }
 
+#[cfg(test)]
 pub(super) fn expand_saved_vertex_references(
     project: &ProjectState,
     source: &str,
@@ -308,6 +424,26 @@ pub(super) fn expand_saved_vertex_references(
     visiting: &mut HashSet<(VertexId, bool)>,
     work: &mut usize,
     depth: usize,
+) -> Result<String, String> {
+    expand_saved_vertex_references_with_legacy_policy(
+        project,
+        source,
+        memo,
+        visiting,
+        work,
+        depth,
+        LegacyEdgeGeometryReferencePolicy::ReevaluateDeterministically,
+    )
+}
+
+fn expand_saved_vertex_references_with_legacy_policy(
+    project: &ProjectState,
+    source: &str,
+    memo: &mut HashMap<(VertexId, bool), f64>,
+    visiting: &mut HashSet<(VertexId, bool)>,
+    work: &mut usize,
+    depth: usize,
+    legacy_policy: LegacyEdgeGeometryReferencePolicy,
 ) -> Result<String, String> {
     let mut result = String::with_capacity(source.len());
     let mut cursor = 0;
@@ -342,8 +478,20 @@ pub(super) fn expand_saved_vertex_references(
             } else {
                 return Err("invalid edge reference".to_owned());
             };
+            if source
+                .get(end..)
+                .and_then(|tail| tail.chars().next())
+                .is_some_and(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
+                })
+            {
+                return Err("invalid edge reference".to_owned());
+            }
             let referenced: EdgeId = serde_json::from_str(&format!("\"{uuid}\""))
                 .map_err(|_| "invalid edge reference".to_owned())?;
+            if referenced.canonical_bytes().iter().all(|byte| *byte == 0) {
+                return Err("invalid edge reference".to_owned());
+            }
             let canonical = serde_json::to_value(referenced)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
@@ -374,6 +522,7 @@ pub(super) fn expand_saved_vertex_references(
                 visiting,
                 work,
                 depth + 1,
+                legacy_policy,
             )?;
             let start_y = resolve_saved_coordinate(
                 project,
@@ -383,6 +532,7 @@ pub(super) fn expand_saved_vertex_references(
                 visiting,
                 work,
                 depth + 1,
+                legacy_policy,
             )?;
             let end_x = resolve_saved_coordinate(
                 project,
@@ -392,17 +542,24 @@ pub(super) fn expand_saved_vertex_references(
                 visiting,
                 work,
                 depth + 1,
+                legacy_policy,
             )?;
-            let end_y =
-                resolve_saved_coordinate(project, edge.end, true, memo, visiting, work, depth + 1)?;
+            let end_y = resolve_saved_coordinate(
+                project,
+                edge.end,
+                true,
+                memo,
+                visiting,
+                work,
+                depth + 1,
+                legacy_policy,
+            )?;
             let delta_x = end_x - start_x;
             let delta_y = end_y - start_y;
-            let edge_length = delta_x.hypot(delta_y);
-            if !edge_length.is_finite() || edge_length <= 0.0 {
-                return Err("edge reference geometry is degenerate".to_owned());
-            }
+            let (edge_length, edge_angle_degrees) =
+                deterministic_saved_edge_reference_geometry(delta_x, delta_y)?;
             let value = if y_axis_angle {
-                delta_y.atan2(delta_x).to_degrees().rem_euclid(360.0)
+                edge_angle_degrees
             } else {
                 edge_length
             };
@@ -453,6 +610,7 @@ pub(super) fn expand_saved_vertex_references(
             visiting,
             work,
             depth + 1,
+            legacy_policy,
         )?;
         result.push('(');
         result.push_str(&value.to_string());
@@ -463,6 +621,35 @@ pub(super) fn expand_saved_vertex_references(
     Ok(result)
 }
 
+fn source_uses_edge_geometry_reference(source: &str) -> bool {
+    source.contains("e.")
+}
+
+fn deterministic_saved_edge_reference_geometry(
+    delta_x: f64,
+    delta_y: f64,
+) -> Result<(f64, f64), String> {
+    let edge_length = ori_numeric::deterministic_hypot_v1(delta_x, delta_y)
+        .map_err(|_| "edge reference result is non-finite".to_owned())?;
+    if edge_length <= 0.0 {
+        return Err("edge reference geometry is degenerate".to_owned());
+    }
+    let angle_radians = ori_numeric::deterministic_atan2_v1(delta_y, delta_x)
+        .map_err(|_| "edge reference result is non-finite".to_owned())?;
+    let angle_degrees = ori_numeric::deterministic_radians_to_degrees_v1(angle_radians)
+        .map_err(|_| "edge reference result is non-finite".to_owned())?
+        .rem_euclid(360.0);
+    let angle_degrees = if angle_degrees == 0.0 {
+        0.0
+    } else {
+        angle_degrees
+    };
+    if !angle_degrees.is_finite() {
+        return Err("edge reference result is non-finite".to_owned());
+    }
+    Ok((edge_length, angle_degrees))
+}
+
 fn finish_geometric_constraint_solve_preview(
     token: ProjectId,
     expectation: ProjectExpectation,
@@ -470,27 +657,130 @@ fn finish_geometric_constraint_solve_preview(
     document: &GeometricConstraintDocumentV1,
     solved: &ori_core::ConstraintSolvePreviewV1,
     expression_bindings: Option<&[VertexCoordinateExpressions]>,
+    expression_drivers: Option<&[(VertexId, Point2)]>,
 ) -> (
     GeometricConstraintSolvePreviewResponse,
     GeometricConstraintSolveStage,
 ) {
-    let prepared = prepare_geometric_constraint_solve(pattern, document, solved);
+    finish_geometric_constraint_solve_preview_with_model_support(
+        token,
+        expectation,
+        pattern,
+        document,
+        solved,
+        expression_bindings,
+        expression_drivers,
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    )
+}
+
+fn finish_geometric_constraint_solve_preview_with_model_support(
+    token: ProjectId,
+    expectation: ProjectExpectation,
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    solved: &ori_core::ConstraintSolvePreviewV1,
+    expression_bindings: Option<&[VertexCoordinateExpressions]>,
+    expression_drivers: Option<&[(VertexId, Point2)]>,
+    deterministic_model_supported: bool,
+) -> (
+    GeometricConstraintSolvePreviewResponse,
+    GeometricConstraintSolveStage,
+) {
+    let mut prepared = prepare_geometric_constraint_solve(pattern, document, solved);
+    // Axis-aligned exactification has no driver metadata and may project a
+    // fixed expression vertex onto another class member. Preserve the
+    // reevaluated expression bits as the authority for expression previews.
+    if prepared.exact_satisfaction.is_some()
+        && expression_drivers.is_some_and(|drivers| {
+            drivers.iter().any(|(vertex, driver)| {
+                prepared
+                    .positions
+                    .iter()
+                    .find(|(candidate, _)| candidate == vertex)
+                    .map(|(_, point)| *point)
+                    .or_else(|| {
+                        pattern
+                            .vertices
+                            .iter()
+                            .find(|candidate| candidate.id == *vertex)
+                            .map(|candidate| candidate.position)
+                    })
+                    .is_none_or(|candidate| {
+                        candidate.x.to_bits() != driver.x.to_bits()
+                            || candidate.y.to_bits() != driver.y.to_bits()
+                    })
+            })
+        })
+    {
+        let mut positions = solved.positions.clone();
+        if let Some(drivers) = expression_drivers {
+            for (vertex, driver) in drivers {
+                if let Some((_, point)) = positions
+                    .iter_mut()
+                    .find(|(candidate, _)| candidate == vertex)
+                {
+                    *point = *driver;
+                    continue;
+                }
+                if pattern
+                    .vertices
+                    .iter()
+                    .find(|candidate| candidate.id == *vertex)
+                    .is_some_and(|candidate| {
+                        candidate.position.x.to_bits() != driver.x.to_bits()
+                            || candidate.position.y.to_bits() != driver.y.to_bits()
+                    })
+                {
+                    positions.push((*vertex, *driver));
+                }
+            }
+            positions.sort_unstable_by_key(|(vertex, _)| vertex.canonical_bytes());
+        }
+        prepared = PreparedGeometricConstraintSolve {
+            positions,
+            exact_satisfaction: None,
+        };
+    }
     let response =
         geometric_constraint_solve_response(token, expectation.revision, solved, &prepared);
     let expression_bindings = expression_bindings.map(|bindings| {
         bindings
             .iter()
             .filter_map(|binding| {
-                prepared
+                let point = prepared
                     .positions
                     .iter()
                     .find(|(vertex, _)| *vertex == binding.vertex)
-                    .map(|(_, point)| {
-                        let mut binding = binding.clone();
-                        binding.adopted_x_mm = point.x;
-                        binding.adopted_y_mm = point.y;
-                        binding
+                    .map(|(_, point)| *point)
+                    .or_else(|| {
+                        expression_drivers.and_then(|drivers| {
+                            drivers
+                                .iter()
+                                .find(|(vertex, _)| *vertex == binding.vertex)
+                                .map(|(_, point)| *point)
+                        })
                     })
+                    .or_else(|| {
+                        pattern
+                            .vertices
+                            .iter()
+                            .find(|vertex| vertex.id == binding.vertex)
+                            .map(|vertex| vertex.position)
+                    })?;
+                let mut updated = binding.clone();
+                updated.adopted_x_mm = point.x;
+                updated.adopted_y_mm = point.y;
+                upgrade_expression_binding_after_deterministic_reevaluation(
+                    &mut updated,
+                    deterministic_model_supported,
+                );
+                let changed = updated.adopted_x_mm.to_bits() != binding.adopted_x_mm.to_bits()
+                    || updated.adopted_y_mm.to_bits() != binding.adopted_y_mm.to_bits()
+                    || updated.schema_version != binding.schema_version
+                    || updated.transcendental_model_id.as_deref()
+                        != binding.transcendental_model_id.as_deref();
+                changed.then_some(updated)
             })
             .collect()
     });
@@ -504,6 +794,18 @@ fn finish_geometric_constraint_solve_preview(
         exact_satisfaction: prepared.exact_satisfaction,
     };
     (response, stage)
+}
+
+pub(super) fn upgrade_expression_binding_after_deterministic_reevaluation(
+    binding: &mut VertexCoordinateExpressions,
+    deterministic_model_supported: bool,
+) {
+    if binding.uses_edge_geometry_reference() && deterministic_model_supported {
+        binding.schema_version =
+            ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2;
+        binding.transcendental_model_id =
+            Some(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.to_owned());
+    }
 }
 
 fn geometric_constraint_solve_response(
@@ -637,24 +939,60 @@ pub(super) fn apply_geometric_constraint_solve_stage(
     {
         return Err("geometric constraint preview is stale".to_owned());
     }
+    let expression_bindings = staged.expression_bindings.as_deref().unwrap_or_default();
+    let mut apply_positions = staged.positions.clone();
+    let mut seen_expression_vertices = HashSet::with_capacity(expression_bindings.len());
+    for binding in expression_bindings {
+        let staged_point = staged
+            .positions
+            .iter()
+            .find(|(vertex, _)| *vertex == binding.vertex)
+            .map(|(_, point)| *point);
+        let target_exists = project
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .any(|vertex| vertex.id == binding.vertex);
+        let point =
+            staged_point.unwrap_or_else(|| Point2::new(binding.adopted_x_mm, binding.adopted_y_mm));
+        if !seen_expression_vertices.insert(binding.vertex)
+            || !target_exists
+            || !point.x.is_finite()
+            || !point.y.is_finite()
+            || staged_point.is_some_and(|staged_point| {
+                binding.adopted_x_mm.to_bits() != staged_point.x.to_bits()
+                    || binding.adopted_y_mm.to_bits() != staged_point.y.to_bits()
+            })
+        {
+            return Err("geometric constraint preview binding is invalid".to_owned());
+        }
+        if !apply_positions
+            .iter()
+            .any(|(vertex, _)| *vertex == binding.vertex)
+        {
+            apply_positions.push((binding.vertex, point));
+        }
+    }
+    apply_positions.sort_unstable_by_key(|(vertex, _)| vertex.canonical_bytes());
     if let Some(exact_satisfaction) = staged.exact_satisfaction {
         recertify_staged_exact_geometric_constraint_solve(
             project.editor.pattern(),
             project.editor.geometric_constraints(),
-            &staged.positions,
+            &apply_positions,
             exact_satisfaction,
         )?;
-        if staged.positions.is_empty() {
-            if staged
-                .expression_bindings
-                .as_ref()
-                .is_none_or(Vec::is_empty)
-            {
-                return Ok(snapshot(project));
-            }
-            return Err("exact geometric constraint preview has inconsistent bindings".to_owned());
-        }
     }
+    if apply_positions.is_empty() {
+        return Ok(snapshot(project));
+    }
+    let updates = apply_positions
+        .iter()
+        .map(|(vertex, position)| VertexPositionUpdate {
+            vertex: *vertex,
+            position: *position,
+        })
+        .collect();
     execute_expected_command(
         project,
         ProjectExpectation::new(
@@ -662,22 +1000,12 @@ pub(super) fn apply_geometric_constraint_solve_stage(
             expected_project_id,
             expected_revision,
         ),
-        Command::MoveVertices {
-            updates: staged
-                .positions
-                .iter()
-                .map(|(vertex, position)| VertexPositionUpdate {
-                    vertex: *vertex,
-                    position: *position,
-                })
-                .collect(),
-        },
+        Command::MoveVertices { updates },
     )?;
-    if let Some(bindings) = &staged.expression_bindings {
-        for binding in bindings {
-            project.adopt_vertex_coordinate_expression(binding.clone());
-        }
+    for binding in expression_bindings {
+        project.adopt_vertex_coordinate_expression(binding.clone());
     }
+    project.reconcile_vertex_coordinate_expressions();
     Ok(snapshot(project))
 }
 

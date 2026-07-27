@@ -1066,32 +1066,23 @@ pub(super) fn add_ray_to_first_target(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub(super) fn add_connected_vertex(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     start: VertexId,
-    x: f64,
-    y: f64,
     length_expression: String,
     angle_degrees_expression: String,
-    length_mm: f64,
-    angle_degrees: f64,
     kind: EdgeKind,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
-    let (evaluated_length_mm, evaluated_angle_degrees) = evaluate_finite_millimetre_pair(
+    let (length_mm, angle_degrees) = evaluate_finite_millimetre_pair(
         length_expression.clone(),
         angle_degrees_expression.clone(),
     )
     .map_err(map_loaded_numeric_expression_error)?;
-    if evaluated_length_mm.to_bits() != length_mm.to_bits()
-        || evaluated_angle_degrees.to_bits() != angle_degrees.to_bits()
-        || length_mm <= 0.0
-        || angle_degrees.abs() > 360_000.0
-    {
+    if length_mm <= 0.0 || angle_degrees.abs() > 360_000.0 {
         return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
     }
     let start_position = project
@@ -1102,12 +1093,14 @@ pub(super) fn add_connected_vertex(
         .find(|vertex| vertex.id == start)
         .map(|vertex| vertex.position)
         .ok_or_else(|| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
-    let angle_radians = angle_degrees.to_radians();
-    let expected_x = start_position.x + length_mm * angle_radians.cos();
-    let expected_y = start_position.y + length_mm * angle_radians.sin();
-    if expected_x.to_bits() != x.to_bits() || expected_y.to_bits() != y.to_bits() {
-        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
-    }
+    let endpoint = deterministic_polar_endpoint_with_model_support(
+        start_position,
+        length_mm,
+        angle_degrees,
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    )?;
+    let x = endpoint.x;
+    let y = endpoint.y;
     let vertex_id = VertexId::new();
     execute_expected_command(
         &mut project,
@@ -1126,8 +1119,12 @@ pub(super) fn add_connected_vertex(
     )?;
     let mut binding =
         VertexCoordinateExpressions::new(vertex_id, x.to_string(), y.to_string(), x, y);
+    binding.schema_version =
+        ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2;
+    binding.transcendental_model_id =
+        Some(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.to_owned());
     binding.polar_construction = Some(PolarVertexConstructionExpressions {
-        schema_version: 1,
+        schema_version: ori_formats::PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION,
         start_vertex: start,
         adopted_start_x_mm: start_position.x,
         adopted_start_y_mm: start_position.y,
@@ -1138,6 +1135,21 @@ pub(super) fn add_connected_vertex(
     });
     project.adopt_vertex_coordinate_expression(binding);
     Ok(snapshot(&project))
+}
+
+pub(super) fn deterministic_polar_endpoint_with_model_support(
+    start: Point2,
+    length_mm: f64,
+    angle_degrees: f64,
+    deterministic_model_supported: bool,
+) -> Result<Point2, String> {
+    if !deterministic_model_supported {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    let (x, y) =
+        ori_numeric::deterministic_polar_endpoint_v2(start.x, start.y, length_mm, angle_degrees)
+            .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+    Ok(Point2::new(x, y))
 }
 
 #[tauri::command]

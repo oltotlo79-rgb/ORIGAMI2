@@ -224,10 +224,6 @@ export const APP_TEXT = Object.freeze({
     '正の有限な長さ、有限な角度、利用可能な線種を入力してください。',
     'Enter a positive finite length, a finite angle, and an available line type.',
   ),
-  theSpecifiedLengthAndAngleDoNotProduceFiniteCoordinates: localized(
-    '指定した長さと角度から有限な座標を作成できません。',
-    'The specified length and angle do not produce finite coordinates.',
-  ),
   addedAnEndpointAndLineFromTheSpecifiedLengthAnd: localized(
     '指定した長さと角度から終点と線を追加しました。',
     'Added an endpoint and line from the specified length and angle.',
@@ -766,6 +762,14 @@ export const APP_TEXT = Object.freeze({
   vertexXCoordinateUnit: localized('頂点のX座標 ({unit})', 'Vertex X coordinate ({unit})'),
   vertexYCoordinateUnit: localized('頂点のY座標 ({unit})', 'Vertex Y coordinate ({unit})'),
   updateCoordinates: localized('座標を更新', 'Update coordinates'),
+  legacyV1EdgeGeometryReferenceIsUnverified: localized(
+    '旧V1の辺形状参照式は未検証です。保存済み座標を正本として表示していますが、現在の辺形状から再評価していません。座標の更新またはV2への昇格には、ユーザーによる明示的な座標再評価が必要です。この表示は変更権限を与えません。',
+    'This legacy V1 edge-geometry reference is unverified. The saved coordinates remain canonical for display and have not been reevaluated from the current edge geometry. Updating the coordinates or upgrading to V2 requires explicit coordinate reevaluation by the user. This notice grants no mutation authority.',
+  ),
+  legacyV1PolarConstructionIsUnverified: localized(
+    '旧V1の極座標作図式は、この実行環境では再検証されていません。保存済みの端点座標を正本として表示しています。決定論モデルへ昇格するには、長さと角度から端点を再作成してください。',
+    'This legacy V1 polar construction has not been reverified in this runtime. Its saved endpoint coordinates remain canonical for display. Recreate the endpoint from its length and angle to upgrade it to the deterministic model.',
+  ),
   deleteBoundaryVertexAndMergeEdges: localized(
     '輪郭頂点を削除して辺を統合',
     'Delete boundary vertex and merge edges',

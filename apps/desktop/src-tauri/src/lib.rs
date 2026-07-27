@@ -160,11 +160,16 @@ use geometric_constraint_commands::{
     GeometricConstraintSolveStage, add_edge_orientation_constraint, add_geometric_constraint,
     apply_geometric_constraint_solve, preview_geometric_constraint_edge_solve,
     preview_geometric_constraint_expression_solve, preview_geometric_constraint_solve,
-    reevaluate_saved_vertex_expressions, remove_geometric_constraint,
+    reevaluate_saved_vertex_expressions_for_archive_load_with_model_support,
+    remove_geometric_constraint,
+    validate_saved_vertex_expression_transcendental_model_with_support,
 };
 #[cfg(test)]
 use geometric_constraint_commands::{
     apply_geometric_constraint_solve_stage, expand_saved_vertex_references,
+    reevaluate_saved_vertex_expressions, reevaluate_saved_vertex_expressions_for_archive_load,
+    reevaluate_saved_vertex_expressions_with_model_support_for_test,
+    upgrade_expression_binding_after_deterministic_reevaluation,
 };
 use global_flat_foldability::{
     GlobalFlatFoldabilityState, archive_revalidation_deadline, begin_global_flat_foldability,
@@ -670,6 +675,15 @@ impl ProjectState {
     }
 
     fn project_archive(&self) -> Result<Ori2ProjectArchive, String> {
+        self.project_archive_with_geometry_reference_model_support(
+            ori_numeric::deterministic_transcendental_model_supported_v1(),
+        )
+    }
+
+    fn project_archive_with_geometry_reference_model_support(
+        &self,
+        deterministic_model_supported: bool,
+    ) -> Result<Ori2ProjectArchive, String> {
         let mut document = self.document();
         document.numeric_expressions = self.numeric_expressions.clone();
         let history = self
@@ -698,11 +712,19 @@ impl ProjectState {
             history.redo_len(),
         )
         .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
-        Ok(Ori2ProjectArchive {
+        let archive = Ori2ProjectArchive {
             layer_evidence: self.archived_layer_evidence()?,
             document,
             editor_history: (!history.is_default_empty()).then_some(history),
-        })
+        };
+        if archive_requires_vertex_expression_reauthentication(&archive) {
+            validate_loaded_numeric_expression_archive_with_model_support(
+                &archive,
+                deterministic_model_supported,
+            )
+            .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
+        }
+        Ok(archive)
     }
 
     fn archived_layer_evidence(&self) -> Result<Option<LayerEvidenceArchiveV1>, String> {
@@ -943,15 +965,26 @@ impl ProjectState {
             .vertex_coordinates
             .iter()
             .filter(|binding| {
-                self.editor
-                    .pattern()
-                    .vertices
+                let vertices = &self.editor.pattern().vertices;
+                let target_is_stale = vertices
                     .iter()
                     .find(|vertex| vertex.id == binding.vertex)
                     .is_none_or(|vertex| {
                         vertex.position.x.to_bits() != binding.adopted_x_mm.to_bits()
                             || vertex.position.y.to_bits() != binding.adopted_y_mm.to_bits()
-                    })
+                    });
+                let polar_start_is_stale =
+                    binding.polar_construction.as_ref().is_some_and(|polar| {
+                        let mut matching = vertices
+                            .iter()
+                            .filter(|vertex| vertex.id == polar.start_vertex);
+                        matching.next().is_none_or(|start| {
+                            matching.next().is_some()
+                                || start.position.x.to_bits() != polar.adopted_start_x_mm.to_bits()
+                                || start.position.y.to_bits() != polar.adopted_start_y_mm.to_bits()
+                        })
+                    });
+                target_is_stale || polar_start_is_stale
             })
             .map(|binding| binding.vertex)
             .collect::<Vec<_>>();
@@ -4650,12 +4683,110 @@ fn save_project_to_destination(
 
 fn load_project_file(path: PathBuf) -> Result<LoadedProjectFile, String> {
     let archive = load_project_archive_from_path(&path)?;
-    validate_loaded_numeric_expression_bindings(&archive.document)?;
+    validate_loaded_numeric_expression_archive(&archive)?;
     let replacement = ProjectState::from_project_archive(archive, path)?;
     Ok(LoadedProjectFile { replacement })
 }
 
+fn validate_loaded_numeric_expression_archive(archive: &Ori2ProjectArchive) -> Result<(), String> {
+    validate_loaded_numeric_expression_archive_with_model_support(
+        archive,
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    )
+}
+
+fn validate_loaded_numeric_expression_archive_with_model_support(
+    archive: &Ori2ProjectArchive,
+    deterministic_model_supported: bool,
+) -> Result<(), String> {
+    validate_loaded_numeric_expression_bindings_with_model_support(
+        &archive.document,
+        deterministic_model_supported,
+    )?;
+    if !archive_requires_vertex_expression_reauthentication(archive) {
+        return Ok(());
+    }
+
+    let mut replay_archive = archive.clone();
+    replay_archive.layer_evidence = None;
+    let mut replay = ProjectState::from_project_archive(replay_archive, PathBuf::new())
+        .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+    validate_current_project_numeric_expression_bindings_with_model_support(
+        &replay,
+        deterministic_model_supported,
+    )?;
+
+    while replay.editor.can_undo() {
+        let revision = replay.editor.revision();
+        replay
+            .editor
+            .undo(revision)
+            .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+        replay.undo_numeric_expression_edit();
+        validate_current_project_numeric_expression_bindings_with_model_support(
+            &replay,
+            deterministic_model_supported,
+        )?;
+    }
+    while replay.editor.can_redo() {
+        let revision = replay.editor.revision();
+        replay
+            .editor
+            .redo(revision)
+            .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+        replay.redo_numeric_expression_edit();
+        validate_current_project_numeric_expression_bindings_with_model_support(
+            &replay,
+            deterministic_model_supported,
+        )?;
+    }
+    Ok(())
+}
+
+fn archived_vertex_coordinate_bindings(
+    archive: &Ori2ProjectArchive,
+) -> impl Iterator<Item = &VertexCoordinateExpressions> {
+    archive
+        .document
+        .numeric_expressions
+        .vertex_coordinates
+        .iter()
+        .chain(
+            archive
+                .document
+                .numeric_expressions
+                .vertex_undo_stack
+                .iter()
+                .chain(&archive.document.numeric_expressions.vertex_redo_stack)
+                .flatten()
+                .flat_map(|transition| &transition.changes)
+                .flat_map(|change| change.before.iter().chain(&change.after)),
+        )
+}
+
+fn archive_requires_vertex_expression_reauthentication(archive: &Ori2ProjectArchive) -> bool {
+    archived_vertex_coordinate_bindings(archive).any(|binding| {
+        contains_geometry_reference(&binding.x_source)
+            || contains_geometry_reference(&binding.y_source)
+            || binding.polar_construction.is_some()
+            || binding.schema_version
+                != ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1
+            || binding.transcendental_model_id.is_some()
+    })
+}
+
+#[cfg(test)]
 fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Result<(), String> {
+    validate_loaded_numeric_expression_bindings_with_model_support(
+        document,
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    )
+}
+
+fn validate_loaded_numeric_expression_bindings_with_model_support(
+    document: &ProjectDocument,
+    deterministic_model_supported: bool,
+) -> Result<(), String> {
     for binding in document
         .numeric_expressions
         .rectangular_paper_creation
@@ -4665,71 +4796,12 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
     {
         validate_loaded_numeric_expression_binding(binding)?;
     }
-    for binding in &document.numeric_expressions.vertex_coordinates {
-        if !contains_geometry_reference(&binding.x_source)
-            && !contains_geometry_reference(&binding.y_source)
-        {
-            validate_coordinate_expression_pair(
-                &binding.x_source,
-                &binding.y_source,
-                binding.adopted_x_mm,
-                binding.adopted_y_mm,
-            )?;
-        }
-        let matching = document
-            .crease_pattern
-            .vertices
-            .iter()
-            .filter(|vertex| vertex.id == binding.vertex)
-            .collect::<Vec<_>>();
-        if matching.len() != 1
-            || matching[0].position.x.to_bits() != binding.adopted_x_mm.to_bits()
-            || matching[0].position.y.to_bits() != binding.adopted_y_mm.to_bits()
-        {
-            return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
-        }
-        if let Some(polar) = &binding.polar_construction {
-            let (length_mm, angle_degrees) = evaluate_finite_millimetre_pair(
-                polar.length_source.clone(),
-                polar.angle_degrees_source.clone(),
-            )
-            .map_err(map_loaded_numeric_expression_error)?;
-            let radians = angle_degrees.to_radians();
-            if length_mm.to_bits() != polar.adopted_length_mm.to_bits()
-                || angle_degrees.to_bits() != polar.adopted_angle_degrees.to_bits()
-                || (polar.adopted_start_x_mm + length_mm * radians.cos()).to_bits()
-                    != binding.adopted_x_mm.to_bits()
-                || (polar.adopted_start_y_mm + length_mm * radians.sin()).to_bits()
-                    != binding.adopted_y_mm.to_bits()
-            {
-                return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
-            }
-        }
-    }
-    if document
-        .numeric_expressions
-        .vertex_coordinates
-        .iter()
-        .any(|binding| {
-            contains_geometry_reference(&binding.x_source)
-                || contains_geometry_reference(&binding.y_source)
-        })
-    {
+    if !document.numeric_expressions.vertex_coordinates.is_empty() {
         let staged = ProjectState::from_document(document.clone(), PathBuf::new())?;
-        let resolved = reevaluate_saved_vertex_expressions(&staged)
-            .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
-        for binding in &document.numeric_expressions.vertex_coordinates {
-            let point = resolved
-                .iter()
-                .find(|(vertex, _)| *vertex == binding.vertex)
-                .map(|(_, point)| *point)
-                .ok_or_else(|| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
-            if point.x.to_bits() != binding.adopted_x_mm.to_bits()
-                || point.y.to_bits() != binding.adopted_y_mm.to_bits()
-            {
-                return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
-            }
-        }
+        validate_current_project_numeric_expression_bindings_with_model_support(
+            &staged,
+            deterministic_model_supported,
+        )?;
     }
     for transition in document
         .numeric_expressions
@@ -4743,32 +4815,157 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
             .iter()
             .flat_map(|change| change.before.iter().chain(change.after.iter()))
         {
-            validate_coordinate_expression_pair(
-                &binding.x_source,
-                &binding.y_source,
-                binding.adopted_x_mm,
-                binding.adopted_y_mm,
-            )?;
-            if let Some(polar) = &binding.polar_construction {
-                let (length_mm, angle_degrees) = evaluate_finite_millimetre_pair(
-                    polar.length_source.clone(),
-                    polar.angle_degrees_source.clone(),
-                )
-                .map_err(map_loaded_numeric_expression_error)?;
-                let radians = angle_degrees.to_radians();
-                if length_mm.to_bits() != polar.adopted_length_mm.to_bits()
-                    || angle_degrees.to_bits() != polar.adopted_angle_degrees.to_bits()
-                    || (polar.adopted_start_x_mm + length_mm * radians.cos()).to_bits()
-                        != binding.adopted_x_mm.to_bits()
-                    || (polar.adopted_start_y_mm + length_mm * radians.sin()).to_bits()
-                        != binding.adopted_y_mm.to_bits()
+            validate_saved_vertex_expression_transcendental_model_with_support(
+                binding,
+                deterministic_model_supported,
+            )
+            .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+            if !contains_geometry_reference(&binding.x_source)
+                && !contains_geometry_reference(&binding.y_source)
+            {
+                if binding.polar_construction.is_some()
+                    && binding.schema_version
+                        == ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1
+                    && binding.transcendental_model_id.is_none()
                 {
-                    return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+                    validate_coordinate_expression_pair_sources(
+                        &binding.x_source,
+                        &binding.y_source,
+                    )?;
+                } else {
+                    validate_coordinate_expression_pair(
+                        &binding.x_source,
+                        &binding.y_source,
+                        binding.adopted_x_mm,
+                        binding.adopted_y_mm,
+                    )?;
                 }
+            }
+            if let Some(polar) = &binding.polar_construction {
+                validate_loaded_polar_expression_binding(
+                    polar,
+                    binding,
+                    deterministic_model_supported,
+                )?;
             }
         }
     }
     Ok(())
+}
+
+fn validate_current_project_numeric_expression_bindings_with_model_support(
+    project: &ProjectState,
+    deterministic_model_supported: bool,
+) -> Result<(), String> {
+    if project.numeric_expressions.vertex_coordinates.is_empty() {
+        return Ok(());
+    }
+    let resolved = reevaluate_saved_vertex_expressions_for_archive_load_with_model_support(
+        project,
+        deterministic_model_supported,
+    )
+    .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+    for binding in &project.numeric_expressions.vertex_coordinates {
+        if !binding.adopted_x_mm.is_finite() || !binding.adopted_y_mm.is_finite() {
+            return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+        }
+        validate_saved_vertex_expression_transcendental_model_with_support(
+            binding,
+            deterministic_model_supported,
+        )
+        .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+        let matching = project
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.id == binding.vertex)
+            .collect::<Vec<_>>();
+        let resolved_point = resolved
+            .iter()
+            .find(|(vertex, _)| *vertex == binding.vertex)
+            .map(|(_, point)| *point)
+            .ok_or_else(|| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+        if matching.len() != 1
+            || matching[0].position.x.to_bits() != binding.adopted_x_mm.to_bits()
+            || matching[0].position.y.to_bits() != binding.adopted_y_mm.to_bits()
+            || resolved_point.x.to_bits() != binding.adopted_x_mm.to_bits()
+            || resolved_point.y.to_bits() != binding.adopted_y_mm.to_bits()
+        {
+            return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+        }
+        if let Some(polar) = &binding.polar_construction {
+            let matching_start = project
+                .editor
+                .pattern()
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.id == polar.start_vertex)
+                .collect::<Vec<_>>();
+            if matching_start.len() != 1
+                || matching_start[0].position.x.to_bits() != polar.adopted_start_x_mm.to_bits()
+                || matching_start[0].position.y.to_bits() != polar.adopted_start_y_mm.to_bits()
+            {
+                return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+            }
+            validate_loaded_polar_expression_binding(
+                polar,
+                binding,
+                deterministic_model_supported,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_loaded_polar_expression_binding(
+    polar: &PolarVertexConstructionExpressions,
+    binding: &VertexCoordinateExpressions,
+    deterministic_model_supported: bool,
+) -> Result<(), String> {
+    let (length_mm, angle_degrees) = evaluate_finite_millimetre_pair(
+        polar.length_source.clone(),
+        polar.angle_degrees_source.clone(),
+    )
+    .map_err(map_loaded_numeric_expression_error)?;
+    if length_mm.to_bits() != polar.adopted_length_mm.to_bits()
+        || angle_degrees.to_bits() != polar.adopted_angle_degrees.to_bits()
+    {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    if polar.schema_version != ori_formats::PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+
+    match (
+        binding.schema_version,
+        binding.transcendental_model_id.as_deref(),
+    ) {
+        (ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1, None) => {
+            // V1 stores creator-runtime endpoint bits. Replaying native
+            // trigonometry here would reject valid cross-runtime archives.
+            Ok(())
+        }
+        (
+            ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2,
+            Some(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1),
+        ) if deterministic_model_supported => {
+            let (expected_x, expected_y) = ori_numeric::deterministic_polar_endpoint_v2(
+                polar.adopted_start_x_mm,
+                polar.adopted_start_y_mm,
+                length_mm,
+                angle_degrees,
+            )
+            .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+            if expected_x.to_bits() != binding.adopted_x_mm.to_bits()
+                || expected_y.to_bits() != binding.adopted_y_mm.to_bits()
+            {
+                return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+            }
+            Ok(())
+        }
+        _ => Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned()),
+    }
 }
 
 fn contains_geometry_reference(source: &str) -> bool {
@@ -4803,6 +5000,15 @@ fn validate_coordinate_expression_pair(
         return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
     }
     Ok(())
+}
+
+fn validate_coordinate_expression_pair_sources(
+    x_source: &str,
+    y_source: &str,
+) -> Result<(), String> {
+    evaluate_finite_millimetre_pair(x_source.to_owned(), y_source.to_owned())
+        .map(|_| ())
+        .map_err(map_loaded_numeric_expression_error)
 }
 
 fn map_loaded_numeric_expression_error(error: PositiveMillimetrePairError) -> String {
@@ -5849,6 +6055,10 @@ pub fn run() {
         });
     });
 }
+
+#[cfg(test)]
+#[path = "geometry_reference_compat_tests.rs"]
+mod geometry_reference_compat_tests;
 
 #[cfg(test)]
 mod tests;

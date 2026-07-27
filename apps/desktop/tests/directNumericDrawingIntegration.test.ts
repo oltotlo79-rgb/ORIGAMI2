@@ -7,6 +7,10 @@ const appSource = [
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/SelectedVertexInspector.tsx', import.meta.url), 'utf8'),
 ].join('\n')
+const nativePatternEditSource = readFileSync(
+  new URL('../src-tauri/src/pattern_edit_commands.rs', import.meta.url),
+  'utf8',
+)
 
 test('the empty inspector exposes direct coordinate vertex creation in both locales', () => {
   assert.match(appSource, /name="direct_x_display"/)
@@ -38,16 +42,26 @@ test('a selected vertex can create an endpoint from an explicit length and angle
   assert.match(appSource, /name="polar_edge_kind"/)
   assert.match(appSource, /value="polar_endpoint"/)
   assert.match(appSource, /Draw line by length and angle/)
+  const polarStart = appSource.indexOf("form.get('vertex_action') === 'polar_endpoint'")
+  const polarEnd = appSource.indexOf('const xDisplayExpression', polarStart)
+  assert.notEqual(polarStart, -1)
+  assert.notEqual(polarEnd, -1)
+  const polarSubmit = appSource.slice(polarStart, polarEnd)
+  assert.doesNotMatch(polarSubmit, /Math\.(?:cos|sin)/u)
   assert.match(
-    appSource,
-    /form\.get\('vertex_action'\) === 'polar_endpoint'[\s\S]*?Math\.cos[\s\S]*?Math\.sin/,
-  )
-  assert.match(
-    appSource,
+    polarSubmit,
     /polar_endpoint[\s\S]*?await runNativeEdit[\s\S]*?await addConnectedVertex/,
   )
   assert.match(
     appSource,
     /polar_endpoint[\s\S]*?evaluateDisplayLengthExpression[\s\S]*?evaluateFiniteNumericExpression/,
+  )
+  assert.match(
+    nativePatternEditSource,
+    /fn add_connected_vertex\([\s\S]*?deterministic_polar_endpoint_with_model_support[\s\S]*?Command::AddConnectedVertex/u,
+  )
+  assert.doesNotMatch(
+    nativePatternEditSource,
+    /fn add_connected_vertex\([\s\S]*?\n\s+x: f64,[\s\S]*?\n\s+y: f64,/u,
   )
 })

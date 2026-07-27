@@ -10,6 +10,7 @@ ori-core = { path = "../ori-core" }
 ori-domain = { path = "../ori-domain" }
 ori-geometry = { path = "../ori-geometry" }
 ori-instructions = { path = "../ori-instructions" }
+ori-numeric = { path = "../ori-numeric" }
 ori-topology = { path = "../ori-topology" }
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 quick-xml = { version = "0.41.0", default-features = false }

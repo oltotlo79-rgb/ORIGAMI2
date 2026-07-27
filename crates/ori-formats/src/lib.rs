@@ -92,7 +92,8 @@ pub use ori2::{
     LayerEvidenceArchiveKindV1, LayerEvidenceArchiveV1, LayerEvidenceCellV1, LayerEvidenceFaceV1,
     LayerEvidenceHingeAngleV1, LayerEvidencePairOrderV1, MAX_EDITOR_HISTORY_JSON_BYTES,
     MAX_LAYER_EVIDENCE_JSON_BYTES_V1, ORI2_CONTAINER_IDENTIFIER, ORI2_EDITOR_HISTORY_PATH,
-    ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
+    ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1,
+    ORI2_FEATURE_DETERMINISTIC_GEOMETRY_REFERENCES_V2, ORI2_FEATURE_EDITOR_HISTORY_V1,
     ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
     ORI2_FEATURE_LAYER_EVIDENCE_V1, ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
     ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, ORI2_FEATURE_SPECULATIVE_UNPROVEN_FOLD_V1,
@@ -132,6 +133,8 @@ pub use svg::{
 
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
 pub const PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION: u32 = 1;
+pub const VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1: u32 = 1;
+pub const VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2: u32 = 2;
 pub const MAX_PROJECT_NUMERIC_EXPRESSION_SOURCE_BYTES: usize = 4_096;
 /// Non-relaxable byte ceiling for directly supplied `project.json` input.
 pub const MAX_PROJECT_JSON_BYTES: usize = 128 * 1024 * 1024;
@@ -213,6 +216,8 @@ impl RectangularPaperCreationExpressions {
 #[serde(deny_unknown_fields)]
 pub struct VertexCoordinateExpressions {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcendental_model_id: Option<String>,
     pub vertex: VertexId,
     pub x_source: String,
     pub y_source: String,
@@ -231,16 +236,131 @@ impl VertexCoordinateExpressions {
         adopted_x_mm: f64,
         adopted_y_mm: f64,
     ) -> Self {
-        Self {
-            schema_version: PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION,
+        Self::new_with_geometry_reference_model_support(
             vertex,
-            x_source: x_source.into(),
-            y_source: y_source.into(),
+            x_source,
+            y_source,
+            adopted_x_mm,
+            adopted_y_mm,
+            ori_numeric::deterministic_transcendental_model_supported_v1(),
+        )
+    }
+
+    fn new_with_geometry_reference_model_support(
+        vertex: VertexId,
+        x_source: impl Into<String>,
+        y_source: impl Into<String>,
+        adopted_x_mm: f64,
+        adopted_y_mm: f64,
+        deterministic_model_supported: bool,
+    ) -> Self {
+        let x_source = x_source.into();
+        let y_source = y_source.into();
+        let uses_edge_geometry_reference =
+            sources_use_valid_edge_geometry_references(&x_source, &y_source);
+        let issues_deterministic_model =
+            uses_edge_geometry_reference && deterministic_model_supported;
+        Self {
+            schema_version: if issues_deterministic_model {
+                VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2
+            } else {
+                VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1
+            },
+            transcendental_model_id: issues_deterministic_model
+                .then(|| ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.to_owned()),
+            vertex,
+            x_source,
+            y_source,
             adopted_x_mm,
             adopted_y_mm,
             polar_construction: None,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_geometry_reference_model_support_for_test(
+        vertex: VertexId,
+        x_source: impl Into<String>,
+        y_source: impl Into<String>,
+        adopted_x_mm: f64,
+        adopted_y_mm: f64,
+        deterministic_model_supported: bool,
+    ) -> Self {
+        Self::new_with_geometry_reference_model_support(
+            vertex,
+            x_source,
+            y_source,
+            adopted_x_mm,
+            adopted_y_mm,
+            deterministic_model_supported,
+        )
+    }
+
+    #[must_use]
+    pub fn uses_edge_geometry_reference(&self) -> bool {
+        sources_use_valid_edge_geometry_references(&self.x_source, &self.y_source)
+    }
+
+    #[must_use]
+    pub fn uses_legacy_edge_geometry_reference_v1(&self) -> bool {
+        self.schema_version == VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1
+            && self.transcendental_model_id.is_none()
+            && self.uses_edge_geometry_reference()
+    }
+}
+
+fn sources_use_valid_edge_geometry_references(x_source: &str, y_source: &str) -> bool {
+    match (
+        source_edge_geometry_reference_count(x_source),
+        source_edge_geometry_reference_count(y_source),
+    ) {
+        (Some(x_count), Some(y_count)) => {
+            x_count.checked_add(y_count).is_some_and(|total| total > 0)
+        }
+        _ => false,
+    }
+}
+
+fn source_edge_geometry_reference_count(source: &str) -> Option<usize> {
+    let mut count = 0_usize;
+    let mut cursor = 0_usize;
+    while let Some(relative_start) = source.get(cursor..)?.find("e.") {
+        let start = cursor.checked_add(relative_start)?;
+        let id_end = start.checked_add(38)?;
+        let uuid = source.get(start + 2..id_end)?;
+        let edge: EdgeId = serde_json::from_str(&format!("\"{uuid}\"")).ok()?;
+        if edge.canonical_bytes().iter().all(|byte| *byte == 0) {
+            return None;
+        }
+        let canonical = serde_json::to_value(edge)
+            .ok()?
+            .as_str()
+            .map(str::to_owned)?;
+        if canonical != uuid {
+            return None;
+        }
+        let suffix = source.get(id_end..)?;
+        let property_bytes = if suffix.starts_with(".length") {
+            ".length".len()
+        } else if suffix.starts_with(".angle") {
+            ".angle".len()
+        } else {
+            return None;
+        };
+        let token_end = id_end.checked_add(property_bytes)?;
+        if source
+            .get(token_end..)
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
+            })
+        {
+            return None;
+        }
+        count = count.checked_add(1)?;
+        cursor = token_end;
+    }
+    Some(count)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -296,6 +416,24 @@ impl ProjectNumericExpressions {
             && self.vertex_coordinates.is_empty()
             && self.vertex_undo_stack.is_empty()
             && self.vertex_redo_stack.is_empty()
+    }
+
+    #[must_use]
+    pub(crate) fn requires_deterministic_geometry_references_v2(&self) -> bool {
+        self.vertex_coordinates
+            .iter()
+            .chain(
+                self.vertex_undo_stack
+                    .iter()
+                    .chain(&self.vertex_redo_stack)
+                    .flatten()
+                    .flat_map(|transition| &transition.changes)
+                    .flat_map(|change| change.before.iter().chain(&change.after)),
+            )
+            .any(|binding| {
+                binding.schema_version
+                    == VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2
+            })
     }
 }
 
@@ -1334,7 +1472,20 @@ fn valid_numeric_expression_source(source: &str) -> bool {
 fn validate_vertex_coordinate_expression(
     binding: &VertexCoordinateExpressions,
 ) -> Result<(), FormatError> {
-    if binding.schema_version != PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION
+    if !matches!(
+        (
+            binding.schema_version,
+            binding.transcendental_model_id.as_deref()
+        ),
+        (VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1, None)
+            | (
+                VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2,
+                Some(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1)
+            )
+    ) || (binding.schema_version
+        == VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2
+        && !binding.uses_edge_geometry_reference()
+        && binding.polar_construction.is_none())
         || !valid_numeric_expression_source(&binding.x_source)
         || !valid_numeric_expression_source(&binding.y_source)
         || !binding.adopted_x_mm.is_finite()
@@ -2564,6 +2715,169 @@ mod tests {
                 .expect("JSON is UTF-8")
                 .contains("\"schema_version\": 1")
         );
+    }
+
+    #[test]
+    fn json_round_trip_preserves_adjacent_negative_coordinate_bits() {
+        let mut original = sample_document();
+        let value = f64::from_bits(0xbfcb_cb65_4643_d551);
+        original.crease_pattern.vertices[0].position.y = value;
+        let vertex = original.crease_pattern.vertices[0].clone();
+        original
+            .numeric_expressions
+            .vertex_coordinates
+            .push(VertexCoordinateExpressions::new(
+                vertex.id,
+                vertex.position.x.to_string(),
+                value.to_string(),
+                vertex.position.x,
+                value,
+            ));
+
+        let bytes = write_project_json(&original).expect("write adjacent negative coordinate");
+        let restored = read_project_json(&bytes).expect("read adjacent negative coordinate");
+
+        assert_eq!(
+            restored.crease_pattern.vertices[0].position.y.to_bits(),
+            value.to_bits()
+        );
+        assert_eq!(
+            restored.numeric_expressions.vertex_coordinates[0]
+                .adopted_y_mm
+                .to_bits(),
+            value.to_bits()
+        );
+    }
+
+    #[test]
+    fn edge_geometry_references_use_strict_legacy_and_deterministic_models() {
+        let mut deterministic = sample_document();
+        let edge = serde_json::to_value(deterministic.crease_pattern.edges[0].id)
+            .expect("edge ID")
+            .as_str()
+            .expect("wire edge ID")
+            .to_owned();
+        let vertex = deterministic.crease_pattern.vertices[0].clone();
+        let production_binding = VertexCoordinateExpressions::new(
+            vertex.id,
+            format!("e.{edge}.length"),
+            vertex.position.y.to_string(),
+            vertex.position.x,
+            vertex.position.y,
+        );
+        assert_eq!(
+            production_binding.schema_version,
+            if ori_numeric::deterministic_transcendental_model_supported_v1() {
+                VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2
+            } else {
+                VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1
+            }
+        );
+        let binding =
+            VertexCoordinateExpressions::new_with_geometry_reference_model_support_for_test(
+                vertex.id,
+                format!("e.{edge}.length"),
+                vertex.position.y.to_string(),
+                vertex.position.x,
+                vertex.position.y,
+                true,
+            );
+        assert_eq!(
+            binding.schema_version,
+            VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2
+        );
+        assert_eq!(
+            binding.transcendental_model_id.as_deref(),
+            Some(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1)
+        );
+        deterministic
+            .numeric_expressions
+            .vertex_coordinates
+            .push(binding.clone());
+        let bytes = write_project_json(&deterministic).expect("write deterministic reference");
+        assert_eq!(
+            read_project_json(&bytes)
+                .expect("read deterministic reference")
+                .numeric_expressions,
+            deterministic.numeric_expressions
+        );
+
+        let mut legacy = deterministic.clone();
+        let legacy_binding = &mut legacy.numeric_expressions.vertex_coordinates[0];
+        legacy_binding.schema_version = VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1;
+        legacy_binding.transcendental_model_id = None;
+        let legacy_bytes = write_project_json(&legacy).expect("write legacy reference");
+        assert!(
+            !String::from_utf8(legacy_bytes)
+                .expect("legacy JSON is UTF-8")
+                .contains("transcendental_model_id")
+        );
+
+        let canonical_uuid_ending_in_e = "12345678-1234-4234-8234-123456789abe";
+        assert_eq!(
+            source_edge_geometry_reference_count(&format!("e.{canonical_uuid_ending_in_e}.length")),
+            Some(1),
+            "the property separator must not be rescanned with the UUID's final `e`"
+        );
+
+        for (schema_version, model_id) in [
+            (
+                VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1,
+                Some(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1),
+            ),
+            (
+                VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2,
+                None,
+            ),
+            (
+                VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2,
+                Some("forged_model"),
+            ),
+            (u32::MAX, None),
+        ] {
+            let mut invalid = deterministic.clone();
+            let invalid_binding = &mut invalid.numeric_expressions.vertex_coordinates[0];
+            invalid_binding.schema_version = schema_version;
+            invalid_binding.transcendental_model_id = model_id.map(str::to_owned);
+            assert!(matches!(
+                write_project_json(&invalid),
+                Err(FormatError::InvalidNumericExpressions)
+            ));
+        }
+
+        let malformed_sources = [
+            "e.not-a-canonical-uuid-value-000000000.length".to_owned(),
+            "e.00000000-0000-0000-0000-000000000000.length".to_owned(),
+            format!("e.{}.length", edge.to_uppercase()),
+            format!("e.{edge}.lengthjunk"),
+            format!("e.{edge}.angle.foo"),
+        ];
+        for malformed_source in malformed_sources {
+            let mut invalid = deterministic.clone();
+            invalid.numeric_expressions.vertex_coordinates[0].x_source = malformed_source;
+            assert!(matches!(
+                write_project_json(&invalid),
+                Err(FormatError::InvalidNumericExpressions)
+            ));
+            let unchecked = serde_json::to_vec(&invalid).expect("serialize unchecked fixture");
+            assert!(matches!(
+                read_project_json(&unchecked),
+                Err(FormatError::InvalidNumericExpressions)
+            ));
+        }
+
+        let mut mixed = deterministic;
+        mixed.numeric_expressions.vertex_coordinates[0].y_source =
+            "e.00000000-0000-0000-0000-000000000000.angle".to_owned();
+        assert!(matches!(
+            write_project_json(&mixed),
+            Err(FormatError::InvalidNumericExpressions)
+        ));
+        let unchecked = serde_json::to_vec(&mixed).expect("serialize unchecked mixed fixture");
+        assert!(matches!(
+            read_project_json(&unchecked),
+            Err(FormatError::InvalidNumericExpressions)
+        ));
     }
 
     #[test]

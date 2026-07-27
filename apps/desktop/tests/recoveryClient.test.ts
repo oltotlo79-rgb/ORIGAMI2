@@ -2,6 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+  type VertexCoordinateExpressionBinding,
+} from '../src/lib/coreClient.ts'
+import {
+  isUnverifiedLegacyV1EdgeGeometryBinding,
+} from '../src/lib/edgeGeometryReferences.ts'
+import {
   createRecoveryClient,
   createWindowCloseHandshake,
   createWindowCloseHandshakeState,
@@ -277,6 +284,221 @@ test('restore rejects identity, fresh-editor, envelope, and nested DTO drift', (
       parseRestoredRecoverySnapshot(invalid, AVAILABLE, EXPECTED),
       null,
     )
+  }
+})
+
+test('recovery admits legacy geometry references and only the deterministic V2 model', () => {
+  const binding = (
+    versioned: Record<string, unknown>,
+    xSource = `e.${RECOVERY_ID}.length`,
+    ySource = `e.${RECOVERY_ID}.angle`,
+  ) => validSnapshot({
+    numeric_expressions: {
+      vertex_coordinates: [{
+        ...versioned,
+        vertex: RECOVERY_ID,
+        x_source: xSource,
+        y_source: ySource,
+        adopted_x_mm: 1,
+        adopted_y_mm: 2,
+      }],
+    },
+  })
+
+  for (const versioned of [
+    { schema_version: 1 },
+    {
+      schema_version: 2,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    },
+  ]) {
+    assert.ok(
+      parseRestoredRecoverySnapshot(binding(versioned), AVAILABLE, EXPECTED),
+    )
+  }
+
+  for (const versioned of [
+    {
+      schema_version: 1,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    },
+    { schema_version: 2 },
+    {
+      schema_version: 2,
+      transcendental_model_id: 'forged_model',
+    },
+    {
+      schema_version: 2,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+      future: true,
+    },
+  ]) {
+    assert.equal(
+      parseRestoredRecoverySnapshot(binding(versioned), AVAILABLE, EXPECTED),
+      null,
+    )
+  }
+  assert.equal(
+    parseRestoredRecoverySnapshot(
+      binding({
+        schema_version: 2,
+        transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+      }, '1', '2'),
+      AVAILABLE,
+      EXPECTED,
+    ),
+    null,
+  )
+})
+
+test('recovery admits deterministic V2 polar bindings without edge references', () => {
+  const polar = {
+    schema_version: 1,
+    start_vertex: RECOVERY_ID,
+    adopted_start_x_mm: 1,
+    adopted_start_y_mm: 2,
+    length_source: '3.75',
+    angle_degrees_source: '37.5',
+    adopted_length_mm: 3.75,
+    adopted_angle_degrees: 37.5,
+  }
+  const binding = (
+    versioned: Record<string, unknown>,
+    polarConstruction: unknown = polar,
+  ) => validSnapshot({
+    numeric_expressions: {
+      vertex_coordinates: [{
+        ...versioned,
+        vertex: RECOVERY_ID,
+        x_source: '4.224051852714362',
+        y_source: '0.5328697807033036',
+        adopted_x_mm: 4.224051852714362,
+        adopted_y_mm: 0.5328697807033036,
+        polar_construction: polarConstruction,
+      }],
+    },
+  })
+
+  assert.ok(parseRestoredRecoverySnapshot(binding({
+    schema_version: 2,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+  }), AVAILABLE, EXPECTED))
+  assert.ok(parseRestoredRecoverySnapshot(binding({
+    schema_version: 1,
+  }), AVAILABLE, EXPECTED))
+  assert.equal(
+    parseRestoredRecoverySnapshot(binding({
+      schema_version: 2,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    }, { ...polar, schema_version: 2 }), AVAILABLE, EXPECTED),
+    null,
+  )
+  assert.equal(
+    parseRestoredRecoverySnapshot(validSnapshot({
+      numeric_expressions: {
+        vertex_coordinates: [{
+          schema_version: 2,
+          transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+          vertex: RECOVERY_ID,
+          x_source: '1',
+          y_source: '2',
+          adopted_x_mm: 1,
+          adopted_y_mm: 2,
+        }],
+      },
+    }), AVAILABLE, EXPECTED),
+    null,
+  )
+})
+
+test('recovery scans every edge-geometry reference with Rust-compatible token rules', () => {
+  const v2 = {
+    schema_version: 2,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+  }
+  const length = `e.${RECOVERY_ID}.length`
+  const angle = `e.${RECOVERY_ID}.angle`
+  const endingE = 'e.12345678-1234-4234-8234-123456789abe.length'
+  const binding = (xSource: string, ySource: string) => validSnapshot({
+    numeric_expressions: {
+      vertex_coordinates: [{
+        ...v2,
+        vertex: RECOVERY_ID,
+        x_source: xSource,
+        y_source: ySource,
+        adopted_x_mm: 1,
+        adopted_y_mm: 2,
+      }],
+    },
+  })
+
+  for (const [xSource, ySource] of [
+    [length, '2'],
+    ['1', angle],
+    [`(${length}) + (${angle})`, `${angle} / 2`],
+    [endingE, '2'],
+  ]) {
+    assert.ok(
+      parseRestoredRecoverySnapshot(
+        binding(xSource, ySource),
+        AVAILABLE,
+        EXPECTED,
+      ),
+    )
+  }
+
+  const nil = '00000000-0000-0000-0000-000000000000'
+  const uppercase = RECOVERY_ID.toUpperCase()
+  for (const [fixture, xSource, ySource] of [
+    ['malformed UUID', 'e.not-a-uuid.length', angle],
+    ['nil UUID', `e.${nil}.length`, angle],
+    ['uppercase UUID', `e.${uppercase}.length`, angle],
+    ['missing property', `e.${RECOVERY_ID}`, angle],
+    ['unknown property', `e.${RECOVERY_ID}.width`, angle],
+    ['trailing ASCII letter', `${length}x`, angle],
+    ['trailing ASCII digit', `${angle}0`, length],
+    ['trailing underscore', `${length}_suffix`, angle],
+    ['trailing dot', `${angle}.degrees`, length],
+    ['mixed valid and malformed in one source', `${length} + e.bad`, '2'],
+    [
+      'mixed valid and uppercase across sources',
+      length,
+      `${angle} + e.${uppercase}.angle`,
+    ],
+  ] as const) {
+    assert.equal(
+      parseRestoredRecoverySnapshot(
+        binding(xSource, ySource),
+        AVAILABLE,
+        EXPECTED,
+      ),
+      null,
+      fixture,
+    )
+  }
+})
+
+test('legacy edge-geometry warning helper is lexical and grants no model authority', () => {
+  const legacy = {
+    schema_version: 1,
+    vertex: RECOVERY_ID,
+    x_source: `e.${RECOVERY_ID}.length`,
+    y_source: '2',
+    adopted_x_mm: 1,
+    adopted_y_mm: 2,
+  } satisfies VertexCoordinateExpressionBinding
+  assert.equal(isUnverifiedLegacyV1EdgeGeometryBinding(legacy), true)
+
+  for (const binding of [
+    { ...legacy, x_source: '1' },
+    { ...legacy, x_source: `e.${RECOVERY_ID.toUpperCase()}.length` },
+    {
+      ...legacy,
+      schema_version: 2,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    },
+  ] as VertexCoordinateExpressionBinding[]) {
+    assert.equal(isUnverifiedLegacyV1EdgeGeometryBinding(binding), false)
   }
 })
 

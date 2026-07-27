@@ -3166,7 +3166,6 @@ function App() {
       (vertex) => vertex.id === selectedVertex.id,
     )
     if (currentVertices.length !== 1) return
-    const currentVertex = currentVertices[0]
     const currentUnit = resolveLengthDisplayUnit(current)
     const form = new FormData(event.currentTarget)
     const submitter = (event.nativeEvent as SubmitEvent).submitter
@@ -3241,13 +3240,6 @@ function App() {
         setCoreStatus(appMessage(APP_TEXT.enterAPositiveFiniteLengthAFiniteAngleAndAn))
         return
       }
-      const angleRadians = angleDegrees * Math.PI / 180
-      const x = currentVertex.position.x + length * Math.cos(angleRadians)
-      const y = currentVertex.position.y + length * Math.sin(angleRadians)
-      if (!Number.isFinite(x) || !Number.isFinite(y)) {
-        setCoreStatus(appMessage(APP_TEXT.theSpecifiedLengthAndAngleDoNotProduceFiniteCoordinates))
-        return
-      }
       const previousVertexIds = new Set(
         current.crease_pattern.vertices.map(({ id }) => id),
       )
@@ -3262,15 +3254,11 @@ function App() {
           revision,
           projectInstanceId,
           selectedVertex.id,
-          x,
-          y,
           millimetreExpressionSource(
             lengthDisplayExpression,
             currentUnit.millimetresPerUnit,
           ),
           angleDegreesExpression,
-          length,
-          angleDegrees,
           edgeKind,
         )
         result.snapshot = snapshot

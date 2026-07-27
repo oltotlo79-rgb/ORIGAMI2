@@ -64,6 +64,9 @@ import {
   normalizeGeometricConstraintSolvePreview,
   type GeometricConstraintSolvePreview,
 } from './geometricConstraintSolvePreview.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from './deterministicTranscendentalModel.ts'
 import type {
   UnprovenHistoryStatusCountsView,
 } from './proofProgressModel.ts'
@@ -1785,8 +1788,9 @@ export interface NumericExpressionBinding {
       adopted_height_mm: number
 }
 
-export interface VertexCoordinateExpressionBinding {
-  schema_version: 1
+export { DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1 }
+
+type VertexCoordinateExpressionBindingBase = Readonly<{
   vertex: string
   x_source: string
   y_source: string
@@ -1802,7 +1806,19 @@ export interface VertexCoordinateExpressionBinding {
     adopted_length_mm: number
     adopted_angle_degrees: number
   }
-}
+}>
+
+export type VertexCoordinateExpressionBinding =
+  VertexCoordinateExpressionBindingBase & (
+    | Readonly<{
+      schema_version: 1
+      transcendental_model_id?: never
+    }>
+    | Readonly<{
+      schema_version: 2
+      transcendental_model_id: typeof DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+    }>
+  )
 
 export interface VertexCoordinateExpressionTransition {
   changes: Array<{
@@ -5075,12 +5091,8 @@ export function addConnectedVertex(
   expectedRevision: number,
   expectedProjectInstanceId: string,
   start: string,
-  x: number,
-  y: number,
   lengthExpression: string,
   angleDegreesExpression: string,
-  lengthMm: number,
-  angleDegrees: number,
   kind: 'mountain' | 'valley' | 'auxiliary' | 'cut',
 ) {
   return invoke<ProjectSnapshot>('add_connected_vertex', {
@@ -5088,12 +5100,8 @@ export function addConnectedVertex(
     expectedProjectId,
     expectedRevision,
     start,
-    x,
-    y,
     lengthExpression,
     angleDegreesExpression,
-    lengthMm,
-    angleDegrees,
     kind,
   })
 }

@@ -2478,6 +2478,7 @@ dependencies = [
  "ori-domain",
  "ori-geometry",
  "ori-instructions",
+ "ori-numeric",
  "ori-topology",
  "quick-xml",
  "serde",

@@ -23,6 +23,8 @@ pub const ORI2_LAYER_EVIDENCE_PATH: &str = "layer-evidence.json";
 pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
 pub const ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1: &str = "declarative_instruction_steps_v1";
 pub const ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1: &str = "numeric_expressions_v1";
+pub const ORI2_FEATURE_DETERMINISTIC_GEOMETRY_REFERENCES_V2: &str =
+    "deterministic_geometry_references_v2";
 pub const ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1: &str = "geometric_constraints_v1";
 pub const ORI2_FEATURE_LAYERS_V1: &str = "layers_v1";
 pub const ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1: &str = "reference_model_assets_v1";
@@ -362,6 +364,12 @@ pub(crate) fn required_features_for_project_archive_v1(
     if !document.numeric_expressions.is_empty() {
         required_features.push(ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned());
     }
+    if document
+        .numeric_expressions
+        .requires_deterministic_geometry_references_v2()
+    {
+        required_features.push(ORI2_FEATURE_DETERMINISTIC_GEOMETRY_REFERENCES_V2.to_owned());
+    }
     if !document.geometric_constraints.is_empty() {
         required_features.push(ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1.to_owned());
     }
@@ -389,6 +397,7 @@ pub(crate) fn is_known_required_feature_v1(feature: &str) -> bool {
         ORI2_FEATURE_INSTRUCTION_TIMELINE_V1
             | ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1
             | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
+            | ORI2_FEATURE_DETERMINISTIC_GEOMETRY_REFERENCES_V2
             | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
             | ORI2_FEATURE_LAYERS_V1
             | ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
@@ -2761,6 +2770,67 @@ mod tests {
         );
         let restored = read_project_ori2(&bytes).expect("read expressions");
         assert_eq!(restored.numeric_expressions, original.numeric_expressions);
+    }
+
+    #[test]
+    fn deterministic_geometry_reference_declares_its_required_feature_and_model() {
+        let mut original = sample_document();
+        let edge = serde_json::to_value(original.crease_pattern.edges[0].id)
+            .expect("edge ID")
+            .as_str()
+            .expect("wire edge ID")
+            .to_owned();
+        let vertex = original.crease_pattern.vertices[0].clone();
+        let binding =
+            crate::VertexCoordinateExpressions::new_with_geometry_reference_model_support_for_test(
+                vertex.id,
+                format!("e.{edge}.length"),
+                vertex.position.y.to_string(),
+                vertex.position.x,
+                vertex.position.y,
+                true,
+            );
+        original
+            .numeric_expressions
+            .vertex_coordinates
+            .push(binding.clone());
+
+        let bytes = write_project_ori2(&original).expect("write deterministic geometry reference");
+        assert_eq!(
+            manifest_from_archive(&bytes).required_features,
+            vec![
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned(),
+                ORI2_FEATURE_DETERMINISTIC_GEOMETRY_REFERENCES_V2.to_owned(),
+            ]
+        );
+        assert_eq!(
+            read_project_ori2(&bytes)
+                .expect("read deterministic geometry reference")
+                .numeric_expressions,
+            original.numeric_expressions
+        );
+
+        let mut history_only = original;
+        history_only.numeric_expressions.vertex_coordinates.clear();
+        history_only
+            .numeric_expressions
+            .vertex_undo_stack
+            .push(Some(crate::VertexCoordinateExpressionTransition {
+                changes: vec![crate::VertexCoordinateExpressionChange {
+                    vertex: binding.vertex,
+                    before: None,
+                    after: Some(binding),
+                }],
+            }));
+        let history_bytes = write_project_ori2(&history_only)
+            .expect("write deterministic geometry reference history");
+        assert_eq!(
+            manifest_from_archive(&history_bytes).required_features,
+            vec![
+                ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1.to_owned(),
+                ORI2_FEATURE_DETERMINISTIC_GEOMETRY_REFERENCES_V2.to_owned(),
+            ]
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ repository = "https://github.com/oltotlo79-rgb/ORIGAMI2"
 num-bigint = "=0.4.8"
 rayon = "=1.12.0"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 unicode-normalization = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }

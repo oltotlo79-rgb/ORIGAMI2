@@ -11618,7 +11618,8 @@ fn saved_edge_length_and_angle_follow_endpoint_dag() {
             53.13010235415598,
         ),
     ];
-    let values = reevaluate_saved_vertex_expressions(&project).unwrap();
+    let values =
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&project, true).unwrap();
     let point = values
         .iter()
         .find(|(vertex, _)| *vertex == derived)
@@ -11640,7 +11641,9 @@ fn saved_edge_reference_cycle_and_dangling_fail_closed() {
         0.0,
         0.0,
     )];
-    assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    assert!(
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&project, true).is_err()
+    );
     project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
         edge.end,
         edge_reference(EdgeId::new(), "length"),
@@ -11648,7 +11651,9 @@ fn saved_edge_reference_cycle_and_dangling_fail_closed() {
         0.0,
         0.0,
     )];
-    assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    assert!(
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&project, true).is_err()
+    );
 }
 
 #[test]
@@ -11681,7 +11686,8 @@ fn edge_angle_reversal_and_zero_boundary_are_canonical() {
             180.0,
         ),
     ];
-    let values = reevaluate_saved_vertex_expressions(&project).unwrap();
+    let values =
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&project, true).unwrap();
     let angle = values.iter().find(|(id, _)| *id == derived).unwrap().1;
     assert_eq!(angle, Point2::new(0.0, 180.0));
 }
@@ -11703,7 +11709,9 @@ fn zero_length_edge_reference_fails_closed() {
         VertexCoordinateExpressions::new(edge.end, "1", "1", 0.0, 0.0),
         VertexCoordinateExpressions::new(derived, edge_reference(edge.id, "length"), "0", 0.0, 0.0),
     ];
-    assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    assert!(
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&project, true).is_err()
+    );
 }
 
 #[test]
@@ -11736,10 +11744,14 @@ fn shared_edge_chain_is_memoized_and_indirect_cycle_is_rejected() {
             0.0,
         ),
     ];
-    assert!(reevaluate_saved_vertex_expressions(&project).is_ok());
+    assert!(
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&project, true).is_ok()
+    );
     project.numeric_expressions.vertex_coordinates[1].x_source =
         edge_reference(second_edge, "length");
-    assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    assert!(
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&project, true).is_err()
+    );
 }
 
 #[test]

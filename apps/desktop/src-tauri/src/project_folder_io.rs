@@ -32,7 +32,7 @@ use tauri_plugin_dialog::DialogExt;
 use super::{
     AppState, ProjectExpectation, ProjectSnapshot, ProjectState, commit_project_replacement,
     ensure_project_expectation, lock_project, recovery::RecoveryRuntime, snapshot,
-    validate_document_instruction_poses, validate_loaded_numeric_expression_bindings,
+    validate_document_instruction_poses, validate_loaded_numeric_expression_archive,
 };
 
 #[cfg(unix)]
@@ -499,7 +499,7 @@ fn error_string(error: ProjectFolderFilesystemError) -> String {
 
 fn load_project_folder(path: PathBuf) -> FsResult<LoadedProjectFolder> {
     let artifact = load_project_folder_artifact(&path, ProjectFolderLimits::default())?;
-    validate_loaded_numeric_expression_bindings(&artifact.archive().document)
+    validate_loaded_numeric_expression_archive(artifact.archive())
         .map_err(|_| ProjectFolderFilesystemError::InvalidTree)?;
     let mut replacement = ProjectState::from_project_archive(artifact.into_archive(), path)
         .map_err(|_| ProjectFolderFilesystemError::InvalidTree)?;

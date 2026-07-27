@@ -8,7 +8,7 @@ import { APP_TEXT as TEXT } from '../src/lib/appText.ts'
 import { formatLocalizedText } from '../src/lib/i18n.ts'
 
 test('app text catalog is closed and deeply frozen', () => {
-  assert.equal(Object.keys(TEXT).length, 861)
+  assert.equal(Object.keys(TEXT).length, 862)
   assert.equal(Object.isFrozen(TEXT), true)
 
   for (const entry of Object.values(TEXT)) {
@@ -121,6 +121,6 @@ test('App and its extracted helpers reference the catalog for every fixed locali
       ),
       0,
     ),
-    933,
+    934,
   )
 })

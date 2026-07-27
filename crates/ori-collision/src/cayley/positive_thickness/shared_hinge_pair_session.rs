@@ -10,7 +10,7 @@ use super::projected_pair_authority::{
 use super::*;
 
 #[derive(Debug)]
-pub(super) struct SharedHingePairDiagnosticSessionV1<'pose> {
+pub(crate) struct SharedHingePairDiagnosticSessionV1<'pose> {
     bound: BoundMaterialTreePose<'pose>,
     exact: RationalCayleyTreePose<'pose>,
     paper_thickness_bits: u64,
@@ -21,25 +21,13 @@ pub(super) struct SharedHingePairDiagnosticSessionV1<'pose> {
 }
 
 impl<'pose> SharedHingePairDiagnosticSessionV1<'pose> {
-    pub(super) fn diagnose(
+    pub(crate) fn diagnose(
         &self,
         target_edge: Option<EdgeId>,
     ) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingeSolidDiagnosticErrorV1>
     {
         let paper_thickness_mm = f64::from_bits(self.paper_thickness_bits);
-        if !positive_finite_binary64(paper_thickness_mm)
-            || !self.exact.is_for(self.bound)
-            || self.full_face_count != self.exact.faces.len()
-            || self.full_face_count != self.bound.model().face_ids().len()
-            || self.full_hinge_count != self.exact.hinges.len()
-            || self.full_hinge_count != self.bound.model().hinges().len()
-            || self.full_hinge_count != self.bound.pose().hinge_angles().len()
-            || projected_tree_counts_fit_limits_v1(
-                self.full_face_count,
-                self.full_hinge_count,
-                self.limits,
-            ) != Some(self.excluded_face_index_bindings)
-        {
+        if !self.revalidates_for(self.bound, paper_thickness_mm) {
             return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
         }
         diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1(
@@ -48,6 +36,30 @@ impl<'pose> SharedHingePairDiagnosticSessionV1<'pose> {
             paper_thickness_mm,
             target_edge,
         )
+    }
+
+    pub(crate) fn revalidates_for(
+        &self,
+        bound: BoundMaterialTreePose<'_>,
+        paper_thickness_mm: f64,
+    ) -> bool {
+        positive_finite_binary64(paper_thickness_mm)
+            && self.paper_thickness_bits == paper_thickness_mm.to_bits()
+            && std::ptr::eq(self.bound.model(), bound.model())
+            && std::ptr::eq(self.bound.pose(), bound.pose())
+            && self.exact.is_for(bound)
+            && self.full_face_count == self.exact.faces.len()
+            && self.full_face_count == bound.model().face_ids().len()
+            && self.full_hinge_count == self.exact.hinges.len()
+            && self.full_hinge_count == bound.model().hinges().len()
+            && self.full_hinge_count == bound.pose().hinge_angles().len()
+            && bound.model().face_ids() == bound.pose().face_ids()
+            && bound.model().hinges() == bound.pose().hinges()
+            && projected_tree_counts_fit_limits_v1(
+                self.full_face_count,
+                self.full_hinge_count,
+                self.limits,
+            ) == Some(self.excluded_face_index_bindings)
     }
 
     #[cfg(test)]
@@ -71,7 +83,7 @@ impl<'pose> SharedHingePairDiagnosticSessionV1<'pose> {
     }
 }
 
-pub(super) fn prepare_shared_hinge_pair_diagnostic_session_v1<'pose>(
+pub(crate) fn prepare_shared_hinge_pair_diagnostic_session_v1<'pose>(
     bound: BoundMaterialTreePose<'pose>,
     paper_thickness_mm: f64,
 ) -> Result<Option<SharedHingePairDiagnosticSessionV1<'pose>>, SharedHingeSolidDiagnosticErrorV1> {

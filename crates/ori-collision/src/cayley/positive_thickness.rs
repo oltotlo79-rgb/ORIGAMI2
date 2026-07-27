@@ -99,7 +99,7 @@ use projected_pair_authority::{
     ProjectedPairAuthorityV1, prepare_projected_pair_authority_v1,
     revalidate_projected_pair_authority_v1,
 };
-use shared_hinge_pair_session::prepare_shared_hinge_pair_diagnostic_session_v1;
+pub(crate) use shared_hinge_pair_session::prepare_shared_hinge_pair_diagnostic_session_v1;
 
 const STAGE: CayleyStage = CayleyStage::Containment;
 const SCALAR_INPUT_RATIONALS: usize = 13;
@@ -1907,6 +1907,7 @@ fn exact_hinge_binds_face_pair_vertices_v1(
 /// [`diagnose_bound_shared_hinge_solid_for_edge_v1`] with an authenticated
 /// edge. Unsupported geometry returns `Ok(None)` and remains an explicit
 /// indeterminate pair at the caller.
+#[cfg(test)]
 pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
     bound: BoundMaterialTreePose<'_>,
     paper_thickness_mm: f64,

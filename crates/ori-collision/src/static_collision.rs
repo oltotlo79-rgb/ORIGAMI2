@@ -20,11 +20,11 @@ use crate::{
         PositiveThicknessPrismParallelConfigV1, PositiveThicknessPrismScanErrorV1,
         ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
         SharedHingeSolidDiagnosticDispositionV1, SharedHingeSolidDiagnosticErrorV1,
-        ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
+        SharedHingeSolidDiagnosticSummaryV1, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
         diagnose_bound_positive_thickness_prism_pairs_parallel_v1,
         diagnose_bound_positive_thickness_prism_pairs_v1,
-        diagnose_bound_shared_hinge_solid_for_edge_v1, diagnose_bound_shared_hinge_solid_v1,
         diagnose_bound_zero_thickness_shared_hinge_boundaries_v1,
+        prepare_shared_hinge_pair_diagnostic_session_v1,
         scan_bound_pose_for_proven_transversal_penetration,
     },
     classify_runtime_topology_contact_v2,
@@ -617,6 +617,40 @@ struct SharedHingeCoverageV1 {
     disposition: SharedHingeCoverageDispositionV1,
 }
 
+fn shared_hinge_coverage_from_diagnostic_v1(
+    hinge: &TreeHinge,
+    diagnostic: Option<SharedHingeSolidDiagnosticSummaryV1>,
+    expected_unordered_face_pairs: usize,
+) -> Result<SharedHingeCoverageV1, StaticCollisionError> {
+    let Some(diagnostic) = diagnostic else {
+        return Err(StaticCollisionError::PairEvidenceUnavailable {
+            expected_unordered_face_pairs,
+        });
+    };
+    let expected_pair = canonical_face_pair(hinge.left_face(), hinge.right_face());
+    if canonical_face_pair(diagnostic.first_face, diagnostic.second_face) != expected_pair {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    match diagnostic.disposition {
+        SharedHingeSolidDiagnosticDispositionV1::Allowed => Ok(SharedHingeCoverageV1 {
+            hinge: hinge.clone(),
+            disposition: SharedHingeCoverageDispositionV1::IndependentSolidAllowed,
+        }),
+        SharedHingeSolidDiagnosticDispositionV1::Penetrating => {
+            Err(StaticCollisionError::ProvenPositiveThicknessPenetration {
+                expected_unordered_face_pairs,
+                proven_positive_thickness_pairs: 1,
+                first_proven_positive_thickness_pair: expected_pair,
+            })
+        }
+        SharedHingeSolidDiagnosticDispositionV1::Indeterminate => {
+            Err(StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            })
+        }
+    }
+}
+
 /// Opaque geometry proof that one exact native material pose completed static
 /// collision analysis without penetration or unresolved indeterminate pairs.
 ///
@@ -904,6 +938,7 @@ pub fn prove_static_collision_geometry(
         limits,
         &StaticCollisionParallelConfigV1::new(1),
         &|| {},
+        &|| {},
     )
 }
 
@@ -927,6 +962,7 @@ pub fn prove_static_collision_geometry_parallel_v1(
         paper_thickness_mm,
         limits,
         &config,
+        &|| {},
         &|| {},
     )
 }
@@ -955,6 +991,7 @@ fn prove_static_collision_geometry_with_parallel_config_v1(
     limits: StaticCollisionLimits,
     parallel: &StaticCollisionParallelConfigV1,
     observe_positive_scan_complete: &dyn Fn(),
+    observe_shared_hinge_session_prepared: &dyn Fn(),
 ) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
     let validated = validate_static_collision_input(model, pose, paper_thickness_mm, limits)?;
     let bound = validated.bound;
@@ -1115,6 +1152,18 @@ fn prove_static_collision_geometry_with_parallel_config_v1(
         if shared_feature_count > limits.max_shared_hinge_solid_diagnostics {
             return Err(StaticCollisionError::ResourceLimitExceeded);
         }
+        let Some(shared_hinge_session) =
+            prepare_shared_hinge_pair_diagnostic_session_v1(bound, paper_thickness_mm)
+                .map_err(map_shared_hinge_solid_diagnostic_error)?
+        else {
+            return Err(StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            });
+        };
+        if !shared_hinge_session.revalidates_for(bound, paper_thickness_mm) {
+            return Err(StaticCollisionError::InconsistentMaterialPose);
+        }
+        observe_shared_hinge_session_prepared();
         let mut shared_hinge_coverage = Vec::new();
         shared_hinge_coverage
             .try_reserve_exact(expected_shared_hinges.len())
@@ -1127,35 +1176,14 @@ fn prove_static_collision_geometry_with_parallel_config_v1(
                         && hinge.right_face() == pair.first_face)
             });
             if let Some(hinge) = shared_hinge {
-                let classified = diagnose_bound_shared_hinge_solid_for_edge_v1(
-                    bound,
-                    paper_thickness_mm,
-                    Some(hinge.edge()),
-                )
-                .map_err(map_shared_hinge_solid_diagnostic_error)?;
-                match classified.map(|summary| summary.disposition) {
-                    Some(SharedHingeSolidDiagnosticDispositionV1::Allowed) => {
-                        shared_hinge_coverage.push(SharedHingeCoverageV1 {
-                            hinge: hinge.clone(),
-                            disposition: SharedHingeCoverageDispositionV1::IndependentSolidAllowed,
-                        });
-                    }
-                    Some(SharedHingeSolidDiagnosticDispositionV1::Penetrating) => {
-                        return Err(StaticCollisionError::ProvenPositiveThicknessPenetration {
-                            expected_unordered_face_pairs,
-                            proven_positive_thickness_pairs: 1,
-                            first_proven_positive_thickness_pair: [
-                                pair.first_face,
-                                pair.second_face,
-                            ],
-                        });
-                    }
-                    _ => {
-                        return Err(StaticCollisionError::PairEvidenceUnavailable {
-                            expected_unordered_face_pairs,
-                        });
-                    }
-                }
+                let diagnostic = shared_hinge_session
+                    .diagnose(Some(hinge.edge()))
+                    .map_err(map_shared_hinge_solid_diagnostic_error)?;
+                shared_hinge_coverage.push(shared_hinge_coverage_from_diagnostic_v1(
+                    hinge,
+                    diagnostic,
+                    expected_unordered_face_pairs,
+                )?);
             } else {
                 let shared_vertex_count = pose
                     .face_boundary(pair.first_face)
@@ -1326,6 +1354,26 @@ pub(crate) fn prove_static_collision_geometry_with_post_prism_observer_for_test_
         limits,
         parallel,
         observe_positive_scan_complete,
+        &|| {},
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn prove_static_collision_geometry_with_shared_hinge_session_observer_for_test_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    limits: StaticCollisionLimits,
+    observe_shared_hinge_session_prepared: &dyn Fn(),
+) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
+    prove_static_collision_geometry_with_parallel_config_v1(
+        model,
+        pose,
+        paper_thickness_mm,
+        limits,
+        &StaticCollisionParallelConfigV1::new(1),
+        &|| {},
+        observe_shared_hinge_session_prepared,
     )
 }
 
@@ -1448,22 +1496,32 @@ pub fn diagnose_static_collision_geometry(
     }
     let shared_hinge_solids = if is_positive_thickness {
         let registry = preflight_shared_hinge_registry(pose, limits)?;
+        let Some(session) =
+            prepare_shared_hinge_pair_diagnostic_session_v1(validated.bound, paper_thickness_mm)
+                .map_err(map_shared_hinge_solid_diagnostic_error)?
+        else {
+            return Err(StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            });
+        };
+        if !session.revalidates_for(validated.bound, paper_thickness_mm) {
+            return Err(StaticCollisionError::InconsistentMaterialPose);
+        }
         let mut summaries = Vec::new();
         summaries
             .try_reserve_exact(registry.hinges.len())
             .map_err(|_| StaticCollisionError::ResourceLimitExceeded)?;
         for hinge in &registry.hinges {
-            let summary = if registry.hinges.len() == 1 {
-                // Preserve the established two-face/one-hinge entry path.
-                diagnose_bound_shared_hinge_solid_v1(validated.bound, paper_thickness_mm)
+            let target_edge = if registry.hinges.len() == 1 {
+                // Preserve the established two-face/one-hinge target-selection
+                // semantics while retaining the one-exact parent session.
+                None
             } else {
-                diagnose_bound_shared_hinge_solid_for_edge_v1(
-                    validated.bound,
-                    paper_thickness_mm,
-                    Some(hinge.edge()),
-                )
-            }
-            .map_err(map_shared_hinge_solid_diagnostic_error)?;
+                Some(hinge.edge())
+            };
+            let summary = session
+                .diagnose(target_edge)
+                .map_err(map_shared_hinge_solid_diagnostic_error)?;
             if let Some(summary) = summary {
                 if canonical_face_pair(summary.first_face, summary.second_face)
                     != canonical_face_pair(hinge.left_face(), hinge.right_face())
@@ -2316,6 +2374,10 @@ fn checked_unordered_pair_count(face_count: usize) -> Result<usize, StaticCollis
         .checked_mul(second)
         .ok_or(StaticCollisionError::ResourceLimitExceeded)
 }
+
+#[cfg(test)]
+#[path = "static_collision/general_tree_pair_session_tests.rs"]
+mod general_tree_pair_session_tests;
 
 #[cfg(test)]
 mod tests {

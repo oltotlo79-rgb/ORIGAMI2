@@ -1499,7 +1499,7 @@ fn three_face_positive_thickness_proof_rejects_unresolved_hinge_solids() {
 }
 
 #[test]
-fn four_to_sixteen_face_positive_thickness_fans_fail_closed_after_scanning_every_pair() {
+fn four_to_sixteen_face_positive_thickness_fans_cover_every_pair_and_hinge() {
     for (face_count, reverse_source, reverse_root, thickness) in [
         (4, false, false, 0.1),
         (8, true, true, 1.0),
@@ -1539,21 +1539,20 @@ fn four_to_sixteen_face_positive_thickness_fans_fail_closed_after_scanning_every
         assert_eq!(hinge_pairs.len(), face_count - 1);
         assert!(hinge_pairs.iter().all(|pair| {
             pair.shared_hinge_solid_classified()
-                && pair.evidence() == IntersectionEvidenceV2::Indeterminate
-                && pair.policy_decision() == TopologyContactDecision::Indeterminate
-                && pair.disposition() == StaticCollisionPairDisposition::Indeterminate
+                && pair.disposition() == StaticCollisionPairDisposition::Allowed
         }));
-        assert!(matches!(
-            prove_static_collision_geometry(
-                &fixture.model,
-                &pose,
-                thickness,
-                StaticCollisionLimits::default(),
-            ),
-            Err(StaticCollisionError::PairEvidenceUnavailable {
-                expected_unordered_face_pairs,
-            }) if expected_unordered_face_pairs == expected_pairs
-        ));
+        let proof = prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            thickness,
+            StaticCollisionLimits::default(),
+        )
+        .expect("complete general-tree positive-thickness proof");
+        assert!(proof.is_for_geometry(&fixture.model, &pose, thickness));
+        assert_eq!(proof.expected_unordered_face_pairs(), expected_pairs);
+        assert_eq!(proof.analyzed_unordered_face_pairs(), expected_pairs);
+        assert_eq!(proof.expected_shared_hinges(), face_count - 1);
+        assert_eq!(proof.analyzed_shared_hinges(), face_count - 1);
     }
 }
 

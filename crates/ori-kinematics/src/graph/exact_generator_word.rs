@@ -22,6 +22,18 @@ pub(super) struct CanonicalInfiniteLineV1 {
     exact_moment: [BigRational; 3],
 }
 
+pub(super) fn exact_plucker_components_v1(
+    line: &CanonicalInfiniteLineV1,
+) -> Option<([BigRational; 3], [BigRational; 3])> {
+    let [Some(x), Some(y), Some(z)] = line
+        .direction_bits
+        .map(|value| BigRational::from_float(f64::from_bits(value)))
+    else {
+        return None;
+    };
+    Some(([x, y, z], line.exact_moment.clone()))
+}
+
 /// Proves that two exact Plücker lines meet at one point and have
 /// perpendicular directions.
 ///
@@ -33,18 +45,10 @@ pub(super) fn exact_perpendicular_intersection_v1(
     first: &CanonicalInfiniteLineV1,
     second: &CanonicalInfiniteLineV1,
 ) -> bool {
-    let direction = |bits: [u64; 3]| {
-        let [Some(x), Some(y), Some(z)] =
-            bits.map(|value| BigRational::from_float(f64::from_bits(value)))
-        else {
-            return None;
-        };
-        Some([x, y, z])
-    };
-    let Some(first_direction) = direction(first.direction_bits) else {
+    let Some((first_direction, first_moment)) = exact_plucker_components_v1(first) else {
         return false;
     };
-    let Some(second_direction) = direction(second.direction_bits) else {
+    let Some((second_direction, second_moment)) = exact_plucker_components_v1(second) else {
         return false;
     };
     let dot = |left: &[BigRational; 3], right: &[BigRational; 3]| {
@@ -60,8 +64,7 @@ pub(super) fn exact_perpendicular_intersection_v1(
     {
         return false;
     }
-    let reciprocal =
-        dot(&first_direction, &second.exact_moment) + dot(&second_direction, &first.exact_moment);
+    let reciprocal = dot(&first_direction, &second_moment) + dot(&second_direction, &first_moment);
     reciprocal.is_zero()
 }
 

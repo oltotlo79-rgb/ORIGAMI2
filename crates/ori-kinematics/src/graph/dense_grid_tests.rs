@@ -49,7 +49,7 @@ struct DenseGridFixtureV1 {
 }
 
 fn dense_grid_fixture_v1(columns: usize, rows: usize, reverse_storage: bool) -> DenseGridFixtureV1 {
-    assert!(columns >= 3 && rows >= 3);
+    assert!(columns >= 2 && rows >= 2);
     let namespace = ProjectId::new();
     let face_id =
         |x: usize, y: usize| FaceId::derive_v5(namespace, format!("dense-face:{x}:{y}").as_bytes());
@@ -218,14 +218,31 @@ fn dense_grid_dimension_inference_crosses_the_old_nine_boundary_with_hard_caps()
             (columns - 1) * (rows - 1),
         )
     };
-    for (columns, rows) in [(3, 9), (3, 10), (10, 3), (7, 17), (3, 2_000)] {
+    for (columns, rows) in [
+        (2, 2),
+        (2, 10),
+        (10, 2),
+        (3, 9),
+        (3, 10),
+        (10, 3),
+        (7, 17),
+        (3, 2_000),
+        (2, 3_334),
+        (4, 1_429),
+    ] {
         let (faces, hinges, closures) = counts(columns, rows);
         assert_eq!(
             bounded_dense_grid_dimensions_v1(faces, hinges, closures),
             Some((columns.min(rows), columns.max(rows)))
         );
     }
-    let (faces, hinges, closures) = counts(3, 2_001);
+    let (faces, hinges, _) = counts(2, 3_334);
+    assert_eq!(hinges, MAX_DENSE_GRID_HINGES_V1);
+    assert!(faces < MAX_DENSE_GRID_FACES_V1);
+    let (_, one_short_hinges, _) = counts(4, 1_429);
+    assert_eq!(one_short_hinges, MAX_DENSE_GRID_HINGES_V1 - 1);
+
+    let (faces, hinges, closures) = counts(2, 3_335);
     assert!(hinges > MAX_DENSE_GRID_HINGES_V1);
     assert_eq!(
         bounded_dense_grid_dimensions_v1(faces, hinges, closures),
@@ -235,6 +252,7 @@ fn dense_grid_dimension_inference_crosses_the_old_nine_boundary_with_hard_caps()
         bounded_dense_grid_dimensions_v1(MAX_DENSE_GRID_FACES_V1 + 1, MAX_DENSE_GRID_HINGES_V1, 1,),
         None
     );
+    assert_eq!(bounded_dense_grid_dimensions_v1(3, 2, 0), None);
     let (faces, hinges, closures) = counts(3, 10);
     assert_eq!(
         bounded_dense_grid_dimensions_v1(faces, hinges + 1, closures),
@@ -247,8 +265,19 @@ fn dense_grid_dimension_inference_crosses_the_old_nine_boundary_with_hard_caps()
 }
 
 #[test]
-fn three_by_ten_dense_grid_closes_in_both_orientations_and_storage_orders() {
-    for (columns, rows) in [(3, 10), (10, 3)] {
+fn dense_grid_recognizes_the_native_hinge_limit_with_bounded_work() {
+    let fixture = dense_grid_fixture_v1(2, 3_334, true);
+    assert_eq!(fixture.geometry.hinges().len(), MAX_DENSE_GRID_HINGES_V1);
+    assert_eq!(fixture.geometry.face_ids().len(), 6_668);
+    let recognized = recognize_dense_grid_v1(&fixture.geometry, &fixture.audit)
+        .expect("the maximum native dense grid must remain recognizable");
+    assert_eq!((recognized.columns, recognized.rows), (2, 3_334));
+    assert_eq!(recognized.hinges.len(), MAX_DENSE_GRID_HINGES_V1);
+}
+
+#[test]
+fn dense_grid_two_by_n_and_larger_cases_close_in_both_orientations_and_storage_orders() {
+    for (columns, rows) in [(2, 2), (2, 10), (10, 2), (3, 10), (10, 3)] {
         for reverse_storage in [false, true] {
             let fixture = dense_grid_fixture_v1(columns, rows, reverse_storage);
             let moving = fixture
@@ -294,8 +323,8 @@ fn three_by_ten_dense_grid_closes_in_both_orientations_and_storage_orders() {
 }
 
 #[test]
-fn one_complete_carrier_is_admitted_but_partial_or_mixed_carriers_are_not() {
-    let fixture = dense_grid_fixture_v1(3, 10, false);
+fn dense_grid_requires_complete_carriers_and_rejects_mixed_families() {
+    let fixture = dense_grid_fixture_v1(4, 10, false);
     let one_carrier = fixture.column_carriers[0].clone();
     let schedule = dense_grid_schedule_v1(&fixture, one_carrier.clone());
     assert!(dense_parallel_grid_cycle_closure_premises_v1(
@@ -327,19 +356,34 @@ fn one_complete_carrier_is_admitted_but_partial_or_mixed_carriers_are_not() {
         &schedule,
         1.0e-9,
     ));
+
+    let mixed_families = fixture.column_carriers[0]
+        .iter()
+        .chain(&fixture.row_carriers[0])
+        .copied()
+        .collect::<Vec<_>>();
+    let schedule = dense_grid_schedule_v1(&fixture, mixed_families);
+    assert!(!dense_parallel_grid_cycle_closure_premises_v1(
+        &fixture.geometry,
+        &fixture.audit,
+        fixture.fixed_face,
+        &schedule,
+        1.0e-9,
+    ));
 }
 
 #[test]
-fn dense_grid_row_family_admits_one_or_every_complete_carrier() {
-    let fixture = dense_grid_fixture_v1(3, 10, false);
-    for moving in [
-        fixture.row_carriers[0].clone(),
-        fixture
-            .row_carriers
+fn dense_grid_admits_arbitrary_nonempty_complete_carrier_subsets() {
+    let fixture = dense_grid_fixture_v1(6, 7, false);
+    let selected = |carriers: &[Vec<EdgeId>], indices: &[usize]| {
+        indices
             .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<_>>(),
+            .flat_map(|index| carriers[*index].iter().copied())
+            .collect::<Vec<_>>()
+    };
+    for moving in [
+        selected(&fixture.column_carriers, &[0, 2, 4]),
+        selected(&fixture.row_carriers, &[1, 3]),
     ] {
         let schedule = dense_grid_schedule_v1(&fixture, moving);
         assert!(dense_parallel_grid_cycle_closure_premises_v1(

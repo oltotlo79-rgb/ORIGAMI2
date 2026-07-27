@@ -5,7 +5,8 @@ use ori_domain::{EdgeId, FaceId};
 use super::MaterialHingeGraphAudit;
 use crate::{CanonicalCycleScheduleV1, MaterialHingeGraphGeometry, TreeHinge};
 
-// Exact carrier identity for a bounded non-cactus rectangular grid.
+// Exact carrier identity for a bounded non-cactus rectangular grid whose two
+// dimensions are both at least two.
 //
 // The old recognizer searched only `3..=9` dimensions and inferred the grid
 // from three aggregate counts. Nine was a fixture limit, not a kinematics
@@ -46,13 +47,13 @@ fn bounded_dense_grid_dimensions_v1(
     hinge_count: usize,
     closure_count: usize,
 ) -> Option<(usize, usize)> {
-    if !(9..=MAX_DENSE_GRID_FACES_V1).contains(&face_count)
+    if !(4..=MAX_DENSE_GRID_FACES_V1).contains(&face_count)
         || hinge_count > MAX_DENSE_GRID_HINGES_V1
     {
         return None;
     }
     let mut factor_tests = 0usize;
-    let mut columns = 3usize;
+    let mut columns = 2usize;
     while columns <= face_count / columns {
         factor_tests = factor_tests.checked_add(1)?;
         if factor_tests > MAX_DENSE_GRID_FACTOR_TESTS_V1 {
@@ -60,7 +61,7 @@ fn bounded_dense_grid_dimensions_v1(
         }
         if face_count.is_multiple_of(columns) {
             let rows = face_count / columns;
-            if rows >= 3 {
+            if rows >= 2 {
                 let expected_hinges = face_count
                     .checked_mul(2)?
                     .checked_sub(columns)?
@@ -382,7 +383,7 @@ fn dense_grid_motion_has_exact_carriers_v1(
             .copied()
             .filter(|record| record.family == family)
             .collect::<Vec<_>>();
-        if family_records.len() != carrier_count.saturating_mul(segment_count)
+        if Some(family_records.len()) != carrier_count.checked_mul(segment_count)
             || grid
                 .hinges
                 .iter()
@@ -397,11 +398,17 @@ fn dense_grid_motion_has_exact_carriers_v1(
                 })
             })
             .collect::<Vec<_>>();
-        if selected_carriers.is_empty()
-            || (selected_carriers.len() != 1 && selected_carriers.len() != carrier_count)
-        {
+        if selected_carriers.is_empty() {
             return false;
         }
+        // Every path orthogonal to this family crosses the selected carriers
+        // in the same canonical order. A complete carrier gives every such
+        // path the same exact directed generator and the same bit-identical
+        // collective profile; an unselected carrier and the other family are
+        // exact zero identities. Therefore any non-empty carrier subset gives
+        // every parallel row/column the same transform sequence. This proves
+        // path independence without assuming that distinct carrier rotations
+        // commute, and it is why selection need not be limited to one or all.
         for carrier in selected_carriers {
             let mut records = family_records
                 .iter()

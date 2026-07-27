@@ -344,9 +344,9 @@ fn assert_projected_pipeline_case<'pose>(
         root,
         edge,
         thickness,
-        &exact_e_analysis.result,
-        &direct_f_analysis.result,
-        &classification.result
+        exact_e_analysis.result,
+        direct_f_analysis.result,
+        classification.result
     );
 
     let summary = diagnose_bound_shared_hinge_solid_for_edge_v1(bound, thickness, Some(edge))

@@ -11,8 +11,10 @@ use crate::{
 };
 
 mod dense_grid;
+mod exact_cut_carrier;
 
 use dense_grid::dense_parallel_grid_cycle_closure_premises_v1;
+use exact_cut_carrier::exact_cut_carrier_cycle_closure_premises_v1;
 
 pub const MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1: u32 = 1;
 
@@ -601,6 +603,9 @@ impl MaterialHingeGraphGeometry {
         });
         if stationary_closed
             || dense_parallel_grid_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+            || exact_cut_carrier_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
             || collective_flat_stack_cycle_closure_premises_v1(

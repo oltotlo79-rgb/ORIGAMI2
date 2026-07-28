@@ -6,6 +6,54 @@
 前提報告: `docs/Codex/claude-sim010-viewer-negative-matrix-report-2026-07-26.md`
 前提commit: `ccc6026902513e987918cb80bf8fa08f640da2db`
 
+---
+
+## 0. Claude実施状況: 着手ゲート未開放のため未commit（2026-07-26 14:55 記入）
+
+本指示は **commitに至っていない**。§2の着手ゲート5項目のうち、
+§2-2「対象fileに自分以外の未commit差分がない」が開かなかったためである。
+
+観測値:
+
+```text
+観測時刻   : 2026-07-26T14:40:36+09:00（最終確認 14:55）
+観測HEAD   : bfc6f117c38a93463fb90504c65779d9c9fad9c6
+
+§2-1 ccc6026 がlogに存在        : 通過
+§2-2 対象fileに他者の未commit差分 : 不通過（+104/-12、mod tests の fixture 書き換え）
+§2-3 install_pose_authority_with_angles がcommit済み : 通過（applied_pose.rs:1723）
+§2-4 applied_pose.rs が clean    : 通過
+§2-5 indexに他者のstageなし      : 通過
+
+対象file working-tree hash : F9B9D2DDDB0A812164952CB0BAAC63BF39F183A4E4F471D7EAFEAE5B22444030
+対象file ccc6026 時点 hash  : A8879975F90CF288DAB7A6881312F3F9903698846625C9200A6FBD5037B2882C
+```
+
+§2の定めどおり、対象fileの編集を開始せず、stash / restore / reset / 整形 / stage を
+一切行っていない。60秒間隔で最大25分待機したがゲートは開かなかった。
+
+実装自体は、共有fileへ触れずにrepository外の一時worktree（HEADの純checkout）で
+完成・検証済みである。
+
+```text
+成功mask 7 / 完全hinge 12 / moving hinge 3 / material face 9 / overlap cell 0
+cargo test  current_non_flat_layer_order_view::tests : 46 passed / 0 failed
+cargo clippy --no-deps -- -D warnings                : exit 0 / warning 0
+rustfmt --check                                       : 差分0
+```
+
+適用可能な実装全文、mask探索規則、§5必須assertionとの対応、
+`clippy::duplicate_mod` の扱いは次に記載した。
+
+```text
+docs/Codex/claude-sim010-viewer-graph-issuer-positive-report-2026-07-26.md
+```
+
+対象fileの作業中差分がcommitされ次第、上記§6の2箇所を適用して
+`非平坦層順ビューのグラフ発行者回帰を完成する` としてcommitできる状態である。
+
+---
+
 ## 1. 目的
 
 前提commitで、native non-flat layer-order viewerのresource境界、structural negative matrix、tree issuer、dropped X/Y/Zの正規positiveは実装済みである。未達なのは、正規constructorだけで生成したnon-flat closed-graph poseとfreshなgraph layer evidenceをviewerへ渡し、responseが実issuerどおりgraph modelを公開するpositive回帰だけである。

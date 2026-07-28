@@ -50,7 +50,7 @@ test('rejects speculative mode flags that could overclaim mutation authority', (
     (response) => { response.continuousPath.continuousClearanceCertified = true },
     (response) => {
       response.continuousPath.continuousCertificateModelId =
-        'stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1'
+        'stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v2'
     },
     (response) => { response.continuousPath.sampledPoseCount = 0 },
     (response) => { response.continuousPath.sampledNonblockingPoseCount = 1 },

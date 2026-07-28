@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use ori_collision::{
     PersistentPairProofCacheRuntimeV1, ProofCacheLimitsV1, ProofCacheRuntimeBindingV1,
-    STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+    STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
     StackedFoldPathDiagnosticErrorV1,
 };
 use ori_domain::ProjectId;
@@ -25,9 +25,39 @@ use support::{
 // measures the 91-hit/14-cold (13.33%) differential-retention requirement.
 #[test]
 fn production_stacked_fold_edit_rebind_is_exact_and_fails_closed_across_aba() {
-    let identity = ProjectId::new();
-    let instance = ProjectId::new();
+    let identity: ProjectId = serde_json::from_str("\"00000000-0000-4000-a100-000000000001\"")
+        .expect("fixed production identity namespace");
+    let instance: ProjectId = serde_json::from_str("\"00000000-0000-4000-a200-000000000001\"")
+        .expect("fixed production instance namespace");
     let fixture = production_fixture(identity);
+    let replay = production_fixture(identity);
+    assert_eq!(replay.changed_vertex, fixture.changed_vertex);
+    assert_eq!(replay.changed_edge, fixture.changed_edge);
+    for (first, second) in [
+        (&fixture.baseline, &replay.baseline),
+        (&fixture.changed, &replay.changed),
+    ] {
+        assert_eq!(first.revision, second.revision);
+        assert_eq!(first.fingerprint, second.fingerprint);
+        assert_eq!(first.candidate_pattern(), second.candidate_pattern());
+        assert_eq!(first.topology, second.topology);
+        assert_eq!(first.model().face_ids(), second.model().face_ids());
+        assert_eq!(first.model().hinges(), second.model().hinges());
+        assert_eq!(first.pose().fixed_face(), second.pose().fixed_face());
+        assert_eq!(first.pose().hinge_angles(), second.pose().hinge_angles());
+        for face in first.model().face_ids() {
+            assert_eq!(
+                first.pose().face_transform(*face),
+                second.pose().face_transform(*face)
+            );
+        }
+        for hinge in first.model().hinges() {
+            assert_eq!(
+                first.pose().hinge_parent_transform(hinge.edge()),
+                second.pose().hinge_parent_transform(hinge.edge())
+            );
+        }
+    }
     let baseline = &fixture.baseline;
     let changed = &fixture.changed;
 
@@ -85,10 +115,17 @@ fn production_stacked_fold_edit_rebind_is_exact_and_fails_closed_across_aba() {
 
     let baseline_uncached =
         uncached(baseline, REQUESTED_ANGLE_DEGREES).expect("baseline no-cache diagnosis");
-    assert!(baseline_uncached.continuous_clearance_certified());
+    assert!(
+        baseline_uncached.continuous_clearance_certified(),
+        "{baseline_uncached:?}"
+    );
     assert_eq!(
         baseline_uncached.continuous_certificate_model_id(),
-        Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+        Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2)
+    );
+    assert_ne!(
+        baseline_uncached.continuous_certificate_model_id(),
+        Some("stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1")
     );
     assert_eq!(baseline_uncached.positive_endpoint_exact_pair_calls(), 1);
 
@@ -160,6 +197,11 @@ fn production_stacked_fold_edit_rebind_is_exact_and_fails_closed_across_aba() {
 
     let changed_uncached =
         uncached(changed, REQUESTED_ANGLE_DEGREES).expect("changed no-cache diagnosis");
+    assert_eq!(
+        changed_uncached.positive_endpoint_exact_pair_calls(),
+        1,
+        "the source edit must retain the one-pair production rebind exercise: {changed_uncached:?}"
+    );
     let changed_capture = runtime
         .capture_v1(binding(instance, identity, changed, 2))
         .expect("changed capture");
@@ -173,12 +215,20 @@ fn production_stacked_fold_edit_rebind_is_exact_and_fails_closed_across_aba() {
     .expect("changed differential diagnosis");
     assert_eq!(changed_rebound, changed_uncached);
     let rebound_progress = runtime.progress_v1().expect("rebind progress");
-    assert_eq!(rebound_progress.cache_hits, 0);
     assert_eq!(
-        rebound_progress.cold_proofs,
-        changed_uncached.positive_endpoint_exact_pair_calls()
+        rebound_progress.cold_proofs, 0,
+        "the differential rebind must not cold-prove its unchanged exact pair: {rebound_progress:?}"
     );
-    assert_eq!(rebound_progress.cold_proofs, 1);
+    assert_eq!(
+        rebound_progress.cache_hits, 1,
+        "the exact outward broadphase leaves one pair whose complete face footprints and exact poses are unchanged"
+    );
+    assert_eq!(
+        rebound_progress
+            .cache_hits
+            .checked_add(rebound_progress.cold_proofs),
+        Some(changed_uncached.positive_endpoint_exact_pair_calls())
+    );
     let changed_warm = cached(
         changed,
         REQUESTED_ANGLE_DEGREES,

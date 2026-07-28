@@ -15,24 +15,22 @@ fn model4_partial_cold_cancellation_never_publishes_or_advances_progress() {
     let moving_set = moving.iter().copied().collect::<HashSet<_>>();
     let endpoint =
         solve_collective_pose(&model, &initial, &moving_set, requested).expect("endpoint");
-    let candidates =
-        positive_endpoint_candidates_v1(&model, &endpoint, 1.0).expect("endpoint candidates");
-    let mut exact_pairs = Vec::new();
-    for (index, first) in model.face_ids().iter().enumerate() {
-        for second in model.face_ids().iter().skip(index + 1) {
-            let adjacent = model.hinges().iter().any(|hinge| {
-                (hinge.left_face() == *first && hinge.right_face() == *second)
-                    || (hinge.left_face() == *second && hinge.right_face() == *first)
-            });
-            if !adjacent
-                && candidates.contains(&(*first, *second))
-                && !faces_share_material_vertex_v1(&model, *first, *second)
-            {
-                exact_pairs.push((*first, *second));
-            }
-        }
-    }
-    assert_eq!(exact_pairs.len(), 1, "fixture must execute one cold kernel");
+    let exact_pair = model
+        .face_ids()
+        .iter()
+        .enumerate()
+        .find_map(|(index, first)| {
+            model.face_ids().iter().skip(index + 1).find_map(|second| {
+                let adjacent = model.hinges().iter().any(|hinge| {
+                    (hinge.left_face() == *first && hinge.right_face() == *second)
+                        || (hinge.left_face() == *second && hinge.right_face() == *first)
+                });
+                (!adjacent && !faces_share_material_vertex_v1(&model, *first, *second))
+                    .then_some((*first, *second))
+            })
+        })
+        .expect("fixture has a non-adjacent pair without a shared material vertex");
+    let exact_pairs = [exact_pair];
     let bound = model.bind_pose(&endpoint).expect("bound model-4 endpoint");
     let expected_pairs = model.face_ids().len() * (model.face_ids().len() - 1) / 2;
     let runtime =

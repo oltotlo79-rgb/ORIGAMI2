@@ -172,6 +172,16 @@ fn endpoint_collision_plan_v1(
     }
 }
 
+fn is_positive_thickness_continuous_certificate_model_id_v2(model_id: Option<&str>) -> bool {
+    matches!(
+        model_id,
+        Some(
+            ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2
+                | ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2
+        )
+    )
+}
+
 const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
 const MAX_DYADIC_GRAPH_STATES_V1: usize = 2_187;
 const MAX_DYADIC_GRAPH_TRANSITIONS_V1: usize = 20_412;
@@ -3021,13 +3031,10 @@ async fn propose_current_stacked_fold_read_inner(
             .target()
             .geometry()
             .proof();
-        let positive_thickness_certificate = matches!(
-            continuous_path.continuous_certificate_model_id(),
-            Some(
-                ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
-                    | ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
-            )
-        );
+        let positive_thickness_certificate =
+            is_positive_thickness_continuous_certificate_model_id_v2(
+                continuous_path.continuous_certificate_model_id(),
+            );
         let endpoint_collision_plan = endpoint_collision_plan_v1(
             candidate.requested_angle_degrees(),
             positive_thickness_certificate,
@@ -3556,6 +3563,30 @@ mod tests {
             endpoint_collision_plan_v1(179.999, true),
             EndpointCollisionPlanV1::CertifiedPositiveThickness,
         );
+    }
+
+    #[test]
+    fn native_positive_thickness_runtime_accepts_only_v2_model_ids() {
+        assert!(is_positive_thickness_continuous_certificate_model_id_v2(
+            Some(
+                ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
+            ),
+        ));
+        assert!(is_positive_thickness_continuous_certificate_model_id_v2(
+            Some(
+                ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
+            ),
+        ));
+        for rejected in [
+            None,
+            Some("stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1"),
+            Some("stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1"),
+            Some("forged_positive_thickness_continuous_certificate_v2"),
+        ] {
+            assert!(!is_positive_thickness_continuous_certificate_model_id_v2(
+                rejected
+            ));
+        }
     }
 
     #[test]
@@ -5800,7 +5831,8 @@ mod tests {
         let angle = if certified_path {
             certified_path_steps as f64
         } else {
-            2.0 * 1.0_f64.atan2(5.0).to_degrees()
+            ori_kinematics::deterministic_half_angle_ratio_degrees_v1(1.0, 5.0)
+                .expect("the canonical half-angle fixture is finite")
         };
         let registry = tauri::async_runtime::block_on(read_live_hinge_registry_inner(
             &app_state,

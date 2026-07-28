@@ -349,6 +349,36 @@ describe('stacked-fold read boundary', () => {
       },
     }
     assert.deepEqual(normalizeStackedFoldReadResponse(ready, request), ready)
+    for (const modelId of [
+      'stacked_fold_single_hinge_positive_thickness_continuous_certificate_v2',
+      'stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v2',
+    ] as const) {
+      const positiveReady = {
+        ...ready,
+        continuousPath: {
+          ...ready.continuousPath,
+          continuousCertificateModelId: modelId,
+          paperThicknessMm: 0.1,
+        },
+      }
+      assert.deepEqual(
+        normalizeStackedFoldReadResponse(positiveReady, request),
+        positiveReady,
+      )
+    }
+    for (const retiredModelId of [
+      'stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1',
+      'stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1',
+    ] as const) {
+      assert.equal(normalizeStackedFoldReadResponse({
+        ...ready,
+        continuousPath: {
+          ...ready.continuousPath,
+          continuousCertificateModelId: retiredModelId,
+          paperThicknessMm: 0.1,
+        },
+      }, request), null)
+    }
     assert.equal(
       normalizeStackedFoldReadResponse({
         ...ready,

@@ -9,10 +9,10 @@ use crate::continuous_path::{
     STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_SINGLE_HINGE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-    STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+    STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
     STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-    STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+    STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
 };
 
 use super::{
@@ -39,13 +39,13 @@ impl ProofCacheCertificateModelV1 {
                 STACKED_FOLD_SINGLE_HINGE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
             }
             Self::SingleHingePositiveThickness => {
-                STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+                STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2
             }
             Self::CollinearTreeZeroThickness => {
                 STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
             }
             Self::TwoHingePositiveThickness => {
-                STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+                STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2
             }
             Self::TwoHingeIntervalZeroThickness => {
                 STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
@@ -186,6 +186,31 @@ impl Ord for ProofCacheKeyV1 {
 impl PartialOrd for ProofCacheKeyV1 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+mod certificate_model_tests {
+    use super::*;
+
+    #[test]
+    fn positive_thickness_cache_keys_expose_only_v2_certificate_models() {
+        assert_eq!(
+            ProofCacheCertificateModelV1::SingleHingePositiveThickness.model_id(),
+            "stacked_fold_single_hinge_positive_thickness_continuous_certificate_v2"
+        );
+        assert_eq!(
+            ProofCacheCertificateModelV1::TwoHingePositiveThickness.model_id(),
+            "stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v2"
+        );
+        assert_ne!(
+            ProofCacheCertificateModelV1::SingleHingePositiveThickness.model_id(),
+            "stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1"
+        );
+        assert_ne!(
+            ProofCacheCertificateModelV1::TwoHingePositiveThickness.model_id(),
+            "stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1"
+        );
     }
 }
 

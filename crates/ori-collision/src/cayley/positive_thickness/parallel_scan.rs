@@ -11,6 +11,7 @@ mod pair_cache_session;
 
 pub(crate) use pair_cache_session::{
     positive_thickness_exact_pair_cache_work_limits_v1,
+    prepare_positive_thickness_exact_endpoint_session_v2,
     prepare_positive_thickness_exact_pair_cache_session_v1,
 };
 

@@ -11520,7 +11520,12 @@ fn vertex_reference_requires_lowercase_canonical_uuid_and_allows_equal_values() 
 }
 
 fn dependency_chain(project: &mut ProjectState, count: usize) {
-    let ids = (0..count).map(|_| VertexId::new()).collect::<Vec<_>>();
+    let ids = (1..=count)
+        .map(|index| {
+            serde_json::from_str(&format!("\"00000000-0000-4000-8000-{index:012x}\""))
+                .expect("fixed dependency vertex ID")
+        })
+        .collect::<Vec<_>>();
     project.numeric_expressions.vertex_coordinates = ids
         .iter()
         .enumerate()

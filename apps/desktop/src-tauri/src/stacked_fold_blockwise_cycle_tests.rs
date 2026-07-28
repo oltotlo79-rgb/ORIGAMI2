@@ -224,7 +224,7 @@ fn seventeen_cell_current_cycle_uses_blockwise_fallback_end_to_end() {
             request(revision, schedule.clone()),
         )
         .unwrap_err(),
-        CYCLE_NONCLOSING_MESSAGE
+        CYCLE_PATH_UNCERTIFIED_MESSAGE
     );
     assert_eq!(transactions.pending_token_for_test_v1(), None);
     assert_eq!(
@@ -266,7 +266,7 @@ fn seventeen_cell_current_cycle_uses_blockwise_fallback_end_to_end() {
             request(revision, schedule.clone()),
         )
         .unwrap_err(),
-        CYCLE_NONCLOSING_MESSAGE,
+        CYCLE_PATH_UNCERTIFIED_MESSAGE,
         "cross-block overlap evidence must fail closed before preview"
     );
     assert_eq!(transactions.pending_token_for_test_v1(), None);

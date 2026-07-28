@@ -27,6 +27,11 @@ fn edge_reference(edge: EdgeId, property: &str) -> String {
     format!("e.{wire}.{property}")
 }
 
+fn vertex_id_ending_in_e() -> VertexId {
+    serde_json::from_str("\"12345678-1234-4234-8234-123456789abe\"")
+        .expect("fixed vertex ID ending in e")
+}
+
 fn deterministic_edge_geometry(delta_x: f64, delta_y: f64) -> Point2 {
     let length =
         ori_numeric::deterministic_hypot_v1(delta_x, delta_y).expect("deterministic length");
@@ -265,6 +270,136 @@ fn legacy_geometry_reference_adopts_creator_bits_without_replaying_the_creator_l
     assert_eq!(
         validate_loaded_numeric_expression_bindings(&dangling),
         Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())
+    );
+}
+
+#[test]
+fn legacy_geometry_reference_adopts_only_the_axis_with_a_strict_edge_token() {
+    let creator_edge_value = 17.25;
+    let stale_non_edge_value = -91.0;
+    let referenced_vertex = vertex_id_ending_in_e();
+    let mut fixture =
+        geometry_reference_fixture(Point2::new(creator_edge_value, stale_non_edge_value));
+    let mut pattern = fixture.project.editor.pattern().clone();
+    pattern.vertices.push(ori_domain::Vertex {
+        id: referenced_vertex,
+        position: Point2::new(7.5, 8.5),
+    });
+    fixture.project = ProjectState::new(pattern);
+    let referenced_vertex_wire = serde_json::to_value(referenced_vertex)
+        .expect("vertex ID")
+        .as_str()
+        .expect("wire vertex ID")
+        .to_owned();
+    let x_source = edge_reference(fixture.edge, "length");
+    let y_source = format!("v.{referenced_vertex_wire}.x");
+    let mut binding = VertexCoordinateExpressions::new(
+        fixture.target,
+        x_source.clone(),
+        y_source.clone(),
+        creator_edge_value,
+        stale_non_edge_value,
+    );
+    binding.schema_version = ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1;
+    binding.transcendental_model_id = None;
+    fixture.project.numeric_expressions.vertex_coordinates = vec![binding];
+
+    assert!(ori_formats::source_uses_edge_geometry_reference(&x_source));
+    assert!(!ori_formats::source_uses_edge_geometry_reference(&y_source));
+    assert!(
+        fixture.project.numeric_expressions.vertex_coordinates[0]
+            .uses_legacy_edge_geometry_reference_v1()
+    );
+    assert_eq!(
+        reevaluate_saved_vertex_expressions_for_archive_load(&fixture.project)
+            .expect("legacy load evaluation"),
+        vec![(fixture.target, Point2::new(creator_edge_value, 7.5))]
+    );
+}
+
+#[test]
+fn pure_vertex_reference_ending_in_e_does_not_require_the_edge_geometry_model() {
+    let referenced_vertex = vertex_id_ending_in_e();
+    let target = VertexId::new();
+    let referenced_position = Point2::new(7.5, 8.5);
+    let referenced_vertex_wire = serde_json::to_value(referenced_vertex)
+        .expect("vertex ID")
+        .as_str()
+        .expect("wire vertex ID")
+        .to_owned();
+    let x_source = format!("v.{referenced_vertex_wire}.x");
+    let y_source = format!("v.{referenced_vertex_wire}.y");
+    let mut project = ProjectState::new(CreasePattern {
+        vertices: vec![
+            ori_domain::Vertex {
+                id: referenced_vertex,
+                position: referenced_position,
+            },
+            ori_domain::Vertex {
+                id: target,
+                position: Point2::new(0.0, 0.0),
+            },
+        ],
+        edges: Vec::new(),
+    });
+    project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+        target,
+        x_source.clone(),
+        y_source.clone(),
+        0.0,
+        0.0,
+    )];
+
+    assert!(!ori_formats::source_uses_edge_geometry_reference(&x_source));
+    assert!(!ori_formats::source_uses_edge_geometry_reference(&y_source));
+    assert_eq!(
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&project, false)
+            .expect("pure vertex references do not use deterministic edge geometry"),
+        vec![(target, referenced_position)]
+    );
+}
+
+#[test]
+fn saved_reference_tokens_require_a_left_lexical_boundary_before_expansion() {
+    let mut fixture = geometry_reference_fixture(Point2::new(0.0, 0.0));
+    let embedded_edge_source = format!("sqrt{}", edge_reference(fixture.edge, "length"));
+    assert!(embedded_edge_source.starts_with("sqrte."));
+    assert!(!ori_formats::source_uses_edge_geometry_reference(
+        &embedded_edge_source
+    ));
+    fixture.project.numeric_expressions.vertex_coordinates =
+        vec![VertexCoordinateExpressions::new(
+            fixture.target,
+            embedded_edge_source,
+            "0",
+            0.0,
+            0.0,
+        )];
+    assert!(
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&fixture.project, true)
+            .is_err(),
+        "an embedded edge marker must not become a valid sqrt expression after expansion"
+    );
+
+    let referenced_vertex = fixture.project.editor.pattern().vertices[0].id;
+    let referenced_vertex_wire = serde_json::to_value(referenced_vertex)
+        .expect("vertex ID")
+        .as_str()
+        .expect("wire vertex ID")
+        .to_owned();
+    let embedded_vertex_source = format!("sqrtv.{referenced_vertex_wire}.x");
+    fixture.project.numeric_expressions.vertex_coordinates =
+        vec![VertexCoordinateExpressions::new(
+            fixture.target,
+            embedded_vertex_source,
+            "0",
+            0.0,
+            0.0,
+        )];
+    assert!(
+        reevaluate_saved_vertex_expressions_with_model_support_for_test(&fixture.project, true)
+            .is_err(),
+        "an embedded vertex marker must not become a valid sqrt expression after expansion"
     );
 }
 

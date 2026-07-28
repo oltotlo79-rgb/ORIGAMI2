@@ -47,6 +47,17 @@ fn hinge_pair_projection_is_full_pose_bound_and_detached() {
         revalidate_material_hinge_pair_projection_v1(&projection, bound),
         Some(observed)
     );
+    let cloned_pose = pose.clone();
+    assert_eq!(
+        revalidate_material_hinge_pair_projection_v1(
+            &projection,
+            native_model
+                .bind_pose(&cloned_pose)
+                .expect("clone-preserving bound"),
+        ),
+        Some(projection.observe()),
+        "a clone of the same issued pose must retain projection authority"
+    );
 
     let aba = native_model
         .solve(Some(native_model.face_ids()[0]), &angles)

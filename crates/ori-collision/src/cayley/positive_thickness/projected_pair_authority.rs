@@ -153,8 +153,8 @@ pub(super) fn prepare_projected_pair_authority_with_limits_v1<'exact, 'pose>(
     if !positive_finite_binary64(paper_thickness_mm)
         || exact.version != RATIONAL_CAYLEY_TREE_POSE_V1
         || !exact.is_for(bound)
-        || !std::ptr::eq(exact.bound.model(), bound.model())
-        || !std::ptr::eq(exact.bound.pose(), bound.pose())
+        || exact.bound.model() != bound.model()
+        || !exact.bound.pose().same_instance(bound.pose())
         || bound.model().face_ids() != bound.pose().face_ids()
         || bound.model().hinges() != bound.pose().hinges()
     {
@@ -223,8 +223,8 @@ pub(super) fn revalidate_projected_pair_authority_v1(
     )?;
     if !positive_finite_binary64(paper_thickness_mm)
         || !std::ptr::eq(authority.exact, exact)
-        || !std::ptr::eq(authority.bound.model(), bound.model())
-        || !std::ptr::eq(authority.bound.pose(), bound.pose())
+        || authority.bound.model() != bound.model()
+        || !authority.bound.pose().same_instance(bound.pose())
         || authority.paper_thickness_bits != paper_thickness_mm.to_bits()
         || authority.full_face_count != exact.faces.len()
         || authority.full_face_count != bound.model().face_ids().len()

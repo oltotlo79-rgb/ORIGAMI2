@@ -425,16 +425,20 @@ fn projected_three_face_boundary_and_unspecified_edge_remain_fail_closed() {
     let model = three_triangle_chain_model(9_008);
     let pose = uniform_pose(&model, 90.0);
     let bound = model.bind_pose(&pose).expect("bound 90-degree 3/2 pose");
-    assert!(diagnose_bound_shared_hinge_solid_v1(bound, 0.1)
-        .expect("unspecified multi-hinge call remains bounded")
-        .is_none());
-    assert!(diagnose_bound_shared_hinge_solid_for_edge_v1(
-        bound,
-        0.1,
-        Some(triangular_edge_id(999_999)),
-    )
-    .expect("unknown edge remains bounded")
-    .is_none());
+    assert!(
+        diagnose_bound_shared_hinge_solid_v1(bound, 0.1)
+            .expect("unspecified multi-hinge call remains bounded")
+            .is_none()
+    );
+    assert!(
+        diagnose_bound_shared_hinge_solid_for_edge_v1(
+            bound,
+            0.1,
+            Some(triangular_edge_id(999_999)),
+        )
+        .expect("unknown edge remains bounded")
+        .is_none()
+    );
     for source_hinge in model.hinges() {
         let summary =
             diagnose_bound_shared_hinge_solid_for_edge_v1(bound, 0.1, Some(source_hinge.edge()))

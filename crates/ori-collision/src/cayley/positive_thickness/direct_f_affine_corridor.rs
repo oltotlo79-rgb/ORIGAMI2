@@ -877,6 +877,23 @@ struct CompleteOutsideScan {
     violated_halfspace_count: usize,
 }
 
+/// The E/F capability stores transforms in projected `[left, right]` slots,
+/// while this C2-only diagnostic indexes its two exact faces by registry slot.
+/// Keep that order conversion explicit at the diagnostic boundary.
+fn pair_face_transforms_in_registry_order(
+    face_indexes: [usize; FACE_COUNT],
+    pair_order: [BoundBinary64FaceTransformBits; FACE_COUNT],
+) -> Option<[BoundBinary64FaceTransformBits; FACE_COUNT]> {
+    if face_indexes[0] == face_indexes[1] || face_indexes.iter().any(|index| *index >= FACE_COUNT) {
+        return None;
+    }
+    let mut registry_order = pair_order;
+    for (pair_slot, face_index) in face_indexes.into_iter().enumerate() {
+        registry_order[face_index] = pair_order[pair_slot];
+    }
+    Some(registry_order)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn calculate_direct_f_affine_hinge_corridor_v1<
     'prerequisite,
@@ -985,7 +1002,12 @@ fn calculate_direct_f_affine_hinge_corridor_v1<
         return Ok(DirectFAffineHingeCorridorResult::Unresolved);
     }
 
-    let sealed_face_transforms = ef_boundary.binary64_face_transforms;
+    let Some(sealed_face_transforms) = pair_face_transforms_in_registry_order(
+        [left_face_index, right_face_index],
+        ef_boundary.binary64_face_transforms,
+    ) else {
+        return Ok(DirectFAffineHingeCorridorResult::Unresolved);
+    };
     let faces = [
         reconstruct_literal_affine_face(
             exact,
@@ -2527,6 +2549,10 @@ pub(super) fn revalidate_direct_f_affine_hinge_corridor_diagnostic_v1<
     let authority = &diagnostic.authority;
     let sealed_phase2b = exact_e_corridor.sealed_work()?;
     let sealed_work = diagnostic.sealed_work.as_ref()?;
+    let ef_face_transforms = pair_face_transforms_in_registry_order(
+        [prerequisite.left_face_index, prerequisite.right_face_index],
+        ef_boundary.binary64_face_transforms,
+    )?;
     if !positive_finite_binary64(paper_thickness_mm)
         || authority.phase2b_work != *sealed_phase2b
         || sealed_work.phase2b_exact != sealed_phase2b.exact
@@ -2546,7 +2572,7 @@ pub(super) fn revalidate_direct_f_affine_hinge_corridor_diagnostic_v1<
         || authority.right_face_index != prerequisite.right_face_index
         || authority.hinge_index != prerequisite.hinge_index
         || authority.interaction_kind != exact_e_corridor.interaction_kind()
-        || authority.binary64_face_transforms != ef_boundary.binary64_face_transforms
+        || authority.binary64_face_transforms != ef_face_transforms
         || revalidate_single_triangular_hinge_prerequisites_v1(
             prerequisite,
             exact,

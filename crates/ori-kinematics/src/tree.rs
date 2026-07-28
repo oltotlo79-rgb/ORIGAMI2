@@ -1247,8 +1247,8 @@ pub fn revalidate_material_hinge_pair_projection_v1(
     capability: &MaterialHingePairProjectionV1<'_>,
     bound: BoundMaterialTreePose<'_>,
 ) -> Option<MaterialHingePairCanonicalInputV1> {
-    if !std::ptr::eq(capability.bound.model(), bound.model())
-        || !std::ptr::eq(capability.bound.pose(), bound.pose())
+    if capability.bound.model() != bound.model()
+        || !capability.bound.pose().same_instance(bound.pose())
     {
         return None;
     }

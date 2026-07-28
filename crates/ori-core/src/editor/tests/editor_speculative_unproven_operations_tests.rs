@@ -125,10 +125,9 @@ fn certified_resolution_removes_the_feature_requirement() {
         .expect("export certified history");
     assert!(!history.requires_speculative_unproven_fold_feature_v1());
     assert!(
-        serde_json::to_string(&history)
+        !serde_json::to_string(&history)
             .expect("history JSON")
-            .find("speculative_unproven_fold_v1")
-            .is_none()
+            .contains("speculative_unproven_fold_v1")
     );
 }
 

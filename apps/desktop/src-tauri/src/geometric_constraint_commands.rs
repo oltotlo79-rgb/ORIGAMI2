@@ -272,7 +272,7 @@ fn reevaluate_saved_vertex_expressions_with_legacy_policy(
             .numeric_expressions
             .vertex_coordinates
             .iter()
-            .any(|binding| binding.x_source.contains("e.") || binding.y_source.contains("e."))
+            .any(VertexCoordinateExpressions::uses_edge_geometry_reference)
     {
         return Err("deterministic geometry reference model is unsupported".to_owned());
     }
@@ -390,7 +390,7 @@ fn resolve_saved_coordinate(
                     == ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_LEGACY_V1
                 && binding.transcendental_model_id.is_none())
                 || (binding.uses_legacy_edge_geometry_reference_v1()
-                    && source_uses_edge_geometry_reference(source)))
+                    && ori_formats::source_uses_edge_geometry_reference(source)))
         {
             if y_axis {
                 binding.adopted_y_mm
@@ -461,7 +461,17 @@ fn expand_saved_vertex_references_with_legacy_policy(
         };
         let start = cursor + relative;
         result.push_str(&source[cursor..start]);
-        if source[start..].starts_with("e.") {
+        let edge_reference = source[start..].starts_with("e.");
+        if source
+            .get(..start)
+            .and_then(|prefix| prefix.chars().next_back())
+            .is_some_and(is_ascii_saved_reference_continuation)
+        {
+            result.push_str(if edge_reference { "e." } else { "v." });
+            cursor = start + 2;
+            continue;
+        }
+        if edge_reference {
             let id_end = start
                 .checked_add(38)
                 .ok_or_else(|| "invalid edge reference".to_owned())?;
@@ -621,8 +631,8 @@ fn expand_saved_vertex_references_with_legacy_policy(
     Ok(result)
 }
 
-fn source_uses_edge_geometry_reference(source: &str) -> bool {
-    source.contains("e.")
+fn is_ascii_saved_reference_continuation(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
 }
 
 fn deterministic_saved_edge_reference_geometry(

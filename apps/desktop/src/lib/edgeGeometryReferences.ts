@@ -19,6 +19,15 @@ export function sourcesUseValidEdgeGeometryReferences(
 }
 
 /**
+ * Returns whether one source contains a complete canonical edge reference and
+ * no malformed edge-reference token.
+ */
+export function sourceUsesEdgeGeometryReference(source: string): boolean {
+  const count = sourceEdgeGeometryReferenceCount(source)
+  return count !== null && count > 0
+}
+
+/**
  * Identifies a legacy binding whose persisted coordinates remain the display
  * source of truth because its edge-derived values have not been reverified.
  */
@@ -39,6 +48,14 @@ function sourceEdgeGeometryReferenceCount(source: string): number | null {
   while (cursor < source.length) {
     const start = source.indexOf('e.', cursor)
     if (start < 0) break
+    const preceding = source[start - 1]
+    if (
+      preceding !== undefined
+      && isAsciiReferenceContinuation(preceding)
+    ) {
+      cursor = start + 'e.'.length
+      continue
+    }
 
     const uuidStart = start + 2
     const uuidEnd = uuidStart + 36

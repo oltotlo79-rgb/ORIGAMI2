@@ -7,6 +7,7 @@ import {
 } from '../src/lib/coreClient.ts'
 import {
   isUnverifiedLegacyV1EdgeGeometryBinding,
+  sourceUsesEdgeGeometryReference,
 } from '../src/lib/edgeGeometryReferences.ts'
 import {
   createRecoveryClient,
@@ -419,6 +420,7 @@ test('recovery scans every edge-geometry reference with Rust-compatible token ru
   const length = `e.${RECOVERY_ID}.length`
   const angle = `e.${RECOVERY_ID}.angle`
   const endingE = 'e.12345678-1234-4234-8234-123456789abe.length'
+  const vertexEndingE = 'v.12345678-1234-4234-8234-123456789abe.x'
   const binding = (xSource: string, ySource: string) => validSnapshot({
     numeric_expressions: {
       vertex_coordinates: [{
@@ -437,6 +439,8 @@ test('recovery scans every edge-geometry reference with Rust-compatible token ru
     ['1', angle],
     [`(${length}) + (${angle})`, `${angle} / 2`],
     [endingE, '2'],
+    [`${vertexEndingE} + ${endingE}`, '2'],
+    [`${endingE} + ${vertexEndingE}`, '2'],
   ]) {
     assert.ok(
       parseRestoredRecoverySnapshot(
@@ -446,9 +450,21 @@ test('recovery scans every edge-geometry reference with Rust-compatible token ru
       ),
     )
   }
+  assert.equal(sourceUsesEdgeGeometryReference(vertexEndingE), false)
+  assert.equal(sourceUsesEdgeGeometryReference(`${vertexEndingE} + ${endingE}`), true)
+  assert.equal(sourceUsesEdgeGeometryReference(`${endingE} + ${vertexEndingE}`), true)
 
   const nil = '00000000-0000-0000-0000-000000000000'
   const uppercase = RECOVERY_ID.toUpperCase()
+  for (const source of [
+    `e.${nil}.length`,
+    `e.${uppercase}.length`,
+    `${length}junk`,
+    `${angle}.degrees`,
+    `${length} + e.bad`,
+  ]) {
+    assert.equal(sourceUsesEdgeGeometryReference(source), false)
+  }
   for (const [fixture, xSource, ySource] of [
     ['malformed UUID', 'e.not-a-uuid.length', angle],
     ['nil UUID', `e.${nil}.length`, angle],

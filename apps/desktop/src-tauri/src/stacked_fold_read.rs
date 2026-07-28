@@ -3658,7 +3658,7 @@ mod tests {
                                 == row
                         })
                         .collect::<HashSet<_>>();
-                    let entries = geometry
+                    let mut entries = geometry
                         .hinges()
                         .iter()
                         .map(|hinge| HalfAngleRationalEntryInputV1 {
@@ -3692,7 +3692,8 @@ mod tests {
                                 denominator: 1,
                             }],
                         })
-                        .collect();
+                        .collect::<Vec<_>>();
+                    entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
                     let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
                         geometry,
                         audit,
@@ -4151,7 +4152,7 @@ mod tests {
                 request,
             )
             .unwrap_err(),
-            CYCLE_NONCLOSING_MESSAGE
+            CYCLE_PATH_UNCERTIFIED_MESSAGE
         );
         assert_eq!(transactions.pending_token_for_test_v1(), None);
         assert_eq!(

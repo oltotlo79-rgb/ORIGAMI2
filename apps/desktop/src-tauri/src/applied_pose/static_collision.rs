@@ -1243,6 +1243,11 @@ mod tests {
     fn midpoint_mountain_400mm_project_with_thickness(
         thickness_mm: f64,
     ) -> (ProjectState, [EdgeId; 2]) {
+        fn fixed_id<T: serde::de::DeserializeOwned>(group: u16, index: u64) -> T {
+            serde_json::from_str(&format!("\"00000000-0000-4000-{group:04x}-{index:012x}\""))
+                .expect("fixed UUID-backed midpoint fixture ID")
+        }
+
         let coordinates = [
             (0.0, 0.0),
             (200.0, 0.0),
@@ -1252,21 +1257,22 @@ mod tests {
         ];
         let vertices = coordinates
             .into_iter()
-            .map(|(x, y)| Vertex {
-                id: VertexId::new(),
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: fixed_id(0x8000, index as u64 + 1),
                 position: Point2::new(x, y),
             })
             .collect::<Vec<_>>();
         let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
         let mut edges = (0..boundary.len())
             .map(|index| Edge {
-                id: EdgeId::new(),
+                id: fixed_id(0x9000, index as u64 + 1),
                 start: boundary[index],
                 end: boundary[(index + 1) % boundary.len()],
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        let hinges = [EdgeId::new(), EdgeId::new()];
+        let hinges = [fixed_id(0x9000, 6), fixed_id(0x9000, 7)];
         edges.extend([
             Edge {
                 id: hinges[0],
@@ -1287,7 +1293,25 @@ mod tests {
             thickness_mm,
             ..Paper::default()
         };
-        (ProjectState::new_with_paper(pattern, paper), hinges)
+        let mut project = ProjectState::new_with_paper(pattern, paper);
+        project.project_id = fixed_id(0xb000, 1);
+        project.saved_document = Some(project.document());
+        (project, hinges)
+    }
+
+    fn midpoint_fixture_fixed_face(topology: &ori_topology::TopologySnapshot) -> FaceId {
+        // `fixed_face_id` is part of the exact native-pose authority. Selecting
+        // `topology.faces[0]` while the fixture used random UUIDs silently
+        // changed the physical root between test processes because topology
+        // face-key order and canonical face-ID order are distinct contracts.
+        // The fixed source/project IDs above plus this canonical selection bind
+        // every run to the same material face and traversal.
+        topology
+            .faces
+            .iter()
+            .min_by_key(|face| face.id.canonical_bytes())
+            .map(|face| face.id)
+            .expect("midpoint fixture face")
     }
 
     fn only_non_hinge_face_pair(model: &MaterialTreeKinematicsModel) -> [FaceId; 2] {
@@ -1919,7 +1943,7 @@ mod tests {
             expected_project_instance_id: project.instance_id,
             expected_project_id: project.project_id,
             expected_revision: project.editor.revision(),
-            fixed_face_id: Some(topology.faces[0].id),
+            fixed_face_id: Some(midpoint_fixture_fixed_face(&topology)),
             complete_hinge_angles,
         };
         let state = AppState::new(project);
@@ -2073,7 +2097,7 @@ mod tests {
             expected_project_instance_id: project.instance_id,
             expected_project_id: project.project_id,
             expected_revision: project.editor.revision(),
-            fixed_face_id: Some(topology.faces[0].id),
+            fixed_face_id: Some(midpoint_fixture_fixed_face(&topology)),
             complete_hinge_angles,
         };
         let state = AppState::new(project);
@@ -2171,7 +2195,7 @@ mod tests {
     }
 
     #[test]
-    fn positive_thickness_three_face_current_pose_requires_complete_pair_evidence() {
+    fn positive_thickness_three_face_current_pose_admits_complete_pair_evidence() {
         let (project, hinges) = midpoint_mountain_400mm_project_with_thickness(1.0);
         let topology = project
             .editor
@@ -2192,7 +2216,7 @@ mod tests {
             expected_project_instance_id: project.instance_id,
             expected_project_id: project.project_id,
             expected_revision: project.editor.revision(),
-            fixed_face_id: Some(topology.faces[0].id),
+            fixed_face_id: Some(midpoint_fixture_fixed_face(&topology)),
             complete_hinge_angles,
         };
         let state = AppState::new(project);
@@ -2200,30 +2224,42 @@ mod tests {
             crate::applied_pose::apply_current_native_pose(&state, request),
         )
         .expect("production native-pose adoption");
-        assert!(matches!(
-            certify_current_static_collision(&state, StaticCollisionLimits::default()),
-            Err(CurrentStaticCollisionError::GeometryBlocking(
-                StaticCollisionError::PairEvidenceUnavailable {
-                    expected_unordered_face_pairs: 3,
-                },
-            ))
-        ));
+        let certificate =
+            certify_current_static_collision(&state, StaticCollisionLimits::default())
+                .expect("complete three-face pair evidence")
+                .expect("current static-collision certificate");
+        assert_eq!(
+            certificate
+                .certificate
+                .geometry_proof
+                .expected_unordered_face_pairs(),
+            3
+        );
         let diagnosis = tauri::async_runtime::block_on(
             inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
         )
-        .expect("current evidence-unavailable diagnosis");
+        .expect("current certified diagnosis");
         assert_eq!(diagnosis.binding, Some(applied.binding));
         assert_eq!(
             diagnosis.status,
-            CurrentStaticCollisionDiagnosticStatus::Blocking
+            CurrentStaticCollisionDiagnosticStatus::CertifiedNonblocking
         );
-        assert_eq!(
-            diagnosis.reason,
-            Some(CurrentStaticCollisionDiagnosticReason::EvidenceUnavailable)
-        );
+        assert_eq!(diagnosis.reason, None);
         assert_eq!(diagnosis.expected_unordered_face_pairs, Some(3));
-        assert_eq!(diagnosis.proven_transversal_pairs, None);
+        assert_eq!(diagnosis.proven_transversal_pairs, Some(0));
         assert_eq!(diagnosis.first_proven_transversal_pair, None);
+        assert_eq!(
+            diagnosis.pair_classification_counts,
+            Some(CurrentStaticCollisionPairClassificationCounts {
+                separated: 0,
+                touching: 0,
+                allowed: 0,
+                penetrating: 0,
+                indeterminate: 0,
+                candidate_excluded: 0,
+            })
+        );
+        assert_eq!(diagnosis.pair_diagnostics, Some(Vec::new()));
     }
 
     #[test]
@@ -2248,7 +2284,7 @@ mod tests {
             expected_project_instance_id: project.instance_id,
             expected_project_id: project.project_id,
             expected_revision: project.editor.revision(),
-            fixed_face_id: Some(topology.faces[0].id),
+            fixed_face_id: Some(midpoint_fixture_fixed_face(&topology)),
             complete_hinge_angles: vec![NativePoseHingeAngleRequest {
                 edge_id: hinge,
                 angle_degrees: 90.0,

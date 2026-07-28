@@ -504,6 +504,89 @@ fn dense_grid_recognition_authenticates_every_cartesian_adjacency_slot() {
 }
 
 #[test]
+fn dense_grid_axis_and_line_authentication_replay_non_cardinal_binary64_segments() {
+    let start = Point3::new(
+        f64::from_bits(0x3ff0_0000_0000_0001),
+        0.0,
+        f64::from_bits(0x3ffb_b67a_e858_4caa),
+    )
+    .unwrap();
+    let end = Point3::new(
+        f64::from_bits(0x3ff8_0000_0000_0002),
+        0.0,
+        f64::from_bits(0x4004_c8dc_2e42_3980),
+    )
+    .unwrap();
+    let delta = subtract(end, start).unwrap();
+    let axis = scale(delta, 1.0 / length(delta).unwrap()).unwrap();
+    assert_ne!(
+        delta.x() * axis.z() - delta.z() * axis.x(),
+        0.0,
+        "the redundant rounded cross reproduces the former false rejection"
+    );
+
+    let left = FaceId::new();
+    let right = FaceId::new();
+    let hinge = TreeHinge::new_for_test(
+        EdgeId::new(),
+        FoldAssignment::Mountain,
+        left,
+        right,
+        start,
+        end,
+        axis,
+    );
+    assert!(dense_grid_valid_axis_line_v1(DenseGridHingeV1 {
+        hinge: &hinge,
+        family: DenseGridHingeFamilyV1::ColumnBoundary,
+        carrier: 0,
+        segment: 0,
+        forward_face: left,
+    }));
+
+    let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+    let twice_delta = scale(delta, 2.0).unwrap();
+    let reference = TreeHinge::new_for_test(
+        EdgeId::new(),
+        FoldAssignment::Mountain,
+        left,
+        right,
+        origin,
+        delta,
+        axis,
+    );
+    let candidate = TreeHinge::new_for_test(
+        EdgeId::new(),
+        FoldAssignment::Mountain,
+        left,
+        right,
+        delta,
+        twice_delta,
+        axis,
+    );
+    let reference = DenseGridHingeV1 {
+        hinge: &reference,
+        family: DenseGridHingeFamilyV1::ColumnBoundary,
+        carrier: 0,
+        segment: 0,
+        forward_face: left,
+    };
+    let candidate = DenseGridHingeV1 {
+        hinge: &candidate,
+        family: DenseGridHingeFamilyV1::ColumnBoundary,
+        carrier: 0,
+        segment: 1,
+        forward_face: left,
+    };
+    assert!(dense_grid_valid_axis_line_v1(reference));
+    assert!(dense_grid_valid_axis_line_v1(candidate));
+    assert!(
+        dense_grid_same_directed_line_v1(reference, candidate),
+        "raw replayed deltas must prove the exact line without reusing the rounded unit axis"
+    );
+}
+
+#[test]
 fn dense_grid_carrier_requires_one_exact_directed_rotation_line() {
     let fixture = dense_grid_fixture_v1(3, 10, false);
     let moving = fixture.column_carriers[0].clone();

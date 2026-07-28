@@ -3,7 +3,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use ori_domain::{EdgeId, FaceId};
 
 use super::MaterialHingeGraphAudit;
-use crate::{CanonicalCycleScheduleV1, MaterialHingeGraphGeometry, TreeHinge};
+use crate::{
+    CanonicalCycleScheduleV1, MaterialHingeGraphGeometry, TreeHinge,
+    transform::{length, scale, subtract},
+};
 
 // Exact carrier identity for a bounded non-cactus rectangular grid whose two
 // dimensions are both at least two.
@@ -322,26 +325,23 @@ fn dense_grid_directed_axis_v1(record: DenseGridHingeV1<'_>) -> Option<[f64; 3]>
 }
 
 fn dense_grid_valid_axis_line_v1(record: DenseGridHingeV1<'_>) -> bool {
-    let start = record.hinge.start();
-    let end = record.hinge.end();
-    let axis = record.hinge.axis();
-    let delta = [
-        end.x() - start.x(),
-        end.y() - start.y(),
-        end.z() - start.z(),
-    ];
-    let direction = [axis.x(), axis.y(), axis.z()];
-    let cross = [
-        delta[1] * direction[2] - delta[2] * direction[1],
-        delta[2] * direction[0] - delta[0] * direction[2],
-        delta[0] * direction[1] - delta[1] * direction[0],
-    ];
-    let dot = delta[0] * direction[0] + delta[1] * direction[1] + delta[2] * direction[2];
-    delta.into_iter().all(f64::is_finite)
-        && direction.into_iter().all(f64::is_finite)
-        && cross.into_iter().all(|value| value == 0.0)
-        && dot.is_finite()
-        && dot > 0.0
+    let Ok(delta) = subtract(record.hinge.end(), record.hinge.start()) else {
+        return false;
+    };
+    let Ok(delta_length) = length(delta) else {
+        return false;
+    };
+    let Ok(expected_axis) = scale(delta, 1.0 / delta_length) else {
+        return false;
+    };
+    // The native kinematics generator rotates about `(start, axis)`. Authenticate
+    // the stored axis by replaying the same normalized endpoint-delta
+    // construction used by material-graph preparation. Requiring an exact
+    // floating cross product between that rounded unit axis and its pre-
+    // normalization delta is stronger than the model: a non-cardinal binary64
+    // segment can replay to the identical axis while the redundant cross rounds
+    // to one ULP away from zero.
+    expected_axis == record.hinge.axis()
 }
 
 fn dense_grid_same_directed_line_v1(
@@ -357,19 +357,30 @@ fn dense_grid_same_directed_line_v1(
     if reference_axis != candidate_axis {
         return false;
     }
-    let origin = reference.hinge.start();
-    let point = candidate.hinge.start();
-    let offset = [
-        point.x() - origin.x(),
-        point.y() - origin.y(),
-        point.z() - origin.z(),
-    ];
-    let cross = [
-        offset[1] * reference_axis[2] - offset[2] * reference_axis[1],
-        offset[2] * reference_axis[0] - offset[0] * reference_axis[2],
-        offset[0] * reference_axis[1] - offset[1] * reference_axis[0],
-    ];
-    offset.into_iter().all(f64::is_finite) && cross.into_iter().all(|value| value == 0.0)
+    let Ok(reference_delta) = subtract(reference.hinge.end(), reference.hinge.start()) else {
+        return false;
+    };
+    // Stored axes are rounded normalizations of their endpoint deltas. Their
+    // exact equality above authenticates the directed rotation generator, but
+    // using a rounded unit axis again for the line-incidence determinant can
+    // create a one-ULP nonzero cross product for a genuinely collinear
+    // non-cardinal segment. Test both candidate endpoints against the raw,
+    // replay-authenticated reference delta instead. If the binary64 points are
+    // exactly collinear, both products in each determinant have the same exact
+    // real value and therefore round identically.
+    [candidate.hinge.start(), candidate.hinge.end()]
+        .into_iter()
+        .all(|point| {
+            let Ok(offset) = subtract(point, reference.hinge.start()) else {
+                return false;
+            };
+            let cross = [
+                offset.y() * reference_delta.z() - offset.z() * reference_delta.y(),
+                offset.z() * reference_delta.x() - offset.x() * reference_delta.z(),
+                offset.x() * reference_delta.y() - offset.y() * reference_delta.x(),
+            ];
+            cross.into_iter().all(|value| value == 0.0)
+        })
 }
 
 fn dense_grid_motion_has_exact_carriers_v1(
@@ -479,8 +490,10 @@ pub(super) fn dense_parallel_grid_cycle_closure_premises_v1(
                 .iter()
                 .filter(|record| moving.contains(&record.hinge.edge()))
                 .count()
-        || !dense_grid_motion_has_exact_carriers_v1(&grid, &moving)
     {
+        return false;
+    }
+    if !dense_grid_motion_has_exact_carriers_v1(&grid, &moving) {
         return false;
     }
     let (Some(initial), Some(midpoint), Some(target)) = (

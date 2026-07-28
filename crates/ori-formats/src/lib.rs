@@ -321,11 +321,30 @@ fn sources_use_valid_edge_geometry_references(x_source: &str, y_source: &str) ->
     }
 }
 
+/// Returns whether `source` contains at least one complete, canonical edge
+/// geometry reference and no malformed edge-reference token.
+///
+/// This is a lexical compatibility check only. It neither resolves an edge nor
+/// grants authority to reuse persisted coordinates.
+#[must_use]
+pub fn source_uses_edge_geometry_reference(source: &str) -> bool {
+    source_edge_geometry_reference_count(source).is_some_and(|count| count > 0)
+}
+
 fn source_edge_geometry_reference_count(source: &str) -> Option<usize> {
     let mut count = 0_usize;
     let mut cursor = 0_usize;
     while let Some(relative_start) = source.get(cursor..)?.find("e.") {
         let start = cursor.checked_add(relative_start)?;
+        if source
+            .get(..start)?
+            .chars()
+            .next_back()
+            .is_some_and(is_ascii_reference_continuation)
+        {
+            cursor = start.checked_add("e.".len())?;
+            continue;
+        }
         let id_end = start.checked_add(38)?;
         let uuid = source.get(start + 2..id_end)?;
         let edge: EdgeId = serde_json::from_str(&format!("\"{uuid}\"")).ok()?;
@@ -351,9 +370,7 @@ fn source_edge_geometry_reference_count(source: &str) -> Option<usize> {
         if source
             .get(token_end..)
             .and_then(|tail| tail.chars().next())
-            .is_some_and(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
-            })
+            .is_some_and(is_ascii_reference_continuation)
         {
             return None;
         }
@@ -361,6 +378,10 @@ fn source_edge_geometry_reference_count(source: &str) -> Option<usize> {
         cursor = token_end;
     }
     Some(count)
+}
+
+fn is_ascii_reference_continuation(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '.')
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2747,6 +2768,43 @@ mod tests {
                 .to_bits(),
             value.to_bits()
         );
+    }
+
+    #[test]
+    fn edge_geometry_reference_scanner_respects_left_boundaries_and_source_order() {
+        let vertex_ending_in_e = "v.12345678-1234-4234-8234-123456789abe.x";
+        let edge_ending_in_e = "e.22345678-1234-4234-8234-123456789abe.length";
+
+        assert_eq!(
+            source_edge_geometry_reference_count(vertex_ending_in_e),
+            Some(0)
+        );
+        assert!(!source_uses_edge_geometry_reference(vertex_ending_in_e));
+
+        for source in [
+            format!("{vertex_ending_in_e} + {edge_ending_in_e}"),
+            format!("{edge_ending_in_e} + {vertex_ending_in_e}"),
+        ] {
+            assert_eq!(source_edge_geometry_reference_count(&source), Some(1));
+            assert!(source_uses_edge_geometry_reference(&source));
+        }
+    }
+
+    #[test]
+    fn edge_geometry_reference_scanner_rejects_noncanonical_and_extended_tokens() {
+        let canonical = "22345678-1234-4234-8234-123456789abe";
+        let malformed = [
+            "e.00000000-0000-0000-0000-000000000000.length".to_owned(),
+            format!("e.{}.length", canonical.to_uppercase()),
+            format!("e.{canonical}.lengthjunk"),
+            format!("e.{canonical}.angle.foo"),
+            format!("e.{canonical}.length + e.bad"),
+        ];
+
+        for source in malformed {
+            assert_eq!(source_edge_geometry_reference_count(&source), None);
+            assert!(!source_uses_edge_geometry_reference(&source));
+        }
     }
 
     #[test]

@@ -112,10 +112,22 @@ pub fn angled_dense_cycle_pattern(
     assert!(angle_degrees.is_finite() && (0.0..180.0).contains(&angle_degrees));
     let (mut pattern, paper, horizontal, vertical) = orthogonal_dense_cycle_pattern(columns, rows);
     let angle = angle_degrees.to_radians();
+    // Keep the oblique test fixture exact in the binary64 model exercised by
+    // the kinematics authority. With at most nine 20-unit cells, quantizing
+    // each direction component to 2^-42 keeps every integer multiple and
+    // offset below the 53-bit significand limit. Consequently all segments on
+    // one carrier replay to a bit-identical normalized axis instead of gaining
+    // an incidental one-ULP direction change from rounded coordinate
+    // arithmetic.
+    // The component error is at most 2^-43, well below the 1e-12 angular
+    // tolerance asserted by the oblique regressions.
+    const DYADIC_SCALE: f64 = 4_398_046_511_104.0;
+    let cosine = (angle.cos() * DYADIC_SCALE).round() / DYADIC_SCALE;
+    let sine = (angle.sin() * DYADIC_SCALE).round() / DYADIC_SCALE;
     for vertex in &mut pattern.vertices {
         let x = vertex.position.x;
         let y = vertex.position.y;
-        vertex.position = Point2::new(x + y * angle.cos(), y * angle.sin());
+        vertex.position = Point2::new(x + y * cosine, y * sine);
     }
     (pattern, paper, horizontal, vertical)
 }

@@ -20,7 +20,8 @@ use super::{
 };
 use crate::{HingeReliefLinearAngleScheduleV1, HingeReliefPolicyRecordV1};
 
-const COMPOUND_LOGICAL_CORRIDOR_MODEL_ID_V2: &str = "compound_logical_hinge_corridor_preflight_v2";
+pub(super) const COMPOUND_LOGICAL_CORRIDOR_MODEL_ID_V2: &str =
+    "compound_logical_hinge_corridor_preflight_v2";
 const POINT_BYTES: usize = WORD_BYTES * 3;
 const COMPOUND_SET_BYTES: usize = WORD_BYTES * 3;
 const COMPOUND_CERTIFICATE_BYTES: usize =
@@ -79,7 +80,33 @@ pub(super) struct CompoundLogicalCorridorCertificateV2 {
     content_hash: [u8; 32],
 }
 
+/// Narrow borrowed composition view for the union-exterior assumption
+/// recognizer. It exposes only the immutable canonical values already bound
+/// by the compound certificate and cannot construct or mutate that evidence.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CompoundCorridorCompositionBindingV2<'a> {
+    pub(super) pair: [FaceId; 2],
+    pub(super) hinges: &'a [EdgeId],
+    pub(super) lower_bits: [u64; 3],
+    pub(super) upper_bits: [u64; 3],
+    pub(super) binding: CompoundCorridorBindingV2,
+    pub(super) schedule_hash: [u8; 32],
+    pub(super) content_hash: [u8; 32],
+}
+
 impl CompoundLogicalCorridorCertificateV2 {
+    pub(super) fn composition_binding_v2(&self) -> CompoundCorridorCompositionBindingV2<'_> {
+        CompoundCorridorCompositionBindingV2 {
+            pair: self.pair,
+            hinges: &self.hinges,
+            lower_bits: self.lower_bits,
+            upper_bits: self.upper_bits,
+            binding: self.binding,
+            schedule_hash: self.schedule_hash,
+            content_hash: self.content_hash,
+        }
+    }
+
     #[cfg(test)]
     pub(super) const fn pair(&self) -> [FaceId; 2] {
         self.pair

@@ -43,10 +43,15 @@ pub use multi_hinge_union::{
     MultiHingeReliefUnionCertificateV2, MultiHingeReliefUnionCoveredPairV2,
     MultiHingeReliefUnionErrorV2, MultiHingeReliefUnionGapReportV2, MultiHingeReliefUnionGapV2,
     MultiHingeReliefUnionHingeGapV2, MultiHingeReliefUnionLimitsV2,
+    SPLIT_HINGE_UNION_EXTERIOR_RELIEF_ASSUMPTION_MODEL_ID_V1,
+    SplitHingeUnionExteriorReliefAssumptionErrorV1,
+    SplitHingeUnionExteriorReliefAssumptionLimitsV1, SplitHingeUnionExteriorReliefAssumptionV1,
     certify_multi_hinge_relief_union_v2, certify_multi_hinge_relief_union_with_cancel_v2,
     diagnose_multi_hinge_relief_union_gaps_v2,
     diagnose_multi_hinge_relief_union_gaps_with_cancel_v2,
+    prove_split_hinge_union_exterior_relief_assumption_v1,
     revalidate_multi_hinge_relief_union_certificate_v2,
+    revalidate_split_hinge_union_exterior_relief_assumption_v1,
 };
 pub use pair_proof_cache::diagnose_collective_hinge_path_with_pair_cache_v1;
 use pair_proof_cache::{

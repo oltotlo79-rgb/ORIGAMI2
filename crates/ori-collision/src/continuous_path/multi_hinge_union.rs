@@ -23,9 +23,17 @@ use crate::{
 };
 
 mod compound_corridor;
+mod union_exterior_relief_assumption;
 
 use compound_corridor::{
     CompoundLogicalCorridorCertificateV2, prepare_compound_logical_corridors_v2,
+};
+pub use union_exterior_relief_assumption::{
+    SPLIT_HINGE_UNION_EXTERIOR_RELIEF_ASSUMPTION_MODEL_ID_V1,
+    SplitHingeUnionExteriorReliefAssumptionErrorV1,
+    SplitHingeUnionExteriorReliefAssumptionLimitsV1, SplitHingeUnionExteriorReliefAssumptionV1,
+    prove_split_hinge_union_exterior_relief_assumption_v1,
+    revalidate_split_hinge_union_exterior_relief_assumption_v1,
 };
 
 pub const MULTI_HINGE_RELIEF_UNION_GAP_MODEL_ID_V2: &str = "multi_hinge_relief_union_gap_v2";
@@ -1064,3 +1072,7 @@ mod fail_closed_contract_tests;
 #[cfg(test)]
 #[path = "multi_hinge_union/compound_corridor_tests.rs"]
 mod compound_corridor_tests;
+
+#[cfg(test)]
+#[path = "multi_hinge_union/union_exterior_relief_assumption_tests.rs"]
+mod union_exterior_relief_assumption_tests;

@@ -67,11 +67,18 @@ fn bounded_length_witness_is_a_distinct_strict_wire_counter() {
             pair_constraint_constructive_witness_count: 0,
             pair_constraint_algebraic_witness_count: 0,
             length_constraint_constructive_witness_count: 4,
+            zero_length_closure_constructive_witness_count: 0,
             authorizes_project_mutation: false,
-            replayable_across_runtimes: false,
+            replayable_across_runtimes,
             ..
         } if constraint_ids == &expected_ids
+            && *replayable_across_runtimes
+                == ori_numeric::deterministic_transcendental_model_supported_v1()
     ));
     let encoded = serde_json::to_value(semantic_mus).expect("serialize length witness counter");
+    assert_eq!(
+        encoded["transcendental_model_id"],
+        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    );
     assert_eq!(encoded["length_constraint_constructive_witness_count"], 4,);
 }

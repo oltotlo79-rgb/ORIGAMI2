@@ -29,6 +29,7 @@ struct GeometricConstraintSolveVertex {
 #[serde(rename_all = "camelCase")]
 pub(super) struct GeometricConstraintSolveExactSatisfaction {
     model_id: &'static str,
+    transcendental_model_id: &'static str,
     constraint_count: usize,
     equation_count: usize,
     authorizes_project_mutation: bool,
@@ -880,11 +881,12 @@ fn prepare_geometric_constraint_solve(
     PreparedGeometricConstraintSolve {
         positions,
         exact_satisfaction: Some(GeometricConstraintSolveExactSatisfaction {
-            model_id: exact.model_id(),
+            model_id: certificate.model_id(),
+            transcendental_model_id: certificate.transcendental_model_id(),
             constraint_count: certificate.constraint_count(),
             equation_count: certificate.equation_count(),
-            authorizes_project_mutation: exact.authorizes_project_mutation(),
-            replayable_across_runtimes: exact.replayable_across_runtimes(),
+            authorizes_project_mutation: certificate.authorizes_project_mutation(),
+            replayable_across_runtimes: certificate.replayable_across_runtimes(),
         }),
     }
 }
@@ -1025,10 +1027,17 @@ fn recertify_staged_exact_geometric_constraint_solve(
     positions: &[(VertexId, Point2)],
     expected: GeometricConstraintSolveExactSatisfaction,
 ) -> Result<(), String> {
+    let expected_replayability = ori_numeric::deterministic_transcendental_model_supported_v1();
+    let maximum_equation_count = document.constraints.len().checked_mul(2);
     if expected.model_id
         != ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1
+        || expected.transcendental_model_id != ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
         || expected.authorizes_project_mutation
-        || expected.replayable_across_runtimes
+        || expected.replayable_across_runtimes != expected_replayability
+        || expected.constraint_count != document.constraints.len()
+        || expected.constraint_count == 0
+        || expected.equation_count < expected.constraint_count
+        || maximum_equation_count.is_none_or(|maximum| expected.equation_count > maximum)
         || positions.len() > pattern.vertices.len()
     {
         return Err("exact geometric constraint preview certificate is invalid".to_owned());
@@ -1052,7 +1061,11 @@ fn recertify_staged_exact_geometric_constraint_solve(
             .ok_or_else(|| {
                 "exact geometric constraint preview could not be re-certified".to_owned()
             })?;
-    if certificate.constraint_count() != expected.constraint_count
+    if certificate.model_id() != expected.model_id
+        || certificate.transcendental_model_id() != expected.transcendental_model_id
+        || certificate.authorizes_project_mutation() != expected.authorizes_project_mutation
+        || certificate.replayable_across_runtimes() != expected.replayable_across_runtimes
+        || certificate.constraint_count() != expected.constraint_count
         || certificate.equation_count() != expected.equation_count
     {
         return Err("exact geometric constraint preview certificate is stale".to_owned());

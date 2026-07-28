@@ -3436,10 +3436,12 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
         analyze_geometric_constraint_document(pattern, &exact_positive),
         GeometricConstraintPreflightResult::ProvenSatisfiable {
             model_id: ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+            transcendental_model_id: ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
             constraint_count: 1,
             equation_count: 1,
             authorizes_project_mutation: false,
-            replayable_across_runtimes: false,
+            replayable_across_runtimes:
+                ori_numeric::deterministic_transcendental_model_supported_v1(),
         }
     );
     assert_eq!(
@@ -3450,11 +3452,14 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
         .expect("serialize exact positive constraint result"),
         serde_json::json!({
             "status": "proven_satisfiable",
-            "model_id": "geometric_constraint_current_runtime_exact_satisfaction_v1",
+            "model_id": "geometric_constraint_deterministic_binary64_exact_satisfaction_v2",
+            "transcendental_model_id":
+                ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
             "constraint_count": 1,
             "equation_count": 1,
             "authorizes_project_mutation": false,
-            "replayable_across_runtimes": false,
+            "replayable_across_runtimes":
+                ori_numeric::deterministic_transcendental_model_supported_v1(),
         })
     );
 

@@ -25,6 +25,7 @@ const lengthOnly = () => certified({
   current_assignment_witness_count: 0,
   single_constraint_constructive_witness_count: 0,
   length_constraint_constructive_witness_count: 2,
+  zero_length_closure_constructive_witness_count: 0,
 })
 
 test('accepts and freezes the exact bounded length-only witness counter', () => {

@@ -7,6 +7,9 @@ import {
   MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS,
   MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK,
 } from './geometricConstraintSemanticMus.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from './deterministicTranscendentalModel.ts'
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 
 type CertifiedSemanticMus = Extract<
@@ -17,6 +20,7 @@ type CertifiedSemanticMus = Extract<
 const CERTIFIED_SEMANTIC_MUS_KEYS = [
   'status',
   'model_id',
+  'transcendental_model_id',
   'constraint_ids',
   'constraint_count',
   'direct_oracle_calls',
@@ -28,11 +32,14 @@ const CERTIFIED_SEMANTIC_MUS_KEYS = [
   'pair_constraint_constructive_witness_count',
   'pair_constraint_algebraic_witness_count',
   'length_constraint_constructive_witness_count',
+  'zero_length_closure_constructive_witness_count',
   'authorizes_project_mutation',
   'replayable_across_runtimes',
 ] as const
 
 export type GeometricConstraintSemanticMusCertifiedViewModel = Readonly<{
+  transcendentalModelId:
+    typeof DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
   constraintIds: readonly string[]
   constraintCount: number
   directOracleCalls: number
@@ -44,6 +51,8 @@ export type GeometricConstraintSemanticMusCertifiedViewModel = Readonly<{
   pairConstraintConstructiveWitnessCount: number
   pairConstraintAlgebraicWitnessCount: number
   lengthConstraintConstructiveWitnessCount: number
+  zeroLengthClosureConstructiveWitnessCount: number
+  replayableAcrossRuntimes: boolean
 }>
 
 /**
@@ -77,14 +86,17 @@ function snapshotCertifiedSemanticMus(
     || record.status !== 'certified'
     || record.model_id
       !== GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID
+    || record.transcendental_model_id
+      !== DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
     || record.authorizes_project_mutation !== false
-    || record.replayable_across_runtimes !== false
+    || typeof record.replayable_across_runtimes !== 'boolean'
   ) return null
   const constraintIds = snapshotConstraintIds(record.constraint_ids)
   if (!constraintIds) return null
   return {
     status: 'certified',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     constraint_ids: constraintIds,
     constraint_count: record.constraint_count as number,
     direct_oracle_calls: record.direct_oracle_calls as number,
@@ -102,8 +114,11 @@ function snapshotCertifiedSemanticMus(
       record.pair_constraint_algebraic_witness_count as number,
     length_constraint_constructive_witness_count:
       record.length_constraint_constructive_witness_count as number,
+    zero_length_closure_constructive_witness_count:
+      record.zero_length_closure_constructive_witness_count as number,
     authorizes_project_mutation: false,
-    replayable_across_runtimes: false,
+    replayable_across_runtimes:
+      record.replayable_across_runtimes as boolean,
   }
 }
 
@@ -180,6 +195,7 @@ function buildCertifiedViewModel(
     result.pair_constraint_constructive_witness_count,
     result.pair_constraint_algebraic_witness_count,
     result.length_constraint_constructive_witness_count,
+    result.zero_length_closure_constructive_witness_count,
   ]
   if (
     !isPositiveSafeInteger(result.constraint_count)
@@ -199,6 +215,7 @@ function buildCertifiedViewModel(
   ) return null
 
   return Object.freeze({
+    transcendentalModelId: result.transcendental_model_id,
     constraintIds: Object.freeze([...result.constraint_ids]),
     constraintCount: result.constraint_count,
     directOracleCalls: result.direct_oracle_calls,
@@ -216,6 +233,9 @@ function buildCertifiedViewModel(
       result.pair_constraint_algebraic_witness_count,
     lengthConstraintConstructiveWitnessCount:
       result.length_constraint_constructive_witness_count,
+    zeroLengthClosureConstructiveWitnessCount:
+      result.zero_length_closure_constructive_witness_count,
+    replayableAcrossRuntimes: result.replayable_across_runtimes,
   })
 }
 

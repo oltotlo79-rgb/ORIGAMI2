@@ -1,14 +1,16 @@
 use super::*;
 
-/// Request/revision-bound observation of the current-runtime semantic-MUS
+/// Request/revision-bound observation of deterministic-binary64 semantic-MUS
 /// certification. The containing response supplies the exact project
 /// instance, project, and revision binding. This DTO is never mutation
-/// authority and is never a cross-runtime replay proof.
+/// authority; replayability only states whether the same frozen model may be
+/// re-certified on another covered target.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum GeometricConstraintSemanticMusResult {
     Certified {
         model_id: &'static str,
+        transcendental_model_id: &'static str,
         constraint_ids: Vec<ConstraintId>,
         constraint_count: u32,
         direct_oracle_calls: u32,
@@ -20,11 +22,13 @@ pub(crate) enum GeometricConstraintSemanticMusResult {
         pair_constraint_constructive_witness_count: u32,
         pair_constraint_algebraic_witness_count: u32,
         length_constraint_constructive_witness_count: u32,
+        zero_length_closure_constructive_witness_count: u32,
         authorizes_project_mutation: bool,
         replayable_across_runtimes: bool,
     },
     Unknown {
         model_id: &'static str,
+        transcendental_model_id: &'static str,
         reason: GeometricConstraintSemanticMusUnknownReason,
         direct_core_constraint_ids: Vec<ConstraintId>,
         direct_oracle_calls: u32,
@@ -111,6 +115,10 @@ pub(super) fn map_semantic_direct_conflict_result(
                 certificate.length_constraint_constructive_witness_count(),
                 constraint_ids.len(),
             )?;
+            let zero_length_closure_constructive_witness_count = checked_semantic_count(
+                certificate.zero_length_closure_constructive_witness_count(),
+                constraint_ids.len(),
+            )?;
             if deletion_witness_checks != constraint_count
                 || current_assignment_witness_count
                     .checked_add(axis_exactification_witness_count)
@@ -122,11 +130,19 @@ pub(super) fn map_semantic_direct_conflict_result(
                     .and_then(|count| {
                         count.checked_add(length_constraint_constructive_witness_count)
                     })
+                    .and_then(|count| {
+                        count.checked_add(zero_length_closure_constructive_witness_count)
+                    })
                     != Some(constraint_count)
                 || certificate.direct_oracle_calls() == 0
                 || prepared.constraints().len() > MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1
+                || certificate.model_id()
+                    != ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1
+                || certificate.transcendental_model_id()
+                    != ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
                 || certificate.authorizes_project_mutation()
                 || certificate.replayable_across_runtimes()
+                    != ori_numeric::deterministic_transcendental_model_supported_v1()
             {
                 return Err(());
             }
@@ -138,6 +154,7 @@ pub(super) fn map_semantic_direct_conflict_result(
                 bounded_direct_mus,
                 GeometricConstraintSemanticMusResult::Certified {
                     model_id: certificate.model_id(),
+                    transcendental_model_id: certificate.transcendental_model_id(),
                     constraint_ids,
                     constraint_count,
                     direct_oracle_calls,
@@ -149,8 +166,9 @@ pub(super) fn map_semantic_direct_conflict_result(
                     pair_constraint_constructive_witness_count,
                     pair_constraint_algebraic_witness_count,
                     length_constraint_constructive_witness_count,
-                    authorizes_project_mutation: false,
-                    replayable_across_runtimes: false,
+                    zero_length_closure_constructive_witness_count,
+                    authorizes_project_mutation: certificate.authorizes_project_mutation(),
+                    replayable_across_runtimes: certificate.replayable_across_runtimes(),
                 },
             ))
         }
@@ -238,6 +256,7 @@ pub(super) fn map_semantic_direct_conflict_result(
                 GeometricConstraintSemanticMusResult::Unknown {
                     model_id:
                         ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
+                    transcendental_model_id: ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
                     reason: map_semantic_mus_unknown_reason(reason),
                     direct_core_constraint_ids,
                     direct_oracle_calls: direct_oracle_calls_dto,

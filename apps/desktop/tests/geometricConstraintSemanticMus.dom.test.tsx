@@ -12,6 +12,12 @@ import {
   envelope,
   provenDirect,
 } from './geometricConstraintSemanticMusTestSupport'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel'
+import {
+  GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+} from '../src/lib/geometricConstraintSemanticMus'
 import { localeFixture } from './localeTestFixture'
 
 const uuid = (index: number) =>
@@ -31,7 +37,8 @@ const DIRECT: GeometricConstraintPreflightResult = {
 }
 const CERTIFIED_WIRE = {
   status: 'certified',
-  model_id: 'geometric_constraint_current_runtime_semantic_mus_v1',
+  model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+  transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
   constraint_ids: CORE,
   constraint_count: 2,
   direct_oracle_calls: 7,
@@ -43,8 +50,9 @@ const CERTIFIED_WIRE = {
   pair_constraint_constructive_witness_count: 1,
   pair_constraint_algebraic_witness_count: 1,
   length_constraint_constructive_witness_count: 0,
+  zero_length_closure_constructive_witness_count: 0,
   authorizes_project_mutation: false,
-  replayable_across_runtimes: false,
+  replayable_across_runtimes: true,
 }
 
 function parsedCertified(
@@ -71,34 +79,57 @@ const CERTIFIED = parsedCertified({})
 afterEach(cleanup)
 
 describe('geometric-constraint semantic MUS status', () => {
-  it('labels a certified result as current-runtime only and disclaims authority', () => {
+  it('labels a certified result as deterministic and disclaims witness portability', () => {
     renderPanel(CERTIFIED, 'en')
 
     const region = screen.getByRole('region', {
-      name: 'Current-runtime semantic minimal-core certification',
+      name: 'Deterministic-binary64 semantic minimal-core certification',
     })
     expect(region.textContent).toContain(
-      'Certified a semantic minimal core in the current runtime',
+      'Certified a deterministic-binary64 semantic minimal core',
     )
     expect(region.textContent).toContain(
       '1 pair-constraint constructive, 1 pair-constraint algebraic-collapse',
     )
     expect(region.textContent).toContain('0 bounded length-only constructive')
     expect(region.textContent).toContain(
-      'does not authorize project mutation and cannot be replayed across runtimes',
+      '0 bounded zero-length-closure constructive',
+    )
+    expect(region.textContent).toContain(
+      'Re-certifiable under the frozen deterministic model',
+    )
+    expect(region.textContent).toContain(
+      'does not authorize project mutation and makes no portability claim',
     )
     expect(region.textContent).not.toContain('not certified')
+  })
+
+  it('labels a certified unsupported-target result as current-runtime fallback', () => {
+    renderPanel(parsedCertified({
+      replayable_across_runtimes: false,
+    }), 'en')
+
+    const region = screen.getByRole('region', {
+      name: 'Deterministic-binary64 semantic minimal-core certification',
+    })
+    expect(region.textContent).toContain(
+      'On this target, this is a current-runtime-only fallback.',
+    )
+    expect(region.textContent).not.toContain(
+      'Re-certifiable under the frozen deterministic model',
+    )
   })
 
   it('shows both pair methods in Japanese with the same labelled region', () => {
     renderPanel(CERTIFIED, 'ja')
 
     const region = screen.getByRole('region', {
-      name: '現在の実行環境で意味論的最小コア認証',
+      name: '決定論的binary64意味論的最小コア認証',
     })
     expect(region.textContent).toContain('二制約構成1件')
     expect(region.textContent).toContain('二制約代数縮退1件')
     expect(region.textContent).toContain('有界長さ制約構成0件')
+    expect(region.textContent).toContain('ゼロ長閉包構成0件')
   })
 
   it('shows a bounded length-only witness count without inflating its total', () => {
@@ -106,14 +137,34 @@ describe('geometric-constraint semantic MUS status', () => {
       pair_constraint_constructive_witness_count: 0,
       pair_constraint_algebraic_witness_count: 0,
       length_constraint_constructive_witness_count: 2,
+      zero_length_closure_constructive_witness_count: 0,
     }), 'ja')
 
     const region = screen.getByRole('region', {
-      name: '現在の実行環境で意味論的最小コア認証',
+      name: '決定論的binary64意味論的最小コア認証',
     })
     expect(region.textContent).toContain('削除証人2件')
     expect(region.textContent).toContain('有界長さ制約構成2件')
     expect(region.textContent).not.toContain('有界長さ制約構成3件')
+  })
+
+  it('shows the zero-length-closure method without inflating its total', () => {
+    renderPanel(parsedCertified({
+      pair_constraint_constructive_witness_count: 0,
+      pair_constraint_algebraic_witness_count: 0,
+      zero_length_closure_constructive_witness_count: 2,
+    }), 'en')
+
+    const region = screen.getByRole('region', {
+      name: 'Deterministic-binary64 semantic minimal-core certification',
+    })
+    expect(region.textContent).toContain('2 deletion witnesses')
+    expect(region.textContent).toContain(
+      '2 bounded zero-length-closure constructive',
+    )
+    expect(region.textContent).not.toContain(
+      '3 bounded zero-length-closure constructive',
+    )
   })
 
   it('fails closed instead of overstating forged in-process witness counts', () => {
@@ -123,7 +174,7 @@ describe('geometric-constraint semantic MUS status', () => {
     }), 'en')
 
     const region = screen.getByRole('region', {
-      name: 'Current-runtime semantic minimal-core certification',
+      name: 'Deterministic-binary64 semantic minimal-core certification',
     })
     expect(region.textContent).toContain(
       'does not contain semantic minimal-core certification information',
@@ -137,7 +188,8 @@ describe('geometric-constraint semantic MUS status', () => {
   it('does not promote an Unknown direct core to semantic minimality', () => {
     const unknown: GeometricConstraintSemanticMus = {
       status: 'unknown',
-      model_id: 'geometric_constraint_current_runtime_semantic_mus_v1',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       reason: 'deletion_witness_unavailable',
       direct_core_constraint_ids: CORE,
       direct_oracle_calls: 7,
@@ -152,7 +204,7 @@ describe('geometric-constraint semantic MUS status', () => {
     renderPanel(unknown, 'en')
 
     const region = screen.getByRole('region', {
-      name: 'Current-runtime semantic minimal-core certification',
+      name: 'Deterministic-binary64 semantic minimal-core certification',
     })
     expect(region.textContent).toContain(
       'A direct-conflict core (2 constraints) was found',
@@ -164,14 +216,15 @@ describe('geometric-constraint semantic MUS status', () => {
       'A required deletion witness could not be certified.',
     )
     expect(region.textContent).toContain(
-      'does not authorize project mutation and cannot be replayed across runtimes',
+      'does not authorize project mutation and makes no portability claim',
     )
   })
 
   it('reports pre-core Unknown and legacy responses without a semantic claim', () => {
     const unknown: GeometricConstraintSemanticMus = {
       status: 'unknown',
-      model_id: 'geometric_constraint_current_runtime_semantic_mus_v1',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       reason: 'cancelled',
       direct_core_constraint_ids: [],
       direct_oracle_calls: 0,
@@ -185,17 +238,17 @@ describe('geometric-constraint semantic MUS status', () => {
     }
     const { rerender } = renderPanel(unknown, 'ja')
     let region = screen.getByRole('region', {
-      name: '現在の実行環境で意味論的最小コア認証',
+      name: '決定論的binary64意味論的最小コア認証',
     })
     expect(region.textContent).toContain('意味論的最小コアは認証されていません')
     expect(region.textContent).toContain('直接コアの確定前に停止しました')
     expect(region.textContent).toContain(
-      'プロジェクト変更を許可せず、別の実行環境で再利用できません',
+      'プロジェクト変更を許可せず、シリアライズ済み証人の可搬性も主張しません',
     )
 
     rerender(panel(null, 'ja'))
     region = screen.getByRole('region', {
-      name: '現在の実行環境で意味論的最小コア認証',
+      name: '決定論的binary64意味論的最小コア認証',
     })
     expect(region.textContent).toContain(
       'この応答には意味論的最小コア認証情報がありません',

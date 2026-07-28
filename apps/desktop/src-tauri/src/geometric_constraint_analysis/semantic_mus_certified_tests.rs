@@ -35,6 +35,7 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
         semantic_mus,
         GeometricConstraintSemanticMusResult::Certified {
             model_id: ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
+            transcendental_model_id: ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
             constraint_ids: expected_ids.clone(),
             constraint_count: 3,
             direct_oracle_calls: 7,
@@ -52,8 +53,10 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
             pair_constraint_constructive_witness_count: 0,
             pair_constraint_algebraic_witness_count: 0,
             length_constraint_constructive_witness_count: 0,
+            zero_length_closure_constructive_witness_count: 0,
             authorizes_project_mutation: false,
-            replayable_across_runtimes: false,
+            replayable_across_runtimes:
+                ori_numeric::deterministic_transcendental_model_supported_v1(),
         },
     );
     assert!(matches!(
@@ -61,8 +64,15 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
         serde_json::Value::Object(ref value)
             if value.get("status") == Some(&serde_json::json!("certified"))
                 && value.get("constraint_ids") == Some(&serde_json::json!(expected_ids))
+                && value.get("transcendental_model_id")
+                    == Some(&serde_json::json!(
+                        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+                    ))
                 && value.get("authorizes_project_mutation") == Some(&serde_json::json!(false))
-                && value.get("replayable_across_runtimes") == Some(&serde_json::json!(false))
+                && value.get("replayable_across_runtimes")
+                    == Some(&serde_json::json!(
+                        ori_numeric::deterministic_transcendental_model_supported_v1()
+                    ))
     ));
 
     let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
@@ -101,7 +111,14 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
         encoded["semantic_mus"]["authorizes_project_mutation"],
         false,
     );
-    assert_eq!(encoded["semantic_mus"]["replayable_across_runtimes"], false,);
+    assert_eq!(
+        encoded["semantic_mus"]["transcendental_model_id"],
+        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    );
+    assert_eq!(
+        encoded["semantic_mus"]["replayable_across_runtimes"],
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    );
     assert_eq!(
         encoded["semantic_mus"]["single_constraint_constructive_witness_count"],
         0,
@@ -116,6 +133,10 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
     );
     assert_eq!(
         encoded["semantic_mus"]["length_constraint_constructive_witness_count"],
+        0,
+    );
+    assert_eq!(
+        encoded["semantic_mus"]["zero_length_closure_constructive_witness_count"],
         0,
     );
     assert_eq!(fixture.pattern, pattern_before);
@@ -190,10 +211,13 @@ fn different_fixed_lengths_are_promoted_by_the_constructive_singleton_witness() 
             pair_constraint_constructive_witness_count: 0,
             pair_constraint_algebraic_witness_count: 0,
             length_constraint_constructive_witness_count: 0,
+            zero_length_closure_constructive_witness_count: 0,
             authorizes_project_mutation: false,
-            replayable_across_runtimes: false,
+            replayable_across_runtimes,
             ..
         } if constraint_ids == &expected_ids
+            && *replayable_across_runtimes
+                == ori_numeric::deterministic_transcendental_model_supported_v1()
     ));
     let encoded =
         serde_json::to_value(semantic_mus).expect("serialize constructive singleton witness count");
@@ -275,6 +299,10 @@ fn unreachable_constructive_candidates_keep_a_strict_unknown_phase_dto() {
     assert!(matches!(
         outcome.semantic_mus,
         Some(GeometricConstraintSemanticMusResult::Unknown {
+            model_id:
+                ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
+            transcendental_model_id:
+                ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
             reason: GeometricConstraintSemanticMusUnknownReason::DeletionWitnessUnavailable,
             direct_core_constraint_ids,
             direct_oracle_calls: 3,
@@ -341,12 +369,18 @@ fn non_direct_response_serializes_null_and_oversized_direct_input_stays_unknown(
     assert!(matches!(
         oversized_outcome.semantic_mus,
         Some(GeometricConstraintSemanticMusResult::Unknown {
+            model_id:
+                ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
+            transcendental_model_id:
+                ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
             reason: GeometricConstraintSemanticMusUnknownReason::DirectOracleIncomplete,
             ref direct_core_constraint_ids,
             direct_oracle_calls: 0,
             deletion_witness_checks: 0,
             certified_deletion_witnesses: 0,
             deletion_witness_work: 0,
+            authorizes_project_mutation: false,
+            replayable_across_runtimes: false,
             ..
         }) if direct_core_constraint_ids.is_empty()
     ));

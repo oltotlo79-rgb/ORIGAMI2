@@ -1,7 +1,11 @@
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from './deterministicTranscendentalModel.ts'
+
 export const MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS = 16
 export const MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK = 20_000_000
 export const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID =
-  'geometric_constraint_current_runtime_semantic_mus_v1' as const
+  'geometric_constraint_deterministic_binary64_semantic_mus_v2' as const
 
 export type GeometricConstraintSemanticMusUnknownReasonV1 =
   | 'direct_oracle_incomplete'
@@ -16,6 +20,8 @@ export type GeometricConstraintSemanticMusV1 =
       status: 'certified'
       model_id:
         typeof GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID
+      transcendental_model_id:
+        typeof DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
       constraint_ids: readonly string[]
       constraint_count: number
       direct_oracle_calls: number
@@ -27,13 +33,16 @@ export type GeometricConstraintSemanticMusV1 =
       pair_constraint_constructive_witness_count: number
       pair_constraint_algebraic_witness_count: number
       length_constraint_constructive_witness_count: number
+      zero_length_closure_constructive_witness_count: number
       authorizes_project_mutation: false
-      replayable_across_runtimes: false
+      replayable_across_runtimes: boolean
     }>
   | Readonly<{
       status: 'unknown'
       model_id:
         typeof GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID
+      transcendental_model_id:
+        typeof DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
       reason: GeometricConstraintSemanticMusUnknownReasonV1
       direct_core_constraint_ids: readonly string[]
       direct_oracle_calls: number
@@ -133,6 +142,7 @@ function parseCertified(
     !parser.hasExactKeys(record, [
       'status',
       'model_id',
+      'transcendental_model_id',
       'constraint_ids',
       'constraint_count',
       'direct_oracle_calls',
@@ -144,11 +154,14 @@ function parseCertified(
       'pair_constraint_constructive_witness_count',
       'pair_constraint_algebraic_witness_count',
       'length_constraint_constructive_witness_count',
+      'zero_length_closure_constructive_witness_count',
       'authorizes_project_mutation',
       'replayable_across_runtimes',
     ])
     || record.model_id
       !== GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID
+    || record.transcendental_model_id
+      !== DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
   ) return null
   const constraintIds = parser.parseSortedUniqueUuidArray(
     record.constraint_ids,
@@ -200,15 +213,21 @@ function parseCertified(
       constraintIds.length,
       true,
     )
+    || !isCount(
+      record.zero_length_closure_constructive_witness_count,
+      constraintIds.length,
+      true,
+    )
     || record.current_assignment_witness_count
       + record.axis_exactification_witness_count
       + record.single_constraint_constructive_witness_count
       + record.pair_constraint_constructive_witness_count
       + record.pair_constraint_algebraic_witness_count
       + record.length_constraint_constructive_witness_count
+      + record.zero_length_closure_constructive_witness_count
       !== constraintIds.length
     || record.authorizes_project_mutation !== false
-    || record.replayable_across_runtimes !== false
+    || typeof record.replayable_across_runtimes !== 'boolean'
     || directResult.bounded_direct_mus.status !== 'proven_unsatisfiable'
     || record.direct_oracle_calls !== directResult.bounded_direct_mus.oracle_calls
     || !sameStrings(
@@ -220,6 +239,7 @@ function parseCertified(
   const result: CertifiedSemanticMusV1 = Object.freeze({
     status: 'certified',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     constraint_ids: constraintIds,
     constraint_count: record.constraint_count,
     direct_oracle_calls: record.direct_oracle_calls,
@@ -237,8 +257,10 @@ function parseCertified(
       record.pair_constraint_algebraic_witness_count,
     length_constraint_constructive_witness_count:
       record.length_constraint_constructive_witness_count,
+    zero_length_closure_constructive_witness_count:
+      record.zero_length_closure_constructive_witness_count,
     authorizes_project_mutation: false,
-    replayable_across_runtimes: false,
+    replayable_across_runtimes: record.replayable_across_runtimes,
   })
   certifiedSemanticMusValues.add(result)
   return result
@@ -253,6 +275,7 @@ function parseUnknown(
     !parser.hasExactKeys(record, [
       'status',
       'model_id',
+      'transcendental_model_id',
       'reason',
       'direct_core_constraint_ids',
       'direct_oracle_calls',
@@ -266,6 +289,8 @@ function parseUnknown(
     ])
     || record.model_id
       !== GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID
+    || record.transcendental_model_id
+      !== DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
     || !isUnknownReason(record.reason)
   ) return null
   const directCoreIds = parser.parseSortedUniqueUuidArray(
@@ -319,6 +344,7 @@ function parseUnknown(
   return Object.freeze({
     status: 'unknown',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     reason: record.reason,
     direct_core_constraint_ids: directCoreIds,
     direct_oracle_calls: record.direct_oracle_calls,

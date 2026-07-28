@@ -62,6 +62,8 @@ type GeometricConstraintPanelSimpleTextKey =
   | 'degreesOfFreedom'
   | 'condition'
   | 'exactSatisfaction'
+  | 'deterministicReplayableScope'
+  | 'currentRuntimeFallbackScope'
   | 'detailSeparator'
   | 'movePreview'
   | 'apply'
@@ -180,8 +182,16 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
   degreesOfFreedom: text('DOF', 'DOF'),
   condition: text('condition', 'condition'),
   exactSatisfaction: text(
-    '現在の実行環境で、適用候補は全{constraintCount}件・{equationCount}方程式のbinary64残差を厳密に満たしています。適用には引き続き明示確認が必要です。',
-    'In this runtime, the apply candidate exactly satisfies all {constraintCount} constraints and {equationCount} binary64 residual equations. Explicit confirmation is still required to apply it.',
+    '適用候補は全{constraintCount}件・{equationCount}方程式の決定論的binary64残差を厳密に満たしています。{scope} 適用には引き続き明示確認が必要です。',
+    'The apply candidate exactly satisfies all {constraintCount} constraints and {equationCount} deterministic binary64 residual equations. {scope} Explicit confirmation is still required to apply it.',
+  ),
+  deterministicReplayableScope: text(
+    '凍結された決定論モデル下で再認証可能です。シリアライズ済み証人の可搬性は主張しません。',
+    'Re-certifiable under the frozen deterministic model; this does not claim portability of a serialized witness.',
+  ),
+  currentRuntimeFallbackScope: text(
+    'このターゲットでは現runtime内のみのfallbackです。',
+    'On this target, this is a current-runtime-only fallback.',
   ),
   detailSeparator: text(' · ', ' · '),
   movePreview: text('移動プレビュー', 'Move preview'),
@@ -279,8 +289,8 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     '{reason} Do not treat the constraints as safety-verified.',
   ),
   provenSatisfiable: text(
-    '現在の実行環境で、現在の配置は全{constraintCount}件・{equationCount}方程式のbinary64残差を厳密に満たしています。',
-    'In this runtime, the current assignment exactly satisfies all {constraintCount} constraints and {equationCount} binary64 residual equations.',
+    '現在の配置は全{constraintCount}件・{equationCount}方程式の決定論的binary64残差を厳密に満たしています。{scope}',
+    'The current assignment exactly satisfies all {constraintCount} constraints and {equationCount} deterministic binary64 residual equations. {scope}',
   ),
   noDirectConflict: text(
     '直接矛盾は見つかりません（全制約の充足可能性は未証明）',
@@ -325,12 +335,12 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     'A direct conflict is proven, but bounded direct-conflict minimization reached its time limit.',
   ),
   semanticMusHeading: text(
-    '現在の実行環境で意味論的最小コア認証',
-    'Current-runtime semantic minimal-core certification',
+    '決定論的binary64意味論的最小コア認証',
+    'Deterministic-binary64 semantic minimal-core certification',
   ),
   semanticMusCertified: text(
-    '現在の実行環境で意味論的最小コアを認証しました（{count}件、直接オラクル{calls}回、削除証人{checks}件、作業量{work}）。証人方式：現在配置{current}件、軸厳密化{axis}件、単一制約構成{constructive}件、二制約構成{pairConstructive}件、二制約代数縮退{pairAlgebraic}件、有界長さ制約構成{lengthConstructive}件。コア：{ids}',
-    'Certified a semantic minimal core in the current runtime ({count} constraints, {calls} direct-oracle calls, {checks} deletion witnesses, work {work}). Witness methods: {current} current-assignment, {axis} axis-exactification, {constructive} single-constraint constructive, {pairConstructive} pair-constraint constructive, {pairAlgebraic} pair-constraint algebraic-collapse, {lengthConstructive} bounded length-only constructive. Core: {ids}',
+    '決定論的binary64意味論的最小コアを認証しました（{count}件、直接オラクル{calls}回、削除証人{checks}件、作業量{work}）。証人方式：現在配置{current}件、軸厳密化{axis}件、単一制約構成{constructive}件、二制約構成{pairConstructive}件、二制約代数縮退{pairAlgebraic}件、有界長さ制約構成{lengthConstructive}件、ゼロ長閉包構成{zeroClosure}件。{scope} コア：{ids}',
+    'Certified a deterministic-binary64 semantic minimal core ({count} constraints, {calls} direct-oracle calls, {checks} deletion witnesses, work {work}). Witness methods: {current} current-assignment, {axis} axis-exactification, {constructive} single-constraint constructive, {pairConstructive} pair-constraint constructive, {pairAlgebraic} pair-constraint algebraic-collapse, {lengthConstructive} bounded length-only constructive, {zeroClosure} bounded zero-length-closure constructive. {scope} Core: {ids}',
   ),
   semanticMusUnknownWithCore: text(
     '直接矛盾コア（{count}件）は得られましたが、意味論的最小性は認証されていません。理由：{reason}。進捗：削除証人{certified}/{checks}件、作業量{work}。コア：{ids}',
@@ -345,8 +355,8 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     'This response does not contain semantic minimal-core certification information.',
   ),
   semanticMusNoAuthority: text(
-    'この結果はプロジェクト変更を許可せず、別の実行環境で再利用できません。',
-    'This result does not authorize project mutation and cannot be replayed across runtimes.',
+    'この結果はプロジェクト変更を許可せず、シリアライズ済み証人の可搬性も主張しません。',
+    'This result does not authorize project mutation and makes no portability claim for a serialized witness.',
   ),
   invalidIdentifier: text('不正な識別子', 'invalid identifier'),
   idListSeparator: text('、', ', '),

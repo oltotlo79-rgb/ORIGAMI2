@@ -4,10 +4,16 @@ import test from 'node:test'
 import {
   normalizeGeometricConstraintSolvePreview,
 } from '../src/lib/coreClient.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
+import {
+  GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+} from '../src/lib/geometricConstraints.ts'
 
 const TOKEN = '00000000-0000-4000-8000-000000000001'
 const VERTEX = '00000000-0000-4000-8000-000000000002'
-const MODEL = 'geometric_constraint_current_runtime_exact_satisfaction_v1'
+const MODEL = GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
 
 function validPreview() {
   return {
@@ -23,10 +29,11 @@ function validPreview() {
     changedVertices: [{ vertexId: VERTEX, x: 12, y: 8 }],
     exactSatisfaction: {
       modelId: MODEL,
+      transcendentalModelId: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraintCount: 1,
       equationCount: 2,
       authorizesProjectMutation: false,
-      replayableAcrossRuntimes: false,
+      replayableAcrossRuntimes: true,
     },
   }
 }
@@ -37,10 +44,11 @@ test('strict solve preview parser accepts exact and legacy approximate responses
   assert.ok(exact)
   assert.deepEqual(exact.exactSatisfaction, {
     modelId: MODEL,
+    transcendentalModelId: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     constraintCount: 1,
     equationCount: 2,
     authorizesProjectMutation: false,
-    replayableAcrossRuntimes: false,
+    replayableAcrossRuntimes: true,
   })
 
   exactSource.changedVertices[0]!.x = 99
@@ -122,7 +130,7 @@ test('strict solve preview parser rejects malformed top-level and vertex data', 
   assert.equal(normalizeGeometricConstraintSolvePreview(accessor), null)
 })
 
-test('strict solve preview parser rejects forged exact-satisfaction authority', () => {
+test('strict solve preview parser rejects forged exact-satisfaction metadata', () => {
   const mutateExact = (
     mutate: (exact: Record<string, unknown>) => void,
   ): unknown => {
@@ -133,6 +141,8 @@ test('strict solve preview parser rejects forged exact-satisfaction authority', 
   for (const value of [
     { ...validPreview(), exactSatisfaction: null },
     mutateExact((exact) => { exact.modelId = 'other_model' }),
+    mutateExact((exact) => { exact.transcendentalModelId = 'other_model' }),
+    mutateExact((exact) => { delete exact.transcendentalModelId }),
     mutateExact((exact) => { exact.constraintCount = 0 }),
     mutateExact((exact) => { exact.constraintCount = 1_025 }),
     mutateExact((exact) => { exact.equationCount = 0 }),
@@ -142,11 +152,19 @@ test('strict solve preview parser rejects forged exact-satisfaction authority', 
       exact.equationCount = 2
     }),
     mutateExact((exact) => { exact.authorizesProjectMutation = true }),
-    mutateExact((exact) => { exact.replayableAcrossRuntimes = true }),
+    mutateExact((exact) => { exact.replayableAcrossRuntimes = 'true' }),
     mutateExact((exact) => { exact.extra = false }),
   ]) {
     assert.equal(normalizeGeometricConstraintSolvePreview(value), null)
   }
+
+  const currentRuntimeFallback = validPreview()
+  currentRuntimeFallback.exactSatisfaction.replayableAcrossRuntimes = false
+  assert.equal(
+    normalizeGeometricConstraintSolvePreview(currentRuntimeFallback)
+      ?.exactSatisfaction?.replayableAcrossRuntimes,
+    false,
+  )
 })
 
 test('strict solve preview parser bounds changed vertices before traversal', () => {

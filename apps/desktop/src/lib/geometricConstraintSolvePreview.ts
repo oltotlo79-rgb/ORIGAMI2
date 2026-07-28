@@ -2,6 +2,9 @@ import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 import {
   GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
 } from './geometricConstraints.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from './deterministicTranscendentalModel.ts'
 
 const MAX_CHANGED_VERTICES = 256
 const MAX_SOLVER_CONSTRAINTS = 1_024
@@ -29,10 +32,12 @@ export type GeometricConstraintSolvePreview = Readonly<{
   exactSatisfaction?: Readonly<{
     modelId:
       typeof GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
+    transcendentalModelId:
+      typeof DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
     constraintCount: number
     equationCount: number
     authorizesProjectMutation: false
-    replayableAcrossRuntimes: false
+    replayableAcrossRuntimes: boolean
   }>
 }>
 
@@ -115,6 +120,7 @@ export function normalizeGeometricConstraintSolvePreview(
   if (Object.hasOwn(source, 'exactSatisfaction')) {
     const exact = exactDataRecord(source.exactSatisfaction, [
       'modelId',
+      'transcendentalModelId',
       'constraintCount',
       'equationCount',
       'authorizesProjectMutation',
@@ -124,6 +130,8 @@ export function normalizeGeometricConstraintSolvePreview(
       !exact
       || exact.modelId
         !== GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
+      || exact.transcendentalModelId
+        !== DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
       || !isBoundedInteger(
         exact.constraintCount,
         1,
@@ -132,14 +140,15 @@ export function normalizeGeometricConstraintSolvePreview(
       || exact.equationCount !== source.equationCount
       || exact.constraintCount > source.equationCount
       || exact.authorizesProjectMutation !== false
-      || exact.replayableAcrossRuntimes !== false
+      || typeof exact.replayableAcrossRuntimes !== 'boolean'
     ) return null
     exactSatisfaction = {
       modelId: exact.modelId,
+      transcendentalModelId: exact.transcendentalModelId,
       constraintCount: exact.constraintCount,
       equationCount: exact.equationCount,
       authorizesProjectMutation: false,
-      replayableAcrossRuntimes: false,
+      replayableAcrossRuntimes: exact.replayableAcrossRuntimes,
     }
   }
 

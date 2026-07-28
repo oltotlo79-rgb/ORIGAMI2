@@ -63,8 +63,14 @@ fn semantic_observer_and_mapping_preserve_cancel_and_deadline_distinctions() {
         assert!(matches!(
             semantic,
             GeometricConstraintSemanticMusResult::Unknown {
+                model_id:
+                    ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
+                transcendental_model_id:
+                    ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
                 reason,
                 ref direct_core_constraint_ids,
+                authorizes_project_mutation: false,
+                replayable_across_runtimes: false,
                 ..
             } if reason == dto_reason && direct_core_constraint_ids == &direct_ids
         ));
@@ -121,8 +127,14 @@ fn semantic_observer_and_mapping_preserve_cancel_and_deadline_distinctions() {
         assert!(matches!(
             semantic,
             GeometricConstraintSemanticMusResult::Unknown {
+                model_id:
+                    ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
+                transcendental_model_id:
+                    ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
                 reason,
                 ref direct_core_constraint_ids,
+                authorizes_project_mutation: false,
+                replayable_across_runtimes: false,
                 ..
             } if reason == dto_reason && direct_core_constraint_ids == &direct_ids
         ));

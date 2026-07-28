@@ -128,7 +128,7 @@ test('the visible panel never upgrades unknown or direct conflict to a safe resu
   assert.match(panel, /preflight\?\.status === 'unknown'/u)
   assert.match(panel, /semanticMusUnknownWithCore/u)
   assert.match(panel, /className = 'is-blocking'/u)
-  assert.match(panelText, /現在の実行環境で意味論的最小コア認証/u)
+  assert.match(panelText, /決定論的binary64意味論的最小コア認証/u)
   assert.match(panelText, /does not authorize project mutation/u)
   assert.match(panelText, /安全確認済みとして扱いません/u)
   assert.match(

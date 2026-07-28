@@ -15,7 +15,12 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProjectSnapshot } from '../src/lib/coreClient.ts'
+import type {
+  BeginnerSkeletonEndpointInputV1,
+  BeginnerSkeletonEndpointResponseV1,
+} from '../src/lib/beginnerSkeletonEndpointClient.ts'
 import { useBeginnerCandidateWorkflow } from '../src/lib/useBeginnerCandidateWorkflow.ts'
+import { useBeginnerEditorState } from '../src/lib/useBeginnerEditorState.ts'
 import { useBeginnerRecognitionWorkflow } from '../src/lib/useBeginnerRecognitionWorkflow.ts'
 import { useBeginnerReferenceWorkflow } from '../src/lib/useBeginnerReferenceWorkflow.ts'
 
@@ -251,6 +256,59 @@ function ReferenceHarness({
   )
 }
 
+function skeletonEndpointResponse(
+  endXTenthsMm: number,
+): BeginnerSkeletonEndpointResponseV1 {
+  return {
+    start_tenths_mm: [0, 0],
+    end_tenths_mm: [endXTenthsMm, 0],
+  } as BeginnerSkeletonEndpointResponseV1
+}
+
+function EditorHarness({
+  project,
+  resolveEndpoint,
+}: {
+  project: ProjectSnapshot
+  resolveEndpoint: (
+    input: BeginnerSkeletonEndpointInputV1,
+  ) => Promise<BeginnerSkeletonEndpointResponseV1>
+}) {
+  const current = useRef(project)
+  current.current = project
+  const form = useRef<HTMLFormElement>(null)
+  const editor = useBeginnerEditorState({
+    snapshot: project,
+    getCurrentSnapshot: () => current.current,
+    getSelectedFaceId: () => null,
+    resolveSkeletonEndpoint: resolveEndpoint,
+  })
+  return (
+    <>
+      <form ref={form}>
+        <input name="skeleton_start_x_mm" defaultValue="0" />
+        <input name="skeleton_start_y_mm" defaultValue="0" />
+        <input name="skeleton_length_mm" defaultValue="10" />
+        <input name="skeleton_angle_degrees" defaultValue="0" />
+        <input name="skeleton_thickness_mm" defaultValue="1" />
+        <button
+          type="button"
+          onClick={() => {
+            if (form.current) editor.addBeginnerSkeletonSegment(form.current)
+          }}
+        >
+          add skeleton
+        </button>
+      </form>
+      <output data-testid="editor-skeleton-endpoints">
+        {editor.beginnerSkeletonSegments
+          .map((segment) => segment.end.x_tenths_mm)
+          .join(',')}
+      </output>
+    </>
+  )
+}
+
 describe('beginner workflow hook race boundaries', () => {
   it('does not subscribe to native consensus progress in browser mode', () => {
     const subscribe = vi.fn(async () => vi.fn())
@@ -374,6 +432,90 @@ describe('beginner workflow hook race boundaries', () => {
       return geometry.promise
     })
     expect(screen.getByTestId('reference-result').textContent).toBe('empty')
+  })
+
+  it('rejects stale skeleton endpoints across revision and project ABA changes', async () => {
+    const firstProject = snapshot()
+    const revisionPending = deferred<BeginnerSkeletonEndpointResponseV1>()
+    const abaPending = deferred<BeginnerSkeletonEndpointResponseV1>()
+    const resolveEndpoint = vi.fn()
+      .mockImplementationOnce(() => revisionPending.promise)
+      .mockImplementationOnce(() => abaPending.promise)
+    const view = render(
+      <EditorHarness
+        project={firstProject}
+        resolveEndpoint={resolveEndpoint}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'add skeleton' }))
+    const revisedProject = snapshot(2)
+    view.rerender(
+      <EditorHarness
+        project={revisedProject}
+        resolveEndpoint={resolveEndpoint}
+      />,
+    )
+    await act(async () => {
+      revisionPending.resolve(skeletonEndpointResponse(10))
+      await revisionPending.promise
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId('editor-skeleton-endpoints').textContent).toBe('')
+
+    fireEvent.click(screen.getByRole('button', { name: 'add skeleton' }))
+    view.rerender(
+      <EditorHarness
+        project={snapshot(
+          2,
+          '33333333-3333-4333-8333-333333333333',
+        )}
+        resolveEndpoint={resolveEndpoint}
+      />,
+    )
+    view.rerender(
+      <EditorHarness
+        project={{ ...revisedProject }}
+        resolveEndpoint={resolveEndpoint}
+      />,
+    )
+    await act(async () => {
+      abaPending.resolve(skeletonEndpointResponse(20))
+      await abaPending.promise
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId('editor-skeleton-endpoints').textContent).toBe('')
+  })
+
+  it('commits same-revision skeleton endpoint requests in request order', async () => {
+    const firstPending = deferred<BeginnerSkeletonEndpointResponseV1>()
+    const secondPending = deferred<BeginnerSkeletonEndpointResponseV1>()
+    const resolveEndpoint = vi.fn()
+      .mockImplementationOnce(() => firstPending.promise)
+      .mockImplementationOnce(() => secondPending.promise)
+    render(
+      <EditorHarness
+        project={snapshot()}
+        resolveEndpoint={resolveEndpoint}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'add skeleton' }))
+    fireEvent.click(screen.getByRole('button', { name: 'add skeleton' }))
+    expect(resolveEndpoint).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      secondPending.resolve(skeletonEndpointResponse(20))
+      await secondPending.promise
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId('editor-skeleton-endpoints').textContent).toBe('')
+
+    await act(async () => {
+      firstPending.resolve(skeletonEndpointResponse(10))
+      await firstPending.promise
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId('editor-skeleton-endpoints').textContent)
+      .toBe('10,20')
   })
 
 })

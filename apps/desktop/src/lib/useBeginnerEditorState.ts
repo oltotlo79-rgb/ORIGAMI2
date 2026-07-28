@@ -9,6 +9,7 @@ import type {
   BeginnerDesignProfileV1,
   ProjectSnapshot,
 } from './coreClient.ts'
+import { resolveBeginnerSkeletonEndpointV1 } from './beginnerSkeletonEndpointClient.ts'
 import { analyzeGenericSkeletonTree } from './genericSkeletonTree.ts'
 
 type Constraints = BeginnerDesignProfileV1['generation_constraints']
@@ -19,10 +20,25 @@ type ProtrusionKind = Constraints['target_parts'][number]['kind']
 type BulgeTargets = NonNullable<Constraints['bulge_targets']>
 type BodyOutlineMode = 'symmetric' | 'general'
 
+type BeginnerSkeletonEndpointSnapshotBinding = Readonly<{
+  projectInstanceId: ProjectSnapshot['project_instance_id']
+  projectId: ProjectSnapshot['project_id']
+  revision: ProjectSnapshot['revision']
+}>
+
+type BeginnerSkeletonEndpointEpoch = {
+  projectInstanceId: ProjectSnapshot['project_instance_id'] | undefined
+  projectId: ProjectSnapshot['project_id'] | undefined
+  revision: ProjectSnapshot['revision'] | undefined
+  epoch: number
+  commitTail: Promise<void>
+}
+
 export function useBeginnerEditorState(input: Readonly<{
   snapshot: ProjectSnapshot | null
   getCurrentSnapshot: () => ProjectSnapshot | null
   getSelectedFaceId: () => string | null
+  resolveSkeletonEndpoint?: typeof resolveBeginnerSkeletonEndpointV1
 }>) {
   const [beginnerPartTotal, setBeginnerPartTotal] = useState(0)
   const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
@@ -46,8 +62,34 @@ export function useBeginnerEditorState(input: Readonly<{
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   const snapshotRef = useRef(input.snapshot)
   snapshotRef.current = input.snapshot
+  const getCurrentSnapshotRef = useRef(input.getCurrentSnapshot)
+  getCurrentSnapshotRef.current = input.getCurrentSnapshot
   const snapshotProjectInstanceId = input.snapshot?.project_instance_id
+  const snapshotProjectId = input.snapshot?.project_id
   const snapshotRevision = input.snapshot?.revision
+  const beginnerSkeletonEndpointEpochRef = useRef<
+    BeginnerSkeletonEndpointEpoch
+  >({
+    projectInstanceId: snapshotProjectInstanceId,
+    projectId: snapshotProjectId,
+    revision: snapshotRevision,
+    epoch: 0,
+    commitTail: Promise.resolve(),
+  })
+  if (!matchesEndpointEpochIdentity(
+    beginnerSkeletonEndpointEpochRef.current,
+    snapshotProjectInstanceId,
+    snapshotProjectId,
+    snapshotRevision,
+  )) {
+    beginnerSkeletonEndpointEpochRef.current = {
+      projectInstanceId: snapshotProjectInstanceId,
+      projectId: snapshotProjectId,
+      revision: snapshotRevision,
+      epoch: beginnerSkeletonEndpointEpochRef.current.epoch + 1,
+      commitTail: Promise.resolve(),
+    }
+  }
   const beginnerSkeletonTree = useMemo(
     () => analyzeGenericSkeletonTree(beginnerSkeletonSegments),
     [beginnerSkeletonSegments],
@@ -87,7 +129,7 @@ export function useBeginnerEditorState(input: Readonly<{
         .map((part) => part.kind) ?? [],
     )
     setBeginnerBulgeTargets(constraints?.bulge_targets ?? [])
-  }, [snapshotProjectInstanceId, snapshotRevision])
+  }, [snapshotProjectInstanceId, snapshotProjectId, snapshotRevision])
 
   function addBeginnerSkeletonSegment(form: HTMLFormElement) {
     if (beginnerSkeletonSegments.length >= 64) return
@@ -108,38 +150,60 @@ export function useBeginnerEditorState(input: Readonly<{
       || thickness < 0.1
       || thickness > 1_000
     ) return
-    const radians = angle * Math.PI / 180
-    const start = {
-      x_tenths_mm: Math.round(startX * 10),
-      y_tenths_mm: Math.round(startY * 10),
+    const requestSnapshot = getCurrentSnapshotRef.current()
+    const epoch = beginnerSkeletonEndpointEpochRef.current
+    if (!requestSnapshot || !matchesEndpointEpochSnapshot(epoch, requestSnapshot)) {
+      return
     }
-    const end = {
-      x_tenths_mm: Math.round(
-        (startX + length * Math.cos(radians)) * 10,
-      ),
-      y_tenths_mm: Math.round(
-        (startY + length * Math.sin(radians)) * 10,
-      ),
+    const requestBinding = snapshotBinding(requestSnapshot)
+    const resolveEndpoint =
+      input.resolveSkeletonEndpoint ?? resolveBeginnerSkeletonEndpointV1
+    let endpointPromise: ReturnType<typeof resolveBeginnerSkeletonEndpointV1>
+    try {
+      endpointPromise = Promise.resolve(resolveEndpoint({
+        startXMm: startX,
+        startYMm: startY,
+        lengthMm: length,
+        angleDegrees: angle,
+      }))
+    } catch {
+      return
     }
-    if (
-      Math.abs(end.x_tenths_mm) > 100_000
-      || Math.abs(end.y_tenths_mm) > 100_000
-      || (
-        start.x_tenths_mm === end.x_tenths_mm
-        && start.y_tenths_mm === end.y_tenths_mm
-      )
-    ) return
-    const used = new Set(
-      beginnerSkeletonSegments.map((segment) => segment.id),
-    )
-    let id = 0
-    while (used.has(id) && id < 65_535) id += 1
-    setBeginnerSkeletonSegments((segments) => [...segments, {
-      id,
-      start,
-      end,
-      thickness_tenths_mm: Math.round(thickness * 10),
-    }])
+    const commit = epoch.commitTail.then(async () => {
+      let endpoint: Awaited<
+        ReturnType<typeof resolveBeginnerSkeletonEndpointV1>
+      >
+      try {
+        endpoint = await endpointPromise
+      } catch {
+        return
+      }
+      if (beginnerSkeletonEndpointEpochRef.current !== epoch) return
+      const currentSnapshot = getCurrentSnapshotRef.current()
+      if (
+        !currentSnapshot
+        || !matchesSnapshotBinding(currentSnapshot, requestBinding)
+      ) return
+      setBeginnerSkeletonSegments((segments) => {
+        if (segments.length >= 64) return segments
+        const used = new Set(segments.map((segment) => segment.id))
+        let id = 0
+        while (used.has(id) && id < 65_535) id += 1
+        return [...segments, {
+          id,
+          start: {
+            x_tenths_mm: endpoint.start_tenths_mm[0],
+            y_tenths_mm: endpoint.start_tenths_mm[1],
+          },
+          end: {
+            x_tenths_mm: endpoint.end_tenths_mm[0],
+            y_tenths_mm: endpoint.end_tenths_mm[1],
+          },
+          thickness_tenths_mm: Math.round(thickness * 10),
+        }]
+      })
+    })
+    epoch.commitTail = commit.catch(() => undefined)
   }
 
   function addBeginnerProtrusion(form: HTMLFormElement) {
@@ -323,4 +387,46 @@ export function useBeginnerEditorState(input: Readonly<{
     createEmptyGenericTarget,
     addBeginnerBulgeTarget,
   } as const
+}
+
+function snapshotBinding(
+  snapshot: ProjectSnapshot,
+): BeginnerSkeletonEndpointSnapshotBinding {
+  return {
+    projectInstanceId: snapshot.project_instance_id,
+    projectId: snapshot.project_id,
+    revision: snapshot.revision,
+  }
+}
+
+function matchesSnapshotBinding(
+  snapshot: ProjectSnapshot,
+  binding: BeginnerSkeletonEndpointSnapshotBinding,
+) {
+  return snapshot.project_instance_id === binding.projectInstanceId
+    && snapshot.project_id === binding.projectId
+    && snapshot.revision === binding.revision
+}
+
+function matchesEndpointEpochIdentity(
+  epoch: BeginnerSkeletonEndpointEpoch,
+  projectInstanceId: ProjectSnapshot['project_instance_id'] | undefined,
+  projectId: ProjectSnapshot['project_id'] | undefined,
+  revision: ProjectSnapshot['revision'] | undefined,
+) {
+  return epoch.projectInstanceId === projectInstanceId
+    && epoch.projectId === projectId
+    && epoch.revision === revision
+}
+
+function matchesEndpointEpochSnapshot(
+  epoch: BeginnerSkeletonEndpointEpoch,
+  snapshot: ProjectSnapshot,
+) {
+  return matchesEndpointEpochIdentity(
+    epoch,
+    snapshot.project_instance_id,
+    snapshot.project_id,
+    snapshot.revision,
+  )
 }

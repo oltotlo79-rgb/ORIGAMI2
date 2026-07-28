@@ -104,8 +104,8 @@ pub fn certify_scheduled_cycle_transition_v1(
     let schedule = candidate.schedule();
     if closure.fixed_face() != fixed_face
         || !closure.every_leaf_covers_graph_v1(geometry)
-        || closure.schedule_binding_fingerprint_v1()
-            != schedule.certificate_binding_fingerprint_v1()
+        || closure.schedule_binding_fingerprint_v2()
+            != schedule.certificate_binding_fingerprint_v2()
         || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
         || !schedule.matches_binding(geometry, audit, fixed_face)
     {
@@ -120,13 +120,13 @@ pub fn certify_scheduled_cycle_transition_v1(
         interval_count,
     );
     collision.continuous_certificate_model_id()?;
-    let schedule_certificate = schedule.certificate_binding_fingerprint_v1();
+    let schedule_certificate = schedule.certificate_binding_fingerprint_v2();
     let closure_certificate = hash_certificate_binding(
         b"dyadic_material_hinge_interval_closure_certificate_v1",
         &[
             &schedule_certificate,
             &closure.graph_binding_fingerprint_v1(),
-            &closure.partition_binding_fingerprint_v1(),
+            &closure.partition_binding_fingerprint_v2(),
         ],
     );
     let collision_certificate = hash_certificate_binding(

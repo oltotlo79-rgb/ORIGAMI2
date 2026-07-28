@@ -621,7 +621,7 @@ pub fn diagnose_multi_hinge_relief_union_gaps_with_cancel_v2(
         return Err(MultiHingeReliefUnionErrorV2::InvalidBinding);
     }
     let geometry_hash = schedule.graph_binding_fingerprint_v1();
-    let schedule_hash = schedule.certificate_binding_fingerprint_v1();
+    let schedule_hash = schedule.certificate_binding_fingerprint_v2();
     let content_hash = gap_hash(
         geometry,
         fixed_face,

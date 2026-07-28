@@ -678,8 +678,8 @@ fn blockwise_binding_v1(
         .map(|(geometry, schedule, closure)| {
             (
                 schedule.graph_binding_fingerprint_v1(),
-                schedule.certificate_binding_fingerprint_v1(),
-                closure.partition_binding_fingerprint_v1(),
+                schedule.certificate_binding_fingerprint_v2(),
+                closure.partition_binding_fingerprint_v2(),
                 geometry.hinges().len(),
                 geometry.face_ids().len(),
             )
@@ -898,8 +898,8 @@ pub fn issue_multi_block_closure_authority_v1(
     hash.update(issuer_context);
     for block in &blocks {
         hash.update(block.schedule.graph_binding_fingerprint_v1());
-        hash.update(block.schedule.certificate_binding_fingerprint_v1());
-        hash.update(block.closure.partition_binding_fingerprint_v1());
+        hash.update(block.schedule.certificate_binding_fingerprint_v2());
+        hash.update(block.closure.partition_binding_fingerprint_v2());
         hash.update((block.edges.len() as u64).to_le_bytes());
         for edge in &block.edges {
             hash.update(edge.canonical_bytes());
@@ -1239,8 +1239,8 @@ fn block_binding_v1(
 ) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(BLOCK_COMPOSED_PATH_MODEL_ID_V1.as_bytes());
-    hash.update(schedule.certificate_binding_fingerprint_v1());
-    hash.update(closure.partition_binding_fingerprint_v1());
+    hash.update(schedule.certificate_binding_fingerprint_v2());
+    hash.update(closure.partition_binding_fingerprint_v2());
     hash.update(articulation_pose_fingerprint);
     hash.update(articulation_layer_fingerprint);
     for block in blocks {

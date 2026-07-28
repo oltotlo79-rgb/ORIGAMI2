@@ -132,7 +132,7 @@ pub struct DyadicIntervalClosureLimitsV1 {
 pub struct DyadicMaterialHingeIntervalClosureCertificateV1 {
     issuer_geometry: MaterialHingeGraphGeometry,
     fixed_face: FaceId,
-    schedule_binding_fingerprint: [u8; 32],
+    schedule_binding_fingerprint_v2: [u8; 32],
     graph_binding_fingerprint: [u8; 32],
     leaves: Vec<(u32, u64, MaterialHingeIntervalClosureCertificateV1)>,
 }
@@ -208,7 +208,7 @@ impl PartialEq for DyadicMaterialHingeIntervalClosureCertificateV1 {
     fn eq(&self, other: &Self) -> bool {
         self.issuer_geometry.same_instance(&other.issuer_geometry)
             && self.fixed_face == other.fixed_face
-            && self.schedule_binding_fingerprint == other.schedule_binding_fingerprint
+            && self.schedule_binding_fingerprint_v2 == other.schedule_binding_fingerprint_v2
             && self.graph_binding_fingerprint == other.graph_binding_fingerprint
             && self.leaves == other.leaves
     }
@@ -263,22 +263,33 @@ impl DyadicMaterialHingeIntervalClosureCertificateV1 {
             })
     }
 
-    /// Native binding for the exact ordered partition and every independent
-    /// leaf proof. This does not grant pose or mutation authority.
+    /// Native V2 binding for the exact ordered partition and every independent
+    /// leaf proof. Counts and integers use fixed-width big-endian framing; the
+    /// leaf certificate version is included explicitly. This does not grant
+    /// pose or mutation authority.
     #[doc(hidden)]
     #[must_use]
-    pub fn partition_binding_fingerprint_v1(&self) -> [u8; 32] {
+    pub fn partition_binding_fingerprint_v2(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
-        hash.update(b"ORIGAMI2_DYADIC_CLOSURE_PARTITION_BINDING_V1");
+        hash.update(b"ORIGAMI2_DYADIC_CLOSURE_PARTITION_BINDING_V2");
         hash.update(self.fixed_face.canonical_bytes());
-        hash.update(self.schedule_binding_fingerprint);
+        hash.update(self.schedule_binding_fingerprint_v2);
         hash.update(self.graph_binding_fingerprint);
-        hash.update((self.leaves.len() as u64).to_be_bytes());
+        hash.update(
+            u64::try_from(self.leaves.len())
+                .expect("an in-memory partition leaf count must fit u64")
+                .to_be_bytes(),
+        );
         for (depth, index, leaf) in &self.leaves {
             hash.update(depth.to_be_bytes());
             hash.update(index.to_be_bytes());
+            hash.update(leaf.version.to_be_bytes());
             hash.update(leaf.fixed_face.canonical_bytes());
-            hash.update((leaf.checked_hinges.len() as u64).to_be_bytes());
+            hash.update(
+                u64::try_from(leaf.checked_hinges.len())
+                    .expect("an in-memory checked-hinge count must fit u64")
+                    .to_be_bytes(),
+            );
             for edge in &leaf.checked_hinges {
                 hash.update(edge.canonical_bytes());
             }
@@ -288,8 +299,8 @@ impl DyadicMaterialHingeIntervalClosureCertificateV1 {
 
     #[doc(hidden)]
     #[must_use]
-    pub const fn schedule_binding_fingerprint_v1(&self) -> [u8; 32] {
-        self.schedule_binding_fingerprint
+    pub const fn schedule_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.schedule_binding_fingerprint_v2
     }
 
     #[doc(hidden)]
@@ -604,7 +615,7 @@ impl MaterialHingeGraphGeometry {
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
                 issuer_geometry: self.clone(),
                 fixed_face,
-                schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
+                schedule_binding_fingerprint_v2: schedule.certificate_binding_fingerprint_v2(),
                 graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
                 leaves: partitions
                     .into_iter()
@@ -679,7 +690,7 @@ impl MaterialHingeGraphGeometry {
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
                 issuer_geometry: self.clone(),
                 fixed_face,
-                schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
+                schedule_binding_fingerprint_v2: schedule.certificate_binding_fingerprint_v2(),
                 graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
                 leaves: vec![(
                     0,
@@ -758,7 +769,7 @@ impl MaterialHingeGraphGeometry {
         Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
             issuer_geometry: self.clone(),
             fixed_face,
-            schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
+            schedule_binding_fingerprint_v2: schedule.certificate_binding_fingerprint_v2(),
             graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
             leaves,
         })
@@ -3678,8 +3689,8 @@ mod tests {
         assert!(!reordered.has_canonical_complete_partition_v1());
         assert!(!reordered.every_leaf_covers_graph_v1(&geometry));
         assert_ne!(
-            reordered.partition_binding_fingerprint_v1(),
-            closure.partition_binding_fingerprint_v1()
+            reordered.partition_binding_fingerprint_v2(),
+            closure.partition_binding_fingerprint_v2()
         );
 
         let mut gapped = closure.clone();
@@ -3693,8 +3704,16 @@ mod tests {
         assert!(!empty.has_canonical_complete_partition_v1());
         assert!(!empty.every_leaf_covers_graph_v1(&geometry));
 
+        let mut wrong_leaf_version = closure.clone();
+        let valid_binding = wrong_leaf_version.partition_binding_fingerprint_v2();
+        wrong_leaf_version.leaves[0].2.version += 1;
+        assert_ne!(
+            wrong_leaf_version.partition_binding_fingerprint_v2(),
+            valid_binding
+        );
+
         let mut stale = closure;
-        let valid_binding = stale.partition_binding_fingerprint_v1();
+        let valid_binding = stale.partition_binding_fingerprint_v2();
         stale.leaves[2].2.checked_hinges.pop();
         assert!(stale.has_canonical_complete_partition_v1());
         assert!(!stale.every_leaf_covers_graph_v1(&geometry));
@@ -3702,7 +3721,45 @@ mod tests {
             stale.leaves[2].2.checked_hinges(),
             stale.leaves[0].2.checked_hinges()
         );
-        assert_ne!(stale.partition_binding_fingerprint_v1(), valid_binding);
+        assert_ne!(stale.partition_binding_fingerprint_v2(), valid_binding);
+    }
+
+    #[test]
+    fn dyadic_partition_binding_v2_has_cross_runtime_golden_vector() {
+        let namespace = ProjectId::schema_namespace([
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ]);
+        let fixed_face = FaceId::derive_v5(namespace, b"partition-face");
+        let checked_edge = EdgeId::derive_v5(namespace, b"partition-edge");
+        let closure = DyadicMaterialHingeIntervalClosureCertificateV1 {
+            issuer_geometry: MaterialHingeGraphGeometry::new_for_test(vec![fixed_face], Vec::new()),
+            fixed_face,
+            schedule_binding_fingerprint_v2: core::array::from_fn(|index| {
+                u8::try_from(index).unwrap()
+            }),
+            graph_binding_fingerprint: core::array::from_fn(|index| {
+                u8::try_from(index + 32).unwrap()
+            }),
+            leaves: vec![(
+                0,
+                0,
+                MaterialHingeIntervalClosureCertificateV1 {
+                    version: MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1,
+                    fixed_face,
+                    checked_hinges: vec![checked_edge],
+                },
+            )],
+        };
+        let fingerprint = closure.partition_binding_fingerprint_v2();
+        let hex = fingerprint
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            hex,
+            "2bc36acc979a587298ced19a8b9d366b1a57289f5750bc757f4250ceb91f8f66"
+        );
     }
 
     #[test]

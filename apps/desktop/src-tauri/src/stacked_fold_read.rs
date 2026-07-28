@@ -891,7 +891,7 @@ fn issue_regular_quad_petal_preview_record_v1(
                 &[ori_collision::CertifiedPathTransitionCandidateV1 {
                     source,
                     target: target_fingerprint,
-                    candidate_key: schedule.certificate_binding_fingerprint_v1(),
+                    candidate_key: schedule.certificate_binding_fingerprint_v2(),
                 }],
                 source,
                 target_fingerprint,
@@ -1436,7 +1436,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 let evidence = ori_collision::CertifiedPathTransitionEvidenceV1::from_native_oracle(
                     edge.source,
                     edge.target,
-                    generated.schedule().certificate_binding_fingerprint_v1(),
+                    generated.schedule().certificate_binding_fingerprint_v2(),
                     positive.binding_fingerprint_v1(),
                     generated.schedule().graph_binding_fingerprint_v1(),
                 );

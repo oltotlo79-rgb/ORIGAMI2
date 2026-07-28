@@ -550,8 +550,8 @@ impl GeneralMultiFaceCellTransportProofV1 {
         self.issuer.same_instance(geometry)
             && self.source_instance == source as *const LayerOrderSnapshot as usize
             && self.source == *source
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == thickness.to_bits()
     }
 }
@@ -736,8 +736,8 @@ pub fn certify_general_multi_face_cell_transport_v1(
         issuer: input.geometry.clone(),
         source_instance: input.source as *const LayerOrderSnapshot as usize,
         source: input.source.clone(),
-        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.paper_thickness_mm.to_bits(),
         pair_order_count: input.source.face_pair_orders.len(),
         checkpoint_hashes,

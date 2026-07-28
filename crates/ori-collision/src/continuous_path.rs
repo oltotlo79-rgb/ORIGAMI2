@@ -222,8 +222,8 @@ impl DyadicFaceTransformIntervalRegistryV1 {
         } = input;
         self.issuer.same_instance(geometry)
             && self.fixed_face == fixed_face
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == thickness_mm.to_bits()
             && self.tolerance_bits == tolerance.to_bits()
             && self.schedule_limits == schedule_limits
@@ -433,8 +433,8 @@ impl DyadicSharedVertexWedgeDiagnosticV1 {
         max_work_per_cell: usize,
     ) -> bool {
         self.issuer.same_instance(input.geometry)
-            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
             && self.max_work_per_cell == max_work_per_cell
             && self.radius_binding
@@ -540,12 +540,12 @@ impl DyadicSharedVertexWedgeSeparationDiagnosticV1 {
         max_work_per_pair: usize,
     ) -> bool {
         self.issuer.same_instance(input.geometry)
-            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
             && wedges.issuer.same_instance(input.geometry)
-            && wedges.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
-            && wedges.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && wedges.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
+            && wedges.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && wedges.thickness_bits == input.thickness_mm.to_bits()
             && self.max_work_per_pair == max_work_per_pair
             && self.wedge_content_hash == wedges.content_hash
@@ -650,15 +650,15 @@ impl DyadicSharedVertexBoundaryPointDistanceDiagnosticV1 {
         max_work: usize,
     ) -> bool {
         self.issuer.same_instance(input.geometry)
-            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
             && self.max_work == max_work
             && sector_boundary_content_hash_v1(sectors)
                 .is_ok_and(|hash| self.sector_content_hash == hash)
             && sectors.issuer.same_instance(input.geometry)
-            && sectors.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
-            && sectors.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && sectors.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
+            && sectors.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && sectors.thickness_bits == input.thickness_mm.to_bits()
             && gaps.is_for(
                 input.geometry,
@@ -707,8 +707,8 @@ impl DyadicSharedVertexSectorBoundaryDiagnosticV1 {
         max_work_per_point: usize,
     ) -> bool {
         self.issuer.same_instance(input.geometry)
-            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
             && self.max_work_per_point == max_work_per_point
             && self.radius_binding
@@ -796,8 +796,8 @@ impl DyadicSharedVertexIntervalDiagnosticV1 {
     ) -> bool {
         self.issuer.same_instance(input.geometry)
             && self.fixed_face == input.fixed_face
-            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
             && self.tolerance_bits == input.tolerance.to_bits()
             && self.schedule_limits == input.schedule_limits
@@ -968,7 +968,7 @@ impl SharedVertexContinuousCorridorGapReportV1 {
     ) -> bool {
         self.issuer.same_instance(geometry)
             && self.fixed_face == fixed_face
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && self.thickness_bits == thickness_mm.to_bits()
             && schedule.matches_binding(geometry, audit, fixed_face)
     }
@@ -1017,7 +1017,7 @@ impl SharedHingeReliefCoverageReportV1 {
     ) -> bool {
         self.issuer.same_instance(geometry)
             && self.fixed_face == fixed_face
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && self.thickness_bits == thickness_mm.to_bits()
             && schedule.matches_binding(geometry, audit, fixed_face)
     }
@@ -1075,7 +1075,7 @@ impl SharedHingeContinuousCorridorGapReportV1 {
     ) -> bool {
         self.issuer.same_instance(geometry)
             && self.fixed_face == fixed_face
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && self.thickness_bits == paper_thickness_mm.to_bits()
             && schedule.matches_binding(geometry, audit, fixed_face)
             && diagnose_continuous_pair_coverage_v1(geometry, audit, fixed_face, schedule)
@@ -1109,7 +1109,7 @@ impl ContinuousPairCoverageRegistryV1 {
     ) -> bool {
         self.issuer.same_instance(geometry)
             && self.fixed_face == fixed_face
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && schedule.matches_binding(geometry, audit, fixed_face)
             && checked_unordered_pair_count_v1(geometry.face_ids().len())
                 == Some(self.entries.len())
@@ -1156,8 +1156,8 @@ pub fn prepare_dyadic_face_transform_interval_registry_v1(
         || max_work_per_leaf == 0
         || !schedule.matches_binding(geometry, audit, fixed_face)
         || closure.fixed_face() != fixed_face
-        || closure.schedule_binding_fingerprint_v1()
-            != schedule.certificate_binding_fingerprint_v1()
+        || closure.schedule_binding_fingerprint_v2()
+            != schedule.certificate_binding_fingerprint_v2()
         || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
         || !closure.every_leaf_covers_graph_v1(geometry)
         || closure.leaves().len() > MAX_DYADIC_FACE_TRANSFORM_LEAVES_V1
@@ -1204,8 +1204,8 @@ pub fn prepare_dyadic_face_transform_interval_registry_v1(
     Ok(DyadicFaceTransformIntervalRegistryV1 {
         issuer: geometry.clone(),
         fixed_face,
-        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: closure.partition_binding_fingerprint_v1(),
+        schedule_hash: schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: closure.partition_binding_fingerprint_v2(),
         thickness_bits: paper_thickness_mm.to_bits(),
         tolerance_bits: tolerance.to_bits(),
         schedule_limits,
@@ -1304,8 +1304,8 @@ pub fn diagnose_dyadic_shared_vertex_interval_positions_v1(
     Ok(DyadicSharedVertexIntervalDiagnosticV1 {
         issuer: input.geometry.clone(),
         fixed_face: input.fixed_face,
-        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
         tolerance_bits: input.tolerance.to_bits(),
         schedule_limits: input.schedule_limits,
@@ -1465,8 +1465,8 @@ pub fn diagnose_dyadic_shared_vertex_sector_boundaries_v1(
     }
     Ok(DyadicSharedVertexSectorBoundaryDiagnosticV1 {
         issuer: input.geometry.clone(),
-        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
         max_work_per_point,
         radius_binding: records
@@ -1568,8 +1568,8 @@ pub fn diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
         });
     }
     if !sectors.issuer.same_instance(input.geometry)
-        || sectors.schedule_hash != input.schedule.certificate_binding_fingerprint_v1()
-        || sectors.closure_hash != input.closure.partition_binding_fingerprint_v1()
+        || sectors.schedule_hash != input.schedule.certificate_binding_fingerprint_v2()
+        || sectors.closure_hash != input.closure.partition_binding_fingerprint_v2()
         || sectors.thickness_bits != input.thickness_mm.to_bits()
         || !gaps.is_for(
             input.geometry,
@@ -1626,8 +1626,8 @@ pub fn diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
     }
     Ok(DyadicSharedVertexBoundaryPointDistanceDiagnosticV1 {
         issuer: input.geometry.clone(),
-        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
         max_work,
         sector_content_hash: sector_boundary_content_hash_v1(sectors)?,
@@ -1974,8 +1974,8 @@ pub fn diagnose_dyadic_shared_vertex_wedges_v1(
     )?;
     Ok(DyadicSharedVertexWedgeDiagnosticV1 {
         issuer: input.geometry.clone(),
-        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
         max_work_per_cell,
         radius_binding,
@@ -2237,8 +2237,8 @@ pub fn diagnose_dyadic_shared_vertex_wedge_separation_v1(
     if max_work_per_pair == 0
         || max_work_per_pair > MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1
         || !wedges.issuer.same_instance(input.geometry)
-        || wedges.schedule_hash != input.schedule.certificate_binding_fingerprint_v1()
-        || wedges.closure_hash != input.closure.partition_binding_fingerprint_v1()
+        || wedges.schedule_hash != input.schedule.certificate_binding_fingerprint_v2()
+        || wedges.closure_hash != input.closure.partition_binding_fingerprint_v2()
         || wedges.thickness_bits != input.thickness_mm.to_bits()
         || !wedge_content_hash_v1(
             &wedges.leaves,
@@ -2303,8 +2303,8 @@ pub fn diagnose_dyadic_shared_vertex_wedge_separation_v1(
         wedge_separation_content_hash_v1(&leaves, max_work_per_pair, wedge_content_hash)?;
     Ok(DyadicSharedVertexWedgeSeparationDiagnosticV1 {
         issuer: input.geometry.clone(),
-        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
         max_work_per_pair,
         wedge_content_hash,
@@ -3746,8 +3746,8 @@ impl PositiveThicknessContinuousCertificateV1 {
     ) -> bool {
         self.issuer.same_instance(geometry)
             && self.fixed_face == fixed_face
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == thickness.to_bits()
             && self.leaf_count == closure.leaves().len()
             && self.pair_work <= geometry.face_ids().len() * geometry.face_ids().len()
@@ -4225,8 +4225,8 @@ pub fn certify_canonical_positive_thickness_cycle_schedule_path_v1(
     .then(|| PositiveThicknessContinuousCertificateV1 {
         issuer: geometry.clone(),
         fixed_face,
-        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: closure.partition_binding_fingerprint_v1(),
+        schedule_hash: schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: closure.partition_binding_fingerprint_v2(),
         thickness_bits: paper_thickness_mm.to_bits(),
         leaf_count: diagnostic.leaf_count(),
         pair_work: diagnostic.pair_work(),
@@ -4275,8 +4275,8 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
         || !closure.every_leaf_covers_graph_v1(geometry)
         || closure.fixed_face() != fixed_face
-        || closure.schedule_binding_fingerprint_v1()
-            != schedule.certificate_binding_fingerprint_v1()
+        || closure.schedule_binding_fingerprint_v2()
+            != schedule.certificate_binding_fingerprint_v2()
         || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
         || !schedule.matches_binding(geometry, audit, fixed_face)
         || paper_thickness_mm.is_some_and(|value| !value.is_finite() || value <= 0.0)
@@ -4945,7 +4945,7 @@ pub fn diagnose_continuous_pair_coverage_v1(
     (entries.len() == pair_count).then(|| ContinuousPairCoverageRegistryV1 {
         issuer: geometry.clone(),
         fixed_face,
-        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         entries,
     })
 }
@@ -5023,7 +5023,7 @@ pub fn diagnose_shared_hinge_continuous_corridor_gaps_v1(
     (gaps.len() == expected).then(|| SharedHingeContinuousCorridorGapReportV1 {
         issuer: geometry.clone(),
         fixed_face,
-        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         thickness_bits: paper_thickness_mm.to_bits(),
         gaps,
     })
@@ -5083,7 +5083,7 @@ pub fn diagnose_shared_vertex_continuous_corridor_gaps_v1(
     (gaps.len() == expected).then(|| SharedVertexContinuousCorridorGapReportV1 {
         issuer: geometry.clone(),
         fixed_face,
-        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         thickness_bits: paper_thickness_mm.to_bits(),
         gaps,
     })
@@ -5162,7 +5162,7 @@ pub fn compose_shared_hinge_relief_coverage_v1(
     Ok(SharedHingeReliefCoverageReportV1 {
         issuer: geometry.clone(),
         fixed_face,
-        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         thickness_bits: paper_thickness_mm.to_bits(),
         covered,
         remaining,

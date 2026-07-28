@@ -93,8 +93,8 @@ impl ContinuousLayerTransportCertificateV1 {
         self.issuer.same_instance(geometry)
             && self.source_instance == source as *const LayerOrderSnapshot as usize
             && self.source_hash == hash_source(source)
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
-            && self.closure_hash == closure.partition_binding_fingerprint_v1()
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
+            && self.closure_hash == closure.partition_binding_fingerprint_v2()
     }
     /// Revalidates a transported/cloned snapshot after an outer native
     /// capability has independently authenticated its instance/generation.
@@ -122,8 +122,8 @@ pub fn prove_continuous_layer_transport_v1(
     limits: ContinuousLayerTransportLimitsV1,
 ) -> Result<ContinuousLayerTransportCertificateV1, ContinuousLayerTransportErrorV1> {
     if !closure.every_leaf_covers_graph_v1(geometry)
-        || closure.schedule_binding_fingerprint_v1()
-            != schedule.certificate_binding_fingerprint_v1()
+        || closure.schedule_binding_fingerprint_v2()
+            != schedule.certificate_binding_fingerprint_v2()
         || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
     {
         return Err(ContinuousLayerTransportErrorV1::BindingMismatch);
@@ -188,8 +188,8 @@ pub fn prove_continuous_layer_transport_v1(
         issuer: geometry.clone(),
         source_instance: source as *const LayerOrderSnapshot as usize,
         source_hash: hash_source(source),
-        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
-        closure_hash: closure.partition_binding_fingerprint_v1(),
+        schedule_hash: schedule.certificate_binding_fingerprint_v2(),
+        closure_hash: closure.partition_binding_fingerprint_v2(),
         target_order_hash: *hashes
             .last()
             .ok_or(ContinuousLayerTransportErrorV1::AmbiguousOrder)?,

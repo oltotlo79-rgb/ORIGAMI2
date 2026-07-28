@@ -2,6 +2,10 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, ToPrimitive, Zero};
 use ori_domain::{EdgeId, FaceId};
+use ori_numeric::{
+    DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1, deterministic_atan2_v1,
+    deterministic_radians_to_degrees_v1, deterministic_sin_cos_degrees_v1,
+};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -11,6 +15,41 @@ use crate::{
 };
 
 const MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1: u64 = 64;
+pub const CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2: &str =
+    "canonical_cycle_schedule_deterministic_transcendental_v2";
+
+/// Evaluates `2 * atan2(numerator, denominator)` under the frozen
+/// deterministic transcendental model used by canonical half-angle schedules.
+///
+/// This operation order is shared by schedule evaluation and native endpoint
+/// admission. A non-finite input or result is rejected instead of falling
+/// back to the host runtime's libm.
+#[must_use]
+pub fn deterministic_half_angle_ratio_degrees_v1(numerator: f64, denominator: f64) -> Option<f64> {
+    let radians = deterministic_atan2_v1(numerator, denominator).ok()?;
+    let degrees = deterministic_radians_to_degrees_v1(radians).ok()?;
+    let angle = 2.0 * degrees;
+    angle.is_finite().then_some(angle)
+}
+
+fn deterministic_half_angle_tangent_v1(angle_degrees: f64) -> Option<f64> {
+    if !angle_degrees.is_finite() {
+        return None;
+    }
+    match angle_degrees {
+        0.0 => return Some(0.0),
+        90.0 => return Some(1.0),
+        -90.0 => return Some(-1.0),
+        _ => {}
+    }
+    let half_angle_degrees = angle_degrees * 0.5;
+    let (sine, cosine) = deterministic_sin_cos_degrees_v1(half_angle_degrees).ok()?;
+    if cosine == 0.0 {
+        return None;
+    }
+    let tangent = sine / cosine;
+    tangent.is_finite().then_some(tangent)
+}
 
 fn coprime_u64_v1(mut left: u64, mut right: u64) -> bool {
     while right != 0 {
@@ -41,8 +80,10 @@ impl HalfAngleDomainV1 {
         {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
-        let lower = libm::tan(angle_degrees[0] * core::f64::consts::PI / 360.0);
-        let upper = libm::tan(angle_degrees[1] * core::f64::consts::PI / 360.0);
+        let lower = deterministic_half_angle_tangent_v1(angle_degrees[0])
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let upper = deterministic_half_angle_tangent_v1(angle_degrees[1])
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
         let lower = OutwardIntervalV1::from_rounded(lower)
             .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
         let upper = OutwardIntervalV1::from_rounded(upper)
@@ -878,8 +919,7 @@ impl PreparedHalfAngleRationalEntryV1 {
         };
         let numerator = evaluate(&self.numerator_power_coefficients)?;
         let denominator = evaluate(&self.denominator_power_coefficients)?;
-        let angle = 2.0 * numerator.atan2(denominator).to_degrees();
-        angle.is_finite().then_some(angle)
+        deterministic_half_angle_ratio_degrees_v1(numerator, denominator)
     }
 
     pub fn evaluate_exact(
@@ -1544,7 +1584,7 @@ struct Entry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CanonicalCycleScheduleV1 {
     binding_fingerprint: [u8; 32],
-    schedule_fingerprint: [u8; 32],
+    schedule_fingerprint_v2: [u8; 32],
     fixed_face: FaceId,
     domain: [f64; 2],
     entries: Vec<Entry>,
@@ -1596,7 +1636,11 @@ impl CanonicalCycleScheduleV1 {
         }
         Ok(Self {
             binding_fingerprint: binding_fingerprint(block_geometry, block_audit, self.fixed_face),
-            schedule_fingerprint: schedule_fingerprint_v1(&entries, &half_angle_entries),
+            schedule_fingerprint_v2: schedule_fingerprint_v2(
+                self.domain,
+                &entries,
+                &half_angle_entries,
+            ),
             fixed_face: self.fixed_face,
             domain: self.domain,
             entries,
@@ -1704,10 +1748,10 @@ impl CanonicalCycleScheduleV1 {
                 derivative_bound,
             });
         }
-        let schedule_fingerprint = schedule_fingerprint_v1(&prepared, &[]);
+        let schedule_fingerprint_v2 = schedule_fingerprint_v2(domain, &prepared, &[]);
         Ok(Self {
             binding_fingerprint: binding_fingerprint(geometry, audit, fixed_face),
-            schedule_fingerprint,
+            schedule_fingerprint_v2,
             fixed_face,
             domain,
             entries: prepared,
@@ -1742,12 +1786,13 @@ impl CanonicalCycleScheduleV1 {
             .into_iter()
             .map(|entry| PreparedHalfAngleRationalEntryV1::prepare(entry, limits))
             .collect::<Result<Vec<_>, _>>()?;
-        let schedule_fingerprint = schedule_fingerprint_v1(&[], &prepared);
+        let domain = [0.0, 1.0];
+        let schedule_fingerprint_v2 = schedule_fingerprint_v2(domain, &[], &prepared);
         Ok(Self {
             binding_fingerprint: binding_fingerprint(geometry, audit, fixed_face),
-            schedule_fingerprint,
+            schedule_fingerprint_v2,
             fixed_face,
-            domain: [0.0, 1.0],
+            domain,
             entries: Vec::new(),
             half_angle_entries: prepared,
         })
@@ -2142,12 +2187,19 @@ impl CanonicalCycleScheduleV1 {
             && self.binding_fingerprint == binding_fingerprint(geometry, audit, fixed_face)
     }
 
-    /// Opaque authentication value used to prevent exchanging certificates
+    /// Opaque V2 authentication value used to prevent exchanging certificates
     /// between different schedules bound to the same material graph.
+    ///
+    /// The SHA-256 preimage is domain-separated and structurally framed. It
+    /// includes the representation kind, the outer binary64 domain, the entry
+    /// count, an entry tag and canonical edge ID per entry, and every
+    /// variable-length coefficient count. Exact rationals use a canonical
+    /// sign plus length-prefixed numerator and denominator magnitudes. All
+    /// integers and binary64 bit patterns are big-endian.
     #[doc(hidden)]
     #[must_use]
-    pub const fn certificate_binding_fingerprint_v1(&self) -> [u8; 32] {
-        self.schedule_fingerprint
+    pub const fn certificate_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.schedule_fingerprint_v2
     }
 
     #[doc(hidden)]
@@ -2157,41 +2209,142 @@ impl CanonicalCycleScheduleV1 {
     }
 }
 
-fn schedule_fingerprint_v1(
+/// Computes the V2 schedule certificate preimage as:
+///
+/// - the exact domain-separation bytes;
+/// - the canonical-schedule model ID and deterministic-transcendental model
+///   ID, in that order, each preceded by its big-endian `u64` byte length;
+/// - one representation-kind byte (`0` ordinary, `1` half-angle rational);
+/// - two outer-domain binary64 bit patterns;
+/// - one big-endian `u64` entry count;
+/// - for every entry, one kind byte and the 16 canonical edge-ID bytes;
+/// - ordinary initial/coefficients as binary64 bit patterns, preceded by a
+///   big-endian `u64` coefficient count;
+/// - half-angle `u_domain`, followed by independent big-endian `u64` P and Q
+///   counts and their canonically framed exact rationals.
+///
+/// This grammar deliberately has no V1 compatibility branch: every authority
+/// producer and consumer in the process uses the same V2 digest.
+fn schedule_fingerprint_v2(
+    domain: [f64; 2],
     entries: &[Entry],
     half_angle_entries: &[PreparedHalfAngleRationalEntryV1],
 ) -> [u8; 32] {
+    schedule_fingerprint_v2_with_model_ids(
+        domain,
+        entries,
+        half_angle_entries,
+        CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2.as_bytes(),
+        DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.as_bytes(),
+    )
+}
+
+fn schedule_fingerprint_v2_with_model_ids(
+    domain: [f64; 2],
+    entries: &[Entry],
+    half_angle_entries: &[PreparedHalfAngleRationalEntryV1],
+    canonical_schedule_model_id: &[u8],
+    deterministic_transcendental_model_id: &[u8],
+) -> [u8; 32] {
+    const ORDINARY_KIND_TAG: u8 = 0;
+    const HALF_ANGLE_RATIONAL_KIND_TAG: u8 = 1;
+
+    debug_assert!(entries.is_empty() || half_angle_entries.is_empty());
     let mut hash = Sha256::new();
-    hash.update(b"canonical_cycle_schedule_v1");
+    hash.update(b"ORIGAMI2_CANONICAL_CYCLE_SCHEDULE_CERTIFICATE_BINDING_V2");
+    update_length_prefixed_bytes_v2(&mut hash, canonical_schedule_model_id);
+    update_length_prefixed_bytes_v2(&mut hash, deterministic_transcendental_model_id);
+    let half_angle = !half_angle_entries.is_empty();
+    hash.update([if half_angle {
+        HALF_ANGLE_RATIONAL_KIND_TAG
+    } else {
+        ORDINARY_KIND_TAG
+    }]);
+    for endpoint in domain {
+        hash.update(endpoint.to_bits().to_be_bytes());
+    }
+    hash.update(
+        u64::try_from(entries.len() + half_angle_entries.len())
+            .expect("an in-memory schedule entry count must fit u64")
+            .to_be_bytes(),
+    );
     for entry in entries {
+        hash.update([ORDINARY_KIND_TAG]);
         hash.update(entry.edge.canonical_bytes());
         hash.update(entry.initial.to_bits().to_be_bytes());
+        hash.update(
+            u64::try_from(entry.coefficients.len())
+                .expect("an in-memory coefficient count must fit u64")
+                .to_be_bytes(),
+        );
         for coefficient in &entry.coefficients {
             hash.update(coefficient.to_bits().to_be_bytes());
         }
     }
     for entry in half_angle_entries {
+        hash.update([HALF_ANGLE_RATIONAL_KIND_TAG]);
         hash.update(entry.edge.canonical_bytes());
-        for value in entry
-            .u_domain
-            .iter()
-            .chain(&entry.numerator_power_coefficients)
-            .chain(&entry.denominator_power_coefficients)
-        {
-            let (numerator_sign, numerator) = value.numer().to_bytes_be();
-            let denominator = value.denom().to_bytes_be().1;
-            hash.update([match numerator_sign {
-                num_bigint::Sign::Minus => 0,
-                num_bigint::Sign::NoSign => 1,
-                num_bigint::Sign::Plus => 2,
-            }]);
-            hash.update((numerator.len() as u64).to_be_bytes());
-            hash.update(numerator);
-            hash.update((denominator.len() as u64).to_be_bytes());
-            hash.update(denominator);
+        for value in &entry.u_domain {
+            update_canonical_big_rational_v2(&mut hash, value);
+        }
+        hash.update(
+            u64::try_from(entry.numerator_power_coefficients.len())
+                .expect("an in-memory numerator coefficient count must fit u64")
+                .to_be_bytes(),
+        );
+        for value in &entry.numerator_power_coefficients {
+            update_canonical_big_rational_v2(&mut hash, value);
+        }
+        hash.update(
+            u64::try_from(entry.denominator_power_coefficients.len())
+                .expect("an in-memory denominator coefficient count must fit u64")
+                .to_be_bytes(),
+        );
+        for value in &entry.denominator_power_coefficients {
+            update_canonical_big_rational_v2(&mut hash, value);
         }
     }
     hash.finalize().into()
+}
+
+fn update_length_prefixed_bytes_v2(hash: &mut Sha256, value: &[u8]) {
+    hash.update(
+        u64::try_from(value.len())
+            .expect("an in-memory model identifier length must fit u64")
+            .to_be_bytes(),
+    );
+    hash.update(value);
+}
+
+/// Appends one reduced [`BigRational`] using the cross-runtime V2 framing.
+///
+/// `BigRational` keeps denominators positive and values reduced. Encoding the
+/// numerator sign separately from its unsigned magnitude therefore gives one
+/// byte representation per mathematical rational. Zero is encoded with the
+/// `NoSign` tag and one `00` numerator-magnitude byte.
+fn update_canonical_big_rational_v2(hash: &mut Sha256, value: &BigRational) {
+    let (numerator_sign, mut numerator) = value.numer().to_bytes_be();
+    if numerator.is_empty() {
+        numerator.push(0);
+    }
+    let (_, denominator) = value.denom().to_bytes_be();
+    hash.update([match numerator_sign {
+        num_bigint::Sign::Minus => 0,
+        num_bigint::Sign::NoSign => 1,
+        num_bigint::Sign::Plus => 2,
+    }]);
+    hash.update(
+        u64::try_from(numerator.len())
+            .expect("an in-memory numerator length must fit u64")
+            .to_be_bytes(),
+    );
+    hash.update(numerator);
+    hash.update(
+        u64::try_from(denominator.len())
+            .expect("an in-memory denominator length must fit u64")
+            .to_be_bytes(),
+    );
+    hash.update(denominator);
 }
 
 fn binding_fingerprint(
@@ -2325,6 +2478,340 @@ mod tests {
         entries
     }
 
+    fn fingerprint_test_edge(name: &[u8]) -> EdgeId {
+        let namespace = ProjectId::schema_namespace([
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ]);
+        EdgeId::derive_v5(namespace, name)
+    }
+
+    const fn rational(numerator: i64, denominator: u64) -> RationalCoefficientV1 {
+        RationalCoefficientV1 {
+            numerator,
+            denominator,
+        }
+    }
+
+    fn prepared_half_angle_fingerprint_entry(
+        edge: EdgeId,
+        u_domain: [RationalCoefficientV1; 2],
+        numerator: Vec<RationalCoefficientV1>,
+        denominator: Vec<RationalCoefficientV1>,
+    ) -> PreparedHalfAngleRationalEntryV1 {
+        PreparedHalfAngleRationalEntryV1::prepare(
+            HalfAngleRationalEntryInputV1 {
+                edge,
+                u_domain,
+                numerator_power_coefficients: numerator,
+                denominator_power_coefficients: denominator,
+            },
+            CycleScheduleLimitsV1::default(),
+        )
+        .expect("the fingerprint fixture must be an admitted half-angle profile")
+    }
+
+    fn legacy_unframed_schedule_preimage_for_regression(
+        entries: &[Entry],
+        half_angle_entries: &[PreparedHalfAngleRationalEntryV1],
+    ) -> Vec<u8> {
+        let mut preimage = Vec::new();
+        for entry in entries {
+            preimage.extend(entry.edge.canonical_bytes());
+            preimage.extend(entry.initial.to_bits().to_be_bytes());
+            for coefficient in &entry.coefficients {
+                preimage.extend(coefficient.to_bits().to_be_bytes());
+            }
+        }
+        for entry in half_angle_entries {
+            preimage.extend(entry.edge.canonical_bytes());
+            for value in entry
+                .u_domain
+                .iter()
+                .chain(&entry.numerator_power_coefficients)
+                .chain(&entry.denominator_power_coefficients)
+            {
+                let (numerator_sign, numerator) = value.numer().to_bytes_be();
+                let (_, denominator) = value.denom().to_bytes_be();
+                preimage.extend([match numerator_sign {
+                    num_bigint::Sign::Minus => 0,
+                    num_bigint::Sign::NoSign => 1,
+                    num_bigint::Sign::Plus => 2,
+                }]);
+                preimage.extend(
+                    u64::try_from(numerator.len())
+                        .expect("test numerator length must fit u64")
+                        .to_be_bytes(),
+                );
+                preimage.extend(numerator);
+                preimage.extend(
+                    u64::try_from(denominator.len())
+                        .expect("test denominator length must fit u64")
+                        .to_be_bytes(),
+                );
+                preimage.extend(denominator);
+            }
+        }
+        preimage
+    }
+
+    fn fingerprint_hex(fingerprint: [u8; 32]) -> String {
+        fingerprint
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    #[test]
+    fn schedule_fingerprint_v2_separates_half_angle_p_q_flatten_collision() {
+        let edge = fingerprint_test_edge(b"p-q-flatten-collision");
+        let first = prepared_half_angle_fingerprint_entry(
+            edge,
+            [rational(0, 1), rational(1, 1)],
+            vec![rational(1, 1)],
+            vec![rational(2, 1), rational(3, 1)],
+        );
+        let second = prepared_half_angle_fingerprint_entry(
+            edge,
+            [rational(0, 1), rational(1, 1)],
+            vec![rational(1, 1), rational(2, 1)],
+            vec![rational(3, 1)],
+        );
+        assert_eq!(
+            legacy_unframed_schedule_preimage_for_regression(&[], core::slice::from_ref(&first),),
+            legacy_unframed_schedule_preimage_for_regression(&[], core::slice::from_ref(&second),),
+            "the regression fixtures must reproduce the V1 P/Q boundary collision"
+        );
+        assert_ne!(
+            schedule_fingerprint_v2([0.0, 1.0], &[], &[first]),
+            schedule_fingerprint_v2([0.0, 1.0], &[], &[second]),
+            "independent P/Q counts must frame the V2 preimage"
+        );
+    }
+
+    #[test]
+    fn schedule_fingerprint_v2_binds_outer_ordinary_domain() {
+        let entry = Entry {
+            edge: fingerprint_test_edge(b"ordinary-domain"),
+            initial: 90.0,
+            coefficients: vec![0.0, 10.0],
+            derivative_bound: 20.0,
+        };
+        assert_ne!(
+            schedule_fingerprint_v2([0.0, 1.0], core::slice::from_ref(&entry), &[]),
+            schedule_fingerprint_v2([0.0, 2.0], core::slice::from_ref(&entry), &[]),
+            "the same coefficient profile over a different physical domain is different motion"
+        );
+    }
+
+    #[test]
+    fn schedule_fingerprint_v2_frames_entries_and_coefficient_counts() {
+        let first_edge = fingerprint_test_edge(b"entry-framing-first");
+        let second_edge = fingerprint_test_edge(b"entry-framing-second");
+        let second_edge_bytes = second_edge.canonical_bytes();
+        let absorbed_edge_high = f64::from_bits(u64::from_be_bytes(
+            second_edge_bytes[..8].try_into().unwrap(),
+        ));
+        let absorbed_edge_low = f64::from_bits(u64::from_be_bytes(
+            second_edge_bytes[8..].try_into().unwrap(),
+        ));
+        let flattened = vec![Entry {
+            edge: first_edge,
+            initial: 11.0,
+            coefficients: vec![12.0, absorbed_edge_high, absorbed_edge_low, 22.0, 23.0],
+            derivative_bound: 0.0,
+        }];
+        let framed = vec![
+            Entry {
+                edge: first_edge,
+                initial: 11.0,
+                coefficients: vec![12.0],
+                derivative_bound: 0.0,
+            },
+            Entry {
+                edge: second_edge,
+                initial: 22.0,
+                coefficients: vec![23.0],
+                derivative_bound: 0.0,
+            },
+        ];
+        assert_eq!(
+            legacy_unframed_schedule_preimage_for_regression(&flattened, &[]),
+            legacy_unframed_schedule_preimage_for_regression(&framed, &[]),
+            "the regression fixtures must reproduce the V1 entry-boundary collision"
+        );
+        assert_ne!(
+            schedule_fingerprint_v2([0.0, 1.0], &flattened, &[]),
+            schedule_fingerprint_v2([0.0, 1.0], &framed, &[]),
+            "entry and coefficient counts must frame the V2 preimage"
+        );
+    }
+
+    #[test]
+    fn schedule_fingerprint_v2_separates_representation_kinds() {
+        let edge = fingerprint_test_edge(b"kind-separation");
+        let ordinary = Entry {
+            edge,
+            initial: 90.0,
+            coefficients: vec![0.0, 1.0],
+            derivative_bound: 2.0,
+        };
+        let half_angle = prepared_half_angle_fingerprint_entry(
+            edge,
+            [rational(0, 1), rational(1, 1)],
+            vec![rational(0, 1), rational(1, 1)],
+            vec![rational(1, 1)],
+        );
+        assert_ne!(
+            schedule_fingerprint_v2([0.0, 1.0], &[ordinary], &[]),
+            schedule_fingerprint_v2([0.0, 1.0], &[], &[half_angle]),
+            "ordinary and half-angle representations need independent kind domains"
+        );
+    }
+
+    #[test]
+    fn schedule_fingerprint_v2_length_frames_and_binds_both_model_ids() {
+        let ordinary = Entry {
+            edge: fingerprint_test_edge(b"model-id-binding"),
+            initial: 0.0,
+            coefficients: vec![1.0],
+            derivative_bound: 1.0,
+        };
+        let frozen = schedule_fingerprint_v2([0.0, 1.0], core::slice::from_ref(&ordinary), &[]);
+        assert_eq!(
+            frozen,
+            schedule_fingerprint_v2_with_model_ids(
+                [0.0, 1.0],
+                core::slice::from_ref(&ordinary),
+                &[],
+                CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2.as_bytes(),
+                DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.as_bytes(),
+            )
+        );
+        assert_ne!(
+            frozen,
+            schedule_fingerprint_v2_with_model_ids(
+                [0.0, 1.0],
+                core::slice::from_ref(&ordinary),
+                &[],
+                b"canonical_cycle_schedule_deterministic_transcendental_v3",
+                DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.as_bytes(),
+            ),
+            "changing the canonical-schedule model must invalidate existing authorities"
+        );
+        assert_ne!(
+            frozen,
+            schedule_fingerprint_v2_with_model_ids(
+                [0.0, 1.0],
+                core::slice::from_ref(&ordinary),
+                &[],
+                CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2.as_bytes(),
+                b"deterministic_transcendental_v2",
+            ),
+            "changing the transcendental evaluator must invalidate existing authorities"
+        );
+        assert_ne!(
+            schedule_fingerprint_v2_with_model_ids(
+                [0.0, 1.0],
+                core::slice::from_ref(&ordinary),
+                &[],
+                b"ab",
+                b"c",
+            ),
+            schedule_fingerprint_v2_with_model_ids(
+                [0.0, 1.0],
+                core::slice::from_ref(&ordinary),
+                &[],
+                b"a",
+                b"bc",
+            ),
+            "length prefixes must prevent adjacent model identifiers from flattening"
+        );
+    }
+
+    #[test]
+    fn schedule_fingerprint_v2_has_cross_runtime_golden_vectors() {
+        let ordinary = Entry {
+            edge: fingerprint_test_edge(b"golden-ordinary"),
+            initial: 90.0,
+            coefficients: vec![-0.0, 0.5, -2.25],
+            derivative_bound: 0.0,
+        };
+        assert_eq!(
+            fingerprint_hex(schedule_fingerprint_v2([-2.5, 4.0], &[ordinary], &[])),
+            "627120fbfcdc42522a7e53628ad461e9b2dbbfd7c45e5f318484a3ccf79be224"
+        );
+
+        let half_angle = prepared_half_angle_fingerprint_entry(
+            fingerprint_test_edge(b"golden-half"),
+            [rational(0, 1), rational(2, 5)],
+            vec![rational(1, 2), rational(-1, 7)],
+            vec![rational(2, 3), rational(1, 5)],
+        );
+        assert_eq!(
+            fingerprint_hex(schedule_fingerprint_v2([0.0, 1.0], &[], &[half_angle])),
+            "26cb0fe665c66f67b0ab4074c521af934eab2b6dcf422c67b41f4168d22ef446"
+        );
+    }
+
+    #[test]
+    fn schedule_fingerprint_v2_is_deterministic_across_reorder_and_restriction() {
+        let (geometry, audit, fixed_face, edges) = fixture();
+        let schedule_entries = entries(&edges);
+        let schedule = CanonicalCycleScheduleV1::prepare(
+            &geometry,
+            &audit,
+            fixed_face,
+            [0.0, 1.0],
+            schedule_entries.clone(),
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+
+        let mut reordered_hinges = geometry.hinges().to_vec();
+        reordered_hinges.reverse();
+        let reordered_geometry =
+            MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), reordered_hinges);
+        let reordered = CanonicalCycleScheduleV1::prepare(
+            &reordered_geometry,
+            &audit,
+            fixed_face,
+            [0.0, 1.0],
+            schedule_entries,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            schedule.certificate_binding_fingerprint_v2(),
+            reordered.certificate_binding_fingerprint_v2(),
+            "material hinge storage order must not change canonical schedule authority"
+        );
+
+        let block_hinges = geometry.hinges()[..2].to_vec();
+        let first_block =
+            MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), block_hinges.clone());
+        let mut reversed_block_hinges = block_hinges;
+        reversed_block_hinges.reverse();
+        let reversed_block =
+            MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), reversed_block_hinges);
+        let first_restriction = schedule
+            .restrict_to_edge_block_v1(&geometry, &audit, &first_block, &audit)
+            .unwrap();
+        let reversed_restriction = schedule
+            .restrict_to_edge_block_v1(&geometry, &audit, &reversed_block, &audit)
+            .unwrap();
+        assert_eq!(
+            first_restriction.certificate_binding_fingerprint_v2(),
+            reversed_restriction.certificate_binding_fingerprint_v2(),
+            "restricting the same canonical carrier must be independent of block storage order"
+        );
+        assert_ne!(
+            schedule.certificate_binding_fingerprint_v2(),
+            first_restriction.certificate_binding_fingerprint_v2(),
+            "restricting the carrier must bind the reduced entry count"
+        );
+    }
+
     #[test]
     fn kawasaki_degree_four_generator_is_deterministic_and_resource_bounded() {
         let ns = ProjectId::new();
@@ -2405,8 +2892,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            first.schedule().certificate_binding_fingerprint_v1(),
-            second.schedule().certificate_binding_fingerprint_v1(),
+            first.schedule().certificate_binding_fingerprint_v2(),
+            second.schedule().certificate_binding_fingerprint_v2(),
         );
         assert!(
             first
@@ -2438,8 +2925,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            automatic.schedule().certificate_binding_fingerprint_v1(),
-            reordered.schedule().certificate_binding_fingerprint_v1(),
+            automatic.schedule().certificate_binding_fingerprint_v2(),
+            reordered.schedule().certificate_binding_fingerprint_v2(),
         );
         let axes = [
             Point3::new(1.0, 0.0, 0.0).unwrap(),
@@ -3130,6 +3617,23 @@ mod tests {
 
     #[test]
     fn half_angle_domain_separates_tangent_poles_and_encloses_known_angles() {
+        assert_eq!(
+            deterministic_half_angle_tangent_v1(-90.0).map(f64::to_bits),
+            Some((-1.0_f64).to_bits())
+        );
+        assert_eq!(
+            deterministic_half_angle_tangent_v1(-0.0).map(f64::to_bits),
+            Some(0.0_f64.to_bits())
+        );
+        assert_eq!(
+            deterministic_half_angle_tangent_v1(90.0).map(f64::to_bits),
+            Some(1.0_f64.to_bits())
+        );
+        let below_right_angle = f64::from_bits(90.0_f64.to_bits() - 1);
+        let above_right_angle = f64::from_bits(90.0_f64.to_bits() + 1);
+        assert!(deterministic_half_angle_tangent_v1(below_right_angle).unwrap() < 1.0);
+        assert!(deterministic_half_angle_tangent_v1(above_right_angle).unwrap() > 1.0);
+
         let domain = HalfAngleDomainV1::prepare([-90.0, 90.0]).unwrap();
         assert_eq!(domain.angle_degrees(), [-90.0, 90.0]);
         let tangent = domain.half_angle_tangent();
@@ -3144,6 +3648,44 @@ mod tests {
         let near_poles = HalfAngleDomainV1::prepare([-179.0, 179.0]).unwrap();
         assert!(near_poles.half_angle_tangent().lower() < -100.0);
         assert!(near_poles.half_angle_tangent().upper() > 100.0);
+    }
+
+    #[test]
+    fn half_angle_point_evaluation_uses_frozen_transcendental_bits() {
+        assert_eq!(
+            CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2,
+            "canonical_cycle_schedule_deterministic_transcendental_v2"
+        );
+        assert_eq!(
+            deterministic_half_angle_ratio_degrees_v1(1.0, 1.0).map(f64::to_bits),
+            Some(90.0_f64.to_bits())
+        );
+        assert_eq!(
+            deterministic_half_angle_ratio_degrees_v1(-1.0, 1.0).map(f64::to_bits),
+            Some((-90.0_f64).to_bits())
+        );
+
+        let one_below = f64::from_bits(1.0_f64.to_bits() - 1);
+        let one_above = f64::from_bits(1.0_f64.to_bits() + 1);
+        assert_eq!(
+            deterministic_half_angle_ratio_degrees_v1(one_below, 1.0).map(f64::to_bits),
+            Some(90.0_f64.to_bits())
+        );
+        assert_eq!(
+            deterministic_half_angle_ratio_degrees_v1(one_above, 1.0).map(f64::to_bits),
+            Some(90.0_f64.to_bits() + 1)
+        );
+
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                deterministic_half_angle_ratio_degrees_v1(invalid, 1.0),
+                None
+            );
+            assert_eq!(
+                deterministic_half_angle_ratio_degrees_v1(1.0, invalid),
+                None
+            );
+        }
     }
 
     #[test]

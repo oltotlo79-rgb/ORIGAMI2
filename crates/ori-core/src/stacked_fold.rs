@@ -4130,8 +4130,8 @@ pub fn prepare_stacked_fold_requested_scheduled_graph_pose_v1(
             &initial.target.audit,
             initial.pose.fixed_face(),
         )
-        || schedule.certificate_binding_fingerprint_v1()
-            != interval_closure.schedule_binding_fingerprint_v1()
+        || schedule.certificate_binding_fingerprint_v2()
+            != interval_closure.schedule_binding_fingerprint_v2()
         || schedule.graph_binding_fingerprint_v1()
             != interval_closure.graph_binding_fingerprint_v1()
     {
@@ -5546,8 +5546,8 @@ mod tests {
             live_schedule.graph_binding_fingerprint_v1()
         );
         assert_eq!(
-            foreign_schedule.certificate_binding_fingerprint_v1(),
-            live_schedule.certificate_binding_fingerprint_v1()
+            foreign_schedule.certificate_binding_fingerprint_v2(),
+            live_schedule.certificate_binding_fingerprint_v2()
         );
         let foreign_closure = foreign_target
             .hinge_geometry()

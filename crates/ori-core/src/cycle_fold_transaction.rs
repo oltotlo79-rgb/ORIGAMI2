@@ -90,8 +90,8 @@ pub fn prepare_cycle_fold_transaction_v1(
     graph_hinges.sort_unstable_by_key(ori_domain::EdgeId::canonical_bytes);
     if !certificate.has_canonical_complete_partition_v1()
         || !schedule.matches_binding(geometry, audit, fixed)
-        || certificate.schedule_binding_fingerprint_v1()
-            != schedule.certificate_binding_fingerprint_v1()
+        || certificate.schedule_binding_fingerprint_v2()
+            != schedule.certificate_binding_fingerprint_v2()
         || certificate.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
         || certificate
             .leaves()

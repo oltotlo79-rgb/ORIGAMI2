@@ -1,5 +1,6 @@
 use super::same_orientation_angle_tests::{Fixture, document, prepare, record, sorted_ids};
 use super::*;
+use ori_numeric::deterministic_atan2_v1;
 
 pub(super) fn core_records(
     fixture: &Fixture,
@@ -64,20 +65,20 @@ pub(super) fn assert_target(
     assert_eq!(conflicts[0].constraint_ids(), expected_ids);
 }
 
-fn production_actual(
+fn deterministic_proof_actual(
     horizontal_axis: f64,
     horizontal_zero: f64,
     vertical_zero: f64,
     vertical_axis: f64,
-) -> (f64, f64, f64) {
+) -> (f64, f64, Option<f64>) {
     let cross = horizontal_axis * vertical_axis - horizontal_zero * vertical_zero;
     let dot = horizontal_axis * vertical_zero + horizontal_zero * vertical_axis;
-    (cross, dot, cross.abs().atan2(dot))
+    (cross, dot, deterministic_atan2_v1(cross.abs(), dot).ok())
 }
 
 #[test]
-fn perpendicular_actual_classes_use_only_shared_binary64_operations() {
-    let right = 1.0_f64.atan2(0.0);
+fn perpendicular_actual_classes_use_only_frozen_binary64_operations() {
+    let right = deterministic_atan2_v1(1.0, 0.0).unwrap();
     for angle in [
         -0.0,
         0.0,
@@ -100,34 +101,39 @@ fn perpendicular_actual_classes_use_only_shared_binary64_operations() {
         );
     }
     assert_eq!(
-        fixed_angle_residual_binary64_v1(right, 90.0_f64.next_down()),
+        deterministic_fixed_angle_residual_binary64_v1(right, 90.0_f64.next_down()),
         0.0,
-        "the lower one-ULP degree remains a production right angle"
+        "the lower one-ULP degree remains a deterministic proof right angle"
     );
     assert_eq!(
-        fixed_angle_residual_binary64_v1(right, 90.0_f64.next_up()),
+        deterministic_fixed_angle_residual_binary64_v1(right, 90.0_f64.next_up()),
         0.0,
-        "the upper one-ULP degree remains a production right angle"
+        "the upper one-ULP degree remains a deterministic proof right angle"
     );
 
     let (underflow_cross, underflow_dot, underflow_actual) =
-        production_actual(f64::from_bits(1), 0.0, 0.0, 0.5);
+        deterministic_proof_actual(f64::from_bits(1), 0.0, 0.0, 0.5);
     assert_eq!(underflow_cross, 0.0);
     assert_eq!(underflow_dot, 0.0);
-    assert_eq!(underflow_actual.to_bits(), 0.0_f64.atan2(0.0).to_bits());
+    assert_eq!(
+        underflow_actual.unwrap().to_bits(),
+        deterministic_atan2_v1(0.0, 0.0).unwrap().to_bits()
+    );
 
     let (overflow_cross, overflow_dot, overflow_actual) =
-        production_actual(f64::MAX, 0.0, 0.0, 2.0);
+        deterministic_proof_actual(f64::MAX, 0.0, 0.0, 2.0);
     assert_eq!(overflow_cross, f64::INFINITY);
     assert_eq!(overflow_dot, 0.0);
-    assert_eq!(overflow_actual.to_bits(), right.to_bits());
+    assert!(overflow_actual.is_none());
 
-    let (_, nonfinite_dot, nonfinite_actual) = production_actual(f64::INFINITY, 0.0, 0.0, 1.0);
+    let (_, nonfinite_dot, nonfinite_actual) =
+        deterministic_proof_actual(f64::INFINITY, 0.0, 0.0, 1.0);
     assert!(nonfinite_dot.is_nan());
-    assert!(nonfinite_actual.is_nan());
-    let (nonfinite_cross, _, cross_nan_actual) = production_actual(f64::INFINITY, 0.0, 0.0, 0.0);
+    assert!(nonfinite_actual.is_none());
+    let (nonfinite_cross, _, cross_nan_actual) =
+        deterministic_proof_actual(f64::INFINITY, 0.0, 0.0, 0.0);
     assert!(nonfinite_cross.is_nan());
-    assert!(cross_nan_actual.is_nan());
+    assert!(cross_nan_actual.is_none());
 
     let classes = [
         (0.0, 0.0),
@@ -144,7 +150,7 @@ fn perpendicular_actual_classes_use_only_shared_binary64_operations() {
     let mut saw_zero = false;
     let mut saw_right = false;
     let mut saw_pi = false;
-    let mut saw_nan = false;
+    let mut saw_nonfinite_error = false;
     for (horizontal_axis, vertical_axis) in [
         (0.0, 0.0),
         (0.0, 1.0),
@@ -158,28 +164,31 @@ fn perpendicular_actual_classes_use_only_shared_binary64_operations() {
     ] {
         for horizontal_zero in [-0.0, 0.0] {
             for vertical_zero in [-0.0, 0.0] {
-                let (_, _, actual) = production_actual(
+                let (_, _, actual) = deterministic_proof_actual(
                     horizontal_axis,
                     horizontal_zero,
                     vertical_zero,
                     vertical_axis,
                 );
-                if actual.is_nan() {
-                    saw_nan = true;
-                } else {
+                if let Some(actual) = actual {
                     assert!(classes.iter().any(|(absolute_cross, dot)| {
-                        actual.to_bits() == absolute_cross.atan2(*dot).to_bits()
+                        deterministic_atan2_v1(*absolute_cross, *dot)
+                            .is_ok_and(|class| actual.to_bits() == class.to_bits())
                     }));
-                    saw_zero |= actual.to_bits() == 0.0_f64.atan2(0.0).to_bits();
+                    saw_zero |=
+                        actual.to_bits() == deterministic_atan2_v1(0.0, 0.0).unwrap().to_bits();
                     saw_right |= actual.to_bits() == right.to_bits();
-                    saw_pi |= actual.to_bits() == 0.0_f64.atan2(-0.0).to_bits();
+                    saw_pi |=
+                        actual.to_bits() == deterministic_atan2_v1(0.0, -0.0).unwrap().to_bits();
+                    let residual = deterministic_fixed_angle_residual_binary64_v1(actual, 45.0);
+                    assert!(!residual.is_finite() || residual != 0.0);
+                } else {
+                    saw_nonfinite_error = true;
                 }
-                let residual = fixed_angle_residual_binary64_v1(actual, 45.0);
-                assert!(!residual.is_finite() || residual != 0.0);
             }
         }
     }
-    assert!(saw_zero && saw_right && saw_pi && saw_nan);
+    assert!(saw_zero && saw_right && saw_pi && saw_nonfinite_error);
 }
 
 #[test]
@@ -241,7 +250,7 @@ fn witness_is_canonical_storage_invariant_and_irredundant() {
     }
 
     let mut duplicated = records;
-    duplicated.extend(core_records(&fixture, false, 135.0));
+    duplicated.extend(core_records(&fixture, false, 45.0));
     let horizontal = duplicated
         .iter()
         .filter_map(|item| match item.constraint {

@@ -138,10 +138,30 @@ fn numerical_horizontal_preview_is_promoted_only_after_exact_projection() {
         exact.model_id(),
         GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
     );
+    assert_eq!(
+        exact.transcendental_model_id(),
+        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    );
     assert!(!exact.authorizes_project_mutation());
-    assert!(!exact.replayable_across_runtimes());
+    assert_eq!(
+        exact.replayable_across_runtimes(),
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    );
     assert_eq!(exact.certificate().constraint_count(), 1);
     assert_eq!(exact.certificate().equation_count(), 1);
+    assert_eq!(exact.certificate().model_id(), exact.model_id());
+    assert_eq!(
+        exact.certificate().transcendental_model_id(),
+        exact.transcendental_model_id(),
+    );
+    assert_eq!(
+        exact.certificate().authorizes_project_mutation(),
+        exact.authorizes_project_mutation(),
+    );
+    assert_eq!(
+        exact.certificate().replayable_across_runtimes(),
+        exact.replayable_across_runtimes(),
+    );
     assert!(
         certify_binary64_exact_geometric_constraint_satisfaction_v1(exact.pattern(), &constraints,)
             .expect("explicit assignment remains valid")

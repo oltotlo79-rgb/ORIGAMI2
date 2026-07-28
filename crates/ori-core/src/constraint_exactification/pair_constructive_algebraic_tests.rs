@@ -11,6 +11,7 @@ use super::{
 
 struct PairFixture {
     pattern: CreasePattern,
+    vertices: [VertexId; 5],
     first: EdgeId,
     second: EdgeId,
     point: VertexId,
@@ -48,6 +49,7 @@ fn fixture(shared: bool) -> PairFixture {
                 },
             ],
         },
+        vertices,
         first,
         second,
         point: vertices[4],
@@ -78,6 +80,21 @@ fn ratio(
         numerator_edge,
         denominator_edge,
         ratio,
+    }
+}
+
+fn rotation(
+    fixture: &PairFixture,
+    center: usize,
+    source: usize,
+    target: usize,
+    angle_degrees: f64,
+) -> GeometricConstraintKindV1 {
+    GeometricConstraintKindV1::RotationalSymmetry {
+        center_vertex: fixture.vertices[center],
+        source_vertex: fixture.vertices[source],
+        target_vertex: fixture.vertices[target],
+        angle_degrees,
     }
 }
 
@@ -127,6 +144,53 @@ fn supported_zero_length_relations_are_recertified_for_shared_and_disjoint_edges
                 &orientations,
             )
             .is_some(),
+        );
+    }
+}
+
+#[test]
+fn two_rotations_use_only_the_complete_residual_overlay_collapse() {
+    let fixture = fixture(false);
+    for (second_roles, angles) in [
+        ([0, 1, 2], [90.0, 180.0]),
+        ([0, 2, 1], [90.0, 180.0]),
+        ([2, 3, 4], [f64::from_bits(1), 270.0]),
+    ] {
+        let source = document([
+            rotation(&fixture, 0, 1, 2, angles[0]),
+            rotation(
+                &fixture,
+                second_roles[0],
+                second_roles[1],
+                second_roles[2],
+                angles[1],
+            ),
+        ]);
+        assert!(
+            construct_pair_constraint_exact_assignment_v1(&fixture.pattern, &source).is_none(),
+            "the ordinary assignment path must preserve valid crease-pattern geometry",
+        );
+        assert!(
+            construct_pair_constraint_algebraic_exact_assignment_v1(&fixture.pattern, &source)
+                .is_some(),
+            "the private complete overlay may certify the algebraic collapse",
+        );
+
+        let mut reversed_pattern = fixture.pattern.clone();
+        reversed_pattern.vertices.reverse();
+        reversed_pattern.edges.reverse();
+        for edge in &mut reversed_pattern.edges {
+            std::mem::swap(&mut edge.start, &mut edge.end);
+        }
+        let mut reversed_document = source;
+        reversed_document.constraints.reverse();
+        assert!(
+            construct_pair_constraint_algebraic_exact_assignment_v1(
+                &reversed_pattern,
+                &reversed_document,
+            )
+            .is_some(),
+            "record, vertex, edge, and endpoint storage order must not affect the overlay proof",
         );
     }
 }

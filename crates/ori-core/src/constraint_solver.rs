@@ -3,16 +3,27 @@ use std::collections::{HashMap, HashSet};
 use ori_domain::{
     CreasePattern, GeometricConstraintDocumentV1, GeometricConstraintKindV1, Point2, VertexId,
 };
+use ori_numeric::{
+    DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1, deterministic_atan2_v1, deterministic_hypot_v1,
+    deterministic_sin_cos_degrees_v1, deterministic_transcendental_model_supported_v1,
+};
 use thiserror::Error;
 
 use crate::{
     ConstraintPreflightV1, GeometricConstraintLimitsV1,
-    constraints::{fixed_angle_residual_binary64_v1, length_ratio_residual_binary64_v1},
+    constraints::{
+        deterministic_fixed_angle_residual_binary64_v1, fixed_angle_residual_binary64_v1,
+        length_ratio_residual_binary64_v1,
+    },
     prepare_geometric_constraints_v1,
 };
 
+mod mutation_admission;
 mod residual_overlay;
 
+pub(crate) use mutation_admission::verify_deterministic_geometric_constraint_mutation_admission_v1;
+#[cfg(test)]
+pub(crate) use mutation_admission::verify_deterministic_geometric_constraint_mutation_admission_with_model_support_for_test_v1;
 pub(crate) use residual_overlay::{
     Binary64ResidualOnlyConstraintSatisfactionV1,
     certify_binary64_residual_only_constraint_overlay_v1,
@@ -22,7 +33,53 @@ const REGULARIZATION: f64 = 1e-10;
 const DERIVATIVE_STEP: f64 = 1e-6;
 
 pub const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1: &str =
-    "geometric_constraint_current_runtime_exact_satisfaction_v1";
+    "geometric_constraint_deterministic_binary64_exact_satisfaction_v2";
+
+#[derive(Clone, Copy)]
+enum ResidualTranscendentalModelV1 {
+    RuntimePreview,
+    DeterministicProofV1,
+}
+
+impl ResidualTranscendentalModelV1 {
+    fn hypot(self, x: f64, y: f64) -> Result<f64, ConstraintSolveErrorV1> {
+        match self {
+            Self::RuntimePreview => Ok(x.hypot(y)),
+            Self::DeterministicProofV1 => {
+                deterministic_hypot_v1(x, y).map_err(|_| ConstraintSolveErrorV1::NonConvergent)
+            }
+        }
+    }
+
+    fn atan2(self, y: f64, x: f64) -> Result<f64, ConstraintSolveErrorV1> {
+        match self {
+            Self::RuntimePreview => Ok(y.atan2(x)),
+            Self::DeterministicProofV1 => {
+                deterministic_atan2_v1(y, x).map_err(|_| ConstraintSolveErrorV1::NonConvergent)
+            }
+        }
+    }
+
+    fn sin_cos_degrees(self, degrees: f64) -> Result<(f64, f64), ConstraintSolveErrorV1> {
+        match self {
+            Self::RuntimePreview => {
+                let radians = degrees.to_radians();
+                Ok((radians.sin(), radians.cos()))
+            }
+            Self::DeterministicProofV1 => deterministic_sin_cos_degrees_v1(degrees)
+                .map_err(|_| ConstraintSolveErrorV1::NonConvergent),
+        }
+    }
+
+    fn fixed_angle_residual(self, actual_radians: f64, angle_degrees: f64) -> f64 {
+        match self {
+            Self::RuntimePreview => fixed_angle_residual_binary64_v1(actual_radians, angle_degrees),
+            Self::DeterministicProofV1 => {
+                deterministic_fixed_angle_residual_binary64_v1(actual_radians, angle_degrees)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstraintSolveLimitsV1 {
@@ -65,10 +122,11 @@ pub struct ConstraintSolvePreviewV1 {
 /// residual must be finite and exactly `+0.0` or `-0.0`. A failed attempt is
 /// never evidence of unsatisfiability.
 ///
-/// The witness is ephemeral and runtime-local. V1 uses the same `f64`
-/// transcendental operations as the production solver, whose last bits are
-/// not a cross-platform replay contract. This value is neither serializable
-/// nor mutation authority.
+/// The proof evaluator uses the frozen deterministic transcendental kernel,
+/// while numerical preview intentionally retains the platform runtime
+/// evaluator. Replay authority is published only on target triples backed by
+/// the continuous golden-bit corpus. This value is neither serializable nor
+/// project-mutation authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Binary64ExactConstraintSatisfactionV1 {
     constraint_count: usize,
@@ -76,6 +134,22 @@ pub struct Binary64ExactConstraintSatisfactionV1 {
 }
 
 impl Binary64ExactConstraintSatisfactionV1 {
+    pub const fn model_id(self) -> &'static str {
+        GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1
+    }
+
+    pub const fn transcendental_model_id(self) -> &'static str {
+        DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+    }
+
+    pub const fn authorizes_project_mutation(self) -> bool {
+        false
+    }
+
+    pub const fn replayable_across_runtimes(self) -> bool {
+        deterministic_transcendental_model_supported_v1()
+    }
+
     pub fn constraint_count(self) -> usize {
         self.constraint_count
     }
@@ -425,7 +499,7 @@ pub fn certify_binary64_exact_geometric_constraint_satisfaction_v1(
         .iter()
         .map(|vertex| (vertex.id, vertex.position))
         .collect::<HashMap<_, _>>();
-    let values = residuals(pattern, document, &positions)?;
+    let values = deterministic_proof_residuals_v1(pattern, document, &positions)?;
     debug_assert_eq!(values.len(), equation_count);
     if !values.iter().all(|value| *value == 0.0) {
         return Ok(None);
@@ -605,6 +679,33 @@ fn residuals(
     document: &GeometricConstraintDocumentV1,
     positions: &HashMap<VertexId, Point2>,
 ) -> Result<Vec<f64>, ConstraintSolveErrorV1> {
+    residuals_with_transcendental_model_v1(
+        pattern,
+        document,
+        positions,
+        ResidualTranscendentalModelV1::RuntimePreview,
+    )
+}
+
+pub(super) fn deterministic_proof_residuals_v1(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    positions: &HashMap<VertexId, Point2>,
+) -> Result<Vec<f64>, ConstraintSolveErrorV1> {
+    residuals_with_transcendental_model_v1(
+        pattern,
+        document,
+        positions,
+        ResidualTranscendentalModelV1::DeterministicProofV1,
+    )
+}
+
+fn residuals_with_transcendental_model_v1(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    positions: &HashMap<VertexId, Point2>,
+    transcendental_model: ResidualTranscendentalModelV1,
+) -> Result<Vec<f64>, ConstraintSolveErrorV1> {
     let edges = pattern
         .edges
         .iter()
@@ -628,11 +729,11 @@ fn residuals(
     };
     let length = |edge_id| {
         let (x, y) = vector(edge_id);
-        x.hypot(y)
+        transcendental_model.hypot(x, y)
     };
     let unit_vector = |edge_id| {
         let (x, y) = vector(edge_id);
-        let magnitude = x.hypot(y);
+        let magnitude = transcendental_model.hypot(x, y).ok()?;
         if !magnitude.is_finite() || magnitude == 0.0 {
             return None;
         }
@@ -645,24 +746,23 @@ fn residuals(
         .map(|record| {
             let values = match record.constraint {
                 GeometricConstraintKindV1::FixedLength { edge, length_mm } => {
-                    vec![length(edge) - length_mm]
+                    vec![length(edge)? - length_mm]
                 }
                 GeometricConstraintKindV1::Horizontal { edge } => vec![vector(edge).1],
                 GeometricConstraintKindV1::Vertical { edge } => vec![vector(edge).0],
                 GeometricConstraintKindV1::EqualLength {
                     first_edge,
                     second_edge,
-                } => vec![length(first_edge) - length(second_edge)],
+                } => vec![length(first_edge)? - length(second_edge)?],
                 GeometricConstraintKindV1::Parallel {
                     first_edge,
                     second_edge,
                 } => {
                     let first = vector(first_edge);
                     let second = vector(second_edge);
-                    vec![
-                        (first.0 * second.1 - first.1 * second.0)
-                            / (first.0.hypot(first.1) * second.0.hypot(second.1)),
-                    ]
+                    let first_length = transcendental_model.hypot(first.0, first.1)?;
+                    let second_length = transcendental_model.hypot(second.0, second.1)?;
+                    vec![(first.0 * second.1 - first.1 * second.0) / (first_length * second_length)]
                 }
                 GeometricConstraintKindV1::PointOnLine { vertex, line_edge } => {
                     let edge = edges[&line_edge];
@@ -677,9 +777,9 @@ fn residuals(
                     denominator_edge,
                     ratio,
                 } => vec![length_ratio_residual_binary64_v1(
-                    length(numerator_edge),
+                    length(numerator_edge)?,
                     ratio,
-                    length(denominator_edge),
+                    length(denominator_edge)?,
                 )],
                 GeometricConstraintKindV1::FixedAngle {
                     vertex,
@@ -689,10 +789,10 @@ fn residuals(
                 } => {
                     let first = outward_vector(first_edge, vertex);
                     let second = outward_vector(second_edge, vertex);
-                    let actual = (first.0 * second.1 - first.1 * second.0)
-                        .abs()
-                        .atan2(first.0 * second.0 + first.1 * second.1);
-                    vec![fixed_angle_residual_binary64_v1(actual, angle_degrees)]
+                    let absolute_cross = (first.0 * second.1 - first.1 * second.0).abs();
+                    let dot = first.0 * second.0 + first.1 * second.1;
+                    let actual = transcendental_model.atan2(absolute_cross, dot)?;
+                    vec![transcendental_model.fixed_angle_residual(actual, angle_degrees)]
                 }
                 GeometricConstraintKindV1::MirrorSymmetry {
                     first_vertex,
@@ -722,12 +822,12 @@ fn residuals(
                     let center = positions[&center_vertex];
                     let source = positions[&source_vertex];
                     let target = positions[&target_vertex];
-                    let angle = angle_degrees.to_radians();
+                    let (sin, cos) = transcendental_model.sin_cos_degrees(angle_degrees)?;
                     let x = source.x - center.x;
                     let y = source.y - center.y;
                     vec![
-                        target.x - center.x - (x * angle.cos() - y * angle.sin()),
-                        target.y - center.y - (x * angle.sin() + y * angle.cos()),
+                        target.x - center.x - (x * cos - y * sin),
+                        target.y - center.y - (x * sin + y * cos),
                     ]
                 }
                 GeometricConstraintKindV1::AngleBisector {
@@ -739,12 +839,12 @@ fn residuals(
                     let first = outward_vector(first_edge, vertex);
                     let second = outward_vector(second_edge, vertex);
                     let bisector = outward_vector(bisector_edge, vertex);
-                    let sum_x =
-                        first.0 / first.0.hypot(first.1) + second.0 / second.0.hypot(second.1);
-                    let sum_y =
-                        first.1 / first.0.hypot(first.1) + second.1 / second.0.hypot(second.1);
-                    let sum_norm = sum_x.hypot(sum_y);
-                    let bisector_norm = bisector.0.hypot(bisector.1);
+                    let first_norm = transcendental_model.hypot(first.0, first.1)?;
+                    let second_norm = transcendental_model.hypot(second.0, second.1)?;
+                    let sum_x = first.0 / first_norm + second.0 / second_norm;
+                    let sum_y = first.1 / first_norm + second.1 / second_norm;
+                    let sum_norm = transcendental_model.hypot(sum_x, sum_y)?;
+                    let bisector_norm = transcendental_model.hypot(bisector.0, bisector.1)?;
                     let denominator = sum_norm * bisector_norm;
                     let direction_cosine = (sum_x * bisector.0 + sum_y * bisector.1) / denominator;
                     vec![
@@ -817,6 +917,10 @@ fn solve_dense(
 #[cfg(test)]
 #[path = "constraint_solver_residual_overlay_tests.rs"]
 mod residual_overlay_tests;
+
+#[cfg(test)]
+#[path = "constraint_solver_deterministic_proof_tests.rs"]
+mod deterministic_proof_tests;
 
 #[cfg(test)]
 mod tests {
@@ -938,6 +1042,21 @@ mod tests {
             maximum_absolute(&values),
             0.0,
             "{label}: the concrete assignment must satisfy every implemented residual"
+        );
+        let proof_values = deterministic_proof_residuals_v1(
+            &example.pattern,
+            &example.document,
+            &example.positions,
+        )
+        .unwrap_or_else(|error| panic!("{label}: deterministic proof residuals failed: {error:?}"));
+        assert!(
+            proof_values.iter().all(|value| value.is_finite()),
+            "{label}: every deterministic proof residual must be finite: {proof_values:?}"
+        );
+        assert_eq!(
+            maximum_absolute(&proof_values),
+            0.0,
+            "{label}: the counterexample must also satisfy the frozen proof residuals"
         );
 
         let prepared = prepare_geometric_constraints_v1(
@@ -1486,6 +1605,86 @@ mod tests {
         collinear_rotation_radius_is_solver_required,
         RotationalSymmetryWithCollinearRadius
     );
+
+    #[test]
+    fn cardinal_rotation_proof_residual_subtracts_center_before_the_rotated_vector() {
+        let huge = f64::from_bits(0x4630_0000_0000_0000);
+        let mut builder = CounterexampleBuilder::default();
+        let center = builder.vertex(Point2::new(0.0, huge));
+        let source = builder.vertex(Point2::new(1.0, huge));
+        let target = builder.vertex(Point2::new(0.0, huge));
+        let radius = builder.edge(center, source);
+        let example = builder.finish([
+            GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex: center,
+                source_vertex: source,
+                target_vertex: target,
+                angle_degrees: 90.0,
+            },
+            GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex: center,
+                source_vertex: source,
+                target_vertex: target,
+                angle_degrees: 270.0,
+            },
+            GeometricConstraintKindV1::FixedLength {
+                edge: radius,
+                length_mm: 1.0,
+            },
+        ]);
+        let proof_values = deterministic_proof_residuals_v1(
+            &example.pattern,
+            &example.document,
+            &example.positions,
+        )
+        .expect("the frozen cardinal residuals evaluate");
+        assert_eq!(
+            proof_values,
+            [0.0, -1.0, 0.0, 1.0, 0.0],
+            "the proof model evaluates fl(fl(target-center)-R(source-center)); \
+             it never forms fl(center+R(source-center)), where the unit offset \
+             could be absorbed by the huge center coordinate"
+        );
+        let prepared = prepare_geometric_constraints_v1(
+            &example.pattern,
+            &example.document,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("the cardinal conflict fixture prepares");
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict {
+                ref conflicts
+            } if conflicts.len() == 1
+                && matches!(
+                    conflicts[0].conflict(),
+                    crate::DirectConstraintConflictKindV1::
+                        DifferentRotationalSymmetryAnglesWithFixedRadius { .. }
+                )
+        ));
+        let drivers = example
+            .pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, example.positions[&vertex.id]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            solve_geometric_constraints_with_drivers_v1(
+                &example.pattern,
+                &example.document,
+                &drivers,
+                ConstraintSolveLimitsV1 {
+                    residual_tolerance: f64::MAX,
+                    ..ConstraintSolveLimitsV1::default()
+                },
+            ),
+            Err(ConstraintSolveErrorV1::NonConvergent)
+        );
+        assert_eq!(
+            verify_geometric_constraint_solution_v1(&example.pattern, &example.document, f64::MAX,),
+            Err(ConstraintSolveErrorV1::NonConvergent)
+        );
+    }
 
     #[test]
     fn bounded_zero_length_closure_precedes_solver_and_verifier_tolerance() {

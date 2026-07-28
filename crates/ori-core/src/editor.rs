@@ -3468,11 +3468,9 @@ impl EditorState {
         if !origin.x.is_finite() || !origin.y.is_finite() {
             return Err(CommandError::InvalidRayAngle);
         }
-        let radians = f64::from(angle_microdegrees) * std::f64::consts::PI / 180_000_000.0;
-        let (dy, dx) = radians.sin_cos();
-        if !dx.is_finite() || !dy.is_finite() {
-            return Err(CommandError::InvalidRayAngle);
-        }
+        let angle_degrees = f64::from(angle_microdegrees) / 1_000_000.0;
+        let (dy, dx) = ori_numeric::deterministic_sin_cos_degrees_v1(angle_degrees)
+            .map_err(|_| CommandError::InvalidRayAngle)?;
         let coordinate_scale = positions.values().fold(0.0_f64, |scale, point| {
             scale.max(point.x.abs()).max(point.y.abs())
         });
@@ -4011,9 +4009,12 @@ impl EditorState {
                         else {
                             return false;
                         };
-                        let radians = f64::from(plan.angle_microdegrees) * std::f64::consts::PI
-                            / 180_000_000.0;
-                        let (dy, dx) = radians.sin_cos();
+                        let angle_degrees = f64::from(plan.angle_microdegrees) / 1_000_000.0;
+                        let Ok((dy, dx)) =
+                            ori_numeric::deterministic_sin_cos_degrees_v1(angle_degrees)
+                        else {
+                            return false;
+                        };
                         let scale = source
                             .position
                             .x
@@ -6586,32 +6587,61 @@ impl EditorState {
         if self.geometric_constraints.constraints.is_empty() {
             return Ok(());
         }
-        if let Command::MoveVertices { updates } = command {
-            let mut candidate = self.pattern.clone();
-            let mut complete = true;
-            for update in updates {
-                if let Some(vertex) = candidate
-                    .vertices
-                    .iter_mut()
-                    .find(|vertex| vertex.id == update.vertex)
-                {
-                    vertex.position = update.position;
-                } else {
-                    complete = false;
-                    break;
-                }
-            }
-            if complete
-                && crate::verify_geometric_constraint_solution_v1(
+        if let Some(candidate) = self.geometric_constraint_move_candidate(command)
+            && crate::constraint_solver::
+                verify_deterministic_geometric_constraint_mutation_admission_v1(
+                &candidate,
+                &self.geometric_constraints,
+            )
+            .is_ok()
+        {
+            return Ok(());
+        }
+        self.ensure_geometric_constraint_targets_unlocked(command)
+    }
+
+    #[cfg(test)]
+    fn test_model_supported_geometric_constraint_admission(
+        &self,
+        command: &Command,
+        deterministic_model_supported: bool,
+    ) -> Result<(), CommandError> {
+        if self.geometric_constraints.constraints.is_empty() {
+            return Ok(());
+        }
+        if let Some(candidate) = self.geometric_constraint_move_candidate(command)
+            && crate::constraint_solver::
+                verify_deterministic_geometric_constraint_mutation_admission_with_model_support_for_test_v1(
                     &candidate,
                     &self.geometric_constraints,
-                    crate::ConstraintSolveLimitsV1::default().residual_tolerance,
+                    deterministic_model_supported,
                 )
                 .is_ok()
-            {
-                return Ok(());
-            }
+        {
+            return Ok(());
         }
+        self.ensure_geometric_constraint_targets_unlocked(command)
+    }
+
+    fn geometric_constraint_move_candidate(&self, command: &Command) -> Option<CreasePattern> {
+        let Command::MoveVertices { updates } = command else {
+            return None;
+        };
+        let mut candidate = self.pattern.clone();
+        for update in updates {
+            let vertex = candidate
+                .vertices
+                .iter_mut()
+                .find(|vertex| vertex.id == update.vertex)?;
+            vertex.position = update.position;
+        }
+        Some(candidate)
+    }
+
+    fn ensure_geometric_constraint_targets_unlocked(
+        &self,
+        command: &Command,
+    ) -> Result<(), CommandError> {
         let targets = self.constraint_mutation_targets(command)?;
         if targets.is_empty() {
             return Ok(());
@@ -8122,8 +8152,9 @@ impl EditorState {
         };
         let start = unique_position(edge.start)?;
         let end = unique_position(edge.end)?;
-        let length = (end.x - start.x).hypot(end.y - start.y);
-        if !length.is_finite() || length <= 0.0 {
+        let length = ori_numeric::deterministic_hypot_v1(end.x - start.x, end.y - start.y)
+            .map_err(|_| invalid())?;
+        if length <= 0.0 {
             return Err(invalid());
         }
         Ok(length)
@@ -8183,12 +8214,15 @@ impl EditorState {
             .find(|candidate| candidate.id == other)
             .expect("a validated display reference has both endpoint records")
             .position;
-        let length = (candidate.x - other_position.x).hypot(candidate.y - other_position.y);
-        if !candidate.x.is_finite()
-            || !candidate.y.is_finite()
-            || !length.is_finite()
-            || length <= 0.0
-        {
+        let Ok(length) = ori_numeric::deterministic_hypot_v1(
+            candidate.x - other_position.x,
+            candidate.y - other_position.y,
+        ) else {
+            return Err(CommandError::LengthDisplayReferenceEdgeWouldBecomeInvalid {
+                edge: reference_edge,
+            });
+        };
+        if !candidate.x.is_finite() || !candidate.y.is_finite() || length <= 0.0 {
             Err(CommandError::LengthDisplayReferenceEdgeWouldBecomeInvalid {
                 edge: reference_edge,
             })
@@ -9551,6 +9585,9 @@ mod tests {
 
     #[path = "editor_ray_tests.rs"]
     mod ray_tests;
+
+    #[path = "editor_deterministic_constraint_admission_tests.rs"]
+    mod deterministic_constraint_admission_tests;
 
     #[test]
     fn add_third_balloon_base_line_normalizes_shared_three_edge_cluster() {

@@ -32,6 +32,9 @@ pub use ori_domain::{
     GeometricConstraintRecordV1, validate_geometric_constraint_document_v1,
 };
 use ori_domain::{CreasePattern, Edge, EdgeId, Vertex, VertexId};
+use ori_numeric::{
+    deterministic_atan2_v1, deterministic_degrees_to_radians_v1, deterministic_sin_cos_degrees_v1,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -344,6 +347,11 @@ pub enum DirectConstraintConflictKindV1 {
     DifferentFixedLengths {
         edge: EdgeId,
     },
+    /// Two fixed-angle records name the same validated vertex and unordered
+    /// edge pair, and their conservative deterministic-binary64 zero-residual
+    /// enclosures are disjoint. Merely differing stored degree bits are not
+    /// sufficient: adjacent values and values that collapse during the frozen
+    /// degree-to-radian conversion remain solver-required.
     DifferentFixedAngles {
         vertex: VertexId,
         first_edge: EdgeId,
@@ -446,30 +454,34 @@ pub enum DirectConstraintConflictKindV1 {
     },
     /// Two exact, distinct pattern edges share the validated `FixedAngle`
     /// vertex and are both constrained horizontal or both constrained
-    /// vertical. Their production cross term is therefore either signed zero
-    /// or non-finite, including every collapse and endpoint-direction case.
-    /// The conflict is emitted only when the shared production fixed-angle
-    /// residual rejects every finite `atan2(+0, dot)` class, including both
-    /// signed-zero dot values. Stored-degree inequality, tolerance, and current
-    /// coordinates are never used as evidence.
+    /// vertical. Their proof-evaluator cross term is therefore either signed
+    /// zero or non-finite, including every collapse and endpoint-direction
+    /// case. The conflict is emitted only when the frozen fixed-angle residual
+    /// rejects every finite deterministic `atan2(+0, dot)` class, including
+    /// both signed-zero dot values. Stored-degree inequality, tolerance, and
+    /// current coordinates are never used as evidence.
     SameOrientationWithFixedNonParallelAngle {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
     /// Two exact, distinct pattern edges share the validated `FixedAngle`
     /// vertex; one is constrained horizontal and the other vertical. At exact
-    /// orientation residual zero, production `abs(cross).atan2(dot)` can reach
-    /// only the enumerated zero-cross, right-angle, straight-angle, or
-    /// non-finite classes, including underflow, overflow, and collapse. The
-    /// conflict is emitted only when the shared fixed-angle residual rejects
-    /// every class. Stored-degree inequality, tolerance, and current
-    /// coordinates are never evidence.
+    /// orientation residual zero, frozen `abs(cross)` and deterministic
+    /// `atan2` can reach only the enumerated zero-cross, right-angle,
+    /// straight-angle, or non-finite classes, including underflow, overflow,
+    /// and collapse. The conflict is emitted only when the deterministic
+    /// fixed-angle residual rejects every class. Stored-degree inequality,
+    /// tolerance, and current coordinates are never evidence.
     PerpendicularOrientationsWithFixedNonRightAngle {
         horizontal_edge: EdgeId,
         vertical_edge: EdgeId,
     },
-    /// Legacy wire tag retained for compatibility. Distinct stored angles can
-    /// produce the same implemented binary64 rotation residual.
+    /// Two rotational-symmetry records have the same ordered roles but
+    /// distinct exact cardinal matrices under the frozen deterministic
+    /// transcendental model. A consistent positive fixed length binds a real
+    /// center-source or center-target radius edge, so the only common fixed
+    /// point of those matrices (the zero vector) is impossible. Stored angle
+    /// inequality alone is never evidence.
     DifferentRotationalSymmetryAnglesWithFixedRadius {
         center_vertex: VertexId,
         source_vertex: VertexId,
@@ -1765,6 +1777,100 @@ impl ScalarGroupSummary {
     }
 }
 
+/// Exact cardinal rotation classes produced by the frozen proof evaluator.
+///
+/// The tuple order is `(sin, cos)`, matching
+/// `deterministic_sin_cos_degrees_v1` and the production rotation residual.
+/// Only bit-exact coefficients are admitted. Subnormal stored angles that
+/// underflow to the identity matrix are deliberately left solver-required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RotationCardinalClass {
+    Identity,
+    QuarterTurn,
+    HalfTurn,
+    ThreeQuarterTurn,
+}
+
+impl RotationCardinalClass {
+    fn from_angle_degrees(angle_degrees: f64) -> Option<Self> {
+        if !angle_degrees.is_normal() {
+            return None;
+        }
+        let (sin, cos) = deterministic_sin_cos_degrees_v1(angle_degrees).ok()?;
+        match (sin.to_bits(), cos.to_bits()) {
+            (sin_bits, cos_bits)
+                if sin_bits == 0.0_f64.to_bits() && cos_bits == 1.0_f64.to_bits() =>
+            {
+                Some(Self::Identity)
+            }
+            (sin_bits, cos_bits)
+                if sin_bits == 1.0_f64.to_bits() && cos_bits == 0.0_f64.to_bits() =>
+            {
+                Some(Self::QuarterTurn)
+            }
+            (sin_bits, cos_bits)
+                if sin_bits == 0.0_f64.to_bits() && cos_bits == (-1.0_f64).to_bits() =>
+            {
+                Some(Self::HalfTurn)
+            }
+            (sin_bits, cos_bits)
+                if sin_bits == (-1.0_f64).to_bits() && cos_bits == 0.0_f64.to_bits() =>
+            {
+                Some(Self::ThreeQuarterTurn)
+            }
+            _ => None,
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Identity => 0,
+            Self::QuarterTurn => 1,
+            Self::HalfTurn => 2,
+            Self::ThreeQuarterTurn => 3,
+        }
+    }
+}
+
+/// Bounded, order-independent summary for one exact ordered rotation role.
+///
+/// One canonical-smallest record is retained per cardinal class. Selecting
+/// the two globally smallest occupied slots gives the lexicographically
+/// smallest sorted witness pair without constructing quadratic pairs.
+#[derive(Debug, Clone, Copy, Default)]
+struct RotationCardinalGroupSummary {
+    by_class: [Option<ScalarAssignment>; 4],
+}
+
+impl RotationCardinalGroupSummary {
+    fn observe(&mut self, class: RotationCardinalClass, assignment: ScalarAssignment) {
+        let slot = &mut self.by_class[class.index()];
+        if slot.is_none_or(|current| assignment.id.canonical_bytes() < current.id.canonical_bytes())
+        {
+            *slot = Some(assignment);
+        }
+    }
+
+    fn different_witness(&self) -> Option<[ConstraintId; 2]> {
+        let mut first: Option<ScalarAssignment> = None;
+        let mut second: Option<ScalarAssignment> = None;
+        for assignment in self.by_class.iter().flatten().copied() {
+            if first.is_none_or(|current| {
+                assignment.id.canonical_bytes() < current.id.canonical_bytes()
+            }) {
+                second = first;
+                first = Some(assignment);
+            } else if second.is_none_or(|current| {
+                assignment.id.canonical_bytes() < current.id.canonical_bytes()
+            }) {
+                second = Some(assignment);
+            }
+        }
+        let (first, second) = (first?, second?);
+        Some([first.id, second.id])
+    }
+}
+
 /// Retains the canonical-smallest constraint that uses one exact edge in a
 /// residual which rejects a zero-length vector.
 fn observe_exact_nondegenerate_edge_use(
@@ -1950,6 +2056,8 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
     let mut equal_lengths: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
     let mut parallels: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
     let mut rotations: BTreeMap<RotationRoleKey, ScalarGroupSummary> = BTreeMap::new();
+    let mut cardinal_rotations: BTreeMap<RotationRoleKey, RotationCardinalGroupSummary> =
+        BTreeMap::new();
     let mut non_half_turn_rotations: BTreeMap<RotationRoleKey, ScalarAssignment> = BTreeMap::new();
     let mut rotation_roles: BTreeMap<RotationRoleKey, [VertexId; 3]> = BTreeMap::new();
     let mut points_on_lines: BTreeMap<(CanonicalId, CanonicalId), Vec<ConstraintId>> =
@@ -2073,6 +2181,12 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                     .entry(key)
                     .and_modify(|summary| summary.observe(assignment))
                     .or_insert_with(|| ScalarGroupSummary::new(assignment));
+                if let Some(class) = RotationCardinalClass::from_angle_degrees(*angle_degrees) {
+                    cardinal_rotations
+                        .entry(key)
+                        .or_default()
+                        .observe(class, assignment);
+                }
                 if angle_degrees.to_bits() != 180.0_f64.to_bits() {
                     non_half_turn_rotations
                         .entry(key)
@@ -2156,7 +2270,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
         }
     }
     for (key, assignments) in &fixed_angles {
-        if let Some(witness) = different_scalar_witness(assignments) {
+        if let Some(witness) = incompatible_fixed_angle_pair_witness_v1(assignments) {
             push_conflict(
                 &mut conflicts,
                 DirectConstraintConflictKindV1::DifferentFixedAngles {
@@ -2466,7 +2580,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
         }
     }
 
-    let has_same_role_rotation_candidate = rotations
+    let has_same_role_rotation_candidate = cardinal_rotations
         .values()
         .any(|summary| summary.different_witness().is_some());
     let has_inverse_role_rotation_candidate = rotations.iter().any(|(key, summary)| {
@@ -2572,7 +2686,15 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             }
         }
         if has_same_role_rotation_candidate {
-            for (key, summary) in &rotations {
+            // The frozen residual evaluates
+            //   fl(fl(target - center) - R(fl(source - center))).
+            // Exact zero therefore makes the shared finite target delta equal
+            // to both cardinal transforms. Cardinal coefficients are only
+            // +/-1 and +0, so those transforms introduce no rounding for
+            // finite deltas; two distinct cardinal matrices have only the
+            // zero vector as a common input. The selected positive fixed
+            // radius then rules out that forced source/target collapse.
+            for (key, summary) in &cardinal_rotations {
                 let Some(witness) = summary.different_witness() else {
                     continue;
                 };
@@ -3052,12 +3174,36 @@ pub(crate) fn length_ratio_residual_binary64_v1(
 }
 
 /// Evaluates the V1 fixed-angle residual in the exact operation order used by
-/// the numerical solver.
+/// the numerical solver preview.
 ///
-/// Direct proofs call the same helper only with actual-angle classes generated
-/// through the production `abs(cross).atan2(dot)` operation.
+/// The expected angle deliberately retains the original standard-library
+/// degree conversion. This helper is not proof authority.
 pub(crate) fn fixed_angle_residual_binary64_v1(actual_radians: f64, angle_degrees: f64) -> f64 {
-    let difference = actual_radians - angle_degrees.to_radians();
+    fixed_angle_residual_from_expected_radians_binary64_v1(
+        actual_radians,
+        angle_degrees.to_radians(),
+    )
+}
+
+/// Evaluates the fixed-angle residual under the frozen V1 proof model.
+///
+/// Direct proofs and exact certificates must use this helper rather than
+/// inheriting the platform preview's expected-angle conversion.
+pub(crate) fn deterministic_fixed_angle_residual_binary64_v1(
+    actual_radians: f64,
+    angle_degrees: f64,
+) -> f64 {
+    let Ok(expected_radians) = deterministic_degrees_to_radians_v1(angle_degrees) else {
+        return f64::NAN;
+    };
+    fixed_angle_residual_from_expected_radians_binary64_v1(actual_radians, expected_radians)
+}
+
+fn fixed_angle_residual_from_expected_radians_binary64_v1(
+    actual_radians: f64,
+    expected_radians: f64,
+) -> f64 {
+    let difference = actual_radians - expected_radians;
     (difference + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI)
         - std::f64::consts::PI
 }
@@ -3068,9 +3214,10 @@ pub(crate) fn fixed_angle_residual_binary64_v1(actual_radians: f64, angle_degree
 /// `atan2(+0, dot)` depends on the dot product's sign and signed-zero class.
 /// Finite same-orientation vectors cover positive, negative, `+0.0`, and
 /// `-0.0`; overflow can additionally produce either infinity or NaN. The
-/// representative inputs below are evaluated through the same platform
-/// `atan2` and fixed-angle helper as the solver instead of assuming stored
-/// degree inequality or a hard-coded pi bit pattern.
+/// representative inputs below are evaluated through the same frozen
+/// deterministic `atan2` and fixed-angle helper as the exact certificate
+/// instead of assuming stored degree inequality or a hard-coded pi bit
+/// pattern.
 fn fixed_angle_rejects_zero_cross_binary64_v1(angle_degrees: f64) -> bool {
     debug_assert!(angle_degrees.is_finite() && (0.0..=180.0).contains(&angle_degrees));
     [
@@ -3083,10 +3230,12 @@ fn fixed_angle_rejects_zero_cross_binary64_v1(angle_degrees: f64) -> bool {
         f64::NAN,
     ]
     .into_iter()
-    .all(|dot| {
-        let actual = 0.0_f64.atan2(dot);
-        let residual = fixed_angle_residual_binary64_v1(actual, angle_degrees);
-        !residual.is_finite() || residual != 0.0
+    .all(|dot| match deterministic_atan2_v1(0.0, dot) {
+        Ok(actual) => {
+            let residual = deterministic_fixed_angle_residual_binary64_v1(actual, angle_degrees);
+            !residual.is_finite() || residual != 0.0
+        }
+        Err(_) => true,
     })
 }
 
@@ -3096,8 +3245,10 @@ fn fixed_angle_rejects_zero_cross_binary64_v1(angle_degrees: f64) -> bool {
 /// Their production dot is signed zero or NaN. Their absolute cross can be
 /// positive finite, `+0.0` after collapse or product underflow, positive
 /// infinity after product overflow, or NaN after a non-finite intermediate.
-/// Representative binary64 operands intentionally go through platform
-/// `atan2`; no stored-degree comparison or epsilon stands in for that call.
+/// Representative binary64 operands intentionally go through the frozen
+/// deterministic `atan2`, which preserves signed-zero inputs and therefore the
+/// `atan2(+0, -0) == pi` branch-cut class shared with platform preview. No
+/// stored-degree comparison or epsilon stands in for those calls.
 fn fixed_angle_rejects_perpendicular_binary64_v1(angle_degrees: f64) -> bool {
     debug_assert!(angle_degrees.is_finite() && (0.0..=180.0).contains(&angle_degrees));
     [
@@ -3115,11 +3266,16 @@ fn fixed_angle_rejects_perpendicular_binary64_v1(angle_degrees: f64) -> bool {
         (1.0, f64::NAN),
     ]
     .into_iter()
-    .all(|(absolute_cross, dot)| {
-        let actual = absolute_cross.atan2(dot);
-        let residual = fixed_angle_residual_binary64_v1(actual, angle_degrees);
-        !residual.is_finite() || residual != 0.0
-    })
+    .all(
+        |(absolute_cross, dot)| match deterministic_atan2_v1(absolute_cross, dot) {
+            Ok(actual) => {
+                let residual =
+                    deterministic_fixed_angle_residual_binary64_v1(actual, angle_degrees);
+                !residual.is_finite() || residual != 0.0
+            }
+            Err(_) => true,
+        },
+    )
 }
 
 /// One-sided test that two stored binary64 degree values do not add to an
@@ -3719,12 +3875,55 @@ fn canonicalize_constraint_ids(ids: &mut Vec<ConstraintId>) {
     ids.dedup();
 }
 
-fn different_scalar_witness(assignments: &[ScalarAssignment]) -> Option<[ConstraintId; 2]> {
-    let first = assignments.first()?;
-    assignments[1..]
-        .iter()
-        .find(|item| item.value.to_bits() != first.value.to_bits())
-        .map(|different| [first.id, different.id])
+/// Conservatively encloses every finite angle, in radians, that can make the
+/// frozen fixed-angle residual exactly binary64 zero.
+///
+/// Let `d = fl(actual - expected)` and `a = fl(d + PI)`. For validated angles
+/// and deterministic `atan2(abs(cross), dot)`, both `actual` and `expected`
+/// are in `[0, PI]`, so the `rem_euclid(2 * PI)` branch cannot produce `PI`
+/// from another congruence class. A zero final subtraction therefore requires
+/// `a == PI`. Correct rounding bounds `d` by one upward spacing at `PI`; the
+/// predecessor/successor expansion below also encloses the rounding error in
+/// `actual - expected` and both endpoint additions. This deliberately wider
+/// interval permits false negatives but no false positive conflict.
+pub(crate) fn fixed_angle_zero_actual_enclosure_v1(angle_degrees: f64) -> Option<(f64, f64)> {
+    let expected = deterministic_degrees_to_radians_v1(angle_degrees).ok()?;
+    let pi = std::f64::consts::PI;
+    if !expected.is_finite() || expected < 0.0 || expected > pi {
+        return None;
+    }
+    let pi_upward_spacing = pi.next_up() - pi;
+    let radius = pi_upward_spacing.next_up();
+    let lower = (expected - radius).next_down().max(0.0);
+    let upper = (expected + radius).next_up().min(pi);
+    (lower <= upper).then_some((lower, upper))
+}
+
+fn incompatible_fixed_angle_pair_witness_v1(
+    assignments: &[ScalarAssignment],
+) -> Option<[ConstraintId; 2]> {
+    let mut lowest_upper: Option<(f64, ConstraintId)> = None;
+    let mut highest_lower: Option<(f64, ConstraintId)> = None;
+    for assignment in assignments {
+        let (lower, upper) = fixed_angle_zero_actual_enclosure_v1(assignment.value)?;
+        if lowest_upper.is_none_or(|(current, id)| {
+            upper < current
+                || (upper.to_bits() == current.to_bits()
+                    && assignment.id.canonical_bytes() < id.canonical_bytes())
+        }) {
+            lowest_upper = Some((upper, assignment.id));
+        }
+        if highest_lower.is_none_or(|(current, id)| {
+            lower > current
+                || (lower.to_bits() == current.to_bits()
+                    && assignment.id.canonical_bytes() < id.canonical_bytes())
+        }) {
+            highest_lower = Some((lower, assignment.id));
+        }
+    }
+    let (upper, upper_id) = lowest_upper?;
+    let (lower, lower_id) = highest_lower?;
+    (upper < lower && upper_id != lower_id).then_some([upper_id, lower_id])
 }
 
 fn push_conflict(
@@ -3745,6 +3944,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
     matches!(
         conflict,
         DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
+            | DirectConstraintConflictKindV1::DifferentFixedAngles { .. }
             | DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
             | DirectConstraintConflictKindV1::HorizontalAndVertical { .. }
             | DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
@@ -3757,6 +3957,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
             | DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle { .. }
             | DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle { .. }
+            | DirectConstraintConflictKindV1::DifferentRotationalSymmetryAnglesWithFixedRadius { .. }
             | DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure { .. }
             | DirectConstraintConflictKindV1::ZeroLengthClosureReachesNondegenerateProvider { .. }
     )
@@ -4366,6 +4567,10 @@ fn canonical_id_slice_cmp(left: &[ConstraintId], right: &[ConstraintId]) -> std:
 mod equal_ratio_fixed_tests;
 
 #[cfg(test)]
+#[path = "constraints_different_fixed_angles_tests.rs"]
+mod different_fixed_angles_tests;
+
+#[cfg(test)]
 #[path = "constraints_general_ratio_graph_limits_tests.rs"]
 mod general_ratio_graph_limits_tests;
 
@@ -4645,10 +4850,9 @@ mod tests {
         }
     }
 
-    // These helpers inspect quarantined legacy recognizer output only to keep
-    // its stable wire tags and canonical ordering covered. Public outcome
-    // assertions above still require solver-required and never treat these
-    // candidates as unsatisfiability certificates.
+    // These helpers inspect both emitted allowlisted conflicts and quarantined
+    // legacy recognizer output. Each test must separately assert whether its
+    // family is proof-authoritative or remains solver-required.
     fn emitted_and_quarantined_conflicts(
         preflight: &ConstraintPreflightV1,
     ) -> Vec<DirectConstraintConflictV1> {
@@ -4663,7 +4867,13 @@ mod tests {
     }
 
     fn rotation_conflicts(preflight: &ConstraintPreflightV1) -> Vec<DirectConstraintConflictV1> {
-        emitted_and_quarantined_conflicts(preflight)
+        let conflicts = match preflight {
+            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts.clone(),
+            ConstraintPreflightV1::NoDirectConflict | ConstraintPreflightV1::Unknown { .. } => {
+                Vec::new()
+            }
+        };
+        conflicts
             .into_iter()
             .filter(|conflict| {
                 matches!(
@@ -4681,7 +4891,6 @@ mod tests {
     ) -> Option<DirectConstraintConflictV1> {
         let prepared = prepare(fixture, raw).expect("rotation fixture prepares");
         let preflight = prepared.preflight();
-        assert_solver_required(&preflight);
         let mut found = rotation_conflicts(&preflight);
         (found.len() == 1).then(|| found.remove(0))
     }
@@ -5451,17 +5660,99 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_binary64_rotation_angles_remain_distinct_proof_values() {
+    fn adjacent_binary64_rotation_angles_remain_solver_required() {
         let fixture = Fixture::new();
         let raw = document([
             record(rotation(&fixture, 0, 1, 2, 90.0)),
             record(rotation(&fixture, 0, 1, 2, 90.0_f64.next_up())),
             record(fixed_length(&fixture, 0, f64::MIN_POSITIVE)),
         ]);
-        assert!(
-            only_rotation_conflict(&fixture, &raw).is_some(),
-            "the theorem uses the exact stored angle and positive-radius values"
+        let prepared = prepare(&fixture, &raw).expect("adjacent rotations prepare");
+        assert!(rotation_conflicts(&prepared.preflight()).is_empty());
+        assert_solver_required(&prepared.preflight());
+    }
+
+    #[test]
+    fn all_reachable_distinct_cardinal_pairs_accept_either_positive_radius() {
+        let fixture = Fixture::new();
+        let minimum = f64::from_bits(1);
+        for (first_angle, second_angle) in [(90.0, 180.0), (90.0, 270.0), (180.0, 270.0)] {
+            for radius_edge in [0, 1] {
+                let records = [
+                    record(rotation(&fixture, 0, 1, 2, first_angle)),
+                    record(rotation(&fixture, 0, 1, 2, second_angle)),
+                    record(fixed_length(&fixture, radius_edge, minimum)),
+                ];
+                let raw = document(records.clone());
+                let prepared = prepare(&fixture, &raw).expect("cardinal rotation pair prepares");
+                let conflict = only_rotation_conflict(&fixture, &raw)
+                    .expect("distinct exact cardinal matrices force both radii to zero");
+                assert_eq!(
+                    conflict.constraint_ids(),
+                    sorted_ids(&records.map(|item| item.id))
+                );
+                assert!(matches!(
+                    find_bounded_direct_mus_v1(&prepared),
+                    BoundedDirectMusV1::ProvenUnsatisfiable {
+                        ref constraint_ids,
+                        ..
+                    } if constraint_ids == conflict.constraint_ids()
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn cardinal_one_ulp_neighbors_and_identity_underflow_remain_solver_required() {
+        let fixture = Fixture::new();
+        for (cardinal, adjacent) in [
+            (90.0, 90.0_f64.next_down()),
+            (90.0, 90.0_f64.next_up()),
+            (180.0, 180.0_f64.next_down()),
+            (180.0, 180.0_f64.next_up()),
+            (270.0, 270.0_f64.next_down()),
+            (270.0, 270.0_f64.next_up()),
+            (f64::from_bits(1), f64::from_bits(2)),
+        ] {
+            let raw = document([
+                record(rotation(&fixture, 0, 1, 2, cardinal)),
+                record(rotation(&fixture, 0, 1, 2, adjacent)),
+                record(fixed_length(&fixture, 0, f64::from_bits(1))),
+            ]);
+            let prepared = prepare(&fixture, &raw).expect("fail-closed angle pair prepares");
+            let preflight = prepared.preflight();
+            assert!(
+                rotation_conflicts(&preflight).is_empty(),
+                "{cardinal:?}/{adjacent:?} must not cross the bit-exact cardinal boundary"
+            );
+            assert_solver_required(&preflight);
+            assert_bounded_direct_oracle_unknown(&prepared);
+        }
+    }
+
+    #[test]
+    fn cardinal_rotation_pair_selects_the_global_canonical_class_witness() {
+        let fixture = Fixture::new();
+        let rotations = [
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(rotation(&fixture, 0, 1, 2, 270.0)),
+        ];
+        let fixed = record(fixed_length(&fixture, 0, 5.0));
+        let mut expected_rotations = rotations.iter().map(|record| record.id).collect::<Vec<_>>();
+        expected_rotations.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        let raw = document(
+            rotations
+                .iter()
+                .cloned()
+                .chain(std::iter::once(fixed.clone())),
         );
+        let conflict = only_rotation_conflict(&fixture, &raw)
+            .expect("three occupied cardinal classes have a canonical pair");
+        assert!(conflict.constraint_ids().contains(&expected_rotations[0]));
+        assert!(conflict.constraint_ids().contains(&expected_rotations[1]));
+        assert!(!conflict.constraint_ids().contains(&expected_rotations[2]));
+        assert!(conflict.constraint_ids().contains(&fixed.id));
     }
 
     #[test]
@@ -5621,7 +5912,7 @@ mod tests {
     }
 
     #[test]
-    fn quarantined_rotation_candidate_stays_stable_for_growing_documents() {
+    fn proven_rotation_conflict_stays_stable_for_growing_documents() {
         let fixture = Fixture::new();
         let witness_records = [
             record(rotation(&fixture, 0, 1, 2, 90.0)),
@@ -5638,7 +5929,13 @@ mod tests {
             let prepared = prepare(&fixture, &raw).expect("padded documents prepare");
             let conflict = only_rotation_conflict(&fixture, &raw)
                 .expect("padding never hides the rotation witness");
-            assert_bounded_direct_oracle_unknown(&prepared);
+            assert!(matches!(
+                find_bounded_direct_mus_v1(&prepared),
+                BoundedDirectMusV1::ProvenUnsatisfiable {
+                    ref constraint_ids,
+                    ..
+                } if constraint_ids == conflict.constraint_ids()
+            ));
             let constraint_ids = conflict.constraint_ids().to_vec();
             assert_eq!(constraint_ids.len(), 3);
             if let Some(previous) = &expected {
@@ -5647,6 +5944,43 @@ mod tests {
                 expected = Some(constraint_ids);
             }
         }
+    }
+
+    #[test]
+    fn cardinal_rotation_preflight_observer_stops_fail_closed() {
+        struct Stop(GeometricConstraintPreflightObserverControlV1);
+        impl GeometricConstraintPreflightObserverV1 for Stop {
+            fn checkpoint(&mut self) -> GeometricConstraintPreflightObserverControlV1 {
+                self.0
+            }
+        }
+
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 270.0)),
+            record(fixed_length(&fixture, 1, f64::from_bits(1))),
+        ]);
+        let prepared = prepare(&fixture, &raw).expect("observer fixture prepares");
+        for (control, expected) in [
+            (
+                GeometricConstraintPreflightObserverControlV1::Cancelled,
+                GeometricConstraintUnknownReasonV1::Cancelled,
+            ),
+            (
+                GeometricConstraintPreflightObserverControlV1::DeadlineReached,
+                GeometricConstraintUnknownReasonV1::DeadlineReached,
+            ),
+        ] {
+            assert!(matches!(
+                prepared.preflight_with_observer(&mut Stop(control)),
+                ConstraintPreflightV1::Unknown { reason, .. } if reason == expected
+            ));
+        }
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
     }
 
     #[test]
@@ -6957,7 +7291,7 @@ mod tests {
         let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
             panic!("different direct scalar assignments must conflict");
         };
-        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts.len(), 2);
         for conflict in &conflicts {
             assert!(
                 conflict
@@ -6971,6 +7305,12 @@ mod tests {
                 conflict.conflict(),
                 DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
             ) && same_ids(conflict.constraint_ids(), &[length_a.id, length_b.id])
+        }));
+        assert!(conflicts.iter().any(|conflict| {
+            matches!(
+                conflict.conflict(),
+                DirectConstraintConflictKindV1::DifferentFixedAngles { .. }
+            ) && same_ids(conflict.constraint_ids(), &[angle_a.id, angle_b.id])
         }));
         assert!(
             conflicts

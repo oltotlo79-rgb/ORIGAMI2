@@ -2,7 +2,7 @@ use super::*;
 use crate::{ConstraintPreflightV1, DirectConstraintConflictKindV1};
 
 #[derive(Clone, Copy)]
-enum Family {
+pub(super) enum Family {
     RatioCycle,
     GeneralRatioGraph,
     EqualComponent,
@@ -41,7 +41,7 @@ fn matching_pattern(edge_count: usize) -> (CreasePattern, Vec<EdgeId>) {
     )
 }
 
-fn target_fixtures() -> Vec<(Family, SemanticFixture)> {
+pub(super) fn target_fixtures() -> Vec<(Family, SemanticFixture)> {
     let (cycle_pattern, cycle_edges) = matching_pattern(3);
     let cycle = SemanticFixture {
         pattern: cycle_pattern,

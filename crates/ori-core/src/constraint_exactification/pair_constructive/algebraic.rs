@@ -15,12 +15,14 @@ use crate::{
 
 pub(crate) const MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1: usize = 4;
 
-/// Constructs only the explicitly supported two-record zero-length escapes.
+/// Constructs only the explicitly supported two-record algebraic collapses.
 ///
 /// The returned value is an algebraic residual witness, never a crease-pattern
 /// assignment. All source geometry and topology remain unchanged. Each
 /// candidate is a complete overlay over the source vertex registry and is
-/// accepted only by the private full production residual certificate.
+/// accepted only by the private full production residual certificate. Rotation
+/// roles may therefore coincide in the overlay without weakening the ordinary
+/// non-degenerate crease-pattern validation boundary.
 pub(crate) fn construct_pair_constraint_algebraic_exact_assignment_v1(
     pattern: &CreasePattern,
     document: &GeometricConstraintDocumentV1,
@@ -40,9 +42,7 @@ pub(crate) fn construct_pair_constraint_algebraic_exact_assignment_v1(
 
     let first = &document.constraints[0].constraint;
     let second = &document.constraints[1].constraint;
-    let collapsed_edges = algebraic_collapse_edges(first, second)
-        .or_else(|| algebraic_collapse_edges(second, first))?;
-    let collapsed_vertices = collapsed_vertex_ids(pattern, &collapsed_edges)?;
+    let collapsed_vertices = algebraic_collapsed_vertex_ids(pattern, first, second)?;
     let anchors: [Point2; MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1] = [
         Point2::new(0.0, 0.0),
         Point2::new(-0.0, -0.0),
@@ -71,6 +71,46 @@ pub(crate) fn construct_pair_constraint_algebraic_exact_assignment_v1(
         }
     }
     None
+}
+
+fn algebraic_collapsed_vertex_ids(
+    pattern: &CreasePattern,
+    first: &GeometricConstraintKindV1,
+    second: &GeometricConstraintKindV1,
+) -> Option<BTreeSet<[u8; 16]>> {
+    if let (
+        GeometricConstraintKindV1::RotationalSymmetry {
+            center_vertex: first_center,
+            source_vertex: first_source,
+            target_vertex: first_target,
+            ..
+        },
+        GeometricConstraintKindV1::RotationalSymmetry {
+            center_vertex: second_center,
+            source_vertex: second_source,
+            target_vertex: second_target,
+            ..
+        },
+    ) = (first, second)
+    {
+        return Some(
+            [
+                *first_center,
+                *first_source,
+                *first_target,
+                *second_center,
+                *second_source,
+                *second_target,
+            ]
+            .into_iter()
+            .map(|vertex| vertex.canonical_bytes())
+            .collect(),
+        );
+    }
+
+    let collapsed_edges = algebraic_collapse_edges(first, second)
+        .or_else(|| algebraic_collapse_edges(second, first))?;
+    collapsed_vertex_ids(pattern, &collapsed_edges)
 }
 
 fn algebraic_collapse_edges(

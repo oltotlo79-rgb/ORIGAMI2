@@ -4,6 +4,7 @@ use ori_domain::{
     CreasePattern, Edge, EdgeId, GeometricConstraintDocumentV1, GeometricConstraintKindV1, Point2,
     VertexId,
 };
+use ori_numeric::{deterministic_degrees_to_radians_v1, deterministic_sin_cos_degrees_v1};
 
 use super::CurrentRuntimeExactConstraintAssignmentV1;
 use crate::{
@@ -20,8 +21,8 @@ pub(crate) const MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1: usize = 4;
 /// V1 tries four fixed translations of one canonical template. Referenced edge
 /// endpoints are assigned by role, with incident-edge templates expressed as
 /// outward vectors from the required vertex and two-edge templates handling a
-/// shared endpoint explicitly. Runtime trigonometric templates use the same
-/// `to_radians`, `sin`, and `cos` operations as the production residuals.
+/// shared endpoint explicitly. Trigonometric templates use the same frozen
+/// degree conversion, `sin`, and `cos` operations as the proof residuals.
 ///
 /// Invalid documents, documents containing other than one record, non-finite
 /// or subnormal trigonometric components, conflicting shared roles, collapsed
@@ -93,7 +94,7 @@ fn single_constraint_canonical_assignment(
             second_edge,
             angle_degrees,
         } => {
-            let angle = checked_runtime_angle(angle_degrees, angle_degrees != 0.0)?;
+            let angle = checked_deterministic_angle(angle_degrees, angle_degrees != 0.0)?;
             let first_length = if angle_degrees == 0.0 { 2.0 } else { 1.0 };
             assign_outward_edge(
                 pattern,
@@ -177,7 +178,7 @@ fn single_constraint_canonical_assignment(
             target_vertex,
             angle_degrees,
         } => {
-            let angle = checked_runtime_angle(angle_degrees, true)?;
+            let angle = checked_deterministic_angle(angle_degrees, true)?;
             assign_point(&mut assignment, center_vertex, Point2::new(0.0, 0.0))?;
             assign_point(&mut assignment, source_vertex, Point2::new(1.0, 0.0))?;
             assign_point(
@@ -231,15 +232,17 @@ fn single_constraint_canonical_assignment(
 }
 
 #[derive(Clone, Copy)]
-struct RuntimeAngle {
+struct DeterministicAngle {
     sin: f64,
     cos: f64,
 }
 
-fn checked_runtime_angle(angle_degrees: f64, require_nonzero: bool) -> Option<RuntimeAngle> {
-    let radians = angle_degrees.to_radians();
-    let sin = radians.sin();
-    let cos = radians.cos();
+fn checked_deterministic_angle(
+    angle_degrees: f64,
+    require_nonzero: bool,
+) -> Option<DeterministicAngle> {
+    let radians = deterministic_degrees_to_radians_v1(angle_degrees).ok()?;
+    let (sin, cos) = deterministic_sin_cos_degrees_v1(angle_degrees).ok()?;
     if !ordinary_or_zero(radians)
         || !ordinary_or_zero(sin)
         || !ordinary_or_zero(cos)
@@ -247,7 +250,7 @@ fn checked_runtime_angle(angle_degrees: f64, require_nonzero: bool) -> Option<Ru
     {
         return None;
     }
-    Some(RuntimeAngle { sin, cos })
+    Some(DeterministicAngle { sin, cos })
 }
 
 fn ordinary_or_zero(value: f64) -> bool {

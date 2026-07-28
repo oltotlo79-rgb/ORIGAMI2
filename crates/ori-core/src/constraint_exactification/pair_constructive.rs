@@ -1,4 +1,5 @@
 use ori_domain::{CreasePattern, GeometricConstraintDocumentV1, GeometricConstraintKindV1, Point2};
+use ori_numeric::{deterministic_degrees_to_radians_v1, deterministic_sin_cos_degrees_v1};
 
 use self::geometry::{
     Axis, CanonicalAssignment, apply_translated_assignment, assign_axis_length, assign_axis_pair,
@@ -12,23 +13,28 @@ use crate::{
 };
 
 mod algebraic;
+mod cardinal_rotation;
 mod geometry;
 
 pub(crate) use algebraic::{
     MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1,
     construct_pair_constraint_algebraic_exact_assignment_v1,
 };
+use cardinal_rotation::construct_cardinal_rotation_pair_candidate_v1;
 pub(crate) const MAX_PAIR_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1: usize = 4;
 
 /// Tries a fixed, deliberately incomplete language of exact assignments for
 /// two validated constraints.
 ///
-/// Every template is deterministic from canonical IDs and tries only four
-/// fixed translations. A template is merely a candidate: the complete
-/// production residual API revalidates the whole two-record document before
-/// an opaque positive assignment can escape. Unsupported relations, invalid
-/// inputs, subnormal scalars, role collisions, and collapsed assignments
-/// therefore fail closed as `None`.
+/// Ordinary templates are deterministic from canonical IDs and try only four
+/// fixed translations. The exact-cardinal rotation deletion templates use one
+/// origin-bound candidate and deliberately admit a positive subnormal radius.
+/// The two-rotation zero-radius escape is not a valid crease-pattern assignment
+/// and is handled only by the separate residual-only algebraic overlay path.
+/// Every template is merely a candidate: the complete frozen production
+/// residual API revalidates the whole two-record document before an opaque
+/// positive assignment can escape. Unsupported relations, invalid inputs, and
+/// conflicting roles therefore fail closed as `None`.
 pub(crate) fn construct_pair_constraint_exact_assignment_v1(
     pattern: &CreasePattern,
     document: &GeometricConstraintDocumentV1,
@@ -48,6 +54,18 @@ pub(crate) fn construct_pair_constraint_exact_assignment_v1(
 
     let first = &document.constraints[0].constraint;
     let second = &document.constraints[1].constraint;
+    if let Some(candidate) = construct_cardinal_rotation_pair_candidate_v1(pattern, first, second) {
+        let certificate =
+            certify_binary64_exact_geometric_constraint_satisfaction_v1(&candidate, document)
+                .ok()
+                .flatten();
+        if let Some(certificate) = certificate {
+            return Some(CurrentRuntimeExactConstraintAssignmentV1 {
+                pattern: candidate,
+                certificate,
+            });
+        }
+    }
     let assignment = pair_canonical_assignment(pattern, first, second)
         .or_else(|| pair_canonical_assignment(pattern, second, first))?;
     if !assignment_points_are_distinct(&assignment) {
@@ -268,9 +286,8 @@ fn assign_angle_with_axis(
     } else {
         return None;
     };
-    let radians = angle_degrees.to_radians();
-    let sin = radians.sin();
-    let cos = radians.cos();
+    let radians = deterministic_degrees_to_radians_v1(angle_degrees).ok()?;
+    let (sin, cos) = deterministic_sin_cos_degrees_v1(angle_degrees).ok()?;
     if !ordinary_or_zero(angle_degrees)
         || !ordinary_or_zero(radians)
         || !ordinary_or_zero(sin)

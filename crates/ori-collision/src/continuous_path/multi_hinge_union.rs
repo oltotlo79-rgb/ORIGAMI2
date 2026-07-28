@@ -5,6 +5,9 @@
 //! pair sharing two or three hinges: every canonical hinge-local relief
 //! neighbourhood is present in one complete union. It is not a whole-path CCD
 //! proof and grants no collision-free or mutation authority.
+//! A private Phase-A preflight additionally normalizes an exact, contiguous
+//! collinear split into one logical corridor. That internal evidence remains
+//! disconnected from every admission and apply path.
 
 use ori_domain::{EdgeId, FaceId};
 use ori_kinematics::{
@@ -17,6 +20,12 @@ use crate::{
     HingeReliefLinearAngleScheduleV1, HingeReliefPolicyLimitsV1, HingeReliefPolicyRecordV1,
     NativeHingeReliefLocalIntervalCertificateV1, NativeHingeReliefPrerequisiteV1,
     revalidate_hinge_relief_local_intervals_v1,
+};
+
+mod compound_corridor;
+
+use compound_corridor::{
+    CompoundLogicalCorridorCertificateV2, prepare_compound_logical_corridors_v2,
 };
 
 pub const MULTI_HINGE_RELIEF_UNION_GAP_MODEL_ID_V2: &str = "multi_hinge_relief_union_gap_v2";
@@ -272,6 +281,7 @@ pub struct MultiHingeReliefUnionCertificateV2 {
     retained_storage_bytes: usize,
     peak_storage_bytes: usize,
     covered: Vec<MultiHingeReliefUnionCoveredPairV2>,
+    compound_corridors: Vec<CompoundLogicalCorridorCertificateV2>,
     content_hash: [u8; 32],
 }
 
@@ -343,6 +353,7 @@ impl MultiHingeReliefUnionCertificateV2 {
             && self.retained_storage_bytes == other.retained_storage_bytes
             && self.peak_storage_bytes == other.peak_storage_bytes
             && self.covered == other.covered
+            && self.compound_corridors == other.compound_corridors
             && self.content_hash == other.content_hash
     }
 }
@@ -596,6 +607,7 @@ pub fn diagnose_multi_hinge_relief_union_gaps_with_cancel_v2(
                 .map_err(|_| MultiHingeReliefUnionErrorV2::ResourceLimit)?;
             for membership in &memberships[start..end] {
                 let hinge = &geometry.hinges()[membership.hinge_index];
+                meter.work(geometry.hinges().len())?;
                 let derivative = schedule
                     .derivative_bound(hinge.edge())
                     .filter(|value| value.is_finite() && *value >= 0.0)
@@ -766,16 +778,30 @@ pub fn certify_multi_hinge_relief_union_with_cancel_v2(
         }
         meter.work(1)?;
         let derivative = (local.target_angle_degrees - local.source_angle_degrees).abs();
-        let constant =
-            derivative == 0.0 && schedule.is_exact_constant_profile_v1(expected.gap.hinge);
         if policy.edge != expected.gap.hinge
             || local.edge != expected.gap.hinge
             || local.source_angle_degrees.to_bits() != expected.gap.source_angle_bits
             || local.target_angle_degrees.to_bits() != expected.gap.target_angle_bits
-            || (!constant && derivative.to_bits() != expected.gap.derivative_bound_bits)
+            || derivative.to_bits() != expected.gap.derivative_bound_bits
         {
             return Err(MultiHingeReliefUnionErrorV2::IncompleteCoverage);
         }
+    }
+
+    let compound_corridors = prepare_compound_logical_corridors_v2(
+        geometry,
+        schedule,
+        &gaps.gaps,
+        policies,
+        schedules,
+        gaps.thickness_bits,
+        gaps.schedule_hash,
+        limits,
+        &mut meter,
+        &mut cancelled,
+    )?;
+    if compound_corridors.len() != gaps.gaps.len() {
+        return Err(MultiHingeReliefUnionErrorV2::IncompleteCoverage);
     }
 
     let mut covered = Vec::new();
@@ -810,6 +836,7 @@ pub fn certify_multi_hinge_relief_union_with_cancel_v2(
         policy_limits,
         limits,
         &covered,
+        &compound_corridors,
         &mut meter,
     )?;
     meter.release(expected_storage)?;
@@ -829,6 +856,7 @@ pub fn certify_multi_hinge_relief_union_with_cancel_v2(
         retained_storage_bytes: meter.storage,
         peak_storage_bytes: meter.peak,
         covered,
+        compound_corridors,
         content_hash,
     })
 }
@@ -937,6 +965,7 @@ fn gap_hash(
         hash.update(gap.pair[1].canonical_bytes());
         hash.update((gap.hinges.len() as u64).to_be_bytes());
         for item in &gap.hinges {
+            meter.work(geometry.hinges().len())?;
             let hinge = geometry
                 .hinges()
                 .iter()
@@ -966,6 +995,7 @@ fn hash_hinge(hash: &mut Sha256, hinge: &TreeHinge) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn certificate_hash(
     gaps: &MultiHingeReliefUnionGapReportV2,
     policies: &[HingeReliefPolicyRecordV1],
@@ -973,6 +1003,7 @@ fn certificate_hash(
     policy_limits: HingeReliefPolicyLimitsV1,
     limits: MultiHingeReliefUnionLimitsV2,
     covered: &[MultiHingeReliefUnionCoveredPairV2],
+    compound_corridors: &[CompoundLogicalCorridorCertificateV2],
     meter: &mut Meter,
 ) -> Result<[u8; 32], MultiHingeReliefUnionErrorV2> {
     let mut hash = Sha256::new();
@@ -991,6 +1022,11 @@ fn certificate_hash(
         hash.update(policy.material_thickness_mm.to_bits().to_be_bytes());
         hash.update(schedule.source_angle_degrees.to_bits().to_be_bytes());
         hash.update(schedule.target_angle_degrees.to_bits().to_be_bytes());
+    }
+    meter.work(compound_corridors.len())?;
+    hash.update((compound_corridors.len() as u64).to_be_bytes());
+    for corridor in compound_corridors {
+        hash.update(corridor.content_hash_v2());
     }
     for pair in covered {
         meter.work(pair.hinges.len())?;
@@ -1024,3 +1060,7 @@ mod tests;
 #[cfg(test)]
 #[path = "multi_hinge_union_fail_closed_tests.rs"]
 mod fail_closed_contract_tests;
+
+#[cfg(test)]
+#[path = "multi_hinge_union/compound_corridor_tests.rs"]
+mod compound_corridor_tests;

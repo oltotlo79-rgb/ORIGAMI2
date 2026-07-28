@@ -64,7 +64,7 @@ test('native complete animal apply is atomic, replay-safe, undoable, redoable, a
   assert.match(nativeTests, /fn complete_animal_grid_apply_replay_undo_redo_and_archive_round_trip/)
   assert.match(nativeTests, /fn complete_winged_animal_grid_apply_and_archive_round_trip/)
   assert.match(native, /expected_grid_hash/)
-  assert.match(native, /Command::ApplyStackedFoldDocument/)
+  assert.match(native, /Command::ApplyBeginnerGeneratedDocument/)
   assert.match(nativeTests, /execute_undo\(&mut project/)
   assert.match(nativeTests, /execute_redo\(&mut project/)
   assert.match(native, /animal_complete_bindings_v1/)

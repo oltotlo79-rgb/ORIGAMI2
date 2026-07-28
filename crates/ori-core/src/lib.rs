@@ -92,7 +92,7 @@ pub use editor::{
     SpeculativeUnprovenFoldResolutionErrorV1, SpeculativeUnprovenFoldResolutionReportV1,
     SpeculativeUnprovenFoldStateMarkerV1, SpeculativeUnprovenFoldStatusCountsV1,
     SpeculativeUnprovenFoldStatusV1, SpeculativeUnprovenFoldSummaryV1,
-    SpeculativeUnprovenFoldUnknownReasonV1, VertexPositionUpdate,
+    SpeculativeUnprovenFoldUnknownReasonV1, StackedFoldDocumentCommandV1, VertexPositionUpdate,
 };
 pub use flat_surface::{
     CertifiedFlatSurfaceFaceV1, CertifiedFlatSurfaceV1, MAX_CERTIFIED_FLAT_SURFACE_VERTICES_V1,

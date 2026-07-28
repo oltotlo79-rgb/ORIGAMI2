@@ -408,7 +408,26 @@ enum CommandV1 {
         vertex_lineage: Vec<(u8, VertexId, VertexId)>,
         edge_seeds: Vec<(u8, EdgeId, EdgeId)>,
     },
+    // Legacy V1 tag shared by authority-gated and beginner-generated document
+    // replacement. Decode it conservatively as nonauthority below because the
+    // old payload carries no trustworthy discriminator.
     ApplyStackedFoldDocument {
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
+        beginner_design_profile: Box<BeginnerDesignProfileV1>,
+    },
+    // First wire tag reserved exclusively for the opaque authority-gated
+    // command.
+    ApplyStackedFoldDocumentV2 {
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
+        beginner_design_profile: Box<BeginnerDesignProfileV1>,
+    },
+    ApplyBeginnerGeneratedDocument {
         pattern: CreasePattern,
         paper: Paper,
         instruction_timeline: InstructionTimeline,
@@ -939,13 +958,26 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             vertex_lineage: plan.vertex_lineage.clone(),
             edge_seeds: plan.edge_seeds.clone(),
         },
-        Command::ApplyStackedFoldDocument {
+        Command::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1 {
             pattern,
             paper,
             instruction_timeline,
             project_layers,
             beginner_design_profile,
-        } => CommandV1::ApplyStackedFoldDocument {
+        }) => CommandV1::ApplyStackedFoldDocumentV2 {
+            pattern: pattern.clone(),
+            paper: paper.clone(),
+            instruction_timeline: instruction_timeline.clone(),
+            project_layers: project_layers.clone(),
+            beginner_design_profile: beginner_design_profile.clone(),
+        },
+        Command::ApplyBeginnerGeneratedDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+        } => CommandV1::ApplyBeginnerGeneratedDocument {
             pattern: pattern.clone(),
             paper: paper.clone(),
             instruction_timeline: instruction_timeline.clone(),
@@ -1274,7 +1306,33 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             instruction_timeline,
             project_layers,
             beginner_design_profile,
-        } => Command::ApplyStackedFoldDocument {
+        } => Command::ApplyBeginnerGeneratedDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+        },
+        CommandV1::ApplyStackedFoldDocumentV2 {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+        } => Command::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1::new(
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+        )),
+        CommandV1::ApplyBeginnerGeneratedDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+        } => Command::ApplyBeginnerGeneratedDocument {
             pattern,
             paper,
             instruction_timeline,
@@ -2002,7 +2060,14 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
                 return Err(EditorHistoryErrorV1::InvalidCommand);
             }
         }
-        Command::ApplyStackedFoldDocument {
+        Command::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1 {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            ..
+        })
+        | Command::ApplyBeginnerGeneratedDocument {
             pattern,
             paper,
             instruction_timeline,
@@ -3553,7 +3618,7 @@ mod tests {
     }
 
     #[test]
-    fn stacked_fold_document_history_round_trips_and_rejects_malformed_target() {
+    fn beginner_generated_document_history_round_trips_and_stays_non_stacked() {
         let sheet = crate::create_rectangular_sheet(80.0, 60.0, false).unwrap();
         let (source_pattern, mut paper) = sheet.into_parts();
         paper.thickness_mm = 0.1;
@@ -3592,7 +3657,7 @@ mod tests {
         editor
             .execute(
                 0,
-                Command::ApplyStackedFoldDocument {
+                Command::ApplyBeginnerGeneratedDocument {
                     pattern: target_pattern.clone(),
                     paper: paper.clone(),
                     instruction_timeline: timeline.clone(),
@@ -3601,20 +3666,85 @@ mod tests {
                 },
             )
             .unwrap();
+        assert!(editor.clone_predecessor_if_last_stacked_fold_v1().is_none());
         let history = editor.export_history_v1(ProjectId::new()).unwrap();
+        assert!(matches!(
+            &history.undo_stack[0].forward,
+            CommandV1::ApplyBeginnerGeneratedDocument { .. }
+        ));
+        let mut legacy_history = history.clone();
+        let CommandV1::ApplyBeginnerGeneratedDocument {
+            pattern: legacy_pattern,
+            paper: legacy_paper,
+            instruction_timeline: legacy_instruction_timeline,
+            project_layers: legacy_project_layers,
+            beginner_design_profile: legacy_beginner_design_profile,
+        } = legacy_history.undo_stack[0].forward.clone()
+        else {
+            unreachable!("asserted beginner-generated history tag")
+        };
+        legacy_history.undo_stack[0].forward = CommandV1::ApplyStackedFoldDocument {
+            pattern: legacy_pattern,
+            paper: legacy_paper,
+            instruction_timeline: legacy_instruction_timeline,
+            project_layers: legacy_project_layers,
+            beginner_design_profile: legacy_beginner_design_profile,
+        };
+        let legacy_reopened = restore(&editor, legacy_history).unwrap();
+        assert!(
+            legacy_reopened
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none()
+        );
+
         let mut reopened = restore(&editor, history).unwrap();
         reopened.undo(0).unwrap();
         assert_eq!(reopened.pattern(), &source_pattern);
         reopened.redo(1).unwrap();
         assert_eq!(reopened.pattern(), &target_pattern);
         assert_eq!(reopened.instruction_timeline(), &timeline);
+        assert!(
+            reopened
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none()
+        );
+
+        let mut stacked_editor = EditorState::with_paper(source_pattern.clone(), paper.clone());
+        stacked_editor
+            .execute(
+                0,
+                Command::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1::new(
+                    target_pattern.clone(),
+                    paper.clone(),
+                    timeline.clone(),
+                    ProjectLayerDocumentV1::default(),
+                    Box::default(),
+                )),
+            )
+            .unwrap();
+        assert!(
+            stacked_editor
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_some()
+        );
+        let stacked_history = stacked_editor.export_history_v1(ProjectId::new()).unwrap();
+        assert!(matches!(
+            &stacked_history.undo_stack[0].forward,
+            CommandV1::ApplyStackedFoldDocumentV2 { .. }
+        ));
+        let stacked_reopened = restore(&stacked_editor, stacked_history).unwrap();
+        assert!(
+            stacked_reopened
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_some()
+        );
 
         let mut malformed = target_pattern;
         malformed.vertices[0].position.x = f64::NAN;
         assert_eq!(
             editor.execute(
                 1,
-                Command::ApplyStackedFoldDocument {
+                Command::ApplyBeginnerGeneratedDocument {
                     pattern: malformed,
                     paper,
                     instruction_timeline: timeline,

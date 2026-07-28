@@ -4374,7 +4374,7 @@ function App() {
           </button>
           <Fold3dFramesLauncher
             disabled={coreBusy || benchmarkLoading || Boolean(benchmarkRun) || !nativeSnapshot}
-            onApplied={async () => applySnapshot(await getProjectSnapshot())}
+            runNativeEdit={runNativeEdit}
           />
           <button
             ref={creaseExportButtonRef}

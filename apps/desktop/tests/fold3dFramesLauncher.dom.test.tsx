@@ -28,7 +28,10 @@ vi.mock('../src/lib/fold3dFrames.ts', () => ({
   selectFold3dFrame: api.select,
 }))
 
-import { Fold3dFramesLauncher } from '../src/components/Fold3dFramesLauncher.tsx'
+import {
+  Fold3dFramesLauncher,
+  type Fold3dNativeEditRunner,
+} from '../src/components/Fold3dFramesLauncher.tsx'
 import { localeFixture } from './localeTestFixture.ts'
 
 const PREVIEW = Object.freeze({
@@ -87,7 +90,18 @@ const TIMELINE = Object.freeze({
   requiresExplicitConfirmation: true as const,
 })
 
+function nativeEditRunner(succeeds = true) {
+  return vi.fn(async (action: Parameters<Fold3dNativeEditRunner>[0]) => {
+    await action(PREVIEW.projectId, PREVIEW.revision, PREVIEW.projectInstanceId)
+    return succeeds
+  })
+}
+
 beforeEach(() => {
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    callback(0)
+    return 1
+  })
   api.cancel.mockResolvedValue(undefined)
   api.applyPose.mockResolvedValue(undefined)
   api.pick.mockResolvedValue({ canceled: false, preview: PREVIEW })
@@ -100,16 +114,17 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
   document.body.replaceChildren()
 })
 
 it('live-translates the same preview without clearing state or invoking callbacks', async () => {
   const localeStore = localeFixture('ja')
-  const onApplied = vi.fn()
+  const runNativeEdit = nativeEditRunner()
   render(
     <Fold3dFramesLauncher
       disabled={false}
-      onApplied={onApplied}
+      runNativeEdit={runNativeEdit}
       localeStore={localeStore}
     />,
   )
@@ -177,5 +192,131 @@ it('live-translates the same preview without clearing state or invoking callback
   expect(api.applyPose).not.toHaveBeenCalled()
   expect(api.applyTimeline).not.toHaveBeenCalled()
   expect(api.cancel).not.toHaveBeenCalled()
-  expect(onApplied).not.toHaveBeenCalled()
+  expect(runNativeEdit).not.toHaveBeenCalled()
+})
+
+it('routes timeline apply through the current project OCC runner', async () => {
+  const runNativeEdit = nativeEditRunner()
+  render(
+    <Fold3dFramesLauncher
+      disabled={false}
+      runNativeEdit={runNativeEdit}
+      localeStore={localeFixture('en')}
+    />,
+  )
+
+  fireEvent.click(screen.getByRole('button', {
+    name: 'Preview FOLD 3D frames',
+  }))
+  await screen.findByRole('dialog', {
+    name: 'FOLD 3D frame preview',
+  })
+  await waitFor(() => {
+    expect(api.prepareTimeline).toHaveBeenCalledTimes(1)
+  })
+
+  fireEvent.click(await screen.findByRole('checkbox', {
+    name: /I confirm adding every authenticated frame pose/u,
+  }))
+  fireEvent.click(screen.getByRole('button', {
+    name: 'Add all frames atomically',
+  }))
+
+  await waitFor(() => {
+    expect(api.applyTimeline).toHaveBeenCalledTimes(1)
+  })
+  expect(runNativeEdit).toHaveBeenCalledTimes(1)
+  expect(api.applyTimeline).toHaveBeenCalledWith(
+    PREVIEW.projectId,
+    PREVIEW.revision,
+    PREVIEW.projectInstanceId,
+    PREVIEW,
+    TIMELINE.durationMs,
+  )
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+it('keeps the preview open when the OCC runner rejects the timeline result', async () => {
+  const runNativeEdit = nativeEditRunner(false)
+  render(
+    <Fold3dFramesLauncher
+      disabled={false}
+      runNativeEdit={runNativeEdit}
+      localeStore={localeFixture('en')}
+    />,
+  )
+
+  fireEvent.click(screen.getByRole('button', {
+    name: 'Preview FOLD 3D frames',
+  }))
+  const dialog = await screen.findByRole('dialog', {
+    name: 'FOLD 3D frame preview',
+  })
+  await waitFor(() => {
+    expect(api.prepareTimeline).toHaveBeenCalledTimes(1)
+  })
+  fireEvent.click(await screen.findByRole('checkbox', {
+    name: /I confirm adding every authenticated frame pose/u,
+  }))
+  fireEvent.click(screen.getByRole('button', {
+    name: 'Add all frames atomically',
+  }))
+
+  await waitFor(() => {
+    expect(runNativeEdit).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('alert')).toBeTruthy()
+  })
+  expect(screen.getByRole('dialog')).toBe(dialog)
+  expect(api.applyTimeline).toHaveBeenCalledTimes(1)
+})
+
+it('requires fresh confirmations after a preview is closed and reopened', async () => {
+  const runNativeEdit = nativeEditRunner()
+  render(
+    <Fold3dFramesLauncher
+      disabled={false}
+      runNativeEdit={runNativeEdit}
+      localeStore={localeFixture('en')}
+    />,
+  )
+
+  const open = () => fireEvent.click(screen.getByRole('button', {
+    name: 'Preview FOLD 3D frames',
+  }))
+  open()
+  const firstDialog = await screen.findByRole('dialog', {
+    name: 'FOLD 3D frame preview',
+  })
+  const poseConfirmation = await screen.findByRole('checkbox', {
+    name: /Replace only the current 3D pose/u,
+  }) as HTMLInputElement
+  const timelineConfirmation = await screen.findByRole('checkbox', {
+    name: /I confirm adding every authenticated frame pose/u,
+  }) as HTMLInputElement
+  fireEvent.click(poseConfirmation)
+  fireEvent.click(timelineConfirmation)
+  expect(poseConfirmation.checked).toBe(true)
+  expect(timelineConfirmation.checked).toBe(true)
+
+  fireEvent.keyDown(firstDialog, { key: 'Escape' })
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+  open()
+  await screen.findByRole('dialog', {
+    name: 'FOLD 3D frame preview',
+  })
+
+  const reopenedPoseConfirmation = await screen.findByRole('checkbox', {
+    name: /Replace only the current 3D pose/u,
+  }) as HTMLInputElement
+  const reopenedTimelineConfirmation = await screen.findByRole('checkbox', {
+    name: /I confirm adding every authenticated frame pose/u,
+  }) as HTMLInputElement
+  expect(reopenedPoseConfirmation.checked).toBe(false)
+  expect(reopenedTimelineConfirmation.checked).toBe(false)
+  expect(runNativeEdit).not.toHaveBeenCalled()
+  expect(api.applyTimeline).not.toHaveBeenCalled()
 })

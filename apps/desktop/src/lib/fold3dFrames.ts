@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { ProjectSnapshot } from './coreClient.ts'
 
 export type Fold3dFrameMetadata = Readonly<{
   index: number
@@ -236,16 +237,26 @@ export function normalizeFold3dTimelineCompatibility(
   return value as unknown as Fold3dTimelineCompatibility
 }
 
-export async function applyFold3dInstructionTimeline(
+export function applyFold3dInstructionTimeline(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
   preview: Fold3dFramesMetadata,
   durationMs = 1_000,
 ) {
-  return invoke<unknown>('apply_fold_3d_instruction_timeline', {
+  if (
+    preview.projectInstanceId !== expectedProjectInstanceId
+    || preview.projectId !== expectedProjectId
+    || preview.revision !== expectedRevision
+  ) {
+    throw new Error('stale FOLD 3D timeline preview')
+  }
+  return invoke<ProjectSnapshot>('apply_fold_3d_instruction_timeline', {
     request: {
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
       token: preview.token,
-      expectedProjectInstanceId: preview.projectInstanceId,
-      expectedProjectId: preview.projectId,
-      expectedRevision: preview.revision,
       durationMs,
       confirmed: true,
     },

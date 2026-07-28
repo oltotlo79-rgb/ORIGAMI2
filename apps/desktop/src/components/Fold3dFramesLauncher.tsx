@@ -21,6 +21,7 @@ import {
   type LocaleStore,
   useLocale,
 } from '../lib/i18n.ts'
+import type { ProjectSnapshot } from '../lib/coreClient.ts'
 
 type ErrorTextKey =
   | 'openError'
@@ -28,13 +29,21 @@ type ErrorTextKey =
   | 'selectionError'
   | 'poseError'
 
+export type Fold3dNativeEditRunner = (
+  action: (
+    projectId: string,
+    revision: number,
+    projectInstanceId: string,
+  ) => Promise<ProjectSnapshot>,
+) => Promise<boolean>
+
 export function Fold3dFramesLauncher({
   disabled,
-  onApplied,
+  runNativeEdit,
   localeStore,
 }: Readonly<{
   disabled: boolean
-  onApplied?(): void | Promise<void>
+  runNativeEdit: Fold3dNativeEditRunner
   localeStore?: LocaleStore
 }>) {
   const locale = useLocale(localeStore)
@@ -64,6 +73,9 @@ export function Fold3dFramesLauncher({
     try {
       const result = await pickFold3dFrames()
       if (!result.canceled && result.preview) {
+        setConfirmed(false)
+        setApplied(false)
+        setTimelineConfirmed(false)
         setPreview(result.preview)
         setSelection(await selectFold3dFrame(result.preview, 0))
         setCompatibility(await prepareFold3dAppliedPose(result.preview, 0))
@@ -77,6 +89,7 @@ export function Fold3dFramesLauncher({
   async function close() {
     const token = preview?.token
     setPreview(null); setSelection(null); setCompatibility(null); setTimeline(null); setError(null)
+    setConfirmed(false); setApplied(false); setTimelineConfirmed(false)
     if (token) await cancelFold3dFrames(token).catch(() => undefined)
     requestAnimationFrame(() => launcher.current?.focus())
   }
@@ -85,9 +98,23 @@ export function Fold3dFramesLauncher({
     if (!preview || !timeline || !timelineConfirmed || busy) return
     setBusy(true); setError(null)
     try {
-      await applyFold3dInstructionTimeline(preview, timeline.durationMs)
-      await onApplied?.()
-      setPreview(null)
+      const succeeded = await runNativeEdit(
+        (projectId, revision, projectInstanceId) =>
+          applyFold3dInstructionTimeline(
+            projectId,
+            revision,
+            projectInstanceId,
+            preview,
+            timeline.durationMs,
+          ),
+      )
+      if (!succeeded) {
+        setTimeline(null)
+        setError('timelineError')
+        return
+      }
+      setPreview(null); setSelection(null); setCompatibility(null); setTimeline(null)
+      setConfirmed(false); setApplied(false); setTimelineConfirmed(false)
       requestAnimationFrame(() => launcher.current?.focus())
     } catch {
       setTimeline(null)
@@ -112,7 +139,6 @@ export function Fold3dFramesLauncher({
     setBusy(true); setError(null)
     try {
       await applyFold3dAppliedPose(preview, selection.frameIndex)
-      await onApplied?.()
       setApplied(true)
     } catch {
       setCompatibility(null)

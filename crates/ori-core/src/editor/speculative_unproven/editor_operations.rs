@@ -85,13 +85,29 @@ impl EditorState {
         Ok(result)
     }
 
-    /// Updates a speculative entry without Undo or document revision changes.
+    /// Records a blocked or unknown result without Undo or document revision
+    /// changes.
+    ///
+    /// `Certified` is deliberately rejected here. Only a future resolver that
+    /// receives and revalidates an opaque typed proof may remove an unproven
+    /// mark.
     pub fn resolve_speculative_unproven_fold_v1(
         &mut self,
         binding: &SpeculativeUnprovenFoldBindingV1,
         outcome: SpeculativeUnprovenFoldProofOutcomeV1,
     ) -> Result<SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionErrorV1>
     {
+        let terminal_status = match outcome {
+            SpeculativeUnprovenFoldProofOutcomeV1::Certified => {
+                return Err(SpeculativeUnprovenFoldResolutionErrorV1::CertifiedRequiresTypedProof);
+            }
+            SpeculativeUnprovenFoldProofOutcomeV1::Blocked => {
+                SpeculativeUnprovenFoldStatusV1::ProofBlocked
+            }
+            SpeculativeUnprovenFoldProofOutcomeV1::Unknown { reason } => {
+                SpeculativeUnprovenFoldStatusV1::ProofUnknown { reason }
+            }
+        };
         binding.validate()?;
         let location = match self.find_mark_locations(binding).as_slice() {
             [] => return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound),
@@ -107,17 +123,7 @@ impl EditorState {
         }
 
         let report = self.resolution_report(location, outcome);
-        match outcome {
-            SpeculativeUnprovenFoldProofOutcomeV1::Certified => self.remove_mark_at(location),
-            SpeculativeUnprovenFoldProofOutcomeV1::Blocked => {
-                self.mark_at_mut(location).expect("located mark").status =
-                    SpeculativeUnprovenFoldStatusV1::ProofBlocked;
-            }
-            SpeculativeUnprovenFoldProofOutcomeV1::Unknown { reason } => {
-                self.mark_at_mut(location).expect("located mark").status =
-                    SpeculativeUnprovenFoldStatusV1::ProofUnknown { reason };
-            }
-        }
+        self.mark_at_mut(location).expect("located mark").status = terminal_status;
         Ok(report)
     }
 
@@ -235,16 +241,6 @@ impl EditorState {
                 .get_mut(index)?
                 .speculative_unproven_fold
                 .as_mut(),
-        }
-    }
-
-    fn remove_mark_at(&mut self, location: MarkLocation) {
-        match location {
-            MarkLocation::AppliedBase(index) => {
-                self.applied_base_unproven.retained_marks.remove(index);
-            }
-            MarkLocation::Undo(index) => self.undo_stack[index].speculative_unproven_fold = None,
-            MarkLocation::Redo(index) => self.redo_stack[index].speculative_unproven_fold = None,
         }
     }
 

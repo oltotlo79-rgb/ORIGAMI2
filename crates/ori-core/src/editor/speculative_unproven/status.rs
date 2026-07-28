@@ -21,6 +21,10 @@ pub enum SpeculativeUnprovenFoldStatusV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeculativeUnprovenFoldProofOutcomeV1 {
+    /// Reserved for a future resolver that requires an opaque, typed proof.
+    ///
+    /// The generic history resolver rejects this outcome because a binding is
+    /// metadata, not certification authority.
     Certified,
     Blocked,
     Unknown {
@@ -161,4 +165,6 @@ pub enum SpeculativeUnprovenFoldResolutionErrorV1 {
     BindingMetadataMismatch,
     #[error("the speculative history binding already has a terminal result")]
     AlreadyResolved,
+    #[error("certified resolution requires an opaque typed proof")]
+    CertifiedRequiresTypedProof,
 }

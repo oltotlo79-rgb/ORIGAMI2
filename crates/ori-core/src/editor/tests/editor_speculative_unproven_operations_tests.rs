@@ -100,35 +100,140 @@ fn proof_failure_updates_only_the_mark_and_reports_subsequent_edits() {
 }
 
 #[test]
-fn certified_resolution_removes_the_feature_requirement() {
-    let mut fixture = fixture();
-    let binding = binding(
-        &fixture,
+fn generic_certified_resolution_is_rejected_atomically_in_every_history_location() {
+    fn assert_binding_location(
+        fixture: &SpeculativeFixture,
+        binding: &SpeculativeUnprovenFoldBindingV1,
+        expected: SpeculativeUnprovenFoldHistoryLocationV1,
+    ) {
+        let mut lookup_probe = fixture.editor.clone();
+        let report = lookup_probe
+            .resolve_speculative_unproven_fold_v1(
+                binding,
+                SpeculativeUnprovenFoldProofOutcomeV1::Blocked,
+            )
+            .expect("the awaiting binding must exist at the expected history location");
+        assert_eq!(report.location, expected);
+    }
+
+    fn assert_rejected_without_mutation(
+        fixture: &mut SpeculativeFixture,
+        binding: &SpeculativeUnprovenFoldBindingV1,
+    ) {
+        let before_debug = format!("{:?}", fixture.editor);
+        let before_marker = fixture.editor.speculative_unproven_fold_state_marker_v1();
+        let before_summary = fixture.editor.speculative_unproven_fold_summary_v1();
+        let before_history = serde_json::to_value(
+            fixture
+                .editor
+                .export_history_v1(fixture.project_id)
+                .expect("export history before rejected certification"),
+        )
+        .expect("history JSON before rejected certification");
+
+        assert_eq!(
+            fixture.editor.resolve_speculative_unproven_fold_v1(
+                binding,
+                SpeculativeUnprovenFoldProofOutcomeV1::Certified,
+            ),
+            Err(SpeculativeUnprovenFoldResolutionErrorV1::CertifiedRequiresTypedProof)
+        );
+        assert_eq!(format!("{:?}", fixture.editor), before_debug);
+        assert_eq!(
+            fixture.editor.speculative_unproven_fold_state_marker_v1(),
+            before_marker
+        );
+        assert_eq!(
+            fixture.editor.speculative_unproven_fold_summary_v1(),
+            before_summary
+        );
+        assert!(
+            fixture
+                .editor
+                .requires_speculative_unproven_fold_feature_v1()
+        );
+        assert_eq!(
+            serde_json::to_value(
+                fixture
+                    .editor
+                    .export_history_v1(fixture.project_id)
+                    .expect("export history after rejected certification"),
+            )
+            .expect("history JSON after rejected certification"),
+            before_history
+        );
+    }
+
+    let mut applied = fixture();
+    let applied_binding = binding(
+        &applied,
         SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
     );
-    apply_marked(&mut fixture, binding.clone());
-    fixture
+    apply_marked(&mut applied, applied_binding.clone());
+    assert_binding_location(
+        &applied,
+        &applied_binding,
+        SpeculativeUnprovenFoldHistoryLocationV1::AppliedRetainedUndo,
+    );
+    assert_rejected_without_mutation(&mut applied, &applied_binding);
+
+    let unregistered_binding = binding(
+        &applied,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    assert_ne!(
+        unregistered_binding.request_generation_id(),
+        applied_binding.request_generation_id(),
+    );
+    let mut lookup_probe = applied.editor.clone();
+    assert_eq!(
+        lookup_probe.resolve_speculative_unproven_fold_v1(
+            &unregistered_binding,
+            SpeculativeUnprovenFoldProofOutcomeV1::Blocked,
+        ),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound),
+    );
+    assert_rejected_without_mutation(&mut applied, &unregistered_binding);
+
+    let mut redo = fixture();
+    let redo_binding = binding(
+        &redo,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut redo, redo_binding.clone());
+    redo.editor.undo(1).expect("move marked entry to Redo");
+    assert_binding_location(
+        &redo,
+        &redo_binding,
+        SpeculativeUnprovenFoldHistoryLocationV1::UnappliedRedo,
+    );
+    assert_rejected_without_mutation(&mut redo, &redo_binding);
+
+    let mut trimmed = fixture();
+    trimmed
         .editor
-        .resolve_speculative_unproven_fold_v1(
-            &binding,
-            SpeculativeUnprovenFoldProofOutcomeV1::Certified,
+        .set_history_entry_limit(1)
+        .expect("one-entry history");
+    let trimmed_binding = binding(
+        &trimmed,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut trimmed, trimmed_binding.clone());
+    trimmed
+        .editor
+        .execute(
+            trimmed.editor.revision(),
+            Command::UpdateProjectMemo {
+                memo: "trim marked entry into the applied base".to_owned(),
+            },
         )
-        .expect("certify speculative entry");
-    assert!(
-        !fixture
-            .editor
-            .requires_speculative_unproven_fold_feature_v1()
+        .expect("trim marked entry");
+    assert_binding_location(
+        &trimmed,
+        &trimmed_binding,
+        SpeculativeUnprovenFoldHistoryLocationV1::AppliedTrimmedBase,
     );
-    let history = fixture
-        .editor
-        .export_history_v1(fixture.project_id)
-        .expect("export certified history");
-    assert!(!history.requires_speculative_unproven_fold_feature_v1());
-    assert!(
-        !serde_json::to_string(&history)
-            .expect("history JSON")
-            .contains("speculative_unproven_fold_v1")
-    );
+    assert_rejected_without_mutation(&mut trimmed, &trimmed_binding);
 }
 
 #[test]

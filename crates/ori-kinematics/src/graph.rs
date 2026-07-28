@@ -10,6 +10,7 @@ use crate::{
     Point3, RigidTransform, TreeHinge, TreeKinematicsLimits,
 };
 
+mod block_cut_cardinal_rotation_group;
 mod block_cut_carrier_free_product;
 mod block_cut_coaxial;
 mod block_cut_decomposition;
@@ -23,6 +24,7 @@ mod dense_grid;
 mod exact_cut_carrier;
 mod exact_generator_word;
 
+use block_cut_cardinal_rotation_group::block_cut_cardinal_rotation_group_cycle_closure_premises_v1;
 use block_cut_carrier_free_product::block_cut_carrier_free_product_cycle_closure_premises_v1;
 use block_cut_coaxial::block_cut_coaxial_cycle_closure_premises_v1;
 use block_cut_finite_half_turn_group::block_cut_finite_half_turn_group_cycle_closure_premises_v1;
@@ -663,6 +665,9 @@ impl MaterialHingeGraphGeometry {
                 self, audit, fixed_face, schedule, tolerance,
             )
             || block_cut_finite_half_turn_group_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+            || block_cut_cardinal_rotation_group_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
             || collective_flat_stack_cycle_closure_premises_v1(

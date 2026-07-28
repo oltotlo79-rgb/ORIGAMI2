@@ -1,4 +1,5 @@
 use ori_domain::{EdgeKind, Point2};
+use ori_numeric::{deterministic_atan2_v1, deterministic_degrees_to_radians_v1};
 
 use super::*;
 
@@ -155,30 +156,39 @@ pub(super) fn assert_target(
 }
 
 #[test]
-fn zero_cross_classification_uses_the_shared_binary64_residual() {
+fn zero_cross_classification_uses_the_frozen_binary64_residual() {
     let minimum_degrees = f64::from_bits(1);
     assert_eq!(
-        minimum_degrees.to_radians().to_bits(),
+        deterministic_degrees_to_radians_v1(minimum_degrees)
+            .unwrap()
+            .to_bits(),
         0.0_f64.to_bits(),
         "the smallest positive degree underflows to positive radian zero"
     );
     let wrapped_subnormal = f64::from_bits(0x39);
-    assert_ne!(wrapped_subnormal.to_radians(), 0.0);
-    assert_eq!(
-        fixed_angle_residual_binary64_v1(0.0, wrapped_subnormal),
-        0.0,
-        "a non-zero stored degree can disappear in production wrapping"
+    assert_ne!(
+        deterministic_degrees_to_radians_v1(wrapped_subnormal).unwrap(),
+        0.0
     );
     assert_eq!(
-        180.0_f64.to_radians().to_bits(),
+        deterministic_fixed_angle_residual_binary64_v1(0.0, wrapped_subnormal),
+        0.0,
+        "a non-zero stored degree can disappear in deterministic proof wrapping"
+    );
+    assert_eq!(
+        deterministic_degrees_to_radians_v1(180.0)
+            .unwrap()
+            .to_bits(),
         std::f64::consts::PI.to_bits()
     );
     assert_eq!(
-        fixed_angle_residual_binary64_v1(std::f64::consts::PI, 180.0),
+        deterministic_fixed_angle_residual_binary64_v1(std::f64::consts::PI, 180.0),
         0.0
     );
     assert_ne!(
-        180.0_f64.next_down().to_radians().to_bits(),
+        deterministic_degrees_to_radians_v1(180.0_f64.next_down())
+            .unwrap()
+            .to_bits(),
         std::f64::consts::PI.to_bits(),
         "the immediately lower stored degree remains distinguishable at pi"
     );
@@ -218,19 +228,19 @@ fn zero_cross_classification_uses_the_shared_binary64_residual() {
                     let vertical_cross = first_zero * second_axis - first_axis * second_zero;
                     let vertical_dot = first_zero * second_zero + first_axis * second_axis;
                     saw_nonfinite_cross |= horizontal_cross.is_nan() || vertical_cross.is_nan();
-                    for actual in [
-                        horizontal_cross.abs().atan2(horizontal_dot),
-                        vertical_cross.abs().atan2(vertical_dot),
+                    for (absolute_cross, dot) in [
+                        (horizontal_cross.abs(), horizontal_dot),
+                        (vertical_cross.abs(), vertical_dot),
                     ] {
-                        if actual.is_finite() {
-                            assert!(
-                                dot_classes.iter().any(|dot| {
-                                    actual.to_bits() == 0.0_f64.atan2(*dot).to_bits()
-                                })
-                            );
+                        if let Ok(actual) = deterministic_atan2_v1(absolute_cross, dot) {
+                            assert!(dot_classes.iter().any(|dot_class| {
+                                deterministic_atan2_v1(0.0, *dot_class)
+                                    .is_ok_and(|class| actual.to_bits() == class.to_bits())
+                            }));
+                            let residual =
+                                deterministic_fixed_angle_residual_binary64_v1(actual, 90.0);
+                            assert!(!residual.is_finite() || residual != 0.0);
                         }
-                        let residual = fixed_angle_residual_binary64_v1(actual, 90.0);
-                        assert!(!residual.is_finite() || residual != 0.0);
                     }
                 }
             }
@@ -248,8 +258,8 @@ fn zero_cross_classification_uses_the_shared_binary64_residual() {
     ] {
         let cross: f64 = first.0 * second.1 - first.1 * second.0;
         let dot: f64 = first.0 * second.0 + first.1 * second.1;
-        let actual = cross.abs().atan2(dot);
-        let residual = fixed_angle_residual_binary64_v1(actual, 90.0);
+        let actual = deterministic_atan2_v1(cross.abs(), dot).unwrap();
+        let residual = deterministic_fixed_angle_residual_binary64_v1(actual, 90.0);
         assert!(
             !residual.is_finite() || residual != 0.0,
             "both-edge and either one-edge collapse remain rejected"
@@ -306,7 +316,7 @@ fn witness_is_canonical_storage_invariant_and_irredundant() {
     }
 
     let mut duplicated = records;
-    duplicated.extend(core_records(&fixture, false, 45.0));
+    duplicated.extend(core_records(&fixture, false, 90.0));
     let expected_ids = sorted_ids([
         duplicated[..2]
             .iter()

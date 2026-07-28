@@ -2,7 +2,7 @@ use super::*;
 use crate::{ConstraintPreflightV1, DirectConstraintConflictKindV1};
 
 #[derive(Clone, Copy)]
-enum Family {
+pub(super) enum Family {
     EqualDifferentFixed,
     RatioIncompatibleFixed,
     ParallelPerpendicular,
@@ -57,7 +57,7 @@ fn two_edge_fixture(
     }
 }
 
-fn promoted_fixtures() -> Vec<(Family, SemanticFixture)> {
+pub(super) fn promoted_fixtures() -> Vec<(Family, SemanticFixture)> {
     vec![
         (
             Family::EqualDifferentFixed,
@@ -148,7 +148,7 @@ pub(super) fn pair_work_fixture() -> SemanticFixture {
     promoted_fixtures().remove(0).1
 }
 
-fn algebraic_pair_fixtures() -> Vec<(Family, SemanticFixture)> {
+pub(super) fn algebraic_pair_fixtures() -> Vec<(Family, SemanticFixture)> {
     vec![
         (
             Family::HorizontalVertical,
@@ -274,14 +274,9 @@ fn has_family(preflight: &ConstraintPreflightV1, family: Family) -> bool {
 }
 
 #[test]
-fn pair_language_promotes_five_of_the_fifteen_proven_direct_families() {
+fn pair_language_promotes_five_constructive_direct_families() {
     let fixtures = promoted_fixtures();
     assert_eq!(fixtures.len(), 5);
-    assert_eq!(
-        15 - fixtures.len(),
-        10,
-        "coverage remains deliberately partial"
-    );
     for (family, fixture) in fixtures {
         let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
         assert!(has_family(&prepared.preflight(), family));
@@ -301,7 +296,8 @@ fn pair_language_promotes_five_of_the_fifteen_proven_direct_families() {
                 + certificate.single_constraint_constructive_witness_count()
                 + certificate.pair_constraint_constructive_witness_count()
                 + certificate.pair_constraint_algebraic_witness_count()
-                + certificate.length_constraint_constructive_witness_count(),
+                + certificate.length_constraint_constructive_witness_count()
+                + certificate.zero_length_closure_constructive_witness_count(),
             3,
         );
         assert_eq!(certificate.pair_constraint_algebraic_witness_count(), 0);

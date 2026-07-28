@@ -1,6 +1,6 @@
 use super::*;
 
-fn different_fixed_lengths_fixture(current_length: f64) -> SemanticFixture {
+pub(super) fn different_fixed_lengths_fixture(current_length: f64) -> SemanticFixture {
     let start = VertexId::new();
     let end = VertexId::new();
     let edge = EdgeId::new();

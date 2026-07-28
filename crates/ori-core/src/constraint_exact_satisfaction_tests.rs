@@ -3,6 +3,7 @@ use ori_domain::{
     GeometricConstraintDocumentV1, GeometricConstraintKindV1, GeometricConstraintRecordV1, Point2,
     Vertex, VertexId,
 };
+use ori_numeric::deterministic_sin_cos_degrees_v1;
 
 use crate::{ConstraintSolveErrorV1, certify_binary64_exact_geometric_constraint_satisfaction_v1};
 
@@ -66,8 +67,9 @@ fn all_constraint_kinds_exact_fixture() -> (CreasePattern, GeometricConstraintDo
     let diagonal = fixture.vertex(1.0, 1.0);
     let below = fixture.vertex(0.0, -1.0);
     let rotation_angle_degrees = 90.0_f64;
-    let rotation_angle_radians = rotation_angle_degrees.to_radians();
-    let rotated_x_one = fixture.vertex(rotation_angle_radians.cos(), rotation_angle_radians.sin());
+    let (rotation_sin, rotation_cos) =
+        deterministic_sin_cos_degrees_v1(rotation_angle_degrees).unwrap();
+    let rotated_x_one = fixture.vertex(rotation_cos, rotation_sin);
 
     let horizontal_one = fixture.edge(origin, x_one);
     let horizontal_two = fixture.edge(origin, x_two);

@@ -242,7 +242,16 @@ fn all_eleven_singleton_kinds_have_recertified_canonical_assignments() {
         assert_eq!(case.document, document_before, "{name}");
         assert_eq!(assignment.certificate().constraint_count(), 1, "{name}");
         assert!(!assignment.authorizes_project_mutation(), "{name}");
-        assert!(!assignment.replayable_across_runtimes(), "{name}");
+        assert_eq!(
+            assignment.transcendental_model_id(),
+            ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+            "{name}",
+        );
+        assert_eq!(
+            assignment.replayable_across_runtimes(),
+            ori_numeric::deterministic_transcendental_model_supported_v1(),
+            "{name}",
+        );
         assert!(
             certify_binary64_exact_geometric_constraint_satisfaction_v1(
                 assignment.pattern(),

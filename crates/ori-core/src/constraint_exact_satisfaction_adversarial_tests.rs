@@ -3,6 +3,7 @@ use ori_domain::{
     GeometricConstraintDocumentV1, GeometricConstraintKindV1, GeometricConstraintRecordV1, Point2,
     Vertex, VertexId,
 };
+use ori_numeric::{deterministic_atan2_v1, deterministic_sin_cos_degrees_v1};
 
 use crate::{
     ConstraintPreflightV1, GeometricConstraintLimitsV1,
@@ -229,8 +230,8 @@ fn fixed_angle_case() -> (SingleConstraintFixture, SingleConstraintFixture) {
     else {
         unreachable!("fixed-angle fixture");
     };
-    // One stored-degree ULP can disappear in `to_radians`; use a distinct
-    // admitted angle whose production residual is necessarily non-zero.
+    // One stored-degree ULP can disappear in the frozen degree conversion; use
+    // a distinct admitted angle whose proof residual is necessarily non-zero.
     *angle_degrees = 89.0;
     (positive, negative)
 }
@@ -259,12 +260,10 @@ fn rotational_symmetry_case() -> (SingleConstraintFixture, SingleConstraintFixtu
     let mut geometry = GeometryBuilder::default();
     let center_vertex = geometry.vertex(0.0, 0.0);
     let source_vertex = geometry.vertex(1.0, 0.0);
-    // Derive the witness in the current runtime because V1 intentionally does
-    // not make cross-runtime last-bit promises for transcendental operations.
+    // Derive the witness through the frozen proof kernel. The enclosing API
+    // remains runtime-local until its model and wire metadata are migrated.
     let angle_degrees = 90.0_f64;
-    let angle_radians = angle_degrees.to_radians();
-    let target_x = angle_radians.cos();
-    let target_y = angle_radians.sin();
+    let (target_y, target_x) = deterministic_sin_cos_degrees_v1(angle_degrees).unwrap();
     let target_vertex = geometry.vertex(target_x, target_y);
     let positive = SingleConstraintFixture::new(
         geometry.finish(),
@@ -347,7 +346,7 @@ fn each_constraint_kind_has_an_independent_positive_and_nonzero_residual_fixture
 }
 
 #[test]
-fn fixed_angle_degree_one_ulp_follows_the_runtime_binary64_conversion() {
+fn fixed_angle_degree_one_ulp_follows_the_frozen_binary64_conversion() {
     let (positive, _) = fixed_angle_case();
     let mut aliased = positive.clone();
     let aliased_degrees = next_up(90.0);
@@ -358,9 +357,10 @@ fn fixed_angle_degree_one_ulp_follows_the_runtime_binary64_conversion() {
     *angle_degrees = aliased_degrees;
 
     assert_ne!(90.0_f64.to_bits(), aliased_degrees.to_bits());
-    let shared_residual_is_zero =
-        crate::constraints::fixed_angle_residual_binary64_v1(1.0_f64.atan2(0.0), aliased_degrees)
-            == 0.0;
+    let shared_residual_is_zero = crate::constraints::deterministic_fixed_angle_residual_binary64_v1(
+        deterministic_atan2_v1(1.0, 0.0).unwrap(),
+        aliased_degrees,
+    ) == 0.0;
     let certificate_issued = certify_binary64_exact_geometric_constraint_satisfaction_v1(
         &aliased.pattern,
         &aliased.document,
@@ -369,7 +369,7 @@ fn fixed_angle_degree_one_ulp_follows_the_runtime_binary64_conversion() {
     .is_some();
     assert_eq!(
         certificate_issued, shared_residual_is_zero,
-        "the certificate must follow the complete shared runtime residual, not stored-scalar or intermediate-conversion bits",
+        "the certificate must follow the complete frozen proof residual, not stored-scalar or intermediate-conversion bits",
     );
 }
 

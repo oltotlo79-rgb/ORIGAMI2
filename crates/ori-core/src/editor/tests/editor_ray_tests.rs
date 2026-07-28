@@ -227,8 +227,9 @@ fn ray_kernel_handles_tiny_scale_cardinal_and_upper_angle_and_rejects_near_tie()
             .is_ok()
     );
 
-    let radians = 359_999_999_f64 * std::f64::consts::PI / 180_000_000.0;
-    let upper = vertex_at(1.0e-12 * radians.cos(), 1.0e-12 * radians.sin());
+    let (sine, cosine) = ori_numeric::deterministic_sin_cos_degrees_v1(359.999_999)
+        .expect("deterministic upper angle");
+    let upper = vertex_at(1.0e-12 * cosine, 1.0e-12 * sine);
     let editor = EditorState::new(CreasePattern {
         vertices: vec![source.clone(), upper],
         edges: Vec::new(),

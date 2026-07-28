@@ -167,6 +167,14 @@ fn direct_core_is_promoted_only_after_every_deletion_has_an_independent_exact_as
         certificate.model_id(),
         GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
     );
+    assert_eq!(
+        certificate.model_id(),
+        "geometric_constraint_deterministic_binary64_semantic_mus_v2",
+    );
+    assert_eq!(
+        certificate.transcendental_model_id(),
+        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    );
     assert_eq!(certificate.constraint_ids(), expected_ids);
     assert_eq!(certificate.direct_oracle_calls(), 7);
     assert_eq!(certificate.deletion_witness_checks(), 3);
@@ -182,12 +190,19 @@ fn direct_core_is_promoted_only_after_every_deletion_has_an_independent_exact_as
         certificate.length_constraint_constructive_witness_count(),
         0
     );
+    assert_eq!(
+        certificate.zero_length_closure_constructive_witness_count(),
+        0,
+    );
     assert!(certificate.deletion_witness_work() > 0);
     assert!(
         certificate.deletion_witness_work() <= MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK_V1,
     );
     assert!(!certificate.authorizes_project_mutation());
-    assert!(!certificate.replayable_across_runtimes());
+    assert_eq!(
+        certificate.replayable_across_runtimes(),
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    );
 
     let mut current_witnesses = 0;
     let mut axis_witnesses = 0;
@@ -504,3 +519,12 @@ mod length_phase;
 
 #[path = "constraint_semantic_mus_tests/length_phase_limits.rs"]
 mod length_phase_limits;
+
+#[path = "constraint_semantic_mus_tests/zero_closure_phase.rs"]
+mod zero_closure_phase;
+
+#[path = "constraint_semantic_mus_tests/zero_closure_phase_limits.rs"]
+mod zero_closure_phase_limits;
+
+#[path = "constraint_semantic_mus_tests/direct_family_inventory.rs"]
+mod direct_family_inventory;

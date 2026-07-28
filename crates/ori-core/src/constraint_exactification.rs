@@ -4,7 +4,6 @@ use ori_domain::{CreasePattern, GeometricConstraintDocumentV1, GeometricConstrai
 
 use crate::{
     Binary64ExactConstraintSatisfactionV1, ConstraintPreflightV1, ConstraintSolvePreviewV1,
-    GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
     GeometricConstraintLimitsV1, certify_binary64_exact_geometric_constraint_satisfaction_v1,
     prepare_geometric_constraints_v1,
 };
@@ -12,6 +11,7 @@ use crate::{
 mod length_constructive;
 mod pair_constructive;
 mod singleton_constructive;
+mod zero_closure_constructive;
 
 pub(crate) use length_constructive::{
     MAX_LENGTH_CONSTRAINT_CONSTRUCTIVE_CONSTRAINTS_V1, MAX_LENGTH_CONSTRAINT_CONSTRUCTIVE_EDGES_V1,
@@ -24,14 +24,18 @@ pub(crate) use pair_constructive::{
 };
 pub(crate) use singleton_constructive::MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1;
 pub use singleton_constructive::construct_single_constraint_exact_assignment_v1;
+pub(crate) use zero_closure_constructive::{
+    construct_zero_length_closure_residual_exact_assignment_v1,
+    zero_length_closure_constructive_candidate_bound_v1,
+};
 
 /// Explicit assignment obtained from a bounded native construction or
 /// numerical preview and independently re-certified in the complete
-/// current-runtime binary64 residual language.
+/// deterministic binary64 residual language.
 ///
 /// The assignment is observation-only. It is not bound to a project or
-/// revision, does not authorize mutation, and is not replayable across
-/// runtimes whose transcendental operations may produce different last bits.
+/// revision and does not authorize mutation. Cross-runtime re-certification is
+/// advertised only on targets covered by the frozen transcendental model.
 #[derive(Debug, Clone)]
 pub struct CurrentRuntimeExactConstraintAssignmentV1 {
     pattern: CreasePattern,
@@ -41,17 +45,22 @@ pub struct CurrentRuntimeExactConstraintAssignmentV1 {
 impl CurrentRuntimeExactConstraintAssignmentV1 {
     #[must_use]
     pub const fn model_id(&self) -> &'static str {
-        GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1
+        self.certificate.model_id()
+    }
+
+    #[must_use]
+    pub const fn transcendental_model_id(&self) -> &'static str {
+        self.certificate.transcendental_model_id()
     }
 
     #[must_use]
     pub const fn authorizes_project_mutation(&self) -> bool {
-        false
+        self.certificate.authorizes_project_mutation()
     }
 
     #[must_use]
     pub const fn replayable_across_runtimes(&self) -> bool {
-        false
+        self.certificate.replayable_across_runtimes()
     }
 
     /// Returns the complete candidate pattern whose positions were certified.
@@ -226,12 +235,20 @@ impl CanonicalDisjointSet {
 mod pair_constructive_tests;
 
 #[cfg(test)]
+#[path = "constraint_exactification/pair_constructive_cardinal_rotation_tests.rs"]
+mod pair_constructive_cardinal_rotation_tests;
+
+#[cfg(test)]
 #[path = "constraint_exactification/pair_constructive_algebraic_tests.rs"]
 mod pair_constructive_algebraic_tests;
 
 #[cfg(test)]
 #[path = "constraint_exactification/length_constructive_tests.rs"]
 mod length_constructive_tests;
+
+#[cfg(test)]
+#[path = "constraint_exactification/zero_closure_constructive_tests.rs"]
+mod zero_closure_constructive_tests;
 
 #[cfg(test)]
 #[path = "constraint_singleton_constructive_tests.rs"]

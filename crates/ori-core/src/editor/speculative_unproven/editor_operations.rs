@@ -92,6 +92,42 @@ impl EditorState {
         Ok(result)
     }
 
+    /// Inspects one speculative history binding without changing its status,
+    /// document revision, or Undo/Redo location.
+    ///
+    /// `Ok(None)` means the unique matching mark is still awaiting proof.
+    /// Terminal blocked/unknown marks return the same location-aware report
+    /// shape as resolution. A missing, duplicated, or metadata-drifted
+    /// binding fails closed.
+    pub fn inspect_speculative_unproven_fold_v1(
+        &self,
+        binding: &SpeculativeUnprovenFoldBindingV1,
+    ) -> Result<
+        Option<SpeculativeUnprovenFoldResolutionReportV1>,
+        SpeculativeUnprovenFoldResolutionErrorV1,
+    > {
+        binding.validate()?;
+        let location = match self.find_mark_locations(binding).as_slice() {
+            [] => return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound),
+            [location] => *location,
+            _ => return Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding),
+        };
+        let located = self.mark_at(location).expect("located mark");
+        if located.binding != *binding {
+            return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingMetadataMismatch);
+        }
+        let outcome = match located.status {
+            SpeculativeUnprovenFoldStatusV1::AwaitingProof => return Ok(None),
+            SpeculativeUnprovenFoldStatusV1::ProofBlocked => {
+                SpeculativeUnprovenFoldProofOutcomeV1::Blocked
+            }
+            SpeculativeUnprovenFoldStatusV1::ProofUnknown { reason } => {
+                SpeculativeUnprovenFoldProofOutcomeV1::Unknown { reason }
+            }
+        };
+        Ok(Some(self.resolution_report(location, outcome)))
+    }
+
     /// Records a blocked or unknown result without Undo or document revision
     /// changes.
     ///

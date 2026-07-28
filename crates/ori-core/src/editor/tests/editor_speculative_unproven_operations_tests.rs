@@ -100,6 +100,63 @@ fn proof_failure_updates_only_the_mark_and_reports_subsequent_edits() {
 }
 
 #[test]
+fn inspection_is_read_only_and_reports_terminal_status_at_the_live_location() {
+    let mut fixture = fixture();
+    let binding = binding(
+        &fixture,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut fixture, binding.clone());
+    let revision = fixture.editor.revision();
+    let marker = fixture.editor.speculative_unproven_fold_state_marker_v1();
+
+    assert_eq!(
+        fixture
+            .editor
+            .inspect_speculative_unproven_fold_v1(&binding),
+        Ok(None)
+    );
+    assert_eq!(fixture.editor.revision(), revision);
+    assert_eq!(
+        fixture.editor.speculative_unproven_fold_state_marker_v1(),
+        marker
+    );
+
+    let outcome = SpeculativeUnprovenFoldProofOutcomeV1::Unknown {
+        reason: SpeculativeUnprovenFoldUnknownReasonV1::ResourceLimit,
+    };
+    let resolved = fixture
+        .editor
+        .resolve_speculative_unproven_fold_v1(&binding, outcome)
+        .expect("resolve the unique awaiting mark");
+    assert_eq!(
+        fixture
+            .editor
+            .inspect_speculative_unproven_fold_v1(&binding),
+        Ok(Some(resolved.clone()))
+    );
+
+    fixture
+        .editor
+        .undo(fixture.editor.revision())
+        .expect("move the resolved mark to Redo");
+    let inspected = fixture
+        .editor
+        .inspect_speculative_unproven_fold_v1(&binding)
+        .expect("the resolved mark remains inspectable")
+        .expect("the mark remains terminal");
+    assert_eq!(
+        inspected,
+        SpeculativeUnprovenFoldResolutionReportV1 {
+            location: SpeculativeUnprovenFoldHistoryLocationV1::UnappliedRedo,
+            outcome,
+            subsequent_edit_count: 0,
+            undo_steps_to_revert: None,
+        }
+    );
+}
+
+#[test]
 fn generic_certified_resolution_is_rejected_atomically_in_every_history_location() {
     fn assert_binding_location(
         fixture: &SpeculativeFixture,

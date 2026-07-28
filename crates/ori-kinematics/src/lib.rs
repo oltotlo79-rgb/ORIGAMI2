@@ -109,12 +109,12 @@ pub use interval::{
 };
 pub use schedule::{
     CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2, CanonicalCycleScheduleV1, CycleScheduleEntryInputV1,
-    CycleSchedulePrepareErrorV1, EXACT_COMMON_LINEAR_CYCLE_PROFILE_MODEL_ID_V1,
-    ExactCommonLinearCycleProfileErrorV1, ExactCommonLinearCycleProfileLimitsV1,
-    ExactCommonLinearCycleProfileV1, GeneratedMultiHingePathCandidateV1, HalfAngleDomainV1,
-    HalfAngleRationalEntryInputV1, MultiHingePathCandidateErrorV1, MultiHingePathCandidateLimitsV1,
+    CycleScheduleLimitsV1, CycleSchedulePrepareErrorV1,
+    EXACT_COMMON_LINEAR_CYCLE_PROFILE_MODEL_ID_V1, ExactCommonLinearCycleProfileErrorV1,
+    ExactCommonLinearCycleProfileLimitsV1, ExactCommonLinearCycleProfileV1,
+    GeneratedMultiHingePathCandidateV1, HalfAngleDomainV1, HalfAngleRationalEntryInputV1,
+    MultiHingePathCandidateErrorV1, MultiHingePathCandidateLimitsV1,
     PoleFreeBernsteinCertificateV1, PreparedHalfAngleRationalEntryV1, RationalCoefficientV1,
-    CycleScheduleLimitsV1,
     admit_canonical_multi_hinge_path_candidate_v1, deterministic_half_angle_ratio_degrees_v1,
     evaluate_half_angle_rational_degrees_interval_v1,
     evaluate_half_angle_rational_derivative_interval_v1, evaluate_pole_free_atan2_interval_v1,

@@ -207,9 +207,14 @@ import {
   type SnapSettings,
 } from './lib/snap'
 import {
+  classifyVertexPlacementAuthorityV1,
   isSupportedIntersectionPlacement,
   type VertexPlacement,
 } from './lib/vertexPlacement'
+import {
+  moveConstructedVertexV1,
+  placeConstructedVertexV1,
+} from './lib/constructedVertexClient.ts'
 import {
   measureBenchmarkPayloadBytes,
   prepareBenchmarkRenderData,
@@ -547,6 +552,7 @@ function App() {
   const mirrorRequestSequenceRef = useRef(0)
   const mirrorOperationRef = useRef(false)
   const [compassCircles, setCompassCircles] = useState<readonly {
+    centerVertexId: string
     centerX: number
     centerY: number
     radius: number
@@ -1148,6 +1154,20 @@ function App() {
     }, forceReplacement)
     setNativeSnapshot(admittedSnapshot)
     if (forceReplacement) setCompassCircles([])
+    else {
+      setCompassCircles((current) => current.flatMap((circle) => {
+        const center = admittedSnapshot.crease_pattern.vertices.find(
+          ({ id }) => id === circle.centerVertexId,
+        )
+        return center
+          ? [{
+            ...circle,
+            centerX: center.position.x,
+            centerY: center.position.y,
+          }]
+          : []
+      }))
+    }
     setGeometricConstraintDocumentInvalid(constraintDocumentInvalid)
     setProjectLayerDocumentInvalid(layerDocumentInvalid)
     setValidation(null)
@@ -2941,7 +2961,18 @@ function App() {
     }
     const succeeded = await runNativeEdit(async (projectId, revision, projectInstanceId) => {
       let snapshot: ProjectSnapshot
-      if (placement.operation === 'add') {
+      const authorityRoute = classifyVertexPlacementAuthorityV1(placement)
+      if (authorityRoute.kind === 'invalid-native') {
+        throw new Error('invalid_constructed_vertex_authority')
+      }
+      if (authorityRoute.kind === 'native') {
+        snapshot = await placeConstructedVertexV1(
+          projectInstanceId,
+          projectId,
+          revision,
+          authorityRoute.placement,
+        )
+      } else if (placement.operation === 'add') {
         snapshot = await addVertex(
           projectId,
           revision,
@@ -4605,10 +4636,25 @@ function App() {
                 : selectCanvasVertex}
               onMoveVertex={benchmarkRun
                 ? moveBenchmarkVertex
-                : (vertexId, x, y) => {
+                : (vertexId, x, y, nativeConstruction) => {
                     if (nativeLayerView.lockedVertexIds.has(vertexId)) return
                     void runNativeEdit((projectId, revision, projectInstanceId) =>
-                      moveVertex(projectId, revision, projectInstanceId, vertexId, x, y))
+                      nativeConstruction
+                        ? moveConstructedVertexV1(
+                            projectInstanceId,
+                            projectId,
+                            revision,
+                            vertexId,
+                            nativeConstruction,
+                          )
+                        : moveVertex(
+                            projectId,
+                            revision,
+                            projectInstanceId,
+                            vertexId,
+                            x,
+                            y,
+                          ))
                   }}
             />
             {activeTool === 'measure' && (

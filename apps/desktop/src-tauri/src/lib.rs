@@ -15,6 +15,7 @@ mod applied_pose;
 mod beginner_design_commands;
 mod beginner_recognition;
 mod beginner_skeleton_endpoint_commands;
+mod constructed_vertex_commands;
 mod crease_export;
 mod crease_pattern_boundary_support;
 mod current_non_flat_layer_order_view;
@@ -78,6 +79,7 @@ use beginner_recognition::{
     recognize_beginner_silhouette, recognize_beginner_target,
 };
 use beginner_skeleton_endpoint_commands::resolve_beginner_skeleton_endpoint_v1;
+use constructed_vertex_commands::{move_constructed_vertex_v1, place_constructed_vertex_v1};
 #[cfg(test)]
 use pattern_edit_commands::{
     BenchmarkEdge, BenchmarkVertex, LinearArrayRequestV1, RadialArrayRequestV1,
@@ -5747,6 +5749,8 @@ pub fn run() {
             generate_benchmark_pattern,
             project_snapshot,
             resolve_beginner_skeleton_endpoint_v1,
+            place_constructed_vertex_v1,
+            move_constructed_vertex_v1,
             evaluate_beginner_candidates,
             cancel_reference_consensus,
             evaluate_beginner_parameter_grid,

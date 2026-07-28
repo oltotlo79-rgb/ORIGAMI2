@@ -26,8 +26,10 @@ import {
   type CreaseLineKind,
 } from '../lib/creaseLinePresentation'
 import {
+  createNativeAngleConstructionV1,
   createVertexPlacement,
   isSupportedIntersectionTarget,
+  type NativeVertexConstructionV1,
   type VertexPlacement,
 } from '../lib/vertexPlacement'
 import {
@@ -103,6 +105,7 @@ export type CreaseCanvasFace = Readonly<{
 }>
 
 export type CompassConstructionCircle = Readonly<{
+  centerVertexId: string
   centerX: number
   centerY: number
   radius: number
@@ -166,7 +169,12 @@ type Props = {
   ) => void
   onSelectVertex?: (id: string) => void
   onSelectFace?: (id: string | null) => void
-  onMoveVertex?: (id: string, x: number, y: number) => void
+  onMoveVertex?: (
+    id: string,
+    x: number,
+    y: number,
+    nativeConstruction?: NativeVertexConstructionV1,
+  ) => void
   cancelInteractionToken?: number
   disabled?: boolean
   renderMetricsRequestId?: string | number | null
@@ -959,7 +967,7 @@ export function CreaseCanvas({
           !isFiniteSnapPoint(candidate.point) ||
           lookupExactVertex(exactVertexIndex, candidate.point, drag.vertexId)
         ) return false
-        return boundaryDrag || isInsidePaper(
+        return (boundaryDrag && candidate.kind !== 'angle') || isInsidePaper(
           candidate.point.x,
           candidate.point.y,
           pointer.transform,
@@ -1196,7 +1204,18 @@ export function CreaseCanvas({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
-    if (hasMoved) onMoveVertex?.(drag.vertexId, x, y)
+    if (hasMoved) {
+      if (resolved.target?.kind === 'angle') {
+        onMoveVertex?.(
+          drag.vertexId,
+          x,
+          y,
+          createNativeAngleConstructionV1(resolved.target),
+        )
+      } else {
+        onMoveVertex?.(drag.vertexId, x, y)
+      }
+    }
   }
 
   function handlePointerCancel(event: PointerEvent<HTMLCanvasElement>) {

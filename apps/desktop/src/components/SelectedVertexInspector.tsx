@@ -266,6 +266,7 @@ export function SelectedVertexInspector({
                 const radius = displayRadius * displayUnit.millimetresPerUnit
                 if (!Number.isFinite(radius) || radius <= 0) return
                 onAddCompassCircle({
+                  centerVertexId: vertex.id,
                   centerX: vertex.position.x,
                   centerY: vertex.position.y,
                   radius,

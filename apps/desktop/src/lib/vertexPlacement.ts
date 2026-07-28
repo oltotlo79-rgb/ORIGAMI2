@@ -1,24 +1,80 @@
-import type { AdditionSnapTarget, SnapPoint, SnapSegment, SnapVertex } from './snap'
+import type {
+  AdditionSnapTarget,
+  AngleSnapTarget,
+  CircleIntersectionConstructionV1,
+  SnapPoint,
+  SnapSegment,
+  SnapVertex,
+} from './snap'
 import { clusterPointLiesOnSegment } from './intersectionClusterNumerics.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from './deterministicTranscendentalModel.ts'
 
-export type VertexPlacement = Readonly<{
+export const CONSTRUCTED_VERTEX_SCHEMA_VERSION_V1 = 1
+export const CONSTRUCTED_VERTEX_MODEL_ID_V1 =
+  'ori_canvas_constructed_vertex_binary64_native_v1'
+export const CONSTRUCTED_VERTEX_AUTHORITY_MARKER_V1 =
+  'ori_canvas_constructed_vertex_authority_v1'
+
+const MAX_CONSTRUCTION_SCALAR_ABS_V1 = 1e150
+
+export type NativeVertexConstructionSourceV1 =
+  | Readonly<{
+    kind: 'angle'
+    anchorId: string
+    rawX: number
+    rawY: number
+    angleDegrees: number
+    angleSide: 'counterclockwise' | 'clockwise'
+    referenceKind: 'global-horizontal' | 'edge'
+    referenceEdgeId?: string
+  }>
+  | CircleIntersectionConstructionV1
+
+export type NativeVertexConstructionV1 = Readonly<{
+  schemaVersion: typeof CONSTRUCTED_VERTEX_SCHEMA_VERSION_V1
+  constructionModelId: typeof CONSTRUCTED_VERTEX_MODEL_ID_V1
+  transcendentalModelId: typeof DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+  source: NativeVertexConstructionSourceV1
+}>
+
+type AddVertexPlacement = Readonly<{
   operation: 'add'
   x: number
   y: number
-}> | Readonly<{
+}>
+
+type SplitEdgeVertexPlacement = Readonly<{
   operation: 'split-edge'
   edgeId: string
   fraction: number
-}> | Readonly<{
+}>
+
+export type ConstructedVertexPlacement = (
+  AddVertexPlacement | SplitEdgeVertexPlacement
+) & Readonly<{
+  constructedVertexAuthority:
+    typeof CONSTRUCTED_VERTEX_AUTHORITY_MARKER_V1
+  nativeConstruction: NativeVertexConstructionV1
+}>
+
+export type VertexPlacement =
+  | ConstructedVertexPlacement
+  | AddVertexPlacement
+  | SplitEdgeVertexPlacement
+  | Readonly<{
   operation: 'connect-intersection'
   firstEdgeId: string
   secondEdgeId: string
-}> | Readonly<{
+}>
+  | Readonly<{
   operation: 'connect-t-junction'
   firstEdgeId: string
   secondEdgeId: string
   junctionVertexId: string
-}> | Readonly<{
+}>
+  | Readonly<{
   operation: 'connect-intersection-cluster'
   targets: readonly Readonly<{
     edgeId: string
@@ -44,6 +100,131 @@ type PersistedIntersectionEdge = Readonly<{
   kind: string
 }>
 
+export type VertexPlacementAuthorityRouteV1 =
+  | Readonly<{ kind: 'legacy' }>
+  | Readonly<{
+    kind: 'native'
+    placement: ConstructedVertexPlacement
+  }>
+  | Readonly<{ kind: 'invalid-native' }>
+
+export function carriesConstructedVertexAuthorityV1(
+  placement: unknown,
+): boolean {
+  try {
+    if (!isRecord(placement)) return false
+    return 'constructedVertexAuthority' in placement
+      || 'nativeConstruction' in placement
+  } catch {
+    // An object whose authority presence cannot be inspected must never be
+    // allowed onto the ordinary add/split path.
+    return true
+  }
+}
+
+export function isNativeVertexConstructionV1(
+  construction: unknown,
+): construction is NativeVertexConstructionV1 {
+  try {
+    if (
+      !isRecord(construction)
+      || !hasExactKeys(construction, [
+        'schemaVersion',
+        'constructionModelId',
+        'transcendentalModelId',
+        'source',
+      ])
+      || construction.schemaVersion !== CONSTRUCTED_VERTEX_SCHEMA_VERSION_V1
+      || construction.constructionModelId !== CONSTRUCTED_VERTEX_MODEL_ID_V1
+      || construction.transcendentalModelId
+        !== DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+    ) return false
+    return isNativeVertexConstructionSourceV1(construction.source)
+  } catch {
+    return false
+  }
+}
+
+export function isConstructedVertexPlacement(
+  placement: unknown,
+): placement is ConstructedVertexPlacement {
+  try {
+    if (!isRecord(placement)) return false
+    if (
+      placement.operation !== 'add'
+      && placement.operation !== 'split-edge'
+    ) return false
+    if (
+      placement.constructedVertexAuthority
+        !== CONSTRUCTED_VERTEX_AUTHORITY_MARKER_V1
+      || !isNativeVertexConstructionV1(placement.nativeConstruction)
+    ) return false
+    return placement.operation === 'add'
+      ? hasExactKeys(placement, [
+        'operation',
+        'x',
+        'y',
+        'constructedVertexAuthority',
+        'nativeConstruction',
+      ])
+        && finiteConstructionScalar(placement.x)
+        && finiteConstructionScalar(placement.y)
+      : hasExactKeys(placement, [
+        'operation',
+        'edgeId',
+        'fraction',
+        'constructedVertexAuthority',
+        'nativeConstruction',
+      ])
+        && isNonEmptyString(placement.edgeId)
+        && typeof placement.fraction === 'number'
+        && Number.isFinite(placement.fraction)
+        && placement.fraction > 0
+        && placement.fraction < 1
+  } catch {
+    return false
+  }
+}
+
+export function classifyVertexPlacementAuthorityV1(
+  placement: unknown,
+): VertexPlacementAuthorityRouteV1 {
+  try {
+    if (!carriesConstructedVertexAuthorityV1(placement)) {
+      return Object.freeze({ kind: 'legacy' })
+    }
+    if (!isConstructedVertexPlacement(placement)) {
+      return Object.freeze({ kind: 'invalid-native' })
+    }
+    return Object.freeze({ kind: 'native', placement })
+  } catch {
+    return Object.freeze({ kind: 'invalid-native' })
+  }
+}
+
+export function createNativeAngleConstructionV1(
+  target: AngleSnapTarget,
+): NativeVertexConstructionV1 {
+  const source = Object.freeze({
+    kind: 'angle' as const,
+    anchorId: target.anchorId,
+    rawX: normalizeZero(target.rawPoint.x),
+    rawY: normalizeZero(target.rawPoint.y),
+    angleDegrees: normalizeZero(target.angleDegrees),
+    angleSide: target.angleSide,
+    referenceKind: target.referenceKind,
+    ...(target.referenceKind === 'edge'
+      ? { referenceEdgeId: target.referenceEdgeId }
+      : {}),
+  })
+  return Object.freeze({
+    schemaVersion: CONSTRUCTED_VERTEX_SCHEMA_VERSION_V1,
+    constructionModelId: CONSTRUCTED_VERTEX_MODEL_ID_V1,
+    transcendentalModelId: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    source,
+  })
+}
+
 export function createVertexPlacement(
   point: SnapPoint,
   target: AdditionSnapTarget | null,
@@ -57,7 +238,10 @@ export function createVertexPlacement(
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)
       || point.x !== target.point.x || point.y !== target.point.y
       || !Number.isFinite(target.distancePx) || target.distancePx < 0) return null
-    return splitOrAddPoint(point, segments)
+    const placement = splitOrAddPoint(point, segments)
+    return placement && isAddOrSplitPlacement(placement)
+      ? withNativeConstruction(placement, target.construction)
+      : null
   }
   if (
     target?.kind === 'horizontal'
@@ -117,10 +301,15 @@ function constrainedPointPlacement(
   } else if (target.kind === 'angle') {
     const direction = validatedAngleDirection(point, target, segments)
     if (!direction) return null
-    return splitOrAddPoint(point, segments, {
+    const placement = splitOrAddPoint(point, segments, {
       anchorPoint: target.anchorPoint,
       direction,
     })
+    if (!placement || !isAddOrSplitPlacement(placement)) return null
+    return withNativeConstruction(
+      placement,
+      createNativeAngleConstructionV1(target).source,
+    )
   } else if (
     typeof target.anchorId !== 'string'
     || target.anchorId.length === 0
@@ -133,6 +322,144 @@ function constrainedPointPlacement(
   ) return null
 
   return splitOrAddPoint(point, segments)
+}
+
+function isAddOrSplitPlacement(
+  placement: VertexPlacement,
+): placement is AddVertexPlacement | SplitEdgeVertexPlacement {
+  return placement.operation === 'add' || placement.operation === 'split-edge'
+}
+
+function withNativeConstruction(
+  placement: AddVertexPlacement | SplitEdgeVertexPlacement,
+  source: NativeVertexConstructionSourceV1,
+): ConstructedVertexPlacement | null {
+  const frozenSource = Object.freeze({
+    ...source,
+  }) as NativeVertexConstructionSourceV1
+  const nativeConstruction = Object.freeze({
+    schemaVersion: CONSTRUCTED_VERTEX_SCHEMA_VERSION_V1,
+    constructionModelId: CONSTRUCTED_VERTEX_MODEL_ID_V1,
+    transcendentalModelId: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    source: frozenSource,
+  })
+  const result = Object.freeze({
+    ...placement,
+    constructedVertexAuthority: CONSTRUCTED_VERTEX_AUTHORITY_MARKER_V1,
+    nativeConstruction,
+  })
+  return isConstructedVertexPlacement(result) ? result : null
+}
+
+function isNativeVertexConstructionSourceV1(
+  source: unknown,
+): source is NativeVertexConstructionSourceV1 {
+  if (!isRecord(source)) return false
+  if (source.kind === 'angle') {
+    const expectedKeys = source.referenceKind === 'edge'
+      ? [
+        'kind',
+        'anchorId',
+        'rawX',
+        'rawY',
+        'angleDegrees',
+        'angleSide',
+        'referenceKind',
+        'referenceEdgeId',
+      ]
+      : [
+        'kind',
+        'anchorId',
+        'rawX',
+        'rawY',
+        'angleDegrees',
+        'angleSide',
+        'referenceKind',
+      ]
+    return hasExactKeys(source, expectedKeys)
+      && isNonEmptyString(source.anchorId)
+      && finiteConstructionScalar(source.rawX)
+      && finiteConstructionScalar(source.rawY)
+      && typeof source.angleDegrees === 'number'
+      && Number.isFinite(source.angleDegrees)
+      && source.angleDegrees > 0
+      && source.angleDegrees <= 90
+      && (
+        source.angleSide === 'counterclockwise'
+        || source.angleSide === 'clockwise'
+      )
+      && (
+        source.referenceKind === 'global-horizontal'
+          ? source.angleDegrees !== 90
+            || source.angleSide === 'counterclockwise'
+          : source.referenceKind === 'edge'
+            && isNonEmptyString(source.referenceEdgeId)
+            && (
+              source.angleDegrees !== 90
+              || source.angleSide === 'counterclockwise'
+            )
+      )
+  }
+  if (source.kind === 'circle-line') {
+    return hasExactKeys(source, [
+      'kind',
+      'centerVertexId',
+      'radius',
+      'edgeId',
+      'rootSide',
+    ])
+      && isNonEmptyString(source.centerVertexId)
+      && finitePositiveConstructionScalar(source.radius)
+      && isNonEmptyString(source.edgeId)
+      && (source.rootSide === 0 || source.rootSide === 1)
+  }
+  if (source.kind === 'circle-circle') {
+    return hasExactKeys(source, [
+      'kind',
+      'firstCenterVertexId',
+      'firstRadius',
+      'secondCenterVertexId',
+      'secondRadius',
+      'intersectionSide',
+    ])
+      && isNonEmptyString(source.firstCenterVertexId)
+      && finitePositiveConstructionScalar(source.firstRadius)
+      && isNonEmptyString(source.secondCenterVertexId)
+      && source.firstCenterVertexId !== source.secondCenterVertexId
+      && finitePositiveConstructionScalar(source.secondRadius)
+      && (
+        source.intersectionSide === 0
+        || source.intersectionSide === 1
+      )
+  }
+  return false
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expectedKeys: readonly string[],
+): boolean {
+  const actualKeys = Object.keys(value)
+  return actualKeys.length === expectedKeys.length
+    && expectedKeys.every((key) => Object.hasOwn(value, key))
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function finiteConstructionScalar(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && Math.abs(value) <= MAX_CONSTRUCTION_SCALAR_ABS_V1
+}
+
+function finitePositiveConstructionScalar(value: unknown): value is number {
+  return finiteConstructionScalar(value) && value > 0
 }
 
 function splitOrAddPoint(

@@ -16,6 +16,9 @@ import {
   DEFAULT_SNAP_SETTINGS,
   type SnapSettings,
 } from '../src/lib/snap.ts'
+import {
+  isConstructedVertexPlacement,
+} from '../src/lib/vertexPlacement.ts'
 import { localeFixture } from './localeTestFixture.ts'
 
 const CANVAS_RECT = {
@@ -327,11 +330,24 @@ describe('CreaseCanvas vertex dragging', () => {
 
   it('keeps grid snapping available for a moved vertex away from topology', () => {
     const onMoveVertex = vi.fn()
+    const gridOnly: SnapSettings = {
+      ...DEFAULT_SNAP_SETTINGS,
+      vertex: false,
+      intersection: false,
+      midpoint: false,
+      horizontal: false,
+      vertical: false,
+      parallel: false,
+      angle: false,
+      edge: false,
+      grid: true,
+    }
     renderCanvas({
       localeStore: localeFixture('en'),
       tool: 'select',
       vertices: [{ id: 'moving', x: 100, y: 100 }],
       gridDivisions: 4,
+      snapSettings: gridOnly,
       selectedVertexId: 'moving',
       onSelectVertex: () => undefined,
       onMoveVertex,
@@ -342,6 +358,91 @@ describe('CreaseCanvas vertex dragging', () => {
     fireEvent.pointerUp(canvas, { clientX: 246, clientY: 246, pointerId: 9 })
 
     expect(onMoveVertex).toHaveBeenCalledWith('moving', 200, 200)
+  })
+
+  it('carries source-only native authority for an angle-snapped move', () => {
+    const onMoveVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'select',
+      vertices: [{ id: 'moving', x: 100, y: 100 }],
+      angleConfig: {
+        angleDegrees: 45,
+        referenceKind: 'global-horizontal',
+      },
+      selectedVertexId: 'moving',
+      onSelectVertex: () => undefined,
+      onMoveVertex,
+    })
+    const canvas = screen.getByLabelText('Crease-pattern editing canvas')
+    fireEvent.pointerDown(canvas, { clientX: 138, clientY: 138, pointerId: 10, button: 0 })
+    fireEvent.pointerMove(canvas, { clientX: 246, clientY: 246, pointerId: 10 })
+    fireEvent.pointerUp(canvas, { clientX: 246, clientY: 246, pointerId: 10 })
+
+    expect(onMoveVertex).toHaveBeenCalledOnce()
+    const [vertexId, x, y, construction] = onMoveVertex.mock.calls[0]
+    expect(vertexId).toBe('moving')
+    expect(x).toBeCloseTo(y, 12)
+    expect(construction).toMatchObject({
+      schemaVersion: 1,
+      constructionModelId: 'ori_canvas_constructed_vertex_binary64_native_v1',
+      source: {
+        kind: 'angle',
+        anchorId: 'moving',
+        rawX: expect.any(Number),
+        rawY: expect.any(Number),
+        angleDegrees: 45,
+        angleSide: 'counterclockwise',
+        referenceKind: 'global-horizontal',
+      },
+    })
+  })
+
+  it('does not attach angle authority to an outside-paper boundary drag', () => {
+    const onMoveVertex = vi.fn()
+    const angleOnly: SnapSettings = {
+      ...DEFAULT_SNAP_SETTINGS,
+      vertex: false,
+      intersection: false,
+      midpoint: false,
+      horizontal: false,
+      vertical: false,
+      parallel: false,
+      angle: true,
+      edge: false,
+      grid: false,
+    }
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'select',
+      vertices: [{ id: 'moving', x: 100, y: 100 }],
+      paperPolygon: [
+        { id: 'moving', x: 100, y: 100 },
+        { id: 'right', x: 150, y: 100 },
+        { id: 'corner', x: 150, y: 150 },
+        { id: 'bottom', x: 100, y: 150 },
+      ],
+      angleConfig: {
+        angleDegrees: 45,
+        referenceKind: 'global-horizontal',
+      },
+      snapSettings: angleOnly,
+      selectedVertexId: 'moving',
+      onSelectVertex: () => undefined,
+      onMoveVertex,
+    })
+    const canvas = screen.getByLabelText('Crease-pattern editing canvas')
+    fireEvent.pointerDown(canvas, { clientX: 138, clientY: 138, pointerId: 11, button: 0 })
+    fireEvent.pointerMove(canvas, { clientX: 246, clientY: 246, pointerId: 11 })
+    fireEvent.pointerUp(canvas, { clientX: 246, clientY: 246, pointerId: 11 })
+
+    expect(onMoveVertex).toHaveBeenCalledOnce()
+    expect(onMoveVertex.mock.calls[0]).toHaveLength(3)
+    expect(onMoveVertex.mock.calls[0][1]).toBeGreaterThan(150)
+    expect(onMoveVertex.mock.calls[0][1]).toBeCloseTo(
+      onMoveVertex.mock.calls[0][2],
+      12,
+    )
   })
 })
 
@@ -354,6 +455,7 @@ describe('CreaseCanvas compass intersection placement', () => {
       vertices: [
         { id: 'left', x: 0, y: 200 },
         { id: 'right', x: 400, y: 200 },
+        { id: 'center', x: 200, y: 200 },
       ],
       lines: [{
         id: 'crease',
@@ -365,7 +467,12 @@ describe('CreaseCanvas compass intersection placement', () => {
         y2: 200,
         kind: 'mountain',
       }],
-      compassCircles: [{ centerX: 200, centerY: 200, radius: 100 }],
+      compassCircles: [{
+        centerVertexId: 'center',
+        centerX: 200,
+        centerY: 200,
+        radius: 100,
+      }],
       onPlaceVertex,
     })
 
@@ -374,10 +481,20 @@ describe('CreaseCanvas compass intersection placement', () => {
       clientY: 250,
     })
 
-    expect(onPlaceVertex).toHaveBeenCalledWith({
+    expect(onPlaceVertex).toHaveBeenCalledOnce()
+    const placement = onPlaceVertex.mock.calls[0][0]
+    expect(placement).toEqual(expect.objectContaining({
       operation: 'split-edge',
       edgeId: 'crease',
       fraction: 0.75,
+    }))
+    expect(isConstructedVertexPlacement(placement)).toBe(true)
+    expect(placement.nativeConstruction.source).toEqual({
+      kind: 'circle-line',
+      centerVertexId: 'center',
+      radius: 100,
+      edgeId: 'crease',
+      rootSide: 1,
     })
   })
 
@@ -386,9 +503,13 @@ describe('CreaseCanvas compass intersection placement', () => {
     renderCanvas({
       localeStore: localeFixture('en'),
       tool: 'vertex',
+      vertices: [
+        { id: 'first-center', x: 140, y: 200 },
+        { id: 'second-center', x: 260, y: 200 },
+      ],
       compassCircles: [
-        { centerX: 140, centerY: 200, radius: 100 },
-        { centerX: 260, centerY: 200, radius: 100 },
+        { centerVertexId: 'first-center', centerX: 140, centerY: 200, radius: 100 },
+        { centerVertexId: 'second-center', centerX: 260, centerY: 200, radius: 100 },
       ],
       onPlaceVertex,
     })
@@ -398,10 +519,21 @@ describe('CreaseCanvas compass intersection placement', () => {
       clientY: 336,
     })
 
-    expect(onPlaceVertex).toHaveBeenCalledWith({
+    expect(onPlaceVertex).toHaveBeenCalledOnce()
+    const placement = onPlaceVertex.mock.calls[0][0]
+    expect(placement).toEqual(expect.objectContaining({
       operation: 'add',
       x: 200,
       y: 280,
+    }))
+    expect(isConstructedVertexPlacement(placement)).toBe(true)
+    expect(placement.nativeConstruction.source).toEqual({
+      kind: 'circle-circle',
+      firstCenterVertexId: 'first-center',
+      firstRadius: 100,
+      secondCenterVertexId: 'second-center',
+      secondRadius: 100,
+      intersectionSide: 0,
     })
   })
 
@@ -410,14 +542,18 @@ describe('CreaseCanvas compass intersection placement', () => {
     renderCanvas({
       localeStore: localeFixture('en'),
       tool: 'vertex',
+      vertices: [
+        { id: 'first-center', x: 140, y: 200 },
+        { id: 'second-center', x: 260, y: 200 },
+      ],
       paperPolygon: [
         { x: 0, y: 0 },
         { x: 400, y: 0 },
         { x: 200, y: 200 },
       ],
       compassCircles: [
-        { centerX: 140, centerY: 200, radius: 100 },
-        { centerX: 260, centerY: 200, radius: 100 },
+        { centerVertexId: 'first-center', centerX: 140, centerY: 200, radius: 100 },
+        { centerVertexId: 'second-center', centerX: 260, centerY: 200, radius: 100 },
       ],
       onPlaceVertex,
     })

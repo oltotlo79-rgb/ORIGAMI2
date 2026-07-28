@@ -21,9 +21,12 @@ import {
   type SnapSettings,
 } from '../src/lib/snap.ts'
 import {
+  classifyVertexPlacementAuthorityV1,
   createVertexPlacement,
+  isConstructedVertexPlacement,
   isSupportedIntersectionPlacement,
   isSupportedIntersectionTarget,
+  type ConstructedVertexPlacement,
 } from '../src/lib/vertexPlacement.ts'
 import {
   createIntersectionSnapIndex,
@@ -36,6 +39,19 @@ import {
 } from '../src/lib/coreClient.ts'
 
 const EMPTY_GRID: SnapGrid = { xValues: [], yValues: [] }
+
+function assertConstructedPlacementPreview(
+  placement: unknown,
+  expectedPreview: Readonly<Record<string, unknown>>,
+): asserts placement is ConstructedVertexPlacement {
+  assert.ok(isConstructedVertexPlacement(placement))
+  const {
+    constructedVertexAuthority: _authority,
+    nativeConstruction: _construction,
+    ...preview
+  } = placement
+  assert.deepEqual(preview, expectedPreview)
+}
 
 test('browser benchmark fixture contains stable renderable geometry', () => {
   const fixture = createBrowserBenchmarkPattern(4)
@@ -261,25 +277,61 @@ test('compass circles snap to bounded line and circle intersections', () => {
   }
   const lineTarget = resolveCompassIntersectionSnap({
     point: { x: 5.2, y: 0.1 }, scale: 1,
-    circles: [{ centerX: 0, centerY: 0, radius: 5 }], segments: [segment],
+    circles: [{ centerVertexId: 'center', centerX: 0, centerY: 0, radius: 5 }],
+    segments: [segment],
   })
   assert.equal(lineTarget?.kind, 'circle-intersection')
   assert.deepEqual(lineTarget?.point, { x: 5, y: 0 })
-  assert.deepEqual(createVertexPlacement(lineTarget!.point, lineTarget, [segment]), {
+  const linePlacement = createVertexPlacement(lineTarget!.point, lineTarget, [segment])
+  assertConstructedPlacementPreview(linePlacement, {
     operation: 'split-edge', edgeId: 'diameter', fraction: 0.75,
   })
+  assert.deepEqual(linePlacement.nativeConstruction.source, {
+    kind: 'circle-line',
+    centerVertexId: 'center',
+    radius: 5,
+    edgeId: 'diameter',
+    rootSide: 1,
+  })
+  assert.equal(Object.isFrozen(linePlacement), true)
+  assert.equal(Object.isFrozen(linePlacement.nativeConstruction), true)
+  assert.equal(Object.isFrozen(linePlacement.nativeConstruction.source), true)
+  assert.equal(
+    Object.getOwnPropertyDescriptor(
+      linePlacement,
+      'constructedVertexAuthority',
+    )?.enumerable,
+    true,
+  )
+  assert.equal(
+    classifyVertexPlacementAuthorityV1({ ...linePlacement }).kind,
+    'native',
+  )
+  assert.equal(
+    classifyVertexPlacementAuthorityV1(structuredClone(linePlacement)).kind,
+    'native',
+  )
 
   const circleTarget = resolveCompassIntersectionSnap({
     point: { x: 3.1, y: 4.1 }, scale: 1,
     circles: [
-      { centerX: 0, centerY: 0, radius: 5 },
-      { centerX: 6, centerY: 0, radius: 5 },
+      { centerVertexId: 'first', centerX: 0, centerY: 0, radius: 5 },
+      { centerVertexId: 'second', centerX: 6, centerY: 0, radius: 5 },
     ],
     segments: [],
   })
   assert.deepEqual(circleTarget?.point, { x: 3, y: 4 })
-  assert.deepEqual(createVertexPlacement(circleTarget!.point, circleTarget, []), {
+  const circlePlacement = createVertexPlacement(circleTarget!.point, circleTarget, [])
+  assertConstructedPlacementPreview(circlePlacement, {
     operation: 'add', x: 3, y: 4,
+  })
+  assert.deepEqual(circlePlacement.nativeConstruction.source, {
+    kind: 'circle-circle',
+    firstCenterVertexId: 'first',
+    firstRadius: 5,
+    secondCenterVertexId: 'second',
+    secondRadius: 5,
+    intersectionSide: 0,
   })
 })
 
@@ -291,7 +343,8 @@ test('compass tangencies emit one point while coincident and invalid circles fai
   let lineAdmissions = 0
   const lineTangent = resolveCompassIntersectionSnap({
     point: { x: 0, y: 5 }, scale: 1,
-    circles: [{ centerX: 0, centerY: 0, radius: 5 }], segments: [tangentLine],
+    circles: [{ centerVertexId: 'center', centerX: 0, centerY: 0, radius: 5 }],
+    segments: [tangentLine],
     accept: () => {
       lineAdmissions += 1
       return true
@@ -304,8 +357,8 @@ test('compass tangencies emit one point while coincident and invalid circles fai
   const circleTangent = resolveCompassIntersectionSnap({
     point: { x: 5, y: 0 }, scale: 1,
     circles: [
-      { centerX: 0, centerY: 0, radius: 5 },
-      { centerX: 10, centerY: 0, radius: 5 },
+      { centerVertexId: 'first', centerX: 0, centerY: 0, radius: 5 },
+      { centerVertexId: 'second', centerX: 10, centerY: 0, radius: 5 },
     ],
     segments: [],
     accept: () => {
@@ -319,10 +372,10 @@ test('compass tangencies emit one point while coincident and invalid circles fai
   assert.equal(resolveCompassIntersectionSnap({
     point: { x: 5, y: 0 }, scale: 1,
     circles: [
-      { centerX: 0, centerY: 0, radius: 5 },
-      { centerX: 0, centerY: 0, radius: 5 },
-      { centerX: Number.NaN, centerY: 0, radius: 5 },
-      { centerX: 0, centerY: 0, radius: Number.POSITIVE_INFINITY },
+      { centerVertexId: 'first', centerX: 0, centerY: 0, radius: 5 },
+      { centerVertexId: 'second', centerX: 0, centerY: 0, radius: 5 },
+      { centerVertexId: 'nan', centerX: Number.NaN, centerY: 0, radius: 5 },
+      { centerVertexId: 'infinite', centerX: 0, centerY: 0, radius: Number.POSITIVE_INFINITY },
     ],
     segments: [],
   }), null)
@@ -332,7 +385,12 @@ test('compass tangencies emit one point while coincident and invalid circles fai
   }), null)
   assert.equal(resolveCompassIntersectionSnap({
     point: { x: 0, y: 0 }, scale: 1,
-    circles: Array.from({ length: 65 }, () => ({ centerX: 0, centerY: 0, radius: 1 })),
+    circles: Array.from({ length: 65 }, (_, index) => ({
+      centerVertexId: `center-${index}`,
+      centerX: 0,
+      centerY: 0,
+      radius: 1,
+    })),
     segments: [],
   }), null)
 })
@@ -341,9 +399,9 @@ test('compass duplicate intersections are deterministic and paper acceptance sel
   const duplicated = resolveCompassIntersectionSnap({
     point: { x: 3.1, y: 4.1 }, scale: 1,
     circles: [
-      { centerX: 0, centerY: 0, radius: 5 },
-      { centerX: 6, centerY: 0, radius: 5 },
-      { centerX: 0, centerY: 0, radius: 5 },
+      { centerVertexId: 'first', centerX: 0, centerY: 0, radius: 5 },
+      { centerVertexId: 'second', centerX: 6, centerY: 0, radius: 5 },
+      { centerVertexId: 'duplicate', centerX: 0, centerY: 0, radius: 5 },
     ],
     segments: [],
   })
@@ -352,8 +410,8 @@ test('compass duplicate intersections are deterministic and paper acceptance sel
   const bounded = resolveCompassIntersectionSnap({
     point: { x: 3, y: -3.9 }, scale: 1,
     circles: [
-      { centerX: 0, centerY: 0, radius: 5 },
-      { centerX: 6, centerY: 0, radius: 5 },
+      { centerVertexId: 'first', centerX: 0, centerY: 0, radius: 5 },
+      { centerVertexId: 'second', centerX: 6, centerY: 0, radius: 5 },
     ],
     segments: [],
     accept: ({ point }) => point.y >= 0,
@@ -1006,15 +1064,11 @@ test('angle snapping rejects invalid configuration, anchors, references, and ove
   assert.ok(extremeProjection?.kind === 'angle')
   assert.ok(Number.isFinite(extremeProjection.point.x))
   assert.ok(Number.isFinite(extremeProjection.point.y))
-  assert.deepEqual(createVertexPlacement(
+  assert.equal(createVertexPlacement(
     extremeProjection.point,
     extremeProjection,
     [],
-  ), {
-    operation: 'add',
-    x: extremeProjection.point.x,
-    y: extremeProjection.point.y,
-  })
+  ), null)
   assert.equal(resolve({
     ...common,
     point: { x: Number.MAX_VALUE, y: 0 },
@@ -1893,16 +1947,28 @@ test('angle placement adds normally or splits one coincident edge in either orie
   })
   assert.ok(target?.kind === 'angle')
   assert.deepEqual(target.point, { x: 0, y: 5 })
-  assert.deepEqual(createVertexPlacement(target.point, target, []), {
+  const addPlacement = createVertexPlacement(target.point, target, [])
+  assertConstructedPlacementPreview(addPlacement, {
     operation: 'add',
     x: 0,
     y: 5,
   })
-  assert.deepEqual(createVertexPlacement(target.point, target, [vertical]), {
+  assert.deepEqual(addPlacement.nativeConstruction.source, {
+    kind: 'angle',
+    anchorId: 'anchor',
+    rawX: 2,
+    rawY: 5,
+    angleDegrees: 90,
+    angleSide: 'counterclockwise',
+    referenceKind: 'global-horizontal',
+  })
+  const splitPlacement = createVertexPlacement(target.point, target, [vertical])
+  assertConstructedPlacementPreview(splitPlacement, {
     operation: 'split-edge',
     edgeId: 'vertical',
     fraction: 0.5,
   })
+  assert.equal(splitPlacement.nativeConstruction.source.kind, 'angle')
 
   const reversed = {
     ...vertical,
@@ -1911,11 +1977,14 @@ test('angle placement adds normally or splits one coincident edge in either orie
     y1: vertical.y2,
     y2: vertical.y1,
   }
-  assert.deepEqual(createVertexPlacement(target.point, target, [reversed]), {
+  assertConstructedPlacementPreview(
+    createVertexPlacement(target.point, target, [reversed]),
+    {
     operation: 'split-edge',
     edgeId: 'vertical',
     fraction: 0.5,
-  })
+    },
+  )
 
   const endpointTarget = resolve({
     point: { x: 2, y: 10 },
@@ -1954,11 +2023,14 @@ test('edge-referenced angle placement validates canonical reference geometry bef
     parallelReference: reference,
   })
   assert.ok(target?.kind === 'angle' && target.referenceKind === 'edge')
-  assert.deepEqual(createVertexPlacement(target.point, target, [reference, vertical]), {
-    operation: 'split-edge',
-    edgeId: 'vertical',
-    fraction: 0.5,
-  })
+  assertConstructedPlacementPreview(
+    createVertexPlacement(target.point, target, [reference, vertical]),
+    {
+      operation: 'split-edge',
+      edgeId: 'vertical',
+      fraction: 0.5,
+    },
+  )
 
   const reversedReference = {
     ...reference,
@@ -1967,15 +2039,18 @@ test('edge-referenced angle placement validates canonical reference geometry bef
     x1: reference.x2,
     x2: reference.x1,
   }
-  assert.deepEqual(createVertexPlacement(
-    target.point,
-    target,
-    [reversedReference, vertical],
-  ), {
-    operation: 'split-edge',
-    edgeId: 'vertical',
-    fraction: 0.5,
-  })
+  assertConstructedPlacementPreview(
+    createVertexPlacement(
+      target.point,
+      target,
+      [reversedReference, vertical],
+    ),
+    {
+      operation: 'split-edge',
+      edgeId: 'vertical',
+      fraction: 0.5,
+    },
+  )
   assert.equal(createVertexPlacement(target.point, target, [vertical]), null)
   assert.equal(createVertexPlacement(target.point, target, [
     reference,
@@ -2055,15 +2130,18 @@ test('angle placement rejects ambiguous topology and forged metadata without nea
     x2: translatedCoordinate + 2,
     y2: 10,
   }
-  assert.deepEqual(createVertexPlacement(
-    translatedTarget.point,
-    translatedTarget,
-    [oneUlpOffsetEdge],
-  ), {
-    operation: 'add',
-    x: translatedCoordinate,
-    y: 5,
-  })
+  assertConstructedPlacementPreview(
+    createVertexPlacement(
+      translatedTarget.point,
+      translatedTarget,
+      [oneUlpOffsetEdge],
+    ),
+    {
+      operation: 'add',
+      x: translatedCoordinate,
+      y: 5,
+    },
+  )
 })
 
 test('angle side metadata is rechecked against its recalculated line', () => {
@@ -2074,11 +2152,14 @@ test('angle side metadata is rechecked against its recalculated line', () => {
     angleConfig: DEFAULT_ANGLE_SNAP_CONFIG,
   })
   assert.ok(target?.kind === 'angle')
-  assert.deepEqual(createVertexPlacement(target.point, target, []), {
-    operation: 'add',
-    x: target.point.x,
-    y: target.point.y,
-  })
+  assertConstructedPlacementPreview(
+    createVertexPlacement(target.point, target, []),
+    {
+      operation: 'add',
+      x: target.point.x,
+      y: target.point.y,
+    },
+  )
   const forgedSide = {
     ...target,
     angleSide: 'clockwise' as const,

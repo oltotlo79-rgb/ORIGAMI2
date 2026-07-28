@@ -20,7 +20,10 @@ export type SnapKind =
 
 type PointSnapKind = Exclude<SnapKind, 'intersection'>
 type DirectionSnapKind = Extract<PointSnapKind, 'horizontal' | 'vertical'>
-type OrdinaryPointSnapKind = Exclude<PointSnapKind, DirectionSnapKind | 'parallel' | 'angle'>
+type OrdinaryPointSnapKind = Exclude<
+  PointSnapKind,
+  DirectionSnapKind | 'parallel' | 'angle' | 'circle-intersection'
+>
 
 export type SnapSettings = Readonly<{
   vertex: boolean
@@ -80,6 +83,7 @@ export type SnapGrid = Readonly<{
 }>
 
 export type CompassSnapCircle = Readonly<{
+  centerVertexId: string
   centerX: number
   centerY: number
   radius: number
@@ -200,11 +204,36 @@ export type AngleSnapTarget = AngleSnapTargetBase & (
   }>
 )
 
+export type CircleIntersectionConstructionV1 =
+  | Readonly<{
+    kind: 'circle-line'
+    centerVertexId: string
+    radius: number
+    edgeId: string
+    rootSide: 0 | 1
+  }>
+  | Readonly<{
+    kind: 'circle-circle'
+    firstCenterVertexId: string
+    firstRadius: number
+    secondCenterVertexId: string
+    secondRadius: number
+    intersectionSide: 0 | 1
+  }>
+
+export type CircleIntersectionSnapTarget = SnapTargetBase & Readonly<{
+  kind: 'circle-intersection'
+  sourceId?: never
+  sourceFraction?: never
+  construction: CircleIntersectionConstructionV1
+}>
+
 export type SnapTarget =
   | OrdinarySnapTarget
   | DirectionSnapTarget
   | ParallelSnapTarget
   | AngleSnapTarget
+  | CircleIntersectionSnapTarget
 
 export type AdditionSnapTarget = SnapTarget | IntersectionSnapTarget
 
@@ -330,14 +359,34 @@ export function resolveCompassIntersectionSnap(options: Readonly<{
   const threshold = options.thresholdPx ?? DEFAULT_THRESHOLDS_PX['circle-intersection']
   if (!Number.isFinite(threshold) || threshold < 0) return null
   let best: SnapTarget | null = null
-  const admit = (key: string, x: number, y: number) => {
-    const candidate = considerTargetPoint(null, key, 'circle-intersection', x, y, options.point,
-      options.scale, threshold, undefined, options.accept)
-    if (candidate) best = prioritizePointSnapTargets(best, candidate.target)
+  const admit = (
+    key: string,
+    x: number,
+    y: number,
+    construction: CircleIntersectionConstructionV1,
+  ) => {
+    const modelDistance = Math.hypot(x - options.point.x, y - options.point.y)
+    const distancePx = modelDistance * options.scale
+    if (
+      !Number.isFinite(modelDistance)
+      || !Number.isFinite(distancePx)
+      || distancePx > threshold
+    ) return
+    const candidate: CircleIntersectionSnapTarget = {
+      key,
+      kind: 'circle-intersection',
+      point: { x: normalizeZero(x), y: normalizeZero(y) },
+      distancePx,
+      construction,
+    }
+    if (!options.accept || options.accept(candidate)) {
+      best = prioritizePointSnapTargets(best, candidate)
+    }
   }
   for (let circleIndex = 0; circleIndex < options.circles.length; circleIndex += 1) {
     const circle = options.circles[circleIndex]!
-    if (!Number.isFinite(circle.centerX) || !Number.isFinite(circle.centerY)
+    if (typeof circle.centerVertexId !== 'string' || circle.centerVertexId.length === 0
+      || !Number.isFinite(circle.centerX) || !Number.isFinite(circle.centerY)
       || !Number.isFinite(circle.radius) || circle.radius <= 0) continue
     for (const segment of options.segments) {
       const geometry = validSegmentGeometry(segment)
@@ -355,13 +404,24 @@ export function resolveCompassIntersectionSnap(options: Readonly<{
             [1, (-b + root) / (2 * geometry.lengthSquared)]] as const
       for (const [side, fraction] of roots) {
         if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) continue
-        admit(`circle-line:${circleIndex}:${segment.id}:${side}`,
-          segment.x1 + fraction * geometry.dx, segment.y1 + fraction * geometry.dy)
+        admit(
+          `circle-line:${circleIndex}:${segment.id}:${side}`,
+          segment.x1 + fraction * geometry.dx,
+          segment.y1 + fraction * geometry.dy,
+          {
+            kind: 'circle-line',
+            centerVertexId: circle.centerVertexId,
+            radius: normalizeZero(circle.radius),
+            edgeId: segment.id,
+            rootSide: side,
+          },
+        )
       }
     }
     for (let otherIndex = circleIndex + 1; otherIndex < options.circles.length; otherIndex += 1) {
       const other = options.circles[otherIndex]!
-      if (!Number.isFinite(other.centerX) || !Number.isFinite(other.centerY)
+      if (typeof other.centerVertexId !== 'string' || other.centerVertexId.length === 0
+        || !Number.isFinite(other.centerX) || !Number.isFinite(other.centerY)
         || !Number.isFinite(other.radius) || other.radius <= 0) continue
       const dx = other.centerX - circle.centerX
       const dy = other.centerY - circle.centerY
@@ -377,9 +437,26 @@ export function resolveCompassIntersectionSnap(options: Readonly<{
       const baseY = circle.centerY + along * dy / distance
       const perpendicularX = -dy * height / distance
       const perpendicularY = dx * height / distance
-      admit(`circle-circle:${circleIndex}:${otherIndex}:0`, baseX + perpendicularX, baseY + perpendicularY)
+      const construction = {
+        kind: 'circle-circle' as const,
+        firstCenterVertexId: circle.centerVertexId,
+        firstRadius: normalizeZero(circle.radius),
+        secondCenterVertexId: other.centerVertexId,
+        secondRadius: normalizeZero(other.radius),
+      }
+      admit(
+        `circle-circle:${circleIndex}:${otherIndex}:0`,
+        baseX + perpendicularX,
+        baseY + perpendicularY,
+        { ...construction, intersectionSide: 0 },
+      )
       if (height !== 0) {
-        admit(`circle-circle:${circleIndex}:${otherIndex}:1`, baseX - perpendicularX, baseY - perpendicularY)
+        admit(
+          `circle-circle:${circleIndex}:${otherIndex}:1`,
+          baseX - perpendicularX,
+          baseY - perpendicularY,
+          { ...construction, intersectionSide: 1 },
+        )
       }
     }
   }

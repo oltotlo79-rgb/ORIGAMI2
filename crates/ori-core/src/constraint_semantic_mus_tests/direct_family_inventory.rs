@@ -17,6 +17,7 @@ enum InventoryFamily {
     SameOrientationWithFixedNonParallelAngle,
     PerpendicularOrientationsWithFixedNonRightAngle,
     DifferentRotationalSymmetryAnglesWithFixedRadius,
+    NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
     HorizontalAndVertical,
     DifferentLengthRatios,
     EqualLengthWithNonUnitRatioAndFixedLength,
@@ -131,6 +132,55 @@ fn different_cardinal_rotations_with_fixed_radius_fixture() -> SemanticFixture {
     }
 }
 
+fn noncomplementary_inverse_cardinal_rotations_with_fixed_radius_fixture() -> SemanticFixture {
+    let center = VertexId::new();
+    let source = VertexId::new();
+    let target = VertexId::new();
+    let radius = EdgeId::new();
+    SemanticFixture {
+        pattern: CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: center,
+                    position: Point2::new(10.0, 10.0),
+                },
+                Vertex {
+                    id: source,
+                    position: Point2::new(11.0, 10.0),
+                },
+                Vertex {
+                    id: target,
+                    position: Point2::new(12.0, 13.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: radius,
+                start: center,
+                end: source,
+                kind: EdgeKind::Auxiliary,
+            }],
+        },
+        records: vec![
+            record(GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex: center,
+                source_vertex: source,
+                target_vertex: target,
+                angle_degrees: 90.0,
+            }),
+            record(GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex: center,
+                source_vertex: target,
+                target_vertex: source,
+                angle_degrees: 180.0,
+            }),
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: radius,
+                length_mm: f64::from_bits(1),
+            }),
+        ],
+    }
+}
+
 fn inventory() -> Vec<(InventoryFamily, SemanticFixture)> {
     let mut result = vec![
         (
@@ -144,6 +194,10 @@ fn inventory() -> Vec<(InventoryFamily, SemanticFixture)> {
         (
             InventoryFamily::DifferentRotationalSymmetryAnglesWithFixedRadius,
             different_cardinal_rotations_with_fixed_radius_fixture(),
+        ),
+        (
+            InventoryFamily::NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
+            noncomplementary_inverse_cardinal_rotations_with_fixed_radius_fixture(),
         ),
     ];
     result.extend(
@@ -248,6 +302,12 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
                     ..
                 }
             ) | (
+                InventoryFamily::NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
+                DirectConstraintConflictKindV1::
+                    NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius {
+                        ..
+                    }
+            ) | (
                 InventoryFamily::HorizontalAndVertical,
                 DirectConstraintConflictKindV1::HorizontalAndVertical { .. }
             ) | (
@@ -284,16 +344,22 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
 }
 
 #[test]
-fn public_semantic_pipeline_hard_inventory_is_seventeen_of_seventeen() {
+fn public_semantic_pipeline_hard_inventory_is_eighteen_of_eighteen() {
+    const STABLE_WIRE_FAMILY_COUNT_V1: usize = 23;
     let inventory = inventory();
-    assert_eq!(inventory.len(), 17);
+    assert_eq!(inventory.len(), 18);
+    assert_eq!(
+        STABLE_WIRE_FAMILY_COUNT_V1 - inventory.len(),
+        5,
+        "exactly five stable wire families remain fail-closed legacy diagnostics",
+    );
     assert_eq!(
         inventory
             .iter()
             .map(|(family, _)| *family)
             .collect::<BTreeSet<_>>()
             .len(),
-        17,
+        18,
         "every supported direct family must have one distinct inventory row",
     );
 
@@ -318,9 +384,9 @@ fn public_semantic_pipeline_hard_inventory_is_seventeen_of_seventeen() {
         );
         let certificate = certified(certify_bounded_current_runtime_semantic_mus_v1(&prepared));
         assert_eq!(
-            certificate.constraint_ids().len(),
-            fixture.records.len(),
-            "public semantic promotion failed for {family:?}",
+            certificate.constraint_ids(),
+            sorted_ids(fixture.records.iter().cloned()),
+            "public semantic promotion returned the wrong core for {family:?}",
         );
         assert_eq!(
             certificate.deletion_witness_checks(),
@@ -338,7 +404,16 @@ fn public_semantic_pipeline_hard_inventory_is_seventeen_of_seventeen() {
             fixture.records.len(),
             "method counters must total exactly once for {family:?}",
         );
-        if family == InventoryFamily::DifferentRotationalSymmetryAnglesWithFixedRadius {
+        if matches!(
+            family,
+            InventoryFamily::DifferentRotationalSymmetryAnglesWithFixedRadius
+                | InventoryFamily::NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius
+        ) {
+            assert_eq!(
+                fixture.records.len(),
+                3,
+                "each promoted rotation family must retain its exact 3-ID semantic MUS",
+            );
             assert_eq!(
                 certificate.pair_constraint_constructive_witness_count(),
                 2,

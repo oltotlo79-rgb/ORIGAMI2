@@ -21,8 +21,23 @@ mod block_cut_orthogonal_half_turn;
 mod bridge_motion;
 mod coaxial_profile_lattice;
 mod dense_grid;
+mod exact_common_effective_generator_sign;
+mod exact_common_split_pair_effective_generator_sign;
 mod exact_cut_carrier;
 mod exact_generator_word;
+
+pub use exact_common_effective_generator_sign::{
+    EXACT_COMMON_EFFECTIVE_GENERATOR_SIGN_MODEL_ID_V1, EffectiveGeneratorSignV1,
+    ExactCommonEffectiveGeneratorSignErrorV1, ExactCommonEffectiveGeneratorSignLimitsV1,
+    ExactCommonEffectiveGeneratorSignV1, prove_exact_common_effective_generator_sign_v1,
+};
+pub use exact_common_split_pair_effective_generator_sign::{
+    EXACT_COMMON_SPLIT_PAIR_EFFECTIVE_GENERATOR_SIGN_MODEL_ID_V1,
+    ExactCommonSplitPairEffectiveGeneratorSignErrorV1,
+    ExactCommonSplitPairEffectiveGeneratorSignLimitsV1,
+    ExactCommonSplitPairEffectiveGeneratorSignV1,
+    prove_exact_common_split_pair_effective_generator_sign_v1,
+};
 
 use block_cut_cardinal_rotation_group::block_cut_cardinal_rotation_group_cycle_closure_premises_v1;
 use block_cut_carrier_free_product::block_cut_carrier_free_product_cycle_closure_premises_v1;

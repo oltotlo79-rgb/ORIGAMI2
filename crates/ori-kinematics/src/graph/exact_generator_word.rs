@@ -22,6 +22,16 @@ pub(super) struct CanonicalInfiniteLineV1 {
     exact_moment: [BigRational; 3],
 }
 
+impl CanonicalInfiniteLineV1 {
+    pub(super) const fn direction_bits(&self) -> [u64; 3] {
+        self.direction_bits
+    }
+
+    pub(super) const fn exact_moment(&self) -> &[BigRational; 3] {
+        &self.exact_moment
+    }
+}
+
 pub(super) fn exact_plucker_components_v1(
     line: &CanonicalInfiniteLineV1,
 ) -> Option<([BigRational; 3], [BigRational; 3])> {
@@ -323,11 +333,20 @@ pub(super) fn authenticate_graph_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
 ) -> Option<AuthenticatedGraphV1> {
-    let (adjacency_entry_limit, word_node_limit) =
-        bounded_exact_generator_word_counts_v1(geometry.face_ids().len(), geometry.hinges().len())?;
     if audit.closure_hinges().is_empty() {
         return None;
     }
+    authenticate_graph_structure_v1(geometry, audit)
+}
+
+/// Authenticates the exact face/hinge registry without assigning cycle
+/// semantics. Callers must independently require either a tree or a cycle.
+pub(super) fn authenticate_graph_structure_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+) -> Option<AuthenticatedGraphV1> {
+    let (adjacency_entry_limit, word_node_limit) =
+        bounded_exact_generator_word_counts_v1(geometry.face_ids().len(), geometry.hinges().len())?;
 
     let mut faces = Vec::new();
     faces.try_reserve_exact(geometry.face_ids().len()).ok()?;

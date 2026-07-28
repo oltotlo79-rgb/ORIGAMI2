@@ -1189,6 +1189,14 @@ pub struct ExactCommonLinearCycleProfileV1 {
     proof_fingerprint_v1: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExactCommonLinearCompositionBindingV1 {
+    pub(crate) schedule_fingerprint_v2: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    pub(crate) graph_binding_fingerprint_v1: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    pub(crate) proof_fingerprint_v1: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    pub(crate) slope_sign: i8,
+}
+
 impl ExactCommonLinearCycleProfileV1 {
     #[must_use]
     pub fn edge_ids(&self) -> &[EdgeId] {
@@ -1217,6 +1225,59 @@ impl ExactCommonLinearCycleProfileV1 {
         } else {
             Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch)
         }
+    }
+
+    /// Revalidates the proof and returns only the narrow crate-private binding
+    /// needed by downstream exact recognizers. Raw profile coefficients remain
+    /// private.
+    pub(crate) fn revalidate_composition_binding_v1(
+        &self,
+        issuer: &CanonicalCycleScheduleV1,
+        limits: ExactCommonLinearCycleProfileLimitsV1,
+    ) -> Result<ExactCommonLinearCompositionBindingV1, ExactCommonLinearCycleProfileErrorV1> {
+        self.revalidate_issuer_schedule_v1(issuer, limits)?;
+        if self.issuer_schedule_fingerprint_v2 != issuer.schedule_fingerprint_v2
+            || self.issuer_graph_binding_fingerprint_v1 != issuer.binding_fingerprint
+            || !issuer.half_angle_entries.is_empty()
+            || issuer.entries.len() != self.canonical_edges.len()
+        {
+            return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+        }
+        let mut common_profile_bits = None;
+        let mut slope_sign = None;
+        for (edge, entry) in self.canonical_edges.iter().zip(&issuer.entries) {
+            let [constant, linear] = entry.coefficients.as_slice() else {
+                return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+            };
+            if edge != &entry.edge
+                || !entry.initial.is_finite()
+                || !constant.is_finite()
+                || !linear.is_finite()
+                || *linear == 0.0
+            {
+                return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+            }
+            let profile_bits = [
+                entry.initial.to_bits(),
+                constant.to_bits(),
+                linear.to_bits(),
+            ];
+            if common_profile_bits.is_some_and(|expected| expected != profile_bits) {
+                return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+            }
+            common_profile_bits = Some(profile_bits);
+            let candidate_sign = if linear.is_sign_negative() { -1 } else { 1 };
+            if slope_sign.is_some_and(|expected| expected != candidate_sign) {
+                return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+            }
+            slope_sign = Some(candidate_sign);
+        }
+        Ok(ExactCommonLinearCompositionBindingV1 {
+            schedule_fingerprint_v2: self.issuer_schedule_fingerprint_v2,
+            graph_binding_fingerprint_v1: self.issuer_graph_binding_fingerprint_v1,
+            proof_fingerprint_v1: self.proof_fingerprint_v1,
+            slope_sign: slope_sign.ok_or(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch)?,
+        })
     }
 
     #[must_use]

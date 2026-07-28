@@ -6,6 +6,7 @@ import {
   selectLocalizedText,
   type LocalizedText,
 } from '../lib/i18n.ts'
+import { canonicalizeIntegerPolarPolygonV1 } from '../lib/integerPolarPolygon.ts'
 
 type Point = [number, number]
 
@@ -17,16 +18,7 @@ function canonicalize(points: Point[], mode: 'symmetric' | 'general'): Point[] |
   const keys = new Set(tenths.map(([x, y]) => `${x},${y}`))
   if (keys.size !== tenths.length
     || (mode === 'symmetric' && tenths.some(([x, y]) => !keys.has(`${-x},${y}`)))) return null
-  const centre = tenths.reduce(([x, y], point) => [x + point[0], y + point[1]], [0, 0] as Point)
-  tenths.sort((left, right) => {
-    const difference = Math.atan2(left[1] * tenths.length - centre[1], left[0] * tenths.length - centre[0])
-      - Math.atan2(right[1] * tenths.length - centre[1], right[0] * tenths.length - centre[0])
-    return mode === 'general' ? difference : -difference
-  })
-  const start = tenths.reduce((best, point, index) =>
-    point[0] < tenths[best]![0] || (point[0] === tenths[best]![0] && point[1] < tenths[best]![1])
-      ? index : best, 0)
-  return [...tenths.slice(start), ...tenths.slice(0, start)]
+  return canonicalizeIntegerPolarPolygonV1(tenths, mode === 'symmetric')
 }
 
 export function GenericBodyOutlineEditor({ locale, points, mode, onChange, onModeChange }: {

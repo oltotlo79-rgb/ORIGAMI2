@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BeginnerShapeCanvasPreview } from '../src/components/BeginnerShapeCanvasPreview'
+import { canonicalizeIntegerPolarPolygonV1 } from '../src/lib/integerPolarPolygon'
 
 const context = { clearRect: vi.fn(), save: vi.fn(), restore: vi.fn(), translate: vi.fn(),
   beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), closePath: vi.fn(), stroke: vi.fn(),
@@ -51,6 +52,22 @@ describe('BeginnerShapeCanvasPreview', () => {
       protrusions={[]} onBodyOutlineChange={change} onProtrusionChange={() => {}} />)
     fireEvent.keyDown(screen.getByLabelText('Body outline preview'), { key: 'ArrowLeft' })
     expect(change).toHaveBeenCalledWith(expect.arrayContaining([[-21, -10], [21, -10]]))
+  })
+  it('uses the shared integer polar order for an axis-and-origin body outline', () => {
+    const change = vi.fn()
+    const points: Array<[number, number]> =
+      [[-2, 0], [0, -2], [0, 0], [2, 0], [0, 2]]
+    render(<BeginnerShapeCanvasPreview locale="en" bodySize={undefined}
+      bodyOutline={points} bodyMode="general" protrusions={[]}
+      onBodyOutlineChange={change} onProtrusionChange={() => {}} />)
+    fireEvent.keyDown(screen.getByLabelText('Body outline preview'), {
+      key: 'ArrowLeft',
+    })
+    const edited: Array<[number, number]> =
+      [[-3, 0], [0, -2], [0, 0], [2, 0], [0, 2]]
+    expect(change).toHaveBeenCalledWith(
+      canonicalizeIntegerPolarPolygonV1(edited, false),
+    )
   })
   it('moves the nearest binding control point with pointer coordinates', () => {
     const change = vi.fn()

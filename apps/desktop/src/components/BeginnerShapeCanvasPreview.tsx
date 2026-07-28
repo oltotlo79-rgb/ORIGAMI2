@@ -8,21 +8,10 @@ import {
   selectLocalizedText,
   type LocalizedText,
 } from '../lib/i18n.ts'
+import { canonicalizeIntegerPolarPolygonV1 } from '../lib/integerPolarPolygon.ts'
 
 type Protrusion = NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
 type Point = readonly [number, number]
-
-function canonical(points: Point[], clockwise: boolean): Array<[number, number]> {
-  const centre = points.reduce(([x, y], point) => [x + point[0], y + point[1]], [0, 0])
-  const sorted = [...points].sort((left, right) => {
-    const difference = Math.atan2(left[1] * points.length - centre[1], left[0] * points.length - centre[0])
-      - Math.atan2(right[1] * points.length - centre[1], right[0] * points.length - centre[0])
-    return clockwise ? -difference : difference
-  })
-  const start = sorted.reduce((best, point, index) => point[0] < sorted[best]![0]
-    || (point[0] === sorted[best]![0] && point[1] < sorted[best]![1]) ? index : best, 0)
-  return [...sorted.slice(start), ...sorted.slice(0, start)].map(([x, y]) => [x, y])
-}
 
 export function BeginnerShapeCanvasPreview({ locale, bodySize, bodyOutline, bodyMode, protrusions,
   onBodyOutlineChange, onProtrusionChange }: {
@@ -67,7 +56,11 @@ export function BeginnerShapeCanvasPreview({ locale, bodySize, bodyOutline, body
         && point[0] === -old[0] && point[1] === old[1])
       if (mirror >= 0) next[mirror] = [-next[index]![0], next[index]![1]]
     }
-    const normalized = canonical(next, !selected && bodyMode === 'symmetric')
+    const normalized = canonicalizeIntegerPolarPolygonV1(
+      next,
+      !selected && bodyMode === 'symmetric',
+    )
+    if (!normalized) return
     if (selected) onProtrusionChange({ ...selected, local_outline_tenths_mm: normalized })
     else onBodyOutlineChange(normalized)
   }

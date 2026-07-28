@@ -7,6 +7,7 @@ import {
 import {
   PROTRUSION_LOCAL_OUTLINE_EDITOR_TEXT as TEXT,
 } from '../lib/protrusionLocalOutlineEditorText.ts'
+import { canonicalizeIntegerPolarPolygonV1 } from '../lib/integerPolarPolygon.ts'
 
 type Point = [number, number]
 
@@ -22,12 +23,7 @@ function canonicalize(source: string, bilateral: boolean): Point[] | null {
   const keys = new Set(points.map(([x, y]) => `${x},${y}`))
   if (keys.size !== points.length || (bilateral
     && points.some(([x, y]) => !keys.has(`${-x},${y}`)))) return null
-  const centre = points.reduce(([x, y], point) => [x + point[0], y + point[1]], [0, 0] as Point)
-  points.sort((left, right) => Math.atan2(left[1] * points.length - centre[1], left[0] * points.length - centre[0])
-    - Math.atan2(right[1] * points.length - centre[1], right[0] * points.length - centre[0]))
-  const start = points.reduce((best, point, index) => point[0] < points[best]![0]
-    || (point[0] === points[best]![0] && point[1] < points[best]![1]) ? index : best, 0)
-  return [...points.slice(start), ...points.slice(0, start)]
+  return canonicalizeIntegerPolarPolygonV1(points, false)
 }
 
 export function ProtrusionLocalOutlineEditor({ locale, bindingId, symmetry, points, onChange }: {

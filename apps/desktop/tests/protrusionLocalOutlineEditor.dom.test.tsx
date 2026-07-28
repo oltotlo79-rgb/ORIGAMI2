@@ -13,6 +13,21 @@ describe('ProtrusionLocalOutlineEditor', () => {
     fireEvent.change(screen.getByLabelText('Local outline points binding 2'), { target: { value: '-5,-5\n5,-5\n4,5\n-3,5' } })
     fireEvent.click(screen.getByRole('button', { name: 'Apply local outline' }))
     expect(screen.getByRole('alert')).toBeTruthy(); expect(change).not.toHaveBeenCalled() })
+  it('orders same-ray integer points by radius deterministically', () => {
+    const change = vi.fn()
+    render(<ProtrusionLocalOutlineEditor locale="en" bindingId={7}
+      symmetry="none" points={[]} onChange={change} />)
+    fireEvent.change(screen.getByLabelText('Local outline points binding 7'), {
+      target: { value: '0,-0.1\n-0.3,0.1\n0.2,0\n0.1,0' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply local outline' }))
+    expect(change).toHaveBeenCalledWith([
+      [-3, 1],
+      [0, -1],
+      [1, 0],
+      [2, 0],
+    ])
+  })
   it('clears optional geometry explicitly in Japanese', () => { const change = vi.fn()
     render(<ProtrusionLocalOutlineEditor locale="ja" bindingId={1} symmetry="none"
       points={[[0, 0], [10, 0], [0, 10]]} onChange={change} />)

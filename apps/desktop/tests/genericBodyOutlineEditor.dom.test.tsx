@@ -51,6 +51,24 @@ describe('GenericBodyOutlineEditor', () => {
     expect(modeChange).toHaveBeenCalledWith('symmetric')
   })
 
+  it('canonicalizes reversed maximum-bound input without platform atan2', () => {
+    const change = vi.fn()
+    render(<GenericBodyOutlineEditor locale="en" points={[]} mode="general"
+      onModeChange={() => {}} onChange={change} />)
+    fireEvent.change(screen.getByLabelText('Body outline points'), {
+      target: {
+        value: '-10000,10000\n10000,10000\n10000,-10000\n-10000,-10000',
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply outline' }))
+    expect(change).toHaveBeenCalledWith([
+      [-100000, -100000],
+      [100000, -100000],
+      [100000, 100000],
+      [-100000, 100000],
+    ])
+  })
+
   it('switches locale in the same instance without resetting edits or invoking callbacks', () => {
     const change = vi.fn()
     const modeChange = vi.fn()

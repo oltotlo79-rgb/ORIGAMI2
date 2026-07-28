@@ -2437,6 +2437,7 @@ dependencies = [
  "ori-foldability",
  "ori-geometry",
  "ori-kinematics",
+ "ori-numeric",
  "ori-topology",
  "serde",
  "serde_json",

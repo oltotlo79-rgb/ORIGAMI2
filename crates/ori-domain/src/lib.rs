@@ -15,6 +15,7 @@ mod beginner_recognition;
 mod constraints;
 mod element_metadata;
 mod layers;
+mod material_relief;
 mod material_void;
 mod underlays;
 
@@ -104,6 +105,7 @@ pub use layers::{
     ProjectLayerDocumentValidationErrorV1, validate_project_layer_document_against_pattern_v1,
     validate_project_layer_document_v1,
 };
+pub use material_relief::*;
 pub use material_void::*;
 pub use underlays::{
     MAX_UNDERLAY_SCALE_V1, MAX_UNDERLAYS_V1, MIN_UNDERLAY_SCALE_V1, UNDERLAY_SCHEMA_VERSION_V1,

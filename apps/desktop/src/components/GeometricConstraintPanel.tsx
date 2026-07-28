@@ -290,7 +290,7 @@ export function GeometricConstraintPanel({
                     scope: selectLocalizedText(
                       locale,
                       solvePreview.exactSatisfaction
-                          .replayableAcrossRuntimes
+                        .replayableAcrossRuntimes
                         ? TEXT.deterministicReplayableScope
                         : TEXT.currentRuntimeFallbackScope,
                     ),

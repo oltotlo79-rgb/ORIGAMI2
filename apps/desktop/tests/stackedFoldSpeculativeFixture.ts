@@ -151,7 +151,7 @@ export function makeSpeculativeStackedFoldResponse(): any {
 export function makeCertifiedStackedFoldResponse(): any {
   const response = makeSpeculativeStackedFoldResponse()
   response.continuousPath.continuousCertificateModelId =
-    'stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1'
+    'stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v2'
   response.continuousPath.continuousClearanceCertified = true
   response.transactionProposal.applyMode = 'certified'
   response.transactionProposal.speculativeUnprovenAvailable = false

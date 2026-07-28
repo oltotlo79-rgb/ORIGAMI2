@@ -488,8 +488,14 @@ pub enum DirectConstraintConflictKindV1 {
         target_vertex: VertexId,
         fixed_radius_edge: EdgeId,
     },
-    /// Legacy wire tag retained for compatibility. Exact stored-angle
-    /// composition is not a proof about the rounded trigonometric residual.
+    /// Two rotational-symmetry records have exactly reversed source/target
+    /// roles at the same center. Both rotations are exact non-identity
+    /// cardinal matrices under the frozen deterministic transcendental model,
+    /// and their quarter-turn composition is not identity. A consistent
+    /// positive fixed length binds a real center-source or center-target
+    /// radius edge, excluding the only common solution: role collapse.
+    /// Stored-angle sums, epsilon, platform trigonometry, and current
+    /// coordinates are never evidence.
     NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius {
         center_vertex: VertexId,
         source_vertex: VertexId,
@@ -1830,6 +1836,33 @@ impl RotationCardinalClass {
             Self::ThreeQuarterTurn => 3,
         }
     }
+
+    const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Identity),
+            1 => Some(Self::QuarterTurn),
+            2 => Some(Self::HalfTurn),
+            3 => Some(Self::ThreeQuarterTurn),
+            _ => None,
+        }
+    }
+
+    const fn is_non_identity(self) -> bool {
+        !matches!(self, Self::Identity)
+    }
+
+    const fn quarter_turns(self) -> u8 {
+        match self {
+            Self::Identity => 0,
+            Self::QuarterTurn => 1,
+            Self::HalfTurn => 2,
+            Self::ThreeQuarterTurn => 3,
+        }
+    }
+
+    const fn composes_to_identity(self, other: Self) -> bool {
+        (self.quarter_turns() + other.quarter_turns()).is_multiple_of(4)
+    }
 }
 
 /// Bounded, order-independent summary for one exact ordered rotation role.
@@ -1868,6 +1901,49 @@ impl RotationCardinalGroupSummary {
         }
         let (first, second) = (first?, second?);
         Some([first.id, second.id])
+    }
+
+    /// Chooses the canonical two-record witness whose exact cardinal
+    /// composition is not identity.
+    ///
+    /// The summaries belong to exactly reversed role keys. Identity matrices
+    /// are excluded even if a future frozen evaluator makes another stored
+    /// angle map to identity: this proof family is intentionally limited to
+    /// the exact 90/180/270-degree classes.
+    fn nonidentity_inverse_composition_witness(&self, inverse: &Self) -> Option<[ConstraintId; 2]> {
+        let mut best: Option<[ConstraintId; 2]> = None;
+        for (forward_index, forward) in self.by_class.iter().enumerate() {
+            let (Some(forward), Some(forward_class)) =
+                (*forward, RotationCardinalClass::from_index(forward_index))
+            else {
+                continue;
+            };
+            if !forward_class.is_non_identity() {
+                continue;
+            }
+            for (inverse_index, inverse) in inverse.by_class.iter().enumerate() {
+                let (Some(inverse), Some(inverse_class)) =
+                    (*inverse, RotationCardinalClass::from_index(inverse_index))
+                else {
+                    continue;
+                };
+                if !inverse_class.is_non_identity()
+                    || forward_class.composes_to_identity(inverse_class)
+                {
+                    continue;
+                }
+                let candidate = canonical_constraint_id_pair(forward.id, inverse.id);
+                if best.is_none_or(|current| {
+                    (
+                        candidate[0].canonical_bytes(),
+                        candidate[1].canonical_bytes(),
+                    ) < (current[0].canonical_bytes(), current[1].canonical_bytes())
+                }) {
+                    best = Some(candidate);
+                }
+            }
+        }
+        best
     }
 }
 
@@ -2055,7 +2131,6 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
     let mut vertical: BTreeMap<CanonicalId, Vec<ConstraintId>> = BTreeMap::new();
     let mut equal_lengths: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
     let mut parallels: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
-    let mut rotations: BTreeMap<RotationRoleKey, ScalarGroupSummary> = BTreeMap::new();
     let mut cardinal_rotations: BTreeMap<RotationRoleKey, RotationCardinalGroupSummary> =
         BTreeMap::new();
     let mut non_half_turn_rotations: BTreeMap<RotationRoleKey, ScalarAssignment> = BTreeMap::new();
@@ -2177,10 +2252,6 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                     id: record.id,
                     value: *angle_degrees,
                 };
-                rotations
-                    .entry(key)
-                    .and_modify(|summary| summary.observe(assignment))
-                    .or_insert_with(|| ScalarGroupSummary::new(assignment));
                 if let Some(class) = RotationCardinalClass::from_angle_degrees(*angle_degrees) {
                     cardinal_rotations
                         .entry(key)
@@ -2583,13 +2654,12 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
     let has_same_role_rotation_candidate = cardinal_rotations
         .values()
         .any(|summary| summary.different_witness().is_some());
-    let has_inverse_role_rotation_candidate = rotations.iter().any(|(key, summary)| {
+    let has_inverse_role_rotation_candidate = cardinal_rotations.iter().any(|(key, summary)| {
         let inverse_key = key.inverse();
         *key < inverse_key
-            && summary.consistent_assignment().is_some()
-            && rotations
+            && cardinal_rotations
                 .get(&inverse_key)
-                .and_then(ScalarGroupSummary::consistent_assignment)
+                .and_then(|inverse| summary.nonidentity_inverse_composition_witness(inverse))
                 .is_some()
     });
     let has_mirror_axis_candidate = mirrors.keys().any(|key| {
@@ -2722,23 +2792,23 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             }
         }
         if has_inverse_role_rotation_candidate {
-            for (key, summary) in &rotations {
+            // With exact zero production residuals, reversed cardinal roles
+            // establish `t = Rf(s)` and `s = Ri(t)` for finite center-relative
+            // deltas. The frozen 90/180/270 matrices contain only +/-1 and
+            // +0, so the binary64 transforms are exact. A non-identity
+            // quarter-turn composition therefore fixes only the zero vector;
+            // a consistent positive radius rules that collapse out.
+            for (key, summary) in &cardinal_rotations {
                 let inverse_key = key.inverse();
                 if *key >= inverse_key {
                     continue;
                 }
-                let Some(forward) = summary.consistent_assignment() else {
-                    continue;
-                };
-                let Some(inverse) = rotations
+                let Some(witness) = cardinal_rotations
                     .get(&inverse_key)
-                    .and_then(ScalarGroupSummary::consistent_assignment)
+                    .and_then(|inverse| summary.nonidentity_inverse_composition_witness(inverse))
                 else {
                     continue;
                 };
-                if !binary64_angle_sum_is_proven_not_full_turn_v1(forward.value, inverse.value) {
-                    continue;
-                }
                 let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
                 let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
                     &pattern_edges.by_pair,
@@ -2758,7 +2828,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                             target_vertex,
                             fixed_radius_edge,
                         },
-                    [forward.id, inverse.id, fixed_id],
+                    [witness[0], witness[1], fixed_id],
                 );
             }
         }
@@ -3276,21 +3346,6 @@ fn fixed_angle_rejects_perpendicular_binary64_v1(angle_degrees: f64) -> bool {
             Err(_) => true,
         },
     )
-}
-
-/// One-sided test that two stored binary64 degree values do not add to an
-/// exact real full turn.
-///
-/// IEEE-754 addition is correctly rounded. Because `360.0` is exactly
-/// representable, an exact real sum of 360 must round to the `360.0` bit
-/// pattern. Therefore a different rounded result proves the exact sum differs
-/// from 360. This says nothing conclusive about the separately rounded
-/// trigonometric solver residual, so callers may use it only to form a
-/// quarantined solver candidate.
-fn binary64_angle_sum_is_proven_not_full_turn_v1(first: f64, second: f64) -> bool {
-    debug_assert!(first.is_finite() && first > 0.0 && first < 360.0);
-    debug_assert!(second.is_finite() && second > 0.0 && second < 360.0);
-    (first + second).to_bits() != 360.0_f64.to_bits()
 }
 
 fn general_equal_length_graph_conflict_v1(
@@ -3875,6 +3930,14 @@ fn canonicalize_constraint_ids(ids: &mut Vec<ConstraintId>) {
     ids.dedup();
 }
 
+fn canonical_constraint_id_pair(first: ConstraintId, second: ConstraintId) -> [ConstraintId; 2] {
+    if first.canonical_bytes() < second.canonical_bytes() {
+        [first, second]
+    } else {
+        [second, first]
+    }
+}
+
 /// Conservatively encloses every finite angle, in radians, that can make the
 /// frozen fixed-angle residual exactly binary64 zero.
 ///
@@ -3958,6 +4021,8 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle { .. }
             | DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle { .. }
             | DirectConstraintConflictKindV1::DifferentRotationalSymmetryAnglesWithFixedRadius { .. }
+            | DirectConstraintConflictKindV1::
+                NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius { .. }
             | DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure { .. }
             | DirectConstraintConflictKindV1::ZeroLengthClosureReachesNondegenerateProvider { .. }
     )
@@ -4583,6 +4648,14 @@ mod general_ratio_graph_soundness_tests;
 mod general_ratio_graph_tests;
 
 #[cfg(test)]
+#[path = "constraints_inverse_cardinal_rotation_tests.rs"]
+mod inverse_cardinal_rotation_tests;
+
+#[cfg(test)]
+#[path = "constraints_inverse_cardinal_rotation_limits_tests.rs"]
+mod inverse_cardinal_rotation_limits_tests;
+
+#[cfg(test)]
 #[path = "constraints_nonreciprocal_ratio_fixed_tests.rs"]
 mod nonreciprocal_ratio_fixed_tests;
 
@@ -4898,7 +4971,13 @@ mod tests {
     fn inverse_rotation_conflicts(
         preflight: &ConstraintPreflightV1,
     ) -> Vec<DirectConstraintConflictV1> {
-        emitted_and_quarantined_conflicts(preflight)
+        let conflicts = match preflight {
+            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts.clone(),
+            ConstraintPreflightV1::NoDirectConflict | ConstraintPreflightV1::Unknown { .. } => {
+                Vec::new()
+            }
+        };
+        conflicts
             .into_iter()
             .filter(|conflict| {
                 matches!(
@@ -4916,7 +4995,6 @@ mod tests {
     ) -> Option<DirectConstraintConflictV1> {
         let prepared = prepare(fixture, raw).expect("inverse rotation fixture prepares");
         let preflight = prepared.preflight();
-        assert_solver_required(&preflight);
         let mut found = inverse_rotation_conflicts(&preflight);
         (found.len() == 1).then(|| found.remove(0))
     }
@@ -6069,7 +6147,7 @@ mod tests {
     }
 
     #[test]
-    fn inverse_rotation_angles_not_summing_to_a_full_turn_conflict_with_either_radius() {
+    fn inverse_exact_cardinal_nonidentity_composition_conflicts_with_either_radius() {
         let fixture = Fixture::new();
         for radius_edge in [0, 1] {
             let forward = record(rotation(&fixture, 0, 1, 2, 90.0));
@@ -6109,9 +6187,6 @@ mod tests {
                 record(rotation(&fixture, 0, 2, 1, inverse)),
                 record(fixed_length(&fixture, 0, 5.0)),
             ]);
-            assert!(!binary64_angle_sum_is_proven_not_full_turn_v1(
-                forward, inverse
-            ));
             let prepared = prepare(&fixture, &raw).expect("complementary rotations prepare");
             assert!(inverse_rotation_conflicts(&prepared.preflight()).is_empty());
         }
@@ -6127,9 +6202,6 @@ mod tests {
             360.0_f64.to_bits(),
             "the exact non-360 dyadic sum is absorbed by binary64 rounding"
         );
-        assert!(!binary64_angle_sum_is_proven_not_full_turn_v1(
-            adjacent, 270.0
-        ));
         let raw = document([
             record(rotation(&fixture, 0, 1, 2, adjacent)),
             record(rotation(&fixture, 0, 2, 1, 270.0)),
@@ -6143,17 +6215,18 @@ mod tests {
     }
 
     #[test]
-    fn inverse_rotation_extreme_open_angle_boundary_remains_a_sound_proof() {
+    fn inverse_rotation_subnormal_and_near_full_turn_remain_solver_required() {
         let fixture = Fixture::new();
         let first = f64::from_bits(1);
         let second = 360.0_f64.next_down();
-        assert!(binary64_angle_sum_is_proven_not_full_turn_v1(first, second));
         let raw = document([
             record(rotation(&fixture, 0, 1, 2, first)),
             record(rotation(&fixture, 0, 2, 1, second)),
             record(fixed_length(&fixture, 0, f64::from_bits(1))),
         ]);
-        assert!(only_inverse_rotation_conflict(&fixture, &raw).is_some());
+        let prepared = prepare(&fixture, &raw).expect("boundary angles prepare");
+        assert!(inverse_rotation_conflicts(&prepared.preflight()).is_empty());
+        assert_solver_required(&prepared.preflight());
     }
 
     #[test]

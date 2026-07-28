@@ -268,7 +268,7 @@ test('AUT-101 apply rebinds candidate authority natively and requires confirmati
   assert.match(native, /expected_profile: ori_domain::BeginnerDesignProfileV1/)
   assert.match(native, /expected_candidate_edge_id: EdgeId/)
   assert.match(native, /generated candidate identity changed before apply/)
-  assert.match(native, /Command::ApplyStackedFoldDocument/)
+  assert.match(native, /Command::ApplyBeginnerGeneratedDocument/)
   assert.match(native, /SymmetricFourLegBase/)
   assert.match(native, /SymmetricWingBase/)
   assert.match(client, /invoke<ProjectSnapshot>\('apply_beginner_generated_plan'/)

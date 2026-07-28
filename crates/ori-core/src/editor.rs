@@ -311,13 +311,79 @@ pub enum Command {
     ApplyRayToTargetDocument(RayToTargetPlan),
     ApplyLinearArrayDocument(LinearArrayPlan),
     ApplyRadialArrayDocument(RadialArrayPlan),
-    ApplyStackedFoldDocument {
+    /// Internal replay payload for an authority-gated stacked-fold commit.
+    ///
+    /// The payload fields and constructor are private to ori-core, so a
+    /// downstream caller cannot manufacture this variant and route an
+    /// arbitrary document through [`EditorState::execute`].
+    ApplyStackedFoldDocument(StackedFoldDocumentCommandV1),
+    /// Atomic authored-document replacement used by the beginner generator.
+    ///
+    /// This command does not claim stacked-fold proof authority and never
+    /// installs an applied pose.
+    ApplyBeginnerGeneratedDocument {
         pattern: CreasePattern,
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
         beginner_design_profile: Box<BeginnerDesignProfileV1>,
     },
+}
+
+/// Opaque payload for one stacked-fold document history command.
+///
+/// Its fields are deliberately private and there is no public constructor.
+/// Only ori-core's authority-consuming mutation facade and trusted history
+/// replay may create it.
+///
+/// ```compile_fail
+/// use ori_core::StackedFoldDocumentCommandV1;
+/// use ori_domain::{
+///     BeginnerDesignProfileV1, CreasePattern, InstructionTimeline, Paper,
+///     ProjectLayerDocumentV1,
+/// };
+///
+/// fn forge(
+///     pattern: CreasePattern,
+///     paper: Paper,
+///     instruction_timeline: InstructionTimeline,
+///     project_layers: ProjectLayerDocumentV1,
+///     beginner_design_profile: Box<BeginnerDesignProfileV1>,
+/// ) -> StackedFoldDocumentCommandV1 {
+///     StackedFoldDocumentCommandV1 {
+///         pattern,
+///         paper,
+///         instruction_timeline,
+///         project_layers,
+///         beginner_design_profile,
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct StackedFoldDocumentCommandV1 {
+    pattern: CreasePattern,
+    paper: Paper,
+    instruction_timeline: InstructionTimeline,
+    project_layers: ProjectLayerDocumentV1,
+    beginner_design_profile: Box<BeginnerDesignProfileV1>,
+}
+
+impl StackedFoldDocumentCommandV1 {
+    pub(crate) fn new(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        project_layers: ProjectLayerDocumentV1,
+        beginner_design_profile: Box<BeginnerDesignProfileV1>,
+    ) -> Self {
+        Self {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2592,13 +2658,13 @@ impl EditorState {
         let pose_before = self.current_applied_pose.clone();
         let result = self.execute(
             expected_revision,
-            Command::ApplyStackedFoldDocument {
+            Command::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1::new(
                 pattern,
                 paper,
                 instruction_timeline,
                 project_layers,
-                beginner_design_profile: Box::new(self.beginner_design_profile.clone()),
-            },
+                Box::new(self.beginner_design_profile.clone()),
+            )),
         )?;
         self.current_applied_pose = Some(applied_pose.clone());
         let entry = self
@@ -3775,7 +3841,7 @@ impl EditorState {
         if !matches!(
             (&latest.forward, &latest.inverse),
             (
-                Command::ApplyStackedFoldDocument { .. },
+                Command::ApplyStackedFoldDocument(..),
                 Inverse::RestoreStackedFoldDocument { .. }
             )
         ) {
@@ -5385,7 +5451,14 @@ impl EditorState {
                     ),
                 })
             }
-            Command::ApplyStackedFoldDocument {
+            Command::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1 {
+                ref pattern,
+                ref paper,
+                ref instruction_timeline,
+                ref project_layers,
+                ref beginner_design_profile,
+            })
+            | Command::ApplyBeginnerGeneratedDocument {
                 ref pattern,
                 ref paper,
                 ref instruction_timeline,
@@ -6442,7 +6515,8 @@ impl EditorState {
             | Command::ApplyRayToTargetDocument(..)
             | Command::ApplyLinearArrayDocument(..)
             | Command::ApplyRadialArrayDocument(..)
-            | Command::ApplyStackedFoldDocument { .. } => Ok(()),
+            | Command::ApplyStackedFoldDocument(..)
+            | Command::ApplyBeginnerGeneratedDocument { .. } => Ok(()),
         }
     }
 
@@ -6845,7 +6919,8 @@ impl EditorState {
             | Command::ApplyRayToTargetDocument(..)
             | Command::ApplyLinearArrayDocument(..)
             | Command::ApplyRadialArrayDocument(..)
-            | Command::ApplyStackedFoldDocument { .. } => {}
+            | Command::ApplyStackedFoldDocument(..)
+            | Command::ApplyBeginnerGeneratedDocument { .. } => {}
         }
         Ok(targets)
     }
@@ -8863,7 +8938,8 @@ impl Command {
             | Self::ApplyRayToTargetDocument(RayToTargetPlan { pattern, .. })
             | Self::ApplyLinearArrayDocument(LinearArrayPlan { pattern, .. })
             | Self::ApplyRadialArrayDocument(RadialArrayPlan { pattern, .. })
-            | Self::ApplyStackedFoldDocument { pattern, .. } => {
+            | Self::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1 { pattern, .. })
+            | Self::ApplyBeginnerGeneratedDocument { pattern, .. } => {
                 let added_vertices = pattern.vertices.len().saturating_sub(0);
                 let added_edges = pattern.edges.len().saturating_sub(0);
                 (added_vertices, added_edges)
@@ -8901,7 +8977,8 @@ impl Command {
             | Self::ApplyRayToTargetDocument(..)
             | Self::ApplyLinearArrayDocument(..)
             | Self::ApplyRadialArrayDocument(..)
-            | Self::ApplyStackedFoldDocument { .. } => true,
+            | Self::ApplyStackedFoldDocument(..)
+            | Self::ApplyBeginnerGeneratedDocument { .. } => true,
             Self::UpdateProjectMemo { .. }
             | Self::UpdateBeginnerDesignProfile { .. }
             | Self::SetElementMetadata { .. }
@@ -9285,7 +9362,10 @@ impl Command {
                 edges: pattern.edges.iter().map(|edge| edge.id).collect(),
                 ..Changes::default()
             },
-            Self::ApplyStackedFoldDocument { ref pattern, .. } => Changes {
+            Self::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1 {
+                ref pattern, ..
+            })
+            | Self::ApplyBeginnerGeneratedDocument { ref pattern, .. } => Changes {
                 vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
                 edges: pattern.edges.iter().map(|edge| edge.id).collect(),
                 settings: true,

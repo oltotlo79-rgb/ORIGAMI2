@@ -3728,7 +3728,7 @@ pub(super) fn apply_beginner_generated_plan_document(
             expected_project_id,
             expected_revision,
         ),
-        Command::ApplyStackedFoldDocument {
+        Command::ApplyBeginnerGeneratedDocument {
             pattern,
             paper,
             instruction_timeline,
@@ -4177,7 +4177,7 @@ pub(super) fn apply_grid_plan_document(
             expected_project_id,
             expected_revision,
         ),
-        Command::ApplyStackedFoldDocument {
+        Command::ApplyBeginnerGeneratedDocument {
             pattern,
             paper,
             instruction_timeline,

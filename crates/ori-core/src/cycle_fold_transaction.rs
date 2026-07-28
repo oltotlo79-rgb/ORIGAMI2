@@ -1,20 +1,17 @@
-//! Low-level atomic document transaction for a caller-certified cycle fold.
+//! Test-only regression harness for the retired low-level cycle-fold
+//! transaction.
 //!
-//! This V1 primitive binds one `EditorState` commit to a project ID, revision,
-//! source fold-model fingerprint, and previous persisted pose. It does not
-//! authenticate an open-project instance or any runtime pose/layer capability,
-//! and it is not the desktop application's mutation authority.
+//! The former public V1 primitive bound an `EditorState` commit to a project
+//! ID, revision, source fold-model fingerprint, and previous persisted pose,
+//! but did not authenticate an open-project instance, runtime pose/layer
+//! capability, or the caller-supplied payload against the closure
+//! certificate. It therefore cannot be a mutation-authority API.
 //!
-//! The caller-supplied pattern, paper, timeline, layers, and applied pose are
-//! not derived from or cryptographically bound to the closure certificate.
-//! Callers must separately prove that this payload represents the certified
-//! schedule target before preparing a transaction.
+//! The module now compiles only for ori-core's own tests so the historical
+//! atomicity and stale-state regressions remain covered without exposing an
+//! authority-confused entry point to downstream crates.
 
 use ori_domain::{CreasePattern, InstructionTimeline, Paper, ProjectId, ProjectLayerDocumentV1};
-use ori_kinematics::{
-    CanonicalCycleScheduleV1, DyadicMaterialHingeIntervalClosureCertificateV1,
-    MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
-};
 use thiserror::Error;
 
 use crate::{AppliedPoseV1, CommandError, CommandResult, EditorState, Revision};
@@ -28,13 +25,12 @@ struct CycleFoldPayloadV1 {
     applied_pose: AppliedPoseV1,
 }
 
-/// Single-use, non-persistable handle for one atomic document commit.
+/// Single-use test handle for one atomic document commit.
 ///
-/// This handle is not a runtime pose, layer-order, open-instance, or desktop
-/// mutation authority. Its caller remains responsible for binding the
-/// caller-supplied payload to the certified schedule target.
+/// This handle is not compiled into production and is not a runtime pose,
+/// layer-order, open-instance, or desktop mutation authority.
 #[derive(Debug)]
-pub struct ReadyCycleFoldTransactionV1 {
+pub(super) struct ReadyCycleFoldTransactionV1 {
     project: ProjectId,
     revision: Revision,
     fold_model_fingerprint: String,
@@ -43,9 +39,7 @@ pub struct ReadyCycleFoldTransactionV1 {
 }
 
 #[derive(Debug, Error)]
-pub enum CycleFoldTransactionErrorV1 {
-    #[error("the closure certificate is not bound to this schedule and material graph")]
-    BindingMismatch,
+pub(super) enum CycleFoldTransactionErrorV1 {
     #[error("the project identity changed after preparation")]
     ProjectChanged,
     #[error("the editor revision changed after preparation")]
@@ -60,66 +54,12 @@ pub enum CycleFoldTransactionErrorV1 {
     ApplyFailed(#[from] CommandError),
 }
 
-#[allow(clippy::too_many_arguments)]
-/// Prepares a low-level atomic document transaction after validating the
-/// certificate, schedule, and material-graph binding.
-///
-/// This function does not establish that the caller-supplied document payload
-/// corresponds to the certificate's target. That relationship, along with any
-/// runtime pose/layer and open-instance authority, must be validated by the
-/// caller.
-pub fn prepare_cycle_fold_transaction_v1(
-    project: ProjectId,
-    editor: &EditorState,
-    geometry: &MaterialHingeGraphGeometry,
-    audit: &MaterialHingeGraphAudit,
-    schedule: &CanonicalCycleScheduleV1,
-    certificate: DyadicMaterialHingeIntervalClosureCertificateV1,
-    pattern: CreasePattern,
-    paper: Paper,
-    instruction_timeline: InstructionTimeline,
-    project_layers: ProjectLayerDocumentV1,
-    applied_pose: AppliedPoseV1,
-) -> Result<ReadyCycleFoldTransactionV1, CycleFoldTransactionErrorV1> {
-    let fixed = certificate.fixed_face();
-    let mut graph_hinges = geometry
-        .hinges()
-        .iter()
-        .map(|hinge| hinge.edge())
-        .collect::<Vec<_>>();
-    graph_hinges.sort_unstable_by_key(ori_domain::EdgeId::canonical_bytes);
-    if !certificate.has_canonical_complete_partition_v1()
-        || !schedule.matches_binding(geometry, audit, fixed)
-        || certificate.schedule_binding_fingerprint_v2()
-            != schedule.certificate_binding_fingerprint_v2()
-        || certificate.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
-        || certificate
-            .leaves()
-            .iter()
-            .any(|(_, _, leaf)| leaf.fixed_face() != fixed || leaf.checked_hinges() != graph_hinges)
-    {
-        return Err(CycleFoldTransactionErrorV1::BindingMismatch);
-    }
-    Ok(ReadyCycleFoldTransactionV1 {
-        project,
-        revision: editor.revision(),
-        fold_model_fingerprint: editor.fold_model_fingerprint_v1(),
-        previous_pose: editor.current_applied_pose().cloned(),
-        payload: Some(CycleFoldPayloadV1 {
-            pattern,
-            paper,
-            instruction_timeline,
-            project_layers,
-            applied_pose,
-        }),
-    })
-}
-
-/// Applies the prepared document payload as one `EditorState` history entry.
+/// Applies the retired test-only document payload as one `EditorState` history
+/// entry.
 ///
 /// This revalidates the persisted project/revision/model/pose binding only. It
 /// neither installs nor authenticates desktop runtime pose or layer authority.
-pub fn apply_ready_cycle_fold_transaction_v1(
+pub(super) fn apply_ready_cycle_fold_transaction_v1(
     project: ProjectId,
     editor: &mut EditorState,
     ready: &mut ReadyCycleFoldTransactionV1,

@@ -1,5 +1,8 @@
 import { isCanonicalNonNilUuid as isCanonicalUuid } from './canonicalUuid.ts'
 import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from './deterministicTranscendentalModel.ts'
+import {
   DEFAULT_LOCALE,
   formatLocalizedText,
   type Locale,

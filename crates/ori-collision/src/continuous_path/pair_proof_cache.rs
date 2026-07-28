@@ -21,7 +21,7 @@ use crate::proof_cache::{
 };
 
 use super::{
-    STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+    STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
     StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1,
     StackedFoldPathDiagnosticLimitsV1, collective_path_absolute_angles_v1,
     diagnose_collective_hinge_path_from_pose_with_optional_cache_v1,
@@ -68,7 +68,7 @@ pub fn diagnose_collective_hinge_path_with_pair_cache_v1<'a>(
     }
     let (source_absolute, target_absolute) =
         collective_path_absolute_angles_v1(initial_pose, moving_hinges, requested_angle_degrees)?;
-    let issuer_context = positive_two_hinge_cache_issuer_context_v1(
+    let issuer_context = positive_two_hinge_cache_issuer_context_v2(
         initial_pose,
         source_absolute,
         target_absolute.as_slice(),
@@ -90,19 +90,37 @@ pub fn diagnose_collective_hinge_path_with_pair_cache_v1<'a>(
     )
 }
 
-fn positive_two_hinge_cache_issuer_context_v1(
+fn positive_two_hinge_cache_issuer_context_v2(
     initial_pose: &MaterialTreePose,
+    source_absolute: &[HingeAngle],
+    target_absolute: &[HingeAngle],
+) -> [u8; 32] {
+    positive_two_hinge_cache_issuer_context_from_parts_v2(
+        initial_pose.fixed_face(),
+        source_absolute,
+        target_absolute,
+    )
+}
+
+fn positive_two_hinge_cache_issuer_context_from_parts_v2(
+    fixed_face: Option<FaceId>,
     source_absolute: &[HingeAngle],
     target_absolute: &[HingeAngle],
 ) -> [u8; 32] {
     use sha2::Digest as _;
 
     let mut hash = sha2::Sha256::new();
-    hash.update(b"ori-continuous-model4-pair-cache-issuer-v1");
+    hash.update(b"ori-continuous-model4-pair-cache-issuer-v2");
     hash.update(
-        STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1.as_bytes(),
+        (STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2.len() as u64)
+            .to_be_bytes(),
     );
-    match initial_pose.fixed_face() {
+    hash.update(
+        STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2.as_bytes(),
+    );
+    hash.update((ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.len() as u64).to_be_bytes());
+    hash.update(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.as_bytes());
+    match fixed_face {
         Some(face) => {
             hash.update([1]);
             hash.update(face.canonical_bytes());
@@ -168,6 +186,19 @@ fn prove_positive_endpoint_pairs_with_cache_inner_v1(
         || paper_thickness_mm <= 0.0
     {
         return Err(StackedFoldPathDiagnosticErrorV1::ProofCacheUnavailable);
+    }
+    if exact_pairs.is_empty() {
+        if cache.issuer_context == [0; 32] {
+            return Err(StackedFoldPathDiagnosticErrorV1::ProofCacheUnavailable);
+        }
+        cache
+            .control
+            .check_v1()
+            .map_err(map_pair_cache_evidence_error_v1)?;
+        // The endpoint/topology theorem already discharged every pair. No
+        // cache key, witness, lookup result, or publication is consumed here,
+        // so preparing a complete exact face snapshot would add no authority.
+        return Ok(true);
     }
 
     let session = prepare_positive_thickness_exact_pair_cache_session_v1(bound, paper_thickness_mm)
@@ -332,5 +363,44 @@ const fn map_pair_cache_runtime_error_v1(
             StackedFoldPathDiagnosticErrorV1::Cancelled
         }
         _ => StackedFoldPathDiagnosticErrorV1::ProofCacheUnavailable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ori_domain::EdgeId;
+
+    use super::*;
+
+    fn fixed_id<T: serde::de::DeserializeOwned>(prefix: &str, index: u64) -> T {
+        serde_json::from_str(&format!("\"00000000-0000-4000-{prefix}-{index:012x}\"")).unwrap()
+    }
+
+    #[test]
+    fn model4_v2_pair_cache_issuer_has_a_fixed_cross_runtime_golden() {
+        let first: EdgeId = fixed_id("ea00", 1);
+        let second: EdgeId = fixed_id("ea00", 2);
+        let source = [
+            HingeAngle::new(first, 0.0).unwrap(),
+            HingeAngle::new(second, 10.0).unwrap(),
+        ];
+        let target = [
+            HingeAngle::new(first, 30.0).unwrap(),
+            HingeAngle::new(second, 45.0).unwrap(),
+        ];
+
+        assert_eq!(
+            positive_two_hinge_cache_issuer_context_from_parts_v2(
+                Some(fixed_id("fa00", 1)),
+                &source,
+                &target,
+            ),
+            [
+                0xaa, 0x15, 0x35, 0x45, 0x70, 0xed, 0x40, 0xec, 0xd1, 0x1a, 0x6c, 0xf7, 0x86, 0xda,
+                0x73, 0x5c, 0x65, 0x7f, 0xa7, 0xae, 0x29, 0xe2, 0xfb, 0x00, 0x5e, 0x32, 0x1e, 0xe6,
+                0x2a, 0x87, 0x28, 0x8a,
+            ],
+            "the issuer binds its V2 model ID and deterministic transcendental model"
+        );
     }
 }

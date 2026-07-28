@@ -223,7 +223,7 @@ fn validate_unproven_mark_for_entry(
         return Err(EditorHistoryErrorV1::InvalidSpeculativeUnprovenMetadata);
     }
     let (
-        Command::ApplyStackedFoldDocument { .. },
+        Command::ApplyStackedFoldDocument(..),
         Inverse::RestoreStackedFoldDocument { pattern, paper, .. },
     ) = (forward, inverse)
     else {

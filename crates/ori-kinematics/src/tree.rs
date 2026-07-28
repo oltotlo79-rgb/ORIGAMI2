@@ -296,6 +296,27 @@ pub struct MaterialHingeGraphGeometry {
     face_boundaries: Vec<PreparedFaceBoundary>,
 }
 
+/// Crate-private identity anchor for proofs that must remain tied to one
+/// prepared material-graph instance rather than merely equal geometry.
+#[derive(Debug, Clone)]
+pub(crate) struct MaterialHingeGraphInstanceV1 {
+    issuer: Arc<()>,
+}
+
+impl PartialEq for MaterialHingeGraphInstanceV1 {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.issuer, &other.issuer)
+    }
+}
+
+impl Eq for MaterialHingeGraphInstanceV1 {}
+
+impl MaterialHingeGraphInstanceV1 {
+    pub(crate) fn matches(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+        Arc::ptr_eq(&self.issuer, &geometry.issuer)
+    }
+}
+
 /// Opaque, observation-only kinematics geometry for one authenticated
 /// effective-cut material snapshot.
 ///
@@ -658,6 +679,12 @@ pub fn prepare_effective_cut_kinematics_diagnostic_v1(
 }
 
 impl MaterialHingeGraphGeometry {
+    pub(crate) fn instance_anchor_v1(&self) -> MaterialHingeGraphInstanceV1 {
+        MaterialHingeGraphInstanceV1 {
+            issuer: Arc::clone(&self.issuer),
+        }
+    }
+
     pub(crate) fn edge_block_instance(
         &self,
         face_ids: Vec<FaceId>,

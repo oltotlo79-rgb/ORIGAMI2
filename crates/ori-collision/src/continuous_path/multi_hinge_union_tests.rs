@@ -175,6 +175,15 @@ fn production_two_and_three_segment_creases_certify_the_complete_local_union_onl
             &geometry, &audit, fixed, &schedule, 0.1, limits,
         )
         .unwrap();
+        assert_eq!(
+            gaps.work_used(),
+            match hinge_count {
+                2 => 32,
+                3 => 63,
+                _ => unreachable!(),
+            },
+            "every bounded linear lookup must be charged"
+        );
         assert_eq!(gaps.gaps().len(), 1);
         assert_eq!(gaps.gaps()[0].hinges().len(), hinge_count);
         assert!(
@@ -209,6 +218,15 @@ fn production_two_and_three_segment_creases_certify_the_complete_local_union_onl
             limits,
         )
         .unwrap();
+        assert_eq!(
+            certificate.work_used(),
+            match hinge_count {
+                2 => 225,
+                3 => 354,
+                _ => unreachable!(),
+            },
+            "compound normalization and every explicit linear lookup must be charged"
+        );
         assert_eq!(certificate.covered().len(), 1);
         assert_eq!(certificate.covered()[0].hinges().len(), hinge_count);
         assert!(certificate.covers_every_reported_hinge_neighbourhood());

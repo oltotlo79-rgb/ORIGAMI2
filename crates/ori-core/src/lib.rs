@@ -16,6 +16,7 @@ mod constraint_semantic_mus;
 mod constraint_semantic_mus_tests;
 mod constraint_solver;
 mod constraints;
+#[cfg(test)]
 mod cycle_fold_transaction;
 mod editor;
 mod flat_surface;
@@ -70,10 +71,6 @@ pub use constraints::{
     validate_geometric_constraint_document_v1,
     validate_geometric_constraint_record_against_pattern_v1,
 };
-pub use cycle_fold_transaction::{
-    CycleFoldTransactionErrorV1, ReadyCycleFoldTransactionV1,
-    apply_ready_cycle_fold_transaction_v1, prepare_cycle_fold_transaction_v1,
-};
 pub use editor::bulk_intersection_plan::{
     AtomicBulkIntersectionDeltaV1, BulkAtomicDeltaPrerequisiteV1, BulkEdgeSubdivisionPlanV1,
     BulkIntersectionClusterV1, BulkIntersectionGapV1, BulkIntersectionPlanRegistryV1,
@@ -95,7 +92,7 @@ pub use editor::{
     SpeculativeUnprovenFoldResolutionErrorV1, SpeculativeUnprovenFoldResolutionReportV1,
     SpeculativeUnprovenFoldStateMarkerV1, SpeculativeUnprovenFoldStatusCountsV1,
     SpeculativeUnprovenFoldStatusV1, SpeculativeUnprovenFoldSummaryV1,
-    SpeculativeUnprovenFoldUnknownReasonV1, VertexPositionUpdate,
+    SpeculativeUnprovenFoldUnknownReasonV1, StackedFoldDocumentCommandV1, VertexPositionUpdate,
 };
 pub use flat_surface::{
     CertifiedFlatSurfaceFaceV1, CertifiedFlatSurfaceV1, MAX_CERTIFIED_FLAT_SURFACE_VERTICES_V1,

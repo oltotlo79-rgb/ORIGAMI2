@@ -215,6 +215,117 @@ fn admit_initial_layer_order_endpoint_v1(
     Some(endpoint)
 }
 
+fn is_positive_thickness_continuous_certificate_model_id_v2(model_id: Option<&str>) -> bool {
+    matches!(
+        model_id,
+        Some(
+            ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2
+                | ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2
+        )
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScheduledCycleThicknessAuthorityV1 {
+    ZeroThickness,
+    PositiveThickness { thickness_bits: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScheduledCycleThicknessDiagnosticErrorV1 {
+    InvalidThickness,
+    PositiveThicknessUnsupported,
+    Uncertified,
+}
+
+fn normalize_blockwise_current_cycle_fallback_error_v1(error: String) -> String {
+    if error == CANCELLED_MESSAGE || error == CYCLE_PATH_RESOURCE_MESSAGE {
+        error
+    } else {
+        CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned()
+    }
+}
+
+fn preflight_certified_path_graph_thickness_v1(
+    paper_thickness_mm: f64,
+) -> Result<(), ScheduledCycleThicknessDiagnosticErrorV1> {
+    if paper_thickness_mm == 0.0 {
+        // Preserve the established +0/-0 zero-thickness graph issuer.
+        Ok(())
+    } else if !paper_thickness_mm.is_finite() || paper_thickness_mm < 0.0 {
+        Err(ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness)
+    } else {
+        // CertifiedPathTransitionEvidenceV1 currently carries only the
+        // zero-thickness cycle collision issuer. Until every graph edge and
+        // its pending revalidation bind the exact positive thickness, do not
+        // let a detached positive direct path upgrade those edge certificates.
+        Err(ScheduledCycleThicknessDiagnosticErrorV1::PositiveThicknessUnsupported)
+    }
+}
+
+fn scheduled_cycle_diagnostic_matches_thickness_authority_v1(
+    authority: ScheduledCycleThicknessAuthorityV1,
+    model_id: Option<&str>,
+    positive_thickness_bits: Option<u64>,
+) -> bool {
+    match authority {
+        ScheduledCycleThicknessAuthorityV1::ZeroThickness => {
+            model_id
+                == Some(
+                    ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                )
+                && positive_thickness_bits.is_none()
+        }
+        ScheduledCycleThicknessAuthorityV1::PositiveThickness { thickness_bits } => {
+            model_id
+                == Some(
+                    ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                )
+                && positive_thickness_bits == Some(thickness_bits)
+        }
+    }
+}
+
+fn diagnose_scheduled_cycle_path_for_thickness_v1<T>(
+    paper_thickness_mm: f64,
+    supports_positive_thickness: impl FnOnce() -> bool,
+    diagnose_zero_thickness: impl FnOnce() -> T,
+    diagnose_positive_thickness: impl FnOnce(f64) -> T,
+    certificate_metadata: impl FnOnce(&T) -> (Option<&'static str>, Option<u64>),
+) -> Result<T, ScheduledCycleThicknessDiagnosticErrorV1> {
+    let authority = if paper_thickness_mm == 0.0 {
+        // IEEE equality intentionally preserves the existing +0/-0 behavior.
+        ScheduledCycleThicknessAuthorityV1::ZeroThickness
+    } else if !paper_thickness_mm.is_finite() || paper_thickness_mm < 0.0 {
+        return Err(ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness);
+    } else {
+        if !supports_positive_thickness() {
+            // A positive-thickness request must never fall through to the
+            // zero-thickness oracle merely because the positive theorem does
+            // not cover this graph/schedule.
+            return Err(ScheduledCycleThicknessDiagnosticErrorV1::PositiveThicknessUnsupported);
+        }
+        ScheduledCycleThicknessAuthorityV1::PositiveThickness {
+            thickness_bits: paper_thickness_mm.to_bits(),
+        }
+    };
+    let diagnostic = match authority {
+        ScheduledCycleThicknessAuthorityV1::ZeroThickness => diagnose_zero_thickness(),
+        ScheduledCycleThicknessAuthorityV1::PositiveThickness { .. } => {
+            diagnose_positive_thickness(paper_thickness_mm)
+        }
+    };
+    let (model_id, positive_thickness_bits) = certificate_metadata(&diagnostic);
+    if !scheduled_cycle_diagnostic_matches_thickness_authority_v1(
+        authority,
+        model_id,
+        positive_thickness_bits,
+    ) {
+        return Err(ScheduledCycleThicknessDiagnosticErrorV1::Uncertified);
+    }
+    Ok(diagnostic)
+}
+
 const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
 const MAX_DYADIC_GRAPH_STATES_V1: usize = 2_187;
 const MAX_DYADIC_GRAPH_TRANSITIONS_V1: usize = 20_412;
@@ -1925,24 +2036,18 @@ fn propose_current_cycle_pose_inner_with_layers(
     let closure = basis_closure.closure().clone();
     let source = pose_state_fingerprint_v1(pose.hinge_angles());
     let target = pose_state_fingerprint_v1(&requested);
-    let continuous = if paper_thickness_mm > 0.0
-        && supports_scheduled_positive_thickness_path_v1(
+    let continuous = match diagnose_scheduled_cycle_path_for_thickness_v1(
+        paper_thickness_mm,
+        || {
+            supports_scheduled_positive_thickness_path_v1(
             geometry,
             audit,
             pose.fixed_face(),
             generated.schedule(),
-        ) {
-        diagnose_scheduled_positive_thickness_cycle_path_v1(
-            geometry,
-            audit,
-            pose.fixed_face(),
-            &generated,
-            &closure,
-            paper_thickness_mm,
-            32,
-        )
-    } else {
-        diagnose_scheduled_cycle_path_v1(
+            )
+        },
+        || {
+            diagnose_scheduled_cycle_path_v1(
             geometry,
             audit,
             pose.fixed_face(),
@@ -1950,8 +2055,33 @@ fn propose_current_cycle_pose_inner_with_layers(
             &closure,
             32,
         )
-    };
-    if continuous.continuous_certificate_model_id().is_none() {
+        },
+        |thickness| {
+            diagnose_scheduled_positive_thickness_cycle_path_v1(
+            geometry,
+            audit,
+            pose.fixed_face(),
+            &generated,
+            &closure,
+                thickness,
+            32,
+        )
+        },
+        |diagnostic| {
+            (
+                diagnostic.continuous_certificate_model_id(),
+                diagnostic.positive_thickness_bits(),
+            )
+        },
+    ) {
+        Ok(continuous) => continuous,
+        Err(ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness) => {
+            return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
+        }
+        Err(
+            ScheduledCycleThicknessDiagnosticErrorV1::PositiveThicknessUnsupported
+            | ScheduledCycleThicknessDiagnosticErrorV1::Uncertified,
+        ) => {
         return prepare_blockwise_current_cycle_fallback_v1(
             app,
             transaction_state,
@@ -1962,11 +2092,12 @@ fn propose_current_cycle_pose_inner_with_layers(
             &requested,
             paper_thickness_mm,
             generation,
-            progress_request_id,
-            request.expected_revision,
-        )
-        .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
-    }
+                progress_request_id,
+                request.expected_revision,
+            )
+            .map_err(normalize_blockwise_current_cycle_fallback_error_v1);
+        }
+    };
     let expected = ori_collision::certify_scheduled_cycle_transition_v1(
         geometry,
         audit,
@@ -2314,6 +2445,17 @@ async fn propose_current_stacked_fold_read_inner(
     let worker_permit = app_state
         .try_acquire_native_pose_worker()
         .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
+    if request.certified_path_graph_v1.is_some() {
+        let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if project.instance_id != request.expected_project_instance_id
+            || project.project_id != request.expected_project_id
+            || project.editor.revision() != request.expected_revision
+        {
+            return Err(STALE_MESSAGE.to_owned());
+        }
+        preflight_certified_path_graph_thickness_v1(project.editor.paper().thickness_mm)
+            .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    }
     // A rejected busy request must not cancel the permit owner.
     let analysis_generation = begin_stacked_fold_read_generation_v1()?;
     let progress_request_id = request.progress_request_id.clone().filter(|value| {
@@ -2452,11 +2594,7 @@ async fn propose_current_stacked_fold_read_inner(
             audited_target.requires_closure_certificate(),
             request.cycle_schedule_v1.is_some(),
         ) {
-            let initial = prepare_stacked_fold_initial_graph_pose_v1(
-                audited_target,
-                model,
-                pose,
-            )
+            let initial = prepare_stacked_fold_initial_graph_pose_v1(audited_target, model, pose)
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             let path_variant_count = usize::from(request.cycle_schedule_v1.is_some())
                 + usize::from(request.linear_candidate_v1.is_some())
@@ -2474,17 +2612,26 @@ async fn propose_current_stacked_fold_read_inner(
                 )
                 .map_err(str::to_owned)?;
                 let requested = ori_kinematics::CanonicalHingeAngles::new(
-                    cycle.entries.iter().map(|entry| {
-                        ori_kinematics::HingeAngle::new(entry.edge, entry.requested_angle_degrees)
-                    }).collect::<Result<Vec<_>, _>>()
+                    cycle
+                        .entries
+                        .iter()
+                        .map(|entry| {
+                            ori_kinematics::HingeAngle::new(
+                                entry.edge,
+                                entry.requested_angle_degrees,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
                         .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
-                ).map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+                )
+                .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
                 Some((
                     ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
                         schedule,
                         initial.pose().hinge_angles(),
                         &requested,
-                    ).map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
+                    )
+                    .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
                     requested,
                 ))
             } else {
@@ -2497,18 +2644,15 @@ async fn propose_current_stacked_fold_read_inner(
                 certified_path_graph,
                 certified_path_certificate,
                 certified_path_edges,
-            ) =
-                if let Some(graph) = request.certified_path_graph_v1.as_ref() {
-                    let states =
-                        validate_certified_path_graph_v1(graph, initial.pose().hinge_angles())
+            ) = if let Some(graph) = request.certified_path_graph_v1.as_ref() {
+                let states = validate_certified_path_graph_v1(graph, initial.pose().hinge_angles())
                             .map_err(str::to_owned)?;
                     if states[graph.target_state]
                         .as_slice()
                         .iter()
                         .zip(states[graph.source_state].as_slice())
                         .any(|(target, source)| {
-                            target.angle_degrees().to_bits()
-                                != source.angle_degrees().to_bits()
+                        target.angle_degrees().to_bits() != source.angle_degrees().to_bits()
                                 && target.angle_degrees().to_bits()
                                     != candidate.requested_angle_degrees().to_bits()
                         })
@@ -2543,42 +2687,38 @@ async fn propose_current_stacked_fold_read_inner(
                     let mut oracle_edges = std::collections::BTreeMap::new();
                     let progress_app = progress_app.clone();
                     let progress_request_id = progress_request_id.clone();
-                    let searched =
-                        ori_collision::search_certified_pose_graph_with_progress_v1(
+                let searched = ori_collision::search_certified_pose_graph_with_progress_v1(
                         &fingerprints,
                         &candidates,
                         fingerprints[graph.source_state],
                         fingerprints[graph.target_state],
-                        || {
-                            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire)
-                                == analysis_generation
-                        },
+                    || STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) == analysis_generation,
                         |progress| {
                             #[cfg(test)]
                             if progress_request_id
                                 .as_deref()
                                 .and_then(|value| value.strip_prefix("test-cancel-after-"))
                                 .and_then(|value| value.parse::<usize>().ok())
-                                .is_some_and(|limit| {
-                                    progress.evaluated_transition_count >= limit
-                                })
+                            .is_some_and(|limit| progress.evaluated_transition_count >= limit)
                             {
                                 let _ = cancel_current_stacked_fold_read_v1();
                             }
                             if let Some(request_id) = progress_request_id.as_ref() {
-                                if let Some(progress_app) = progress_app.as_ref() { let _ = progress_app.emit(
+                            if let Some(progress_app) = progress_app.as_ref() {
+                                let _ = progress_app.emit(
                                     STACKED_FOLD_READ_PROGRESS_EVENT_V1,
                                     StackedFoldReadProgressDtoV1 {
                                         version: 1,
                                         request_id: request_id.clone(),
                                         explored_state_count: progress.explored_state_count,
-                                        evaluated_transition_count:
-                                            progress.evaluated_transition_count,
+                                        evaluated_transition_count: progress
+                                            .evaluated_transition_count,
                                         state_limit: progress.state_limit,
                                         transition_limit: progress.transition_limit,
                                         authorizes_project_mutation: false,
                                     },
-                                ); }
+                                );
+                            }
                             }
                         },
                         |edge| {
@@ -2600,7 +2740,9 @@ async fn propose_current_stacked_fold_read_inner(
                                 Err(_) => return None,
                             };
                             let cycle_limits = CycleScheduleLimitsV1::default();
-                            let closure = match initial.target().hinge_geometry()
+                        let closure = match initial
+                            .target()
+                            .hinge_geometry()
                                 .prove_dyadic_schedule_closure_v1(
                                     initial.target().audit(),
                                     initial.pose().fixed_face(),
@@ -2652,7 +2794,8 @@ async fn propose_current_stacked_fold_read_inner(
                     let certificate = match searched {
                         ori_collision::CertifiedPathGraphSearchResultV1::Certified(value) => value,
                         ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate {
-                            reason: ori_collision::CertifiedPathGraphIndeterminateReasonV1::ResourceLimit,
+                        reason:
+                            ori_collision::CertifiedPathGraphIndeterminateReasonV1::ResourceLimit,
                             ..
                         } => return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned()),
                         ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate {
@@ -2696,15 +2839,11 @@ async fn propose_current_stacked_fold_read_inner(
                             CertifiedPathGraphEdgeDto {
                                 source_fingerprint_sha256: lowercase_hex(edge.source()),
                                 target_fingerprint_sha256: lowercase_hex(edge.target()),
-                                schedule_certificate_sha256: lowercase_hex(
-                                    edge.schedule_certificate(),
-                                ),
+                            schedule_certificate_sha256: lowercase_hex(edge.schedule_certificate()),
                                 collision_certificate_sha256: lowercase_hex(
                                     edge.collision_certificate(),
                                 ),
-                                closure_certificate_sha256: lowercase_hex(
-                                    edge.closure_certificate(),
-                                ),
+                            closure_certificate_sha256: lowercase_hex(edge.closure_certificate()),
                                 hinges,
                             }
                         })
@@ -2720,9 +2859,10 @@ async fn propose_current_stacked_fold_read_inner(
                         authorizes_project_mutation: false,
                     };
                     let requested = states[graph.target_state].clone();
-                    let all_flat = requested.as_slice().iter().all(|entry| {
-                        entry.angle_degrees().to_bits() == 180.0_f64.to_bits()
-                    });
+                let all_flat = requested
+                    .as_slice()
+                    .iter()
+                    .all(|entry| entry.angle_degrees().to_bits() == 180.0_f64.to_bits());
                     (
                         states[0].clone(),
                         requested,
@@ -2735,9 +2875,10 @@ async fn propose_current_stacked_fold_read_inner(
                     (
                         initial.pose().hinge_angles().clone(),
                         requested.clone(),
-                        requested.as_slice().iter().all(|entry| {
-                            entry.angle_degrees().to_bits() == 180.0_f64.to_bits()
-                        }),
+                    requested
+                        .as_slice()
+                        .iter()
+                        .all(|entry| entry.angle_degrees().to_bits() == 180.0_f64.to_bits()),
                         None,
                         None,
                         Vec::new(),
@@ -2748,15 +2889,15 @@ async fn propose_current_stacked_fold_read_inner(
                         .as_ref()
                         .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
                     if let Some(exact_path) = linear.exact_dyadic_path_v1.as_ref() {
-                        validate_exact_dyadic_candidate_path_v1(exact_path)
-                            .map_err(str::to_owned)?;
+                    validate_exact_dyadic_candidate_path_v1(exact_path).map_err(str::to_owned)?;
                     }
                     let (initial_angles, requested_angles) =
                         validate_linear_candidate_angles_v1(linear, initial.pose().hinge_angles())
                             .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
-                    let all_flat = linear.entries.iter().all(|entry| {
-                        entry.requested_angle_degrees.to_bits() == 180.0_f64.to_bits()
-                    });
+                let all_flat = linear
+                    .entries
+                    .iter()
+                    .all(|entry| entry.requested_angle_degrees.to_bits() == 180.0_f64.to_bits());
                     (
                         initial_angles,
                         requested_angles,
@@ -2768,7 +2909,8 @@ async fn propose_current_stacked_fold_read_inner(
                 };
             let generated = if let Some((generated, _)) = supplied_cycle_candidate {
                 generated
-            } else { generate_linear_multi_hinge_path_candidate_v1(
+            } else {
+                generate_linear_multi_hinge_path_candidate_v1(
                 initial.target().hinge_geometry(),
                 initial.target().audit(),
                 initial.pose().fixed_face(),
@@ -2781,7 +2923,8 @@ async fn propose_current_stacked_fold_read_inner(
                     CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
                 }
                 _ => CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned(),
-            })? };
+                })?
+            };
             let cycle_limits = CycleScheduleLimitsV1::default();
             let closure_schedule_limits = CycleScheduleLimitsV1 {
                 max_degree: 1,
@@ -2814,25 +2957,18 @@ async fn propose_current_stacked_fold_read_inner(
                         CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
                     }
                 })?;
-            let continuous = if paper_thickness_mm > 0.0
-                && supports_scheduled_positive_thickness_path_v1(
+            let continuous = diagnose_scheduled_cycle_path_for_thickness_v1(
+                paper_thickness_mm,
+                || {
+                    supports_scheduled_positive_thickness_path_v1(
                     initial.target().hinge_geometry(),
                     initial.target().audit(),
                     initial.pose().fixed_face(),
                     generated.schedule(),
                 )
-            {
-                diagnose_scheduled_positive_thickness_cycle_path_v1(
-                    initial.target().hinge_geometry(),
-                    initial.target().audit(),
-                    initial.pose().fixed_face(),
-                    &generated,
-                    &interval_closure,
-                    paper_thickness_mm,
-                    StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
-                )
-            } else {
-                diagnose_scheduled_cycle_path_v1(
+                },
+                || {
+                    diagnose_scheduled_cycle_path_v1(
                     initial.target().hinge_geometry(),
                     initial.target().audit(),
                     initial.pose().fixed_face(),
@@ -2840,13 +2976,37 @@ async fn propose_current_stacked_fold_read_inner(
                     &interval_closure,
                     StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
                 )
-            };
-            if continuous.continuous_certificate_model_id().is_none() {
-                // The bounded CCD diagnostic intentionally does not distinguish
-                // an actual collision from an enclosure that stayed unresolved
-                // at its subdivision limit. Do not overstate either outcome.
-                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+                },
+                |thickness| {
+                    diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    initial.target().hinge_geometry(),
+                    initial.target().audit(),
+                    initial.pose().fixed_face(),
+                    &generated,
+                    &interval_closure,
+                        thickness,
+                    StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
+                )
+                },
+                |diagnostic| {
+                    (
+                        diagnostic.continuous_certificate_model_id(),
+                        diagnostic.positive_thickness_bits(),
+                    )
+                },
+            )
+            .map_err(|error| match error {
+                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness
+                | ScheduledCycleThicknessDiagnosticErrorV1::PositiveThicknessUnsupported => {
+                    CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
             }
+                ScheduledCycleThicknessDiagnosticErrorV1::Uncertified => {
+                    // The bounded CCD diagnostic intentionally does not
+                    // distinguish an actual collision from an enclosure that
+                    // stayed unresolved at its subdivision limit.
+                    CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned()
+                }
+            })?;
             let closed_endpoint = ori_core::prepare_stacked_fold_requested_scheduled_graph_pose_v1(
                 initial,
                 generated.schedule(),
@@ -2856,11 +3016,7 @@ async fn propose_current_stacked_fold_read_inner(
             )
             .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
             let geometry_proof = closed_endpoint.initial().target().geometry().proof();
-            let topology = closed_endpoint
-                .initial()
-                .target()
-                .geometry()
-                .candidate();
+            let topology = closed_endpoint.initial().target().geometry().candidate();
             let lineage = geometry_proof.lineage();
             let (layer_proof, layer_material_face_count, layer_overlap_cell_count) =
                 if all_requested_flat {
@@ -2880,8 +3036,7 @@ async fn propose_current_stacked_fold_read_inner(
                     let target_topology = report
                         .snapshot
                         .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-                    let local =
-                        analyze_local_flat_foldability(&topology.paper, &topology.pattern);
+                    let local = analyze_local_flat_foldability(&topology.paper, &topology.pattern);
                     let global = analyze_global_flat_foldability(
                         GlobalFlatFoldabilityInput::current_with_geometry(
                             binding.project_id(),
@@ -2916,9 +3071,7 @@ async fn propose_current_stacked_fold_read_inner(
                     let material_count = layer_order.material_faces().len();
                     let overlap_count = layer_order.overlap_cell_count();
                     (
-                        super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
-                            layer_order,
-                        ),
+                        super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(layer_order),
                         material_count,
                         overlap_count,
                     )
@@ -3051,7 +3204,8 @@ async fn propose_current_stacked_fold_read_inner(
             let material_segments = material_map
                 .segments()
                 .iter()
-                .map(|segment| Ok(StackedFoldMaterialSegmentDto {
+                .map(|segment| {
+                    Ok(StackedFoldMaterialSegmentDto {
                     face_id: segment.face(),
                     start: [segment.start().x, segment.start().y],
                     end: [segment.end().x, segment.end().y],
@@ -3064,7 +3218,8 @@ async fn propose_current_stacked_fold_read_inner(
                         ori_domain::EdgeKind::Valley => "valley",
                         _ => return Err(ANALYSIS_FAILED_MESSAGE.to_owned()),
                     },
-                }))
+                    })
+                })
                 .collect::<Result<Vec<_>, String>>()?;
             drop(material_map);
             drop(proposal);
@@ -3101,11 +3256,8 @@ async fn propose_current_stacked_fold_read_inner(
             TreeKinematicsLimits::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-        let prepared_initial_pose = prepare_stacked_fold_initial_pose_v1(
-            prepared_target,
-            model,
-            pose,
-        )
+        let prepared_initial_pose =
+            prepare_stacked_fold_initial_pose_v1(prepared_target, model, pose)
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         let moving_hinges = prepared_initial_pose
             .target()
@@ -3189,20 +3341,18 @@ async fn propose_current_stacked_fold_read_inner(
             .target()
             .geometry()
             .proof();
-        let positive_thickness_certificate = matches!(
-            continuous_path.continuous_certificate_model_id(),
-            Some(
-                ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
-                    | ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
-            )
-        );
+        let positive_thickness_certificate =
+            is_positive_thickness_continuous_certificate_model_id_v2(
+                continuous_path.continuous_certificate_model_id(),
+            );
         let endpoint_collision_plan = endpoint_collision_plan_v1(
             candidate.requested_angle_degrees(),
             positive_thickness_certificate,
         );
         let exact_flat_endpoint =
             endpoint_collision_plan == EndpointCollisionPlanV1::DeferToFlatLayerOrder;
-        let mut endpoint_collision = if endpoint_collision_plan != EndpointCollisionPlanV1::StaticGeometry {
+        let mut endpoint_collision =
+            if endpoint_collision_plan != EndpointCollisionPlanV1::StaticGeometry {
             let face_count = prepared_requested_pose
                 .initial()
                 .target()
@@ -3245,8 +3395,7 @@ async fn propose_current_stacked_fold_read_inner(
             )
             .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?
         };
-        let (flat_endpoint_layer_order, transaction_layer_order) =
-            if exact_flat_endpoint {
+        let (flat_endpoint_layer_order, transaction_layer_order) = if exact_flat_endpoint {
                 let target_revision = geometry_proof.lineage().target_revision();
                 let topology_report = analyze_faces(FaceExtractionInput {
                     identity_namespace: binding.project_id(),
@@ -3293,8 +3442,7 @@ async fn propose_current_stacked_fold_read_inner(
                             ori_collision::FlatEndpointLayerOrderLimitsV1::default(),
                         )
                         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-                        let endpoint =
-                            diagnose_static_collision_geometry_with_flat_layer_order_v1(
+                    let endpoint = diagnose_static_collision_geometry_with_flat_layer_order_v1(
                                 model,
                                 pose,
                                 FLAT_ENDPOINT_COLLISION_THICKNESS_MM_V1,
@@ -3493,7 +3641,8 @@ async fn propose_current_stacked_fold_read_inner(
         let material_segments = material_map
             .segments()
             .iter()
-            .map(|segment| Ok(StackedFoldMaterialSegmentDto {
+            .map(|segment| {
+                Ok(StackedFoldMaterialSegmentDto {
                 face_id: segment.face(),
                 start: [segment.start().x, segment.start().y],
                 end: [segment.end().x, segment.end().y],
@@ -3506,7 +3655,8 @@ async fn propose_current_stacked_fold_read_inner(
                     ori_domain::EdgeKind::Valley => "valley",
                     _ => return Err(ANALYSIS_FAILED_MESSAGE.to_owned()),
                 },
-            }))
+                })
+            })
             .collect::<Result<Vec<_>, String>>()?;
         drop(material_map);
         drop(proposal);
@@ -3837,6 +3987,25 @@ pub(crate) mod tests {
     // while storing the large strict-scope fixture family separately.
     include!("stacked_fold_dyadic_scope_tests.rs");
 
+    fn set_zero_thickness_for_cycle_test_v1(project: &mut super::super::ProjectState) {
+        let paper = project.editor.paper().clone();
+        let revision = project.editor.revision();
+        project
+            .editor
+            .execute(
+                revision,
+                ori_core::Command::UpdatePaperProperties {
+                    thickness_mm: 0.0,
+                    front_color: paper.front.color,
+                    back_color: paper.back.color,
+                    front_texture_asset: paper.front.texture_asset,
+                    back_texture_asset: paper.back.texture_asset,
+                    cutting_allowed: paper.cutting_allowed,
+                },
+            )
+            .expect("set an explicit zero-thickness cycle fixture");
+    }
+
     #[test]
     fn exact_flat_endpoint_defers_until_zero_thickness_layer_order_diagnosis() {
         assert_eq!(
@@ -3950,6 +4119,267 @@ pub(crate) mod tests {
             .is_none(),
             "count overflow must fail closed"
         );
+    }
+
+    #[test]
+    fn native_positive_thickness_runtime_accepts_only_v2_model_ids() {
+        assert!(is_positive_thickness_continuous_certificate_model_id_v2(
+            Some(
+                ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
+            ),
+        ));
+        assert!(is_positive_thickness_continuous_certificate_model_id_v2(
+            Some(
+                ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
+            ),
+        ));
+        for rejected in [
+            None,
+            Some("stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1"),
+            Some("stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1"),
+            Some("forged_positive_thickness_continuous_certificate_v2"),
+        ] {
+            assert!(!is_positive_thickness_continuous_certificate_model_id_v2(
+                rejected
+            ));
+        }
+    }
+
+    #[test]
+    fn certified_path_graph_thickness_preflight_allows_only_signed_zero() {
+        for thickness in [0.0_f64, -0.0_f64] {
+            assert_eq!(
+                preflight_certified_path_graph_thickness_v1(thickness),
+                Ok(()),
+            );
+        }
+        for thickness in [f64::MIN_POSITIVE, 0.1, f64::MAX] {
+            assert_eq!(
+                preflight_certified_path_graph_thickness_v1(thickness),
+                Err(ScheduledCycleThicknessDiagnosticErrorV1::PositiveThicknessUnsupported),
+            );
+        }
+        for thickness in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1] {
+            assert_eq!(
+                preflight_certified_path_graph_thickness_v1(thickness),
+                Err(ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness),
+            );
+        }
+    }
+
+    #[test]
+    fn blockwise_fallback_preserves_operational_errors_and_normalizes_proof_failures() {
+        for preserved in [CANCELLED_MESSAGE, CYCLE_PATH_RESOURCE_MESSAGE] {
+            assert_eq!(
+                normalize_blockwise_current_cycle_fallback_error_v1(preserved.to_owned()),
+                preserved,
+            );
+        }
+        for proof_failure in [
+            CYCLE_NONCLOSING_MESSAGE,
+            CYCLE_PATH_UNCERTIFIED_MESSAGE,
+            CYCLE_PATH_UNSUPPORTED_MESSAGE,
+        ] {
+            assert_eq!(
+                normalize_blockwise_current_cycle_fallback_error_v1(proof_failure.to_owned()),
+                CYCLE_PATH_UNCERTIFIED_MESSAGE,
+            );
+        }
+    }
+
+    #[test]
+    fn scheduled_cycle_thickness_dispatch_preserves_signed_zero_and_exact_positive_model() {
+        use std::cell::Cell;
+
+        type Diagnostic = (Option<&'static str>, Option<u64>);
+        for thickness in [0.0_f64, -0.0_f64] {
+            let support_calls = Cell::new(0);
+            let zero_calls = Cell::new(0);
+            let positive_calls = Cell::new(0);
+            let observed = diagnose_scheduled_cycle_path_for_thickness_v1(
+                thickness,
+                || {
+                    support_calls.set(support_calls.get() + 1);
+                    false
+                },
+                || {
+                    zero_calls.set(zero_calls.get() + 1);
+                    (
+                        Some(
+                            ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                        ),
+                        None,
+                    )
+                },
+                |_| {
+                    positive_calls.set(positive_calls.get() + 1);
+                    (None, None)
+                },
+                |diagnostic: &Diagnostic| *diagnostic,
+            )
+            .expect("signed zero keeps the established zero-thickness oracle");
+            assert_eq!(
+                observed,
+                (
+                    Some(
+                        ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                    ),
+                    None,
+                )
+            );
+            assert_eq!(support_calls.get(), 0);
+            assert_eq!(zero_calls.get(), 1);
+            assert_eq!(positive_calls.get(), 0);
+        }
+        for rejected in [
+            (None, None),
+            (
+                Some(
+                    ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                ),
+                None,
+            ),
+            (
+                Some(
+                    ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                ),
+                Some(0.0_f64.to_bits()),
+            ),
+        ] {
+            assert_eq!(
+                diagnose_scheduled_cycle_path_for_thickness_v1(
+                    0.0,
+                    || panic!("zero thickness must not query positive support"),
+                    || rejected,
+                    |_| panic!("zero thickness must not invoke the positive oracle"),
+                    |diagnostic: &Diagnostic| *diagnostic,
+                ),
+                Err(ScheduledCycleThicknessDiagnosticErrorV1::Uncertified),
+            );
+        }
+
+        let thickness = f64::from_bits(0x3fb9_9999_9999_999a);
+        let positive_calls = Cell::new(0);
+        let observed = diagnose_scheduled_cycle_path_for_thickness_v1(
+            thickness,
+            || true,
+            || panic!("positive thickness must not invoke the zero-thickness oracle"),
+            |observed_thickness| {
+                positive_calls.set(positive_calls.get() + 1);
+                assert_eq!(observed_thickness.to_bits(), thickness.to_bits());
+                (
+                    Some(
+                        ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                    ),
+                    Some(observed_thickness.to_bits()),
+                )
+            },
+            |diagnostic: &Diagnostic| *diagnostic,
+        )
+        .expect("the exact cycle positive-thickness model and binding are admitted");
+        assert_eq!(observed.1, Some(thickness.to_bits()));
+        assert_eq!(positive_calls.get(), 1);
+
+        for rejected in [
+            (
+                Some(
+                    ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                ),
+                Some(thickness.to_bits()),
+            ),
+            (
+                Some(
+                    ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+                ),
+                Some(1.0_f64.to_bits()),
+            ),
+            (
+                Some(
+                    ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
+                ),
+                Some(thickness.to_bits()),
+            ),
+            (None, Some(thickness.to_bits())),
+        ] {
+            assert_eq!(
+                diagnose_scheduled_cycle_path_for_thickness_v1(
+                    thickness,
+                    || true,
+                    || panic!("positive thickness must not invoke the zero-thickness oracle"),
+                    |_| rejected,
+                    |diagnostic: &Diagnostic| *diagnostic,
+                ),
+                Err(ScheduledCycleThicknessDiagnosticErrorV1::Uncertified),
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_cycle_thickness_stops_before_work_cancel_and_publication_gates() {
+        use std::cell::Cell;
+
+        type Diagnostic = (Option<&'static str>, Option<u64>);
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let generation = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
+        for (thickness, expected_error, expected_support_calls) in [
+            (
+                0.1,
+                ScheduledCycleThicknessDiagnosticErrorV1::PositiveThicknessUnsupported,
+                1,
+            ),
+            (
+                f64::NAN,
+                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness,
+                0,
+            ),
+            (
+                f64::INFINITY,
+                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness,
+                0,
+            ),
+            (
+                f64::NEG_INFINITY,
+                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness,
+                0,
+            ),
+            (
+                -0.1,
+                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness,
+                0,
+            ),
+        ] {
+            let support_calls = Cell::new(0);
+            let diagnostic_work = Cell::new(0);
+            let publication_reached = Cell::new(false);
+            let result = diagnose_scheduled_cycle_path_for_thickness_v1(
+                thickness,
+                || {
+                    support_calls.set(support_calls.get() + 1);
+                    false
+                },
+                || {
+                    diagnostic_work.set(diagnostic_work.get() + 1);
+                    (None, None)
+                },
+                |_| {
+                    diagnostic_work.set(diagnostic_work.get() + 1);
+                    (None, None)
+                },
+                |diagnostic: &Diagnostic| *diagnostic,
+            )
+            .inspect(|_| {
+                publication_reached.set(true);
+            });
+            assert_eq!(result, Err(expected_error));
+            assert_eq!(support_calls.get(), expected_support_calls);
+            assert_eq!(diagnostic_work.get(), 0);
+            assert!(!publication_reached.get());
+            assert_eq!(
+                STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
+                generation,
+                "fail-closed thickness dispatch must not mutate cancellation state",
+            );
+        }
     }
 
     #[test]
@@ -4722,7 +5152,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn two_hinge_tree_project() -> super::super::ProjectState {
+    fn two_hinge_tree_project(paper_thickness_mm: f64) -> super::super::ProjectState {
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let points = [
             (0.0, 0.0),
@@ -4769,6 +5199,7 @@ pub(crate) mod tests {
             CreasePattern { vertices, edges },
             Paper {
                 boundary_vertices: boundary,
+                thickness_mm: paper_thickness_mm,
                 ..Paper::default()
             },
         );
@@ -6038,7 +6469,7 @@ pub(crate) mod tests {
 
     #[test]
     fn two_hinge_e2e_fixture_issues_pose_and_layer_authorities() {
-        let mut project = two_hinge_tree_project();
+        let mut project = two_hinge_tree_project(0.0);
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
@@ -6113,7 +6544,7 @@ pub(crate) mod tests {
     #[test]
     fn missing_pose_capability_strict_dyadic_read_returns_unsupported_dto() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let project = two_hinge_tree_project();
+        let project = two_hinge_tree_project(0.0);
         let target_edge = project
             .editor
             .topology_analysis_input(project.project_id)
@@ -6128,7 +6559,7 @@ pub(crate) mod tests {
     #[test]
     fn tree_pose_capability_rejects_incomplete_target_without_mutation() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let mut project = two_hinge_tree_project();
+        let mut project = two_hinge_tree_project(0.0);
         let target_edge = project
             .editor
             .topology_analysis_input(project.project_id)
@@ -6169,6 +6600,7 @@ pub(crate) mod tests {
     fn assert_two_hinge_projective_schedule_round_trip(
         first: [f64; 3],
         second: [f64; 3],
+        paper_thickness_mm: f64,
         certified_path_steps: usize,
         cancel_after_transition: Option<usize>,
         expected_non_flat_pose_model_id: Option<&'static str>,
@@ -6176,7 +6608,7 @@ pub(crate) mod tests {
         let _generation_guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut project = two_hinge_tree_project();
+        let mut project = two_hinge_tree_project(paper_thickness_mm);
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
         let instance = project.instance_id;
         let project_id = project.project_id;
@@ -6194,7 +6626,8 @@ pub(crate) mod tests {
         let angle = if certified_path {
             certified_path_steps as f64
         } else {
-            2.0 * 1.0_f64.atan2(5.0).to_degrees()
+            ori_kinematics::deterministic_half_angle_ratio_degrees_v1(1.0, 5.0)
+                .expect("the canonical half-angle fixture is finite")
         };
         let registry = tauri::async_runtime::block_on(read_live_hinge_registry_inner(
             &app_state,
@@ -6297,6 +6730,7 @@ pub(crate) mod tests {
         });
         let transaction_state =
             super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let generation_before_proposal = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
         let response = tauri::async_runtime::block_on(propose_current_stacked_fold_read_inner(
             None,
             &app_state,
@@ -6318,6 +6752,19 @@ pub(crate) mod tests {
                 certified_path_graph_v1,
             },
         ));
+        if certified_path && paper_thickness_mm != 0.0 {
+            assert_eq!(response.unwrap_err(), CYCLE_PATH_UNSUPPORTED_MESSAGE);
+            assert_eq!(
+                STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
+                generation_before_proposal,
+                "positive-thickness Graph rejection must precede generation and cancellation",
+            );
+            assert_eq!(transaction_state.pending_token_for_test_v1(), None);
+            let project = super::super::lock_project(&app_state).unwrap();
+            assert_eq!(project.editor.revision(), revision);
+            assert!(project.editor.instruction_timeline().steps.is_empty());
+            return Vec::new();
+        }
         if cancel_after_transition.is_some() {
             assert_eq!(response.unwrap_err(), CANCELLED_MESSAGE);
             let project = super::super::lock_project(&app_state).unwrap();
@@ -7012,6 +7459,7 @@ pub(crate) mod tests {
         let _ = assert_two_hinge_projective_schedule_round_trip(
             [50.0, 0.0, 0.0],
             [50.0, 0.0, -100.0],
+            0.0,
             0,
             None,
             Some(ori_core::APPLIED_POSE_MODEL_ID_V1),
@@ -7023,6 +7471,7 @@ pub(crate) mod tests {
         let _ = assert_two_hinge_projective_schedule_round_trip(
             [0.0, 0.0, -50.0],
             [100.0, 0.0, -50.0],
+            0.0,
             0,
             None,
             Some(ori_core::CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1),
@@ -7034,9 +7483,41 @@ pub(crate) mod tests {
         let _ = assert_two_hinge_projective_schedule_round_trip(
             [0.0, 0.0, -50.0],
             [100.0, 0.0, -50.0],
+            0.0,
             2,
             None,
             None,
+        );
+    }
+
+    #[test]
+    fn positive_thickness_certified_path_graph_is_rejected_before_generation_or_authority() {
+        assert!(
+            assert_two_hinge_projective_schedule_round_trip(
+                [0.0, 0.0, -50.0],
+                [100.0, 0.0, -50.0],
+                0.1,
+                2,
+                None,
+                None,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn negative_zero_certified_path_graph_keeps_legacy_atomic_apply() {
+        assert_eq!(
+            assert_two_hinge_projective_schedule_round_trip(
+                [0.0, 0.0, -50.0],
+                [100.0, 0.0, -50.0],
+                -0.0,
+                2,
+                None,
+                None,
+            )
+            .len(),
+            2,
         );
     }
 
@@ -7045,6 +7526,7 @@ pub(crate) mod tests {
         let _ = assert_two_hinge_projective_schedule_round_trip(
             [0.0, 0.0, -50.0],
             [100.0, 0.0, -50.0],
+            0.0,
             4,
             None,
             None,
@@ -7056,6 +7538,7 @@ pub(crate) mod tests {
         let _ = assert_two_hinge_projective_schedule_round_trip(
             [0.0, 0.0, -50.0],
             [100.0, 0.0, -50.0],
+            0.0,
             16,
             None,
             None,
@@ -7067,13 +7550,13 @@ pub(crate) mod tests {
         let first = [0.0, 0.0, -50.0];
         let second = [100.0, 0.0, -50.0];
         assert!(
-            assert_two_hinge_projective_schedule_round_trip(first, second, 31, Some(8), None)
+            assert_two_hinge_projective_schedule_round_trip(first, second, 0.0, 31, Some(8), None,)
                 .is_empty()
         );
         let first_retry =
-            assert_two_hinge_projective_schedule_round_trip(first, second, 31, None, None);
+            assert_two_hinge_projective_schedule_round_trip(first, second, 0.0, 31, None, None);
         let second_retry =
-            assert_two_hinge_projective_schedule_round_trip(first, second, 31, None, None);
+            assert_two_hinge_projective_schedule_round_trip(first, second, 0.0, 31, None, None);
         assert_eq!(first_retry, second_retry);
     }
 
@@ -8661,6 +9144,7 @@ pub(crate) mod tests {
     fn automatic_kawasaki_archive_reopens_with_native_pose_authority() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
+        set_zero_thickness_for_cycle_test_v1(&mut project);
         super::super::applied_pose::tests::install_flat_graph_pose_authority(&mut project, hinges);
         let instance = project.instance_id;
         let project_id = project.project_id;
@@ -10165,6 +10649,7 @@ pub(crate) mod tests {
         for iteration in 0..3 {
             let (mut project, hinges) =
                 super::super::applied_pose::tests::flat_foldable_cross_cycle_project();
+            set_zero_thickness_for_cycle_test_v1(&mut project);
             super::super::applied_pose::tests::install_flat_graph_pose_authority(
                 &mut project,
                 hinges.clone(),

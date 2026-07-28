@@ -1112,6 +1112,276 @@ pub enum CycleSchedulePrepareErrorV1 {
     AngleRange,
 }
 
+/// Frozen model identifier for the opaque common-linear-profile proof.
+pub const EXACT_COMMON_LINEAR_CYCLE_PROFILE_MODEL_ID_V1: &str =
+    "exact_common_linear_cycle_profile_v1";
+
+const EXACT_COMMON_LINEAR_MIN_EDGES_V1: usize = 2;
+const EXACT_COMMON_LINEAR_MAX_EDGES_V1: usize = 3;
+const EXACT_COMMON_LINEAR_EDGE_BYTES_V1: usize = 16;
+const EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1: usize = 32;
+// Logical cross-runtime streaming storage: one reusable eight-word
+// state/final-digest slot, one 64-byte block, and one 64-bit length word.
+// Input fields are borrowed and finalization reuses the state slot.
+const EXACT_COMMON_LINEAR_SHA256_SCRATCH_BYTES_V1: usize = 104;
+
+/// Explicit resource envelope for proving one exact common linear profile.
+///
+/// Storage limits count canonical payload bytes rather than target-dependent
+/// Rust object layout. Retained storage consists of the canonical edge bytes
+/// and three SHA-256 digests. Peak storage additionally includes the fixed
+/// streaming SHA-256 scratch described by this module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExactCommonLinearCycleProfileLimitsV1 {
+    pub max_edges: usize,
+    pub max_work: usize,
+    pub max_retained_bytes: usize,
+    pub max_peak_bytes: usize,
+}
+
+impl Default for ExactCommonLinearCycleProfileLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_edges: EXACT_COMMON_LINEAR_MAX_EDGES_V1,
+            max_work: 4_096,
+            max_retained_bytes: EXACT_COMMON_LINEAR_MAX_EDGES_V1
+                * EXACT_COMMON_LINEAR_EDGE_BYTES_V1
+                + 3 * EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1,
+            max_peak_bytes: EXACT_COMMON_LINEAR_MAX_EDGES_V1 * EXACT_COMMON_LINEAR_EDGE_BYTES_V1
+                + 2 * EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1
+                + EXACT_COMMON_LINEAR_SHA256_SCRATCH_BYTES_V1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ExactCommonLinearCycleProfileErrorV1 {
+    #[error("the common linear profile input is malformed")]
+    InvalidInput,
+    #[error("the schedule does not use the ordinary representation")]
+    UnsupportedRepresentation,
+    #[error("the selected edges do not exactly cover one canonical schedule")]
+    CarrierSetMismatch,
+    #[error("the common linear profile exceeds its explicit resource limits")]
+    ResourceLimit,
+    #[error("the proof was not issued by this exact schedule")]
+    IssuerMismatch,
+}
+
+/// Opaque evidence that every edge in a complete two- or three-edge schedule
+/// carrier carries one bit-identical, non-constant degree-one ordinary profile.
+///
+/// This type deliberately has no persistence traits and exposes no raw
+/// coefficient accessor. It is only a narrow recognition proof; closure,
+/// collision clearance, and project mutation remain independently gated.
+///
+/// ```compile_fail
+/// use ori_kinematics::ExactCommonLinearCycleProfileV1;
+///
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<ExactCommonLinearCycleProfileV1>();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactCommonLinearCycleProfileV1 {
+    canonical_edges: Vec<EdgeId>,
+    issuer_schedule_fingerprint_v2: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    issuer_graph_binding_fingerprint_v1: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    proof_fingerprint_v1: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExactCommonLinearCompositionBindingV1 {
+    pub(crate) schedule_fingerprint_v2: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    pub(crate) graph_binding_fingerprint_v1: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    pub(crate) proof_fingerprint_v1: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    pub(crate) slope_sign: i8,
+}
+
+impl ExactCommonLinearCycleProfileV1 {
+    #[must_use]
+    pub fn edge_ids(&self) -> &[EdgeId] {
+        &self.canonical_edges
+    }
+
+    /// Recomputes the complete bounded proof against an alleged issuer.
+    ///
+    /// The stored edge list is already canonical, but the same proof path is
+    /// deliberately reused so representation, profile, schedule-fingerprint,
+    /// graph-binding, and model-ID checks cannot drift.
+    pub fn revalidate_issuer_schedule_v1(
+        &self,
+        issuer: &CanonicalCycleScheduleV1,
+        limits: ExactCommonLinearCycleProfileLimitsV1,
+    ) -> Result<(), ExactCommonLinearCycleProfileErrorV1> {
+        let mut meter = ExactCommonLinearCycleProfileMeterV1::new(limits);
+        let candidate = issuer
+            .prove_exact_common_linear_profile_v1_with_meter(&self.canonical_edges, &mut meter)?;
+        let comparison_work = exact_common_linear_retained_bytes_v1(self.canonical_edges.len())?
+            .checked_add(1)
+            .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
+        meter.charge_work(comparison_work)?;
+        if &candidate == self {
+            Ok(())
+        } else {
+            Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch)
+        }
+    }
+
+    /// Revalidates the proof and returns only the narrow crate-private binding
+    /// needed by downstream exact recognizers. Raw profile coefficients remain
+    /// private.
+    pub(crate) fn revalidate_composition_binding_v1(
+        &self,
+        issuer: &CanonicalCycleScheduleV1,
+        limits: ExactCommonLinearCycleProfileLimitsV1,
+    ) -> Result<ExactCommonLinearCompositionBindingV1, ExactCommonLinearCycleProfileErrorV1> {
+        self.revalidate_issuer_schedule_v1(issuer, limits)?;
+        if self.issuer_schedule_fingerprint_v2 != issuer.schedule_fingerprint_v2
+            || self.issuer_graph_binding_fingerprint_v1 != issuer.binding_fingerprint
+            || !issuer.half_angle_entries.is_empty()
+            || issuer.entries.len() != self.canonical_edges.len()
+        {
+            return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+        }
+        let mut common_profile_bits = None;
+        let mut slope_sign = None;
+        for (edge, entry) in self.canonical_edges.iter().zip(&issuer.entries) {
+            let [constant, linear] = entry.coefficients.as_slice() else {
+                return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+            };
+            if edge != &entry.edge
+                || !entry.initial.is_finite()
+                || !constant.is_finite()
+                || !linear.is_finite()
+                || *linear == 0.0
+            {
+                return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+            }
+            let profile_bits = [
+                entry.initial.to_bits(),
+                constant.to_bits(),
+                linear.to_bits(),
+            ];
+            if common_profile_bits.is_some_and(|expected| expected != profile_bits) {
+                return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+            }
+            common_profile_bits = Some(profile_bits);
+            let candidate_sign = if linear.is_sign_negative() { -1 } else { 1 };
+            if slope_sign.is_some_and(|expected| expected != candidate_sign) {
+                return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+            }
+            slope_sign = Some(candidate_sign);
+        }
+        Ok(ExactCommonLinearCompositionBindingV1 {
+            schedule_fingerprint_v2: self.issuer_schedule_fingerprint_v2,
+            graph_binding_fingerprint_v1: self.issuer_graph_binding_fingerprint_v1,
+            proof_fingerprint_v1: self.proof_fingerprint_v1,
+            slope_sign: slope_sign.ok_or(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch)?,
+        })
+    }
+
+    #[must_use]
+    pub const fn authorizes_closure(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_collision_clearance(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug)]
+struct ExactCommonLinearCycleProfileMeterV1 {
+    limits: ExactCommonLinearCycleProfileLimitsV1,
+    work: usize,
+    retained_bytes: usize,
+    temporary_bytes: usize,
+    peak_bytes: usize,
+}
+
+impl ExactCommonLinearCycleProfileMeterV1 {
+    const fn new(limits: ExactCommonLinearCycleProfileLimitsV1) -> Self {
+        Self {
+            limits,
+            work: 0,
+            retained_bytes: 0,
+            temporary_bytes: 0,
+            peak_bytes: 0,
+        }
+    }
+
+    fn charge_work(&mut self, amount: usize) -> Result<(), ExactCommonLinearCycleProfileErrorV1> {
+        self.work = self
+            .work
+            .checked_add(amount)
+            .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
+        if self.work > self.limits.max_work {
+            return Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit);
+        }
+        Ok(())
+    }
+
+    fn retain(&mut self, amount: usize) -> Result<(), ExactCommonLinearCycleProfileErrorV1> {
+        self.retained_bytes = self
+            .retained_bytes
+            .checked_add(amount)
+            .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
+        if self.retained_bytes > self.limits.max_retained_bytes {
+            return Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit);
+        }
+        self.update_peak()
+    }
+
+    fn begin_temporary(
+        &mut self,
+        amount: usize,
+    ) -> Result<(), ExactCommonLinearCycleProfileErrorV1> {
+        self.temporary_bytes = self
+            .temporary_bytes
+            .checked_add(amount)
+            .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
+        self.update_peak()
+    }
+
+    fn end_temporary(&mut self, amount: usize) {
+        self.temporary_bytes = self
+            .temporary_bytes
+            .checked_sub(amount)
+            .expect("internal exact-profile temporary storage must balance");
+    }
+
+    fn update_peak(&mut self) -> Result<(), ExactCommonLinearCycleProfileErrorV1> {
+        let current = self
+            .retained_bytes
+            .checked_add(self.temporary_bytes)
+            .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
+        self.peak_bytes = self.peak_bytes.max(current);
+        if self.peak_bytes > self.limits.max_peak_bytes {
+            return Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit);
+        }
+        Ok(())
+    }
+}
+
+fn exact_common_linear_retained_bytes_v1(
+    edge_count: usize,
+) -> Result<usize, ExactCommonLinearCycleProfileErrorV1> {
+    edge_count
+        .checked_mul(EXACT_COMMON_LINEAR_EDGE_BYTES_V1)
+        .and_then(|bytes| {
+            EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1
+                .checked_mul(3)
+                .and_then(|fingerprints| bytes.checked_add(fingerprints))
+        })
+        .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MultiHingePathCandidateLimitsV1 {
     pub max_hinges: usize,
@@ -1798,6 +2068,163 @@ impl CanonicalCycleScheduleV1 {
         })
     }
 
+    /// Proves one exact common linear ordinary profile over the complete
+    /// schedule carrier set.
+    ///
+    /// Caller edge order is intentionally not semantic: this method copies
+    /// at most three IDs, applies a fixed-comparison canonical sort, and
+    /// rejects duplicates. The resulting proof always stores canonical IDs.
+    pub fn prove_exact_common_linear_profile_v1(
+        &self,
+        edges: &[EdgeId],
+        limits: ExactCommonLinearCycleProfileLimitsV1,
+    ) -> Result<ExactCommonLinearCycleProfileV1, ExactCommonLinearCycleProfileErrorV1> {
+        let mut meter = ExactCommonLinearCycleProfileMeterV1::new(limits);
+        self.prove_exact_common_linear_profile_v1_with_meter(edges, &mut meter)
+    }
+
+    fn prove_exact_common_linear_profile_v1_with_meter(
+        &self,
+        edges: &[EdgeId],
+        meter: &mut ExactCommonLinearCycleProfileMeterV1,
+    ) -> Result<ExactCommonLinearCycleProfileV1, ExactCommonLinearCycleProfileErrorV1> {
+        let edge_count = edges.len();
+        if !(EXACT_COMMON_LINEAR_MIN_EDGES_V1..=EXACT_COMMON_LINEAR_MAX_EDGES_V1)
+            .contains(&edge_count)
+        {
+            return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+        }
+        if edge_count > meter.limits.max_edges {
+            return Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit);
+        }
+
+        let edge_bytes = edge_count
+            .checked_mul(EXACT_COMMON_LINEAR_EDGE_BYTES_V1)
+            .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
+        meter.retain(edge_bytes)?;
+        meter.charge_work(edge_count)?;
+        let mut canonical_edges = edges.to_vec();
+        // A fixed bubble network makes comparison work input-order invariant:
+        // one comparison for two edges and three comparisons for three.
+        for unsorted in (1..edge_count).rev() {
+            for left in 0..unsorted {
+                meter.charge_work(1)?;
+                if canonical_edges[left].canonical_bytes()
+                    > canonical_edges[left + 1].canonical_bytes()
+                {
+                    canonical_edges.swap(left, left + 1);
+                }
+            }
+        }
+        for pair in canonical_edges.windows(2) {
+            meter.charge_work(1)?;
+            if pair[0] == pair[1] {
+                return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+            }
+        }
+
+        meter.charge_work(1)?;
+        if !self.half_angle_entries.is_empty() {
+            return Err(ExactCommonLinearCycleProfileErrorV1::UnsupportedRepresentation);
+        }
+        meter.charge_work(1)?;
+        if self.entries.len() != edge_count {
+            return Err(ExactCommonLinearCycleProfileErrorV1::CarrierSetMismatch);
+        }
+
+        for endpoint in self.domain {
+            meter.charge_work(1)?;
+            if !exact_common_linear_binary64_is_canonical_v1(endpoint) {
+                return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+            }
+        }
+        meter.charge_work(2)?;
+        let width = self.domain[1] - self.domain[0];
+        if self.domain[0] >= self.domain[1]
+            || !exact_common_linear_binary64_is_canonical_v1(width)
+            || width <= 0.0
+        {
+            return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+        }
+
+        let mut common_profile_bits = None;
+        for (index, entry) in self.entries.iter().enumerate() {
+            // Edge/order, initial, coefficient count, both coefficients,
+            // degree/non-constant, excursion, and all three common-profile
+            // bit comparisons are charged uniformly so reject position
+            // cannot weaken the declared bound.
+            meter.charge_work(10)?;
+            if entry.edge != canonical_edges[index] {
+                return Err(ExactCommonLinearCycleProfileErrorV1::CarrierSetMismatch);
+            }
+            if !exact_common_linear_binary64_is_canonical_v1(entry.initial)
+                || !(0.0..=180.0).contains(&entry.initial)
+            {
+                return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+            }
+            let [constant, linear] = entry.coefficients.as_slice() else {
+                return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+            };
+            if !exact_common_linear_binary64_is_canonical_v1(*constant)
+                || !exact_common_linear_binary64_is_canonical_v1(*linear)
+                || *linear == 0.0
+            {
+                return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+            }
+            let excursion = constant.abs() + linear.abs();
+            if !excursion.is_finite()
+                || entry.initial - excursion < 0.0
+                || entry.initial + excursion > 180.0
+            {
+                return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+            }
+            let profile_bits = [
+                entry.initial.to_bits(),
+                constant.to_bits(),
+                linear.to_bits(),
+            ];
+            if common_profile_bits.is_some_and(|expected| expected != profile_bits) {
+                return Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput);
+            }
+            common_profile_bits = Some(profile_bits);
+        }
+        let common_profile_bits =
+            common_profile_bits.ok_or(ExactCommonLinearCycleProfileErrorV1::InvalidInput)?;
+
+        meter.charge_work(exact_common_linear_schedule_fingerprint_work_v1(
+            edge_count,
+        )?)?;
+        meter.begin_temporary(EXACT_COMMON_LINEAR_SHA256_SCRATCH_BYTES_V1)?;
+        let recomputed_schedule_fingerprint =
+            schedule_fingerprint_v2(self.domain, &self.entries, &[]);
+        meter.end_temporary(EXACT_COMMON_LINEAR_SHA256_SCRATCH_BYTES_V1);
+        meter.retain(EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1)?;
+        meter.charge_work(EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1)?;
+        if recomputed_schedule_fingerprint != self.schedule_fingerprint_v2 {
+            return Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch);
+        }
+
+        meter.retain(EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1)?;
+        meter.charge_work(EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1)?;
+        let issuer_graph_binding_fingerprint_v1 = self.binding_fingerprint;
+        let proof_fingerprint_v1 = exact_common_linear_proof_fingerprint_v1(
+            &canonical_edges,
+            self.domain.map(f64::to_bits),
+            common_profile_bits,
+            recomputed_schedule_fingerprint,
+            issuer_graph_binding_fingerprint_v1,
+            meter,
+        )?;
+        meter.retain(EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1)?;
+
+        Ok(ExactCommonLinearCycleProfileV1 {
+            canonical_edges,
+            issuer_schedule_fingerprint_v2: recomputed_schedule_fingerprint,
+            issuer_graph_binding_fingerprint_v1,
+            proof_fingerprint_v1,
+        })
+    }
+
     pub fn evaluate(&self, parameter: f64) -> Option<CanonicalHingeAngles> {
         if !self.half_angle_entries.is_empty() {
             return self
@@ -2209,6 +2636,112 @@ impl CanonicalCycleScheduleV1 {
     }
 }
 
+fn exact_common_linear_binary64_is_canonical_v1(value: f64) -> bool {
+    value.is_finite() && value.to_bits() != (-0.0_f64).to_bits()
+}
+
+fn exact_common_linear_schedule_fingerprint_work_v1(
+    edge_count: usize,
+) -> Result<usize, ExactCommonLinearCycleProfileErrorV1> {
+    const DOMAIN_SEPARATOR: &[u8] = b"ORIGAMI2_CANONICAL_CYCLE_SCHEDULE_CERTIFICATE_BINDING_V2";
+    const LENGTH_BYTES: usize = 8;
+    const ORDINARY_ENTRY_BYTES: usize = 1 + 16 + 8 + 8 + 2 * 8;
+
+    [
+        DOMAIN_SEPARATOR.len(),
+        LENGTH_BYTES,
+        CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2.len(),
+        LENGTH_BYTES,
+        DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.len(),
+        1,
+        2 * 8,
+        LENGTH_BYTES,
+    ]
+    .into_iter()
+    .try_fold(0usize, usize::checked_add)
+    .and_then(|fixed| {
+        edge_count
+            .checked_mul(ORDINARY_ENTRY_BYTES)
+            .and_then(|entries| fixed.checked_add(entries))
+    })
+    .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)
+}
+
+fn exact_common_linear_hash_frame_v1(
+    hash: &mut Sha256,
+    value: &[u8],
+    meter: &mut ExactCommonLinearCycleProfileMeterV1,
+) -> Result<(), ExactCommonLinearCycleProfileErrorV1> {
+    let length = u64::try_from(value.len())
+        .map_err(|_| ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
+    meter.charge_work(8)?;
+    meter.charge_work(value.len())?;
+    hash.update(length.to_be_bytes());
+    hash.update(value);
+    Ok(())
+}
+
+fn exact_common_linear_proof_fingerprint_v1(
+    canonical_edges: &[EdgeId],
+    domain_bits: [u64; 2],
+    profile_bits: [u64; 3],
+    schedule_fingerprint_v2: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    graph_binding_fingerprint_v1: [u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1],
+    meter: &mut ExactCommonLinearCycleProfileMeterV1,
+) -> Result<[u8; EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1], ExactCommonLinearCycleProfileErrorV1> {
+    const DOMAIN_SEPARATOR: &[u8] = b"ORIGAMI2_EXACT_COMMON_LINEAR_CYCLE_PROFILE_PROOF_V1";
+
+    meter.begin_temporary(EXACT_COMMON_LINEAR_SHA256_SCRATCH_BYTES_V1)?;
+    let result = (|| {
+        let mut hash = Sha256::new();
+        exact_common_linear_hash_frame_v1(&mut hash, DOMAIN_SEPARATOR, meter)?;
+        exact_common_linear_hash_frame_v1(
+            &mut hash,
+            EXACT_COMMON_LINEAR_CYCLE_PROFILE_MODEL_ID_V1.as_bytes(),
+            meter,
+        )?;
+        exact_common_linear_hash_frame_v1(
+            &mut hash,
+            CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2.as_bytes(),
+            meter,
+        )?;
+        exact_common_linear_hash_frame_v1(
+            &mut hash,
+            DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.as_bytes(),
+            meter,
+        )?;
+        exact_common_linear_hash_frame_v1(&mut hash, &schedule_fingerprint_v2, meter)?;
+        exact_common_linear_hash_frame_v1(&mut hash, &graph_binding_fingerprint_v1, meter)?;
+        exact_common_linear_hash_frame_v1(
+            &mut hash,
+            &u64::try_from(canonical_edges.len())
+                .map_err(|_| ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?
+                .to_be_bytes(),
+            meter,
+        )?;
+        for edge in canonical_edges {
+            exact_common_linear_hash_frame_v1(&mut hash, &edge.canonical_bytes(), meter)?;
+        }
+        for bits in domain_bits {
+            exact_common_linear_hash_frame_v1(&mut hash, &bits.to_be_bytes(), meter)?;
+        }
+        exact_common_linear_hash_frame_v1(&mut hash, &profile_bits[0].to_be_bytes(), meter)?;
+        exact_common_linear_hash_frame_v1(
+            &mut hash,
+            &u64::try_from(profile_bits.len() - 1)
+                .map_err(|_| ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?
+                .to_be_bytes(),
+            meter,
+        )?;
+        for bits in &profile_bits[1..] {
+            exact_common_linear_hash_frame_v1(&mut hash, &bits.to_be_bytes(), meter)?;
+        }
+        Ok(hash.finalize().into())
+    })();
+    meter.end_temporary(EXACT_COMMON_LINEAR_SHA256_SCRATCH_BYTES_V1);
+    result
+}
+
 /// Computes the V2 schedule certificate preimage as:
 ///
 /// - the exact domain-separation bytes;
@@ -2560,6 +3093,445 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+
+    fn exact_common_linear_schedule_for_test(edge_count: usize) -> CanonicalCycleScheduleV1 {
+        let mut edges = (0..edge_count)
+            .map(|index| fingerprint_test_edge(format!("common-linear-{index}").as_bytes()))
+            .collect::<Vec<_>>();
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let entries = edges
+            .into_iter()
+            .map(|edge| Entry {
+                edge,
+                initial: 90.0,
+                coefficients: vec![0.0, 10.0],
+                derivative_bound: 20.0,
+            })
+            .collect::<Vec<_>>();
+        CanonicalCycleScheduleV1 {
+            binding_fingerprint: [0x6d; 32],
+            schedule_fingerprint_v2: schedule_fingerprint_v2([0.0, 1.0], &entries, &[]),
+            fixed_face: FaceId::derive_v5(
+                ProjectId::schema_namespace([0x42; 16]),
+                b"common-linear-fixed",
+            ),
+            domain: [0.0, 1.0],
+            entries,
+            half_angle_entries: Vec::new(),
+        }
+    }
+
+    fn refresh_exact_common_linear_schedule_fingerprint_v2(
+        schedule: &mut CanonicalCycleScheduleV1,
+    ) {
+        schedule.schedule_fingerprint_v2 = schedule_fingerprint_v2(
+            schedule.domain,
+            &schedule.entries,
+            &schedule.half_angle_entries,
+        );
+    }
+
+    fn unbounded_exact_common_linear_limits_v1() -> ExactCommonLinearCycleProfileLimitsV1 {
+        ExactCommonLinearCycleProfileLimitsV1 {
+            max_edges: EXACT_COMMON_LINEAR_MAX_EDGES_V1,
+            max_work: usize::MAX,
+            max_retained_bytes: usize::MAX,
+            max_peak_bytes: usize::MAX,
+        }
+    }
+
+    #[test]
+    fn exact_common_linear_profile_accepts_complete_two_and_three_edge_carriers() {
+        for edge_count in [2, 3] {
+            let schedule = exact_common_linear_schedule_for_test(edge_count);
+            let canonical = schedule
+                .entries
+                .iter()
+                .map(|entry| entry.edge)
+                .collect::<Vec<_>>();
+            let first = schedule
+                .prove_exact_common_linear_profile_v1(
+                    &canonical,
+                    ExactCommonLinearCycleProfileLimitsV1::default(),
+                )
+                .expect("a complete bit-identical linear carrier must be proved");
+            let mut reversed = canonical.clone();
+            reversed.reverse();
+            let reordered = schedule
+                .prove_exact_common_linear_profile_v1(
+                    &reversed,
+                    ExactCommonLinearCycleProfileLimitsV1::default(),
+                )
+                .expect("caller edge order is canonicalized internally");
+
+            assert_eq!(first, reordered);
+            assert_eq!(first.edge_ids(), canonical);
+            assert!(!first.authorizes_closure());
+            assert!(!first.authorizes_collision_clearance());
+            assert!(!first.authorizes_project_mutation());
+            first
+                .revalidate_issuer_schedule_v1(
+                    &schedule,
+                    ExactCommonLinearCycleProfileLimitsV1::default(),
+                )
+                .expect("the exact issuer must revalidate its opaque proof");
+        }
+    }
+
+    #[test]
+    fn exact_common_linear_profile_rejects_ordinary_negative_matrix() {
+        let schedule = exact_common_linear_schedule_for_test(3);
+        let edges = schedule
+            .entries
+            .iter()
+            .map(|entry| entry.edge)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            schedule.prove_exact_common_linear_profile_v1(
+                &edges[..1],
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+        );
+        let fourth = fingerprint_test_edge(b"common-linear-fourth");
+        assert_eq!(
+            schedule.prove_exact_common_linear_profile_v1(
+                &[edges[0], edges[1], edges[2], fourth],
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+        );
+        assert_eq!(
+            schedule.prove_exact_common_linear_profile_v1(
+                &[edges[0], edges[0], edges[1]],
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+        );
+        assert_eq!(
+            schedule.prove_exact_common_linear_profile_v1(
+                &edges[..2],
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::CarrierSetMismatch)
+        );
+
+        let two_edge_schedule = exact_common_linear_schedule_for_test(2);
+        let mut extra = two_edge_schedule
+            .entries
+            .iter()
+            .map(|entry| entry.edge)
+            .collect::<Vec<_>>();
+        extra.push(fourth);
+        assert_eq!(
+            two_edge_schedule.prove_exact_common_linear_profile_v1(
+                &extra,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::CarrierSetMismatch)
+        );
+
+        let mut noncanonical_schedule = schedule.clone();
+        noncanonical_schedule.entries.swap(0, 1);
+        refresh_exact_common_linear_schedule_fingerprint_v2(&mut noncanonical_schedule);
+        assert_eq!(
+            noncanonical_schedule.prove_exact_common_linear_profile_v1(
+                &edges,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::CarrierSetMismatch)
+        );
+
+        let mut half_angle = schedule.clone();
+        half_angle.entries.clear();
+        half_angle
+            .half_angle_entries
+            .push(prepared_half_angle_fingerprint_entry(
+                edges[0],
+                [rational(0, 1), rational(1, 1)],
+                vec![rational(0, 1), rational(1, 1)],
+                vec![rational(1, 1)],
+            ));
+        assert_eq!(
+            half_angle.prove_exact_common_linear_profile_v1(
+                &edges,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::UnsupportedRepresentation)
+        );
+
+        for coefficients in [vec![10.0], vec![0.0, 10.0, 0.0], vec![1.0, 0.0]] {
+            let mut invalid_degree = schedule.clone();
+            for entry in &mut invalid_degree.entries {
+                entry.coefficients = coefficients.clone();
+            }
+            refresh_exact_common_linear_schedule_fingerprint_v2(&mut invalid_degree);
+            assert_eq!(
+                invalid_degree.prove_exact_common_linear_profile_v1(
+                    &edges,
+                    ExactCommonLinearCycleProfileLimitsV1::default(),
+                ),
+                Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+            );
+        }
+
+        for invalid in [f64::NAN, f64::INFINITY, -0.0] {
+            for endpoint in 0..2 {
+                let mut invalid_domain = schedule.clone();
+                invalid_domain.domain[endpoint] = invalid;
+                assert_eq!(
+                    invalid_domain.prove_exact_common_linear_profile_v1(
+                        &edges,
+                        ExactCommonLinearCycleProfileLimitsV1::default(),
+                    ),
+                    Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+                );
+            }
+
+            let mut invalid_initial = schedule.clone();
+            invalid_initial.entries[0].initial = invalid;
+            assert_eq!(
+                invalid_initial.prove_exact_common_linear_profile_v1(
+                    &edges,
+                    ExactCommonLinearCycleProfileLimitsV1::default(),
+                ),
+                Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+            );
+
+            for coefficient in 0..2 {
+                let mut invalid_coefficient = schedule.clone();
+                invalid_coefficient.entries[0].coefficients[coefficient] = invalid;
+                assert_eq!(
+                    invalid_coefficient.prove_exact_common_linear_profile_v1(
+                        &edges,
+                        ExactCommonLinearCycleProfileLimitsV1::default(),
+                    ),
+                    Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+                );
+            }
+        }
+
+        let mut reversed_domain = schedule.clone();
+        reversed_domain.domain = [1.0, 0.0];
+        assert_eq!(
+            reversed_domain.prove_exact_common_linear_profile_v1(
+                &edges,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+        );
+
+        for field in 0..3 {
+            let mut different_profile = schedule.clone();
+            match field {
+                0 => {
+                    different_profile.entries[1].initial =
+                        f64::from_bits(different_profile.entries[1].initial.to_bits() + 1);
+                }
+                1 | 2 => {
+                    different_profile.entries[1].coefficients[field - 1] = f64::from_bits(
+                        different_profile.entries[1].coefficients[field - 1].to_bits() + 1,
+                    );
+                }
+                _ => unreachable!(),
+            }
+            refresh_exact_common_linear_schedule_fingerprint_v2(&mut different_profile);
+            assert_eq!(
+                different_profile.prove_exact_common_linear_profile_v1(
+                    &edges,
+                    ExactCommonLinearCycleProfileLimitsV1::default(),
+                ),
+                Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+            );
+        }
+    }
+
+    #[test]
+    fn exact_common_linear_profile_does_not_accept_equal_endpoint_or_bound_surrogates() {
+        let schedule = exact_common_linear_schedule_for_test(2);
+        let edges = schedule
+            .entries
+            .iter()
+            .map(|entry| entry.edge)
+            .collect::<Vec<_>>();
+        let mut interior_different = schedule.clone();
+        for entry in &mut interior_different.entries {
+            entry.initial = 89.0;
+            entry.coefficients = vec![0.0, 10.0, 1.0];
+            // This observation cache is deliberately kept bit-identical: it
+            // must never substitute for exact coefficient identity.
+            entry.derivative_bound = 20.0;
+        }
+        refresh_exact_common_linear_schedule_fingerprint_v2(&mut interior_different);
+
+        assert_eq!(schedule.evaluate(0.0), interior_different.evaluate(0.0));
+        assert_eq!(schedule.evaluate(1.0), interior_different.evaluate(1.0));
+        assert!(
+            schedule
+                .entries
+                .iter()
+                .zip(&interior_different.entries)
+                .all(|(first, second)| first.derivative_bound.to_bits()
+                    == second.derivative_bound.to_bits())
+        );
+        assert_eq!(
+            interior_different.prove_exact_common_linear_profile_v1(
+                &edges,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn exact_common_linear_profile_revalidation_binds_issuer_fingerprint_and_every_profile_bit() {
+        let schedule = exact_common_linear_schedule_for_test(3);
+        let edges = schedule
+            .entries
+            .iter()
+            .map(|entry| entry.edge)
+            .collect::<Vec<_>>();
+        let proof = schedule
+            .prove_exact_common_linear_profile_v1(
+                &edges,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            )
+            .unwrap();
+
+        let mut foreign = schedule.clone();
+        foreign.binding_fingerprint[0] ^= 1;
+        assert_eq!(
+            proof.revalidate_issuer_schedule_v1(
+                &foreign,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch)
+        );
+
+        let mut forged_fingerprint = schedule.clone();
+        forged_fingerprint.schedule_fingerprint_v2[0] ^= 1;
+        assert_eq!(
+            forged_fingerprint.prove_exact_common_linear_profile_v1(
+                &edges,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch)
+        );
+
+        let mut one_ulp = schedule.clone();
+        for entry in &mut one_ulp.entries {
+            entry.initial = f64::from_bits(entry.initial.to_bits() + 1);
+        }
+        refresh_exact_common_linear_schedule_fingerprint_v2(&mut one_ulp);
+        assert_eq!(
+            proof.revalidate_issuer_schedule_v1(
+                &one_ulp,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch)
+        );
+
+        let mut forged_proof = proof.clone();
+        forged_proof.proof_fingerprint_v1[31] ^= 1;
+        assert_eq!(
+            forged_proof.revalidate_issuer_schedule_v1(
+                &schedule,
+                ExactCommonLinearCycleProfileLimitsV1::default(),
+            ),
+            Err(ExactCommonLinearCycleProfileErrorV1::IssuerMismatch)
+        );
+    }
+
+    #[test]
+    fn exact_common_linear_profile_limits_are_exact_at_equality_and_one_short() {
+        let schedule = exact_common_linear_schedule_for_test(3);
+        let edges = schedule
+            .entries
+            .iter()
+            .map(|entry| entry.edge)
+            .collect::<Vec<_>>();
+        let mut audit_meter =
+            ExactCommonLinearCycleProfileMeterV1::new(unbounded_exact_common_linear_limits_v1());
+        schedule
+            .prove_exact_common_linear_profile_v1_with_meter(&edges, &mut audit_meter)
+            .unwrap();
+        assert_eq!(
+            audit_meter.retained_bytes,
+            exact_common_linear_retained_bytes_v1(edges.len()).unwrap()
+        );
+        assert_eq!(
+            audit_meter.peak_bytes,
+            edges.len() * EXACT_COMMON_LINEAR_EDGE_BYTES_V1
+                + 2 * EXACT_COMMON_LINEAR_FINGERPRINT_BYTES_V1
+                + EXACT_COMMON_LINEAR_SHA256_SCRATCH_BYTES_V1
+        );
+
+        let exact = ExactCommonLinearCycleProfileLimitsV1 {
+            max_edges: edges.len(),
+            max_work: audit_meter.work,
+            max_retained_bytes: audit_meter.retained_bytes,
+            max_peak_bytes: audit_meter.peak_bytes,
+        };
+        schedule
+            .prove_exact_common_linear_profile_v1(&edges, exact)
+            .expect("every exact limit must admit equality");
+
+        for one_short in [
+            ExactCommonLinearCycleProfileLimitsV1 {
+                max_edges: exact.max_edges - 1,
+                ..exact
+            },
+            ExactCommonLinearCycleProfileLimitsV1 {
+                max_work: exact.max_work - 1,
+                ..exact
+            },
+            ExactCommonLinearCycleProfileLimitsV1 {
+                max_retained_bytes: exact.max_retained_bytes - 1,
+                ..exact
+            },
+            ExactCommonLinearCycleProfileLimitsV1 {
+                max_peak_bytes: exact.max_peak_bytes - 1,
+                ..exact
+            },
+        ] {
+            assert_eq!(
+                schedule.prove_exact_common_linear_profile_v1(&edges, one_short),
+                Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)
+            );
+        }
+    }
+
+    #[test]
+    fn exact_common_linear_profile_meter_fails_closed_on_checked_overflow() {
+        let limits = unbounded_exact_common_linear_limits_v1();
+
+        let mut work = ExactCommonLinearCycleProfileMeterV1::new(limits);
+        work.work = usize::MAX;
+        assert_eq!(
+            work.charge_work(1),
+            Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)
+        );
+
+        let mut retained = ExactCommonLinearCycleProfileMeterV1::new(limits);
+        retained.retained_bytes = usize::MAX;
+        assert_eq!(
+            retained.retain(1),
+            Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)
+        );
+
+        let mut temporary = ExactCommonLinearCycleProfileMeterV1::new(limits);
+        temporary.temporary_bytes = usize::MAX;
+        assert_eq!(
+            temporary.begin_temporary(1),
+            Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)
+        );
+
+        assert_eq!(
+            exact_common_linear_retained_bytes_v1(usize::MAX),
+            Err(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)
+        );
     }
 
     #[test]

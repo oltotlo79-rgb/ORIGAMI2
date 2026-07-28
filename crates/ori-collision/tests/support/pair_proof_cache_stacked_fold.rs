@@ -136,9 +136,46 @@ fn production_source(
     EdgeId,
     Vec<ExpectedStackedFoldCreaseV1>,
 ) {
-    let (boundary_pattern, mut paper) = create_rectangular_sheet(400.0, 400.0, false)
+    let (mut boundary_pattern, mut paper) = create_rectangular_sheet(400.0, 400.0, false)
         .expect("production rectangular sheet")
         .into_parts();
+    let original_vertices = paper.boundary_vertices.clone();
+    assert_eq!(original_vertices.len(), 4);
+    assert_eq!(boundary_pattern.vertices.len(), 4);
+    assert_eq!(boundary_pattern.edges.len(), 4);
+    let stable_vertices = (0..4)
+        .map(|index| {
+            VertexId::derive_v5(
+                identity,
+                format!("pair-proof-cache-production-boundary-vertex-v1:{index}").as_bytes(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for vertex in &mut boundary_pattern.vertices {
+        let index = original_vertices
+            .iter()
+            .position(|candidate| *candidate == vertex.id)
+            .expect("generated rectangular boundary vertex");
+        vertex.id = stable_vertices[index];
+    }
+    for edge in &mut boundary_pattern.edges {
+        let start_index = original_vertices
+            .iter()
+            .position(|candidate| *candidate == edge.start)
+            .expect("generated rectangular boundary edge start");
+        let end_index = original_vertices
+            .iter()
+            .position(|candidate| *candidate == edge.end)
+            .expect("generated rectangular boundary edge end");
+        edge.id = EdgeId::derive_v5(
+            identity,
+            format!("pair-proof-cache-production-boundary-edge-v1:{start_index}:{end_index}")
+                .as_bytes(),
+        );
+        edge.start = stable_vertices[start_index];
+        edge.end = stable_vertices[end_index];
+    }
+    paper.boundary_vertices = stable_vertices;
     paper.thickness_mm = PAPER_THICKNESS_MM;
     let diagonals = diagonal_indices();
     let retained_index = diagonals
@@ -292,6 +329,23 @@ fn prepare_target(
         TreeKinematicsLimits::default(),
     )
     .expect("source model");
+    let mut source_face_boundary_lengths = source_model
+        .face_ids()
+        .iter()
+        .map(|face| {
+            source_model
+                .face_boundary(*face)
+                .expect("source face boundary")
+                .vertices()
+                .len()
+        })
+        .collect::<Vec<_>>();
+    source_face_boundary_lengths.sort_unstable();
+    assert_eq!(
+        source_face_boundary_lengths,
+        [3, 9],
+        "the fixture source must remain one leaf triangle plus its bulk component"
+    );
     let source_angles = CanonicalHingeAngles::new(
         source_model
             .hinges()
@@ -300,8 +354,40 @@ fn prepare_target(
             .collect(),
     )
     .expect("canonical source angles");
+    // Anchor the bulk component explicitly. Choosing the first generated
+    // FaceId made the physical root depend on random sheet IDs and allowed
+    // the edited leaf hinge to perturb otherwise unrelated exact poses.
+    let source_fixed_face = source_model
+        .face_ids()
+        .iter()
+        .copied()
+        .max_by(|left, right| {
+            let left_vertices = source_model
+                .face_boundary(*left)
+                .expect("source face boundary")
+                .vertices()
+                .len();
+            let right_vertices = source_model
+                .face_boundary(*right)
+                .expect("source face boundary")
+                .vertices()
+                .len();
+            left_vertices
+                .cmp(&right_vertices)
+                .then_with(|| right.canonical_bytes().cmp(&left.canonical_bytes()))
+        })
+        .expect("largest source material face");
+    assert_eq!(
+        source_model
+            .face_boundary(source_fixed_face)
+            .expect("fixed source face boundary")
+            .vertices()
+            .len(),
+        9,
+        "the stable source root must be the bulk-side face"
+    );
     let source_pose = source_model
-        .solve(Some(source_model.face_ids()[0]), &source_angles)
+        .solve(Some(source_fixed_face), &source_angles)
         .expect("source pose");
     let target = prepare_stacked_fold_target_model_v1(geometry, TreeKinematicsLimits::default())
         .expect("production target model");

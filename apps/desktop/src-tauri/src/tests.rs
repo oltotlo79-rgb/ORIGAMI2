@@ -2093,7 +2093,7 @@ fn beginner_certifier_matches_positive_five_and_eight_hinge_tree_fixtures() {
             &mut project,
             project_id,
             revision,
-            Command::ApplyStackedFoldDocument {
+            Command::ApplyBeginnerGeneratedDocument {
                 pattern: candidate,
                 paper,
                 instruction_timeline: timeline,

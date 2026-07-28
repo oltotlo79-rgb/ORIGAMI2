@@ -18,7 +18,10 @@ use ori_kinematics::{
 };
 use thiserror::Error;
 
-use crate::cayley::prepare_swept_tree_hinge_thickness_boundaries_v1;
+use crate::cayley::{
+    prepare_positive_thickness_exact_endpoint_session_v2,
+    prepare_swept_tree_hinge_thickness_boundaries_v1,
+};
 use crate::{
     HingeReliefLinearAngleScheduleV1, HingeReliefPolicyLimitsV1, HingeReliefPolicyRecordV1,
     NativeHingeReliefLocalIntervalCertificateV1, NativeHingeReliefPrerequisiteV1,
@@ -46,10 +49,15 @@ pub use multi_hinge_union::{
     MultiHingeReliefUnionCertificateV2, MultiHingeReliefUnionCoveredPairV2,
     MultiHingeReliefUnionErrorV2, MultiHingeReliefUnionGapReportV2, MultiHingeReliefUnionGapV2,
     MultiHingeReliefUnionHingeGapV2, MultiHingeReliefUnionLimitsV2,
+    SPLIT_HINGE_UNION_EXTERIOR_RELIEF_ASSUMPTION_MODEL_ID_V1,
+    SplitHingeUnionExteriorReliefAssumptionErrorV1,
+    SplitHingeUnionExteriorReliefAssumptionLimitsV1, SplitHingeUnionExteriorReliefAssumptionV1,
     certify_multi_hinge_relief_union_v2, certify_multi_hinge_relief_union_with_cancel_v2,
     diagnose_multi_hinge_relief_union_gaps_v2,
     diagnose_multi_hinge_relief_union_gaps_with_cancel_v2,
+    prove_split_hinge_union_exterior_relief_assumption_v1,
     revalidate_multi_hinge_relief_union_certificate_v2,
+    revalidate_split_hinge_union_exterior_relief_assumption_v1,
 };
 pub use pair_proof_cache::diagnose_collective_hinge_path_with_pair_cache_v1;
 use pair_proof_cache::{
@@ -129,12 +137,12 @@ pub const STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1: &str =
     "stacked_fold_bounded_path_diagnostic_v1";
 pub const STACKED_FOLD_SINGLE_HINGE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_single_hinge_zero_thickness_continuous_certificate_v1";
-pub const STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
-    "stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1";
+pub const STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2: &str =
+    "stacked_fold_single_hinge_positive_thickness_continuous_certificate_v2";
 pub const STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_collinear_tree_zero_thickness_continuous_certificate_v1";
-pub const STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
-    "stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1";
+pub const STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2: &str =
+    "stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v2";
 pub const STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_two_hinge_interval_zero_thickness_continuous_certificate_v1";
 pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
@@ -2601,12 +2609,12 @@ impl StackedFoldBoundedPathDiagnosticV1 {
                 },
             )
         } else if self.analytic_positive_two_hinge_clearance {
-            Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+            Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2)
         } else if self.analytic_collinear_tree_clearance {
             Some(STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
         } else if self.analytic_single_hinge_clearance {
             Some(if self.positive_thickness_outer_shell {
-                STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+                STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2
             } else {
                 STACKED_FOLD_SINGLE_HINGE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
             })
@@ -2668,9 +2676,19 @@ impl PositiveThicknessTreeContinuousCertificateV1 {
     pub fn binding_fingerprint_v1(&self) -> [u8; 32] {
         let mut hash = sha2::Sha256::new();
         use sha2::Digest as _;
-        hash.update(b"positive_thickness_tree_continuous_certificate_deterministic_axis_norm_v2");
+        hash.update(b"positive_thickness_tree_continuous_certificate_binding_v2");
+        let model_id = self
+            .diagnostic
+            .continuous_certificate_model_id()
+            .expect("a native positive-thickness certificate always has a model ID");
+        hash.update((model_id.len() as u64).to_be_bytes());
+        hash.update(model_id.as_bytes());
+        hash.update(
+            (ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.len() as u64).to_be_bytes(),
+        );
         hash.update(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.as_bytes());
         for angles in [&self.source_absolute, &self.target_absolute] {
+            hash.update((angles.as_slice().len() as u64).to_be_bytes());
             for angle in angles.as_slice() {
                 hash.update(angle.edge().canonical_bytes());
                 hash.update(angle.angle_degrees().to_bits().to_be_bytes());
@@ -2852,10 +2870,6 @@ fn positive_tree_max_angle_degrees_v1(hinge_count: usize) -> Option<f64> {
     })
 }
 
-fn positive_endpoint_pair_work_within_limit_v1(pair_count: usize) -> bool {
-    pair_count <= MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1
-}
-
 fn positive_tree_resource_premises_v1(
     face_count: usize,
     hinge_count: usize,
@@ -2879,121 +2893,11 @@ fn positive_endpoint_candidates_v1(
     pose: &MaterialTreePose,
     paper_thickness_mm: f64,
 ) -> Option<Vec<(FaceId, FaceId)>> {
-    let expansion = paper_thickness_mm / 2.0;
-    if !expansion.is_finite() || expansion <= 0.0 {
-        return None;
-    }
-    let mut bounds = Vec::with_capacity(model.face_ids().len());
-    let mut world_vertices = HashMap::with_capacity(model.face_ids().len());
-    for face in model.face_ids() {
-        let transform = pose.face_transform(*face)?;
-        let boundary = model.face_boundary(*face)?;
-        let mut minimum = [f64::INFINITY; 7];
-        let mut maximum = [f64::NEG_INFINITY; 7];
-        let mut points = Vec::with_capacity(boundary.vertices().len());
-        for vertex in boundary.vertices() {
-            let world = transform.apply_point(pose.vertex_position(*vertex)?).ok()?;
-            points.push([world.x(), world.y(), world.z()]);
-            for (axis, (value, radius)) in [
-                (world.x(), expansion),
-                (world.y(), expansion),
-                (world.z(), expansion),
-                (world.x() + world.y(), expansion * std::f64::consts::SQRT_2),
-                (world.x() - world.y(), expansion * std::f64::consts::SQRT_2),
-                (world.x() + 25.0 * world.y(), expansion * 626.0_f64.sqrt()),
-                (world.x() - 25.0 * world.y(), expansion * 626.0_f64.sqrt()),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                minimum[axis] = minimum[axis].min(value - radius);
-                maximum[axis] = maximum[axis].max(value + radius);
-            }
-        }
-        world_vertices.insert(*face, points);
-        bounds.push((*face, minimum, maximum));
-    }
-    bounds.sort_by(|left, right| {
-        left.1[0]
-            .total_cmp(&right.1[0])
-            .then_with(|| left.0.canonical_bytes().cmp(&right.0.canonical_bytes()))
-    });
-    let adjacent = |first: FaceId, second: FaceId| {
-        model.hinges().iter().any(|hinge| {
-            (hinge.left_face() == first && hinge.right_face() == second)
-                || (hinge.left_face() == second && hinge.right_face() == first)
-        })
-    };
-    let separated_by_planar_edge = |first: FaceId, second: FaceId| {
-        let Some(first_points) = world_vertices.get(&first) else {
-            return false;
-        };
-        let Some(second_points) = world_vertices.get(&second) else {
-            return false;
-        };
-        [first_points, second_points]
-            .into_iter()
-            .any(|axes_source| {
-                (0..axes_source.len()).any(|index| {
-                    let start = axes_source[index];
-                    let end = axes_source[(index + 1) % axes_source.len()];
-                    let axis = [-(end[2] - start[2]), end[0] - start[0]];
-                    let Some(norm) = deterministic_planar_axis_norm_v1(axis) else {
-                        return false;
-                    };
-                    let project = |points: &Vec<[f64; 3]>| {
-                        points.iter().fold(
-                            (f64::INFINITY, f64::NEG_INFINITY),
-                            |(minimum, maximum), point| {
-                                let value = axis[0] * point[0] + axis[1] * point[2];
-                                (minimum.min(value), maximum.max(value))
-                            },
-                        )
-                    };
-                    let (first_min, first_max) = project(first_points);
-                    let (second_min, second_max) = project(second_points);
-                    let radius = expansion * norm;
-                    first_max + radius < second_min - radius
-                        || second_max + radius < first_min - radius
-                })
-            })
-    };
-    let mut candidates = Vec::new();
-    for first in 0..bounds.len() {
-        for second in first + 1..bounds.len() {
-            if bounds[second].1[0] > bounds[first].2[0] {
-                break;
-            }
-            if adjacent(bounds[first].0, bounds[second].0)
-                || separated_by_planar_edge(bounds[first].0, bounds[second].0)
-                || (1..7).any(|axis| {
-                    bounds[first].2[axis] < bounds[second].1[axis]
-                        || bounds[second].2[axis] < bounds[first].1[axis]
-                })
-            {
-                continue;
-            }
-            if candidates
-                .len()
-                .checked_add(1)
-                .is_none_or(|work| !positive_endpoint_pair_work_within_limit_v1(work))
-            {
-                return None;
-            }
-            let mut pair = (bounds[first].0, bounds[second].0);
-            if pair.1.canonical_bytes() < pair.0.canonical_bytes() {
-                pair = (pair.1, pair.0);
-            }
-            candidates.push(pair);
-        }
-    }
-    candidates.sort_by_key(|pair| (pair.0.canonical_bytes(), pair.1.canonical_bytes()));
-    Some(candidates)
-}
-
-fn deterministic_planar_axis_norm_v1(axis: [f64; 2]) -> Option<f64> {
-    let norm = ori_numeric::deterministic_hypot_v1(axis[0], axis[1]).ok()?;
-    (norm > 0.0).then_some(norm)
+    let bound = model.bind_pose(pose).ok()?;
+    prepare_positive_thickness_exact_endpoint_session_v2(bound, paper_thickness_mm)
+        .ok()?
+        .exact_endpoint_candidates_v2(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1)
+        .ok()
 }
 
 fn faces_share_material_vertex_v1(
@@ -3398,7 +3302,18 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                             expected_pairs,
                             cache,
                         )?
-                    } else {
+                    } else if exact_pairs.is_empty() {
+                        true
+                    } else if limits.static_collision != StaticCollisionLimits::default() {
+                        // A caller-supplied static limit is an active proof
+                        // boundary, not a performance hint. Preserve the
+                        // established full-snapshot preflight until every
+                        // field has an exact-session equivalent; otherwise a
+                        // tight limit could be silently widened here. The
+                        // legacy capability is only an additional preflight:
+                        // the V2 exact prism kernel remains authoritative so
+                        // its penetrating result can never be weakened by an
+                        // older broadphase exclusion.
                         exact_pairs.iter().all(|(first, second)| {
                             prepare_positive_thickness_pair_separation_v1(
                                 bound,
@@ -3415,6 +3330,28 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                                         paper_thickness_mm,
                                     )
                                 })
+                            })
+                        }) && prepare_positive_thickness_exact_endpoint_session_v2(
+                            bound,
+                            paper_thickness_mm,
+                        )
+                        .is_ok_and(|session| {
+                            exact_pairs.iter().all(|(first, second)| {
+                                session
+                                    .exact_pair_strictly_separated_v2(*first, *second)
+                                    .is_ok_and(|separated| separated)
+                            })
+                        })
+                    } else {
+                        prepare_positive_thickness_exact_endpoint_session_v2(
+                            bound,
+                            paper_thickness_mm,
+                        )
+                        .is_ok_and(|session| {
+                            exact_pairs.iter().all(|(first, second)| {
+                                session
+                                    .exact_pair_strictly_separated_v2(*first, *second)
+                                    .is_ok_and(|separated| separated)
                             })
                         })
                     }
@@ -5945,27 +5882,6 @@ mod tests {
     use ori_topology::{FaceExtractionInput, FaceKey, analyze_faces};
 
     use super::*;
-
-    #[test]
-    fn planar_separation_axis_norm_is_deterministic_and_fail_closed() {
-        assert_eq!(
-            deterministic_planar_axis_norm_v1([3.0, 4.0]).map(f64::to_bits),
-            Some(5.0_f64.to_bits())
-        );
-        assert_eq!(
-            deterministic_planar_axis_norm_v1([f64::from_bits(1.0_f64.to_bits() + 1), 0.0,])
-                .map(f64::to_bits),
-            Some(1.0_f64.to_bits() + 1)
-        );
-        for rejected in [
-            [0.0, -0.0],
-            [f64::NAN, 1.0],
-            [f64::INFINITY, 1.0],
-            [f64::MAX, f64::MAX],
-        ] {
-            assert_eq!(deterministic_planar_axis_norm_v1(rejected), None);
-        }
-    }
 
     fn fixed_id<T: serde::de::DeserializeOwned>(prefix: &str, index: u64) -> T {
         serde_json::from_str(&format!("\"00000000-0000-4000-{prefix}-{index:012x}\"")).unwrap()
@@ -10885,13 +10801,29 @@ mod tests {
         assert!(positive_thickness.continuous_clearance_certified());
         assert_eq!(
             positive_thickness.continuous_certificate_model_id(),
-            Some(STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+            Some(STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2)
+        );
+        assert_ne!(
+            positive_thickness.continuous_certificate_model_id(),
+            Some("stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1")
         );
         assert_eq!(positive_thickness.safe_stop_angle_degrees(), 37.0);
 
         let requested =
             CanonicalHingeAngles::new(vec![HingeAngle::new(edge, 37.0).expect("requested hinge")])
                 .expect("canonical requested hinge");
+        let certificate =
+            certify_positive_thickness_tree_continuous_path_v1(&model, &pose, &requested, 0.1)
+                .expect("deterministic single-hinge certificate");
+        assert_eq!(
+            certificate.binding_fingerprint_v1(),
+            [
+                0x11, 0xe3, 0xe4, 0xf5, 0x27, 0xdf, 0xa7, 0x1e, 0x25, 0xed, 0x60, 0x90, 0x83, 0x7c,
+                0x82, 0x47, 0x46, 0x35, 0xb8, 0x07, 0x08, 0xd0, 0x1e, 0xf1, 0xb7, 0x46, 0x82, 0x46,
+                0x45, 0xb6, 0xf1, 0xea,
+            ],
+            "the V2 outward model and deterministic transcendental model are part of the binding"
+        );
         let first_pose = model
             .solve(Some(model.face_ids()[0]), &requested)
             .expect("first requested pose");
@@ -10953,7 +10885,11 @@ mod tests {
             assert!(diagnostic.continuous_clearance_certified());
             assert_eq!(
                 diagnostic.continuous_certificate_model_id(),
-                Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+                Some(STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2)
+            );
+            assert_ne!(
+                diagnostic.continuous_certificate_model_id(),
+                Some("stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1")
             );
             assert_eq!(diagnostic.safe_stop_angle_degrees(), requested);
         }
@@ -11905,8 +11841,7 @@ mod tests {
                 .unwrap();
             assert!(maximum_degree >= 3);
         }
-        assert!(positive_endpoint_pair_work_within_limit_v1(120));
-        assert!(!positive_endpoint_pair_work_within_limit_v1(121));
+        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 120);
         assert!(positive_tree_resource_premises_v1(17, 16, 16));
         assert!(positive_tree_resource_premises_v1(64, 63, 63));
         assert!(!positive_tree_resource_premises_v1(65, 64, 64));
@@ -11935,22 +11870,6 @@ mod tests {
             let model = sparse_triangle_strip_model(face_count);
             let (moving, initial) = zero_tree_pose(&model);
             let requested = positive_tree_max_angle_degrees_v1(face_count - 1).unwrap();
-            let moving_set = moving.iter().copied().collect::<HashSet<_>>();
-            let endpoint = solve_collective_pose(&model, &initial, &moving_set, requested).unwrap();
-            let candidates = positive_endpoint_candidates_v1(&model, &endpoint, 0.001).unwrap();
-            assert!(
-                candidates.iter().all(|(first, second)| {
-                    faces_share_material_vertex_v1(&model, *first, *second)
-                }),
-                "face_count={face_count}, candidates={}, nonjunction={}",
-                candidates.len(),
-                candidates
-                    .iter()
-                    .filter(|(first, second)| {
-                        !faces_share_material_vertex_v1(&model, *first, *second)
-                    })
-                    .count()
-            );
             let diagnostic = diagnose_collective_hinge_path_v1(
                 &model,
                 &initial,
@@ -11971,15 +11890,30 @@ mod tests {
 
     #[test]
     fn dense_sweep_candidate_cap_is_fail_closed_and_order_independent() {
+        let mut canonical_candidates = None;
         for reverse_edges in [false, true] {
-            let model = branched_triangle_model(18, reverse_edges);
+            let model = branched_triangle_model(26, reverse_edges);
             let (moving, initial) = zero_tree_pose(&model);
             let moving = moving.into_iter().collect::<HashSet<_>>();
             let dense = solve_collective_pose(&model, &initial, &moving, 180.0).unwrap();
+            let bound = model.bind_pose(&dense).unwrap();
+            let session =
+                prepare_positive_thickness_exact_endpoint_session_v2(bound, 1_000_000.0).unwrap();
+            let uncapped = session
+                .exact_endpoint_candidates_v2(usize::MAX)
+                .expect("dense exact candidates within arithmetic work limits");
+            assert!(uncapped.len() > MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1);
+            if let Some(canonical) = canonical_candidates.as_ref() {
+                assert_eq!(&uncapped, canonical);
+            } else {
+                canonical_candidates = Some(uncapped);
+            }
+            assert_eq!(
+                session.exact_endpoint_candidates_v2(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1),
+                Err(crate::cayley::PositiveThicknessPrismScanErrorV1::ResourceLimitExceeded)
+            );
             assert!(positive_endpoint_candidates_v1(&model, &dense, 1_000_000.0).is_none());
         }
-        assert!(positive_endpoint_pair_work_within_limit_v1(120));
-        assert!(!positive_endpoint_pair_work_within_limit_v1(121));
     }
 
     #[test]

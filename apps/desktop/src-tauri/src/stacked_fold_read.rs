@@ -47,8 +47,10 @@ use ori_collision::{
 use ori_core::{
     DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1, FaceLineageLimits,
     StackedFoldGeometryLimitsV1, StackedFoldTopologyBuildLimitsV1, analyze_global_flat_foldability,
-    analyze_local_flat_foldability, prepare_stacked_fold_geometry_candidate_v1,
-    prepare_stacked_fold_graph_non_flat_layer_order_v1, prepare_stacked_fold_initial_graph_pose_v1,
+    analyze_local_flat_foldability,
+    diagnose_stacked_fold_requested_path_with_initial_layer_order_v1,
+    prepare_stacked_fold_geometry_candidate_v1, prepare_stacked_fold_graph_non_flat_layer_order_v1,
+    prepare_stacked_fold_initial_graph_pose_v1, prepare_stacked_fold_initial_layer_order_v1,
     prepare_stacked_fold_initial_pose_v1,
     prepare_stacked_fold_non_flat_layer_order_with_thickness_v1,
     prepare_stacked_fold_requested_pose_v1, prepare_stacked_fold_target_graph_audit_v1,
@@ -105,9 +107,12 @@ use self::stacked_fold_dyadic_preview::{
     mint_dyadic_pose_path_preview_inner_v1,
 };
 use self::stacked_fold_dyadic_scope::strict_dyadic_geometry_is_in_scope_v1;
+#[cfg(test)]
+use self::stacked_fold_read_wire::StackedFoldTransactionFailureClassDto;
 use self::stacked_fold_read_wire::{
     CertifiedPathGraphEdgeDto, CertifiedPathGraphPreviewDto, CurrentCyclePoseProgressDtoV1,
-    DyadicPoseGraphAngleDtoV1, StackedFoldContinuousPathDto, StackedFoldEndpointCollisionDto,
+    DyadicPoseGraphAngleDtoV1, STACKED_FOLD_APPLY_CONTRACT_VERSION_V1, StackedFoldApplyModeDtoV1,
+    StackedFoldContinuousPathDto, StackedFoldEndpointCollisionDto,
     StackedFoldFlatEndpointLayerOrderDto, StackedFoldMaterialSegmentDto, StackedFoldReadBindingDto,
     StackedFoldReadCellDto, StackedFoldReadProgressDtoV1, StackedFoldReadWorkDto,
     StackedFoldTopologyProofDto, StackedFoldTransactionProposalDto,
@@ -172,6 +177,44 @@ fn endpoint_collision_plan_v1(
     }
 }
 
+#[must_use]
+fn endpoint_allows_speculative_apply_v1(endpoint: &StackedFoldEndpointCollisionDto) -> bool {
+    !endpoint.has_blocking_hold
+        && endpoint.penetrating_pair_count == 0
+        && endpoint.indeterminate_pair_count == 0
+}
+
+fn admit_initial_layer_order_endpoint_v1(
+    mut endpoint: StackedFoldEndpointCollisionDto,
+    layer_admitted_speculative_path: bool,
+) -> Option<StackedFoldEndpointCollisionDto> {
+    let accounted_pair_count = endpoint
+        .separated_pair_count
+        .checked_add(endpoint.touching_pair_count)?
+        .checked_add(endpoint.allowed_pair_count)?
+        .checked_add(endpoint.penetrating_pair_count)?
+        .checked_add(endpoint.indeterminate_pair_count)?;
+    if accounted_pair_count != endpoint.expected_pair_count
+        || endpoint.has_blocking_hold
+            != (endpoint.penetrating_pair_count > 0 || endpoint.indeterminate_pair_count > 0)
+        || endpoint.penetrating_pair_count > 0
+    {
+        return None;
+    }
+    if endpoint.indeterminate_pair_count == 0 {
+        return Some(endpoint);
+    }
+    if !layer_admitted_speculative_path {
+        return None;
+    }
+    endpoint.allowed_pair_count = endpoint
+        .allowed_pair_count
+        .checked_add(endpoint.indeterminate_pair_count)?;
+    endpoint.indeterminate_pair_count = 0;
+    endpoint.has_blocking_hold = false;
+    Some(endpoint)
+}
+
 const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
 const MAX_DYADIC_GRAPH_STATES_V1: usize = 2_187;
 const MAX_DYADIC_GRAPH_TRANSITIONS_V1: usize = 20_412;
@@ -190,11 +233,18 @@ const MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1: usize = 9;
 // boundary aligned with the editor's bounded multi-step transaction admission.
 const MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1: usize = 31;
 static STACKED_FOLD_READ_GENERATION: AtomicU64 = AtomicU64::new(0);
+static STACKED_FOLD_READ_PUBLICATION_GATE_V1: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static STACKED_FOLD_POST_INSTALL_ACTION_V1: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
 const STACKED_FOLD_READ_PROGRESS_EVENT_V1: &str = "stacked-fold-read-progress-v1";
 const CURRENT_CYCLE_POSE_PROGRESS_EVENT_V1: &str = "current-cycle-pose-progress-v1";
 
 #[tauri::command]
 pub(super) fn cancel_current_stacked_fold_read_v1() -> Result<(), String> {
+    let _publication_guard = STACKED_FOLD_READ_PUBLICATION_GATE_V1
+        .lock()
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     STACKED_FOLD_READ_GENERATION
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
             generation.checked_add(1)
@@ -717,18 +767,28 @@ impl RegularQuadPetalPreviewRecordV1 {
                 .closure
                 .as_ref()
                 .ok_or_else(|| "regular-quad petal closure is unavailable".to_owned())?;
-            let transitions = closure.leaves().len() + 1;
+            let transitions = closure
+                .leaves()
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| "regular-quad petal work overflow".to_owned())?;
             let layer_records = source
                 .overlap_cells
                 .iter()
-                .map(|cell| cell.bottom_to_top_faces.len())
-                .sum::<usize>();
+                .try_fold(0_usize, |sum, cell| {
+                    sum.checked_add(cell.bottom_to_top_faces.len())
+                })
+                .ok_or_else(|| "regular-quad petal work overflow".to_owned())?;
             let boundary_samples = source
                 .overlap_cells
                 .iter()
-                .map(|cell| cell.exact_boundary.len() * cell.bottom_to_top_faces.len())
-                .sum::<usize>()
-                .checked_mul(transitions)
+                .try_fold(0_usize, |sum, cell| {
+                    cell.exact_boundary
+                        .len()
+                        .checked_mul(cell.bottom_to_top_faces.len())
+                        .and_then(|work| sum.checked_add(work))
+                })
+                .and_then(|work| work.checked_mul(transitions))
                 .ok_or_else(|| "regular-quad petal work overflow".to_owned())?;
             inputs.push(ori_collision::GeneralCellTransportInputV1 {
                 geometry,
@@ -1962,6 +2022,9 @@ fn propose_current_cycle_pose_inner_with_layers(
                 sum.checked_add(cell.bottom_to_top_faces.len())
             })
             .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+        let transition_count = closure_leaf_count
+            .checked_add(1)
+            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
         let boundary_samples = source
             .overlap_cells
             .iter()
@@ -1971,7 +2034,7 @@ fn propose_current_cycle_pose_inner_with_layers(
                     .checked_mul(cell.bottom_to_top_faces.len())
                     .and_then(|work| sum.checked_add(work))
             })
-            .and_then(|work| work.checked_mul(closure_leaf_count + 1))
+            .and_then(|work| work.checked_mul(transition_count))
             .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
         Some(
             certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
@@ -1984,7 +2047,7 @@ fn propose_current_cycle_pose_inner_with_layers(
                 paper_thickness_mm,
                 tolerance: ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
                 limits: GeneralCellTransportLimitsV1 {
-                    max_transitions: closure_leaf_count + 1,
+                    max_transitions: transition_count,
                     max_cells: source.overlap_cells.len(),
                     max_layer_records: layer_records,
                     max_boundary_samples: boundary_samples,
@@ -2062,11 +2125,15 @@ fn propose_current_cycle_pose_inner_with_layers(
         layer_transport_metadata.map_or((None, 0, 0, None), |value| {
             (Some(value.0), value.1, value.2, Some(value.3))
         });
+    let target_revision = request
+        .expected_revision
+        .checked_add(1)
+        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     Ok(CurrentCyclePosePreviewResponseV1 {
         version: 1,
         transaction_token: token,
         source_revision: request.expected_revision,
-        target_revision: request.expected_revision + 1,
+        target_revision,
         closure_leaf_count,
         closure_max_depth,
         checked_hinge_count,
@@ -2109,6 +2176,9 @@ fn emit_current_cycle_terminal_v1(app: &AppHandle, request_id: &str, status: &'s
 }
 
 fn begin_stacked_fold_read_generation_v1() -> Result<u64, String> {
+    let _publication_guard = STACKED_FOLD_READ_PUBLICATION_GATE_V1
+        .lock()
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     STACKED_FOLD_READ_GENERATION
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
             value.checked_add(1)
@@ -2151,7 +2221,68 @@ enum StackedFoldPathAnalysis {
 
 enum NativeStackedFoldPremises {
     Tree(super::stacked_fold_transaction::PendingStackedFoldPremises),
+    SpeculativeTree(super::stacked_fold_transaction::PendingSpeculativeStackedFoldPremisesV1),
     Graph(super::stacked_fold_transaction::PendingStackedFoldGraphPremises),
+}
+
+struct InstalledStackedFoldProposalGuard<'a> {
+    transaction_state: &'a super::stacked_fold_transaction::StackedFoldTransactionState,
+    token: Option<ProjectId>,
+}
+
+impl<'a> InstalledStackedFoldProposalGuard<'a> {
+    fn new(
+        transaction_state: &'a super::stacked_fold_transaction::StackedFoldTransactionState,
+        token: ProjectId,
+    ) -> Self {
+        Self {
+            transaction_state,
+            token: Some(token),
+        }
+    }
+
+    fn disarm(mut self) {
+        self.token = None;
+    }
+}
+
+impl Drop for InstalledStackedFoldProposalGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(token) = self.token {
+            let _ = super::stacked_fold_transaction::cancel_pending_stacked_fold(
+                self.transaction_state,
+                token,
+            );
+        }
+    }
+}
+
+fn stacked_fold_read_binding_is_current_v1(
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    binding: StackedFoldReadBindingV1,
+    expected_source_fingerprint_sha256: &str,
+) -> Result<bool, String> {
+    let project = lock_project(app_state).map_err(|_| STALE_MESSAGE.to_owned())?;
+    if project.instance_id != binding.project_instance_id()
+        || project.project_id != binding.project_id()
+        || project.editor.revision() != binding.source_revision()
+        || project.editor.fold_model_fingerprint_v1() != expected_source_fingerprint_sha256
+    {
+        return Ok(false);
+    }
+    let pose_capability = project
+        .applied_pose_authority
+        .capture_capability(&project)
+        .map_err(|_| STALE_MESSAGE.to_owned())?;
+    let layer_capability = capture_current_layer_order_capability(foldability_state, &project)
+        .map_err(|_| STALE_MESSAGE.to_owned())?;
+    Ok(pose_capability
+        .as_ref()
+        .is_some_and(|capability| capability.generation() == binding.pose_generation())
+        && layer_capability
+            .as_ref()
+            .is_some_and(|capability| capability.generation() == binding.layer_order_generation()))
 }
 
 #[tauri::command]
@@ -2798,7 +2929,11 @@ async fn propose_current_stacked_fold_read_inner(
                 .hinge_geometry()
                 .face_ids()
                 .len();
-            let expected_pair_count = face_count * face_count.saturating_sub(1) / 2;
+            let expected_pair_count = face_count
+                .checked_sub(1)
+                .and_then(|prior| face_count.checked_mul(prior))
+                .map(|ordered| ordered / 2)
+                .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             let adjacent_pair_count = closed_endpoint
                 .initial()
                 .target()
@@ -2812,9 +2947,12 @@ async fn propose_current_stacked_fold_read_inner(
                 })
                 .collect::<std::collections::HashSet<_>>()
                 .len();
+            let separated_pair_count = expected_pair_count
+                .checked_sub(adjacent_pair_count)
+                .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             let endpoint_collision = StackedFoldEndpointCollisionDto {
                 expected_pair_count,
-                separated_pair_count: expected_pair_count.saturating_sub(adjacent_pair_count),
+                separated_pair_count,
                 touching_pair_count: 0,
                 allowed_pair_count: adjacent_pair_count,
                 penetrating_pair_count: 0,
@@ -2855,7 +2993,10 @@ async fn propose_current_stacked_fold_read_inner(
                 .count();
             let valley_crease_count = expected_creases.len() - mountain_crease_count;
             let transaction_proposal = StackedFoldTransactionProposalDto {
+                apply_contract_version: STACKED_FOLD_APPLY_CONTRACT_VERSION_V1,
+                apply_mode: StackedFoldApplyModeDtoV1::None,
                 transaction_token: None,
+                speculative_unproven_available: false,
                 source_project_id: binding.project_id(),
                 source_revision: binding.source_revision(),
                 target_revision: lineage.target_revision(),
@@ -2975,7 +3116,7 @@ async fn propose_current_stacked_fold_read_inner(
             .flat_map(|subdivision| subdivision.target_edges().iter().copied())
             .collect::<Vec<_>>();
         let path_limits = StackedFoldPathDiagnosticLimitsV1::default();
-        let continuous_path = if let Some(pair_proof_cache_capture) =
+        let mut continuous_path = if let Some(pair_proof_cache_capture) =
             pair_proof_cache_capture.as_ref()
         {
             diagnose_collective_hinge_path_with_pair_cache_v1(
@@ -3011,6 +3152,33 @@ async fn propose_current_stacked_fold_read_inner(
             candidate.requested_angle_degrees(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let mut initial_layer_order = None;
+        if paper.thickness_mm.to_bits() == 0.0_f64.to_bits()
+            && !continuous_path.continuous_clearance_certified()
+            && continuous_path.continuous_certificate_model_id().is_none()
+            && continuous_path
+                .first_sampled_blocking_angle_degrees()
+                .is_some_and(|angle| angle.to_bits() == 0.0_f64.to_bits())
+            && let Ok(order) = prepare_stacked_fold_initial_layer_order_v1(
+                prepared_requested_pose.initial(),
+                layer_capability.snapshot(),
+                DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+            )
+            && let Ok(admitted) =
+                diagnose_stacked_fold_requested_path_with_initial_layer_order_v1(
+                    &prepared_requested_pose,
+                    paper.thickness_mm,
+                    path_limits,
+                    &order,
+                )
+        {
+            continuous_path = admitted;
+            initial_layer_order = Some(order);
+        }
+        let layer_admitted_speculative_path = initial_layer_order.is_some()
+            && super::stacked_fold_transaction::speculative_tree_diagnostic_is_issuable_v1(
+                &continuous_path,
+            );
         let topology = prepared_requested_pose
             .initial()
             .target()
@@ -3041,7 +3209,11 @@ async fn propose_current_stacked_fold_read_inner(
                 .model()
                 .face_ids()
                 .len();
-            let expected_pair_count = face_count * face_count.saturating_sub(1) / 2;
+            let expected_pair_count = face_count
+                .checked_sub(1)
+                .and_then(|prior| face_count.checked_mul(prior))
+                .map(|ordered| ordered / 2)
+                .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             StackedFoldEndpointCollisionDto {
                 expected_pair_count,
                 separated_pair_count: 0,
@@ -3059,18 +3231,19 @@ async fn propose_current_stacked_fold_read_inner(
                 StaticCollisionLimits::default(),
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            if endpoint.has_prominent_blocking_hold() {
-                return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
-            }
-            StackedFoldEndpointCollisionDto {
+            admit_initial_layer_order_endpoint_v1(
+                StackedFoldEndpointCollisionDto {
                 expected_pair_count: endpoint.expected_unordered_face_pairs(),
                 separated_pair_count: endpoint.separated_pairs(),
                 touching_pair_count: endpoint.touching_pairs(),
                 allowed_pair_count: endpoint.allowed_pairs(),
                 penetrating_pair_count: endpoint.penetrating_pairs(),
                 indeterminate_pair_count: endpoint.indeterminate_pairs(),
-                has_blocking_hold: false,
-            }
+                    has_blocking_hold: endpoint.has_prominent_blocking_hold(),
+                },
+                layer_admitted_speculative_path,
+            )
+            .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?
         };
         let (flat_endpoint_layer_order, transaction_layer_order) =
             if exact_flat_endpoint {
@@ -3224,7 +3397,10 @@ async fn propose_current_stacked_fold_read_inner(
             .iter()
             .filter(|crease| crease.kind == ori_domain::EdgeKind::Valley)
             .count();
-        if mountain_crease_count + valley_crease_count != expected_creases.len() {
+        if mountain_crease_count
+            .checked_add(valley_crease_count)
+            .is_none_or(|count| count != expected_creases.len())
+        {
             return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
         }
         let transaction_failures = transaction_failure_classes(
@@ -3232,7 +3408,10 @@ async fn propose_current_stacked_fold_read_inner(
             flat_endpoint_layer_order.certified,
         );
         let transaction_proposal = StackedFoldTransactionProposalDto {
+            apply_contract_version: STACKED_FOLD_APPLY_CONTRACT_VERSION_V1,
+            apply_mode: StackedFoldApplyModeDtoV1::None,
             transaction_token: None,
+            speculative_unproven_available: false,
             source_project_id: binding.project_id(),
             source_revision: binding.source_revision(),
             target_revision: geometry_proof.lineage().target_revision(),
@@ -3255,19 +3434,49 @@ async fn propose_current_stacked_fold_read_inner(
         let source_fingerprint_bytes = geometry_proof.lineage().source_fingerprint().0;
         let live_graph_hinge_angles =
             live_hinge_registry(prepared_requested_pose.initial().pose().hinge_angles());
-        let native_transaction = transaction_layer_order.map(|layer_order| {
-            NativeStackedFoldPremises::Tree(super::stacked_fold_transaction::PendingStackedFoldPremises {
-                expected_instance_id: binding.project_instance_id(),
-                expected_project_id: binding.project_id(),
-                expected_revision: binding.source_revision(),
-                expected_source_fingerprint: source_fingerprint_bytes,
-                expected_pose_generation: binding.pose_generation(),
-                expected_layer_generation: binding.layer_order_generation(),
-                requested: prepared_requested_pose,
-                continuous: continuous_path,
-                paper_thickness_mm,
-                layer_order,
-            })
+        let native_transaction = transaction_layer_order.and_then(|layer_order| {
+            if continuous_path.continuous_clearance_certified() {
+                Some(NativeStackedFoldPremises::Tree(
+                    super::stacked_fold_transaction::PendingStackedFoldPremises {
+                        expected_instance_id: binding.project_instance_id(),
+                        expected_project_id: binding.project_id(),
+                        expected_revision: binding.source_revision(),
+                        expected_source_fingerprint: source_fingerprint_bytes,
+                        expected_pose_generation: binding.pose_generation(),
+                        expected_layer_generation: binding.layer_order_generation(),
+                        requested: prepared_requested_pose,
+                        continuous: continuous_path,
+                        paper_thickness_mm,
+                        layer_order,
+                    },
+                ))
+            } else if layer_admitted_speculative_path
+                && endpoint_allows_speculative_apply_v1(&endpoint_collision)
+            {
+                let initial_layer_order = initial_layer_order?;
+                Some(NativeStackedFoldPremises::SpeculativeTree(
+                    super::stacked_fold_transaction::PendingSpeculativeStackedFoldPremisesV1 {
+                        expected_instance_id: binding.project_instance_id(),
+                        expected_project_id: binding.project_id(),
+                        expected_revision: binding.source_revision(),
+                        expected_source_fingerprint: source_fingerprint_bytes,
+                        expected_pose_generation: binding.pose_generation(),
+                        expected_layer_generation: binding.layer_order_generation(),
+                        requested: prepared_requested_pose,
+                        continuous: continuous_path,
+                        diagnostic_paper_thickness_bits: paper_thickness_mm.to_bits(),
+                        paper_thickness_mm,
+                        initial_layer_order,
+                        layer_order,
+                        endpoint_has_blocking_hold: endpoint_collision.has_blocking_hold,
+                        endpoint_penetrating_pair_count: endpoint_collision.penetrating_pair_count,
+                        endpoint_indeterminate_pair_count: endpoint_collision
+                            .indeterminate_pair_count,
+                    },
+                ))
+            } else {
+                None
+            }
         });
         let crossed_cells = proposal
             .crossed_cells()
@@ -3345,6 +3554,18 @@ async fn propose_current_stacked_fold_read_inner(
     if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != analysis_generation {
         return Err(CANCELLED_MESSAGE.to_owned());
     }
+    let continuous_path_certified = match &continuous_path {
+        StackedFoldPathAnalysis::Tree(value) => value.continuous_clearance_certified(),
+        StackedFoldPathAnalysis::Graph { diagnostic, .. } => {
+            diagnostic.continuous_certificate_model_id().is_some()
+        }
+    };
+    let target_layer_order_certified = flat_endpoint_layer_order.certified;
+    if !transaction_proposal
+        .has_valid_apply_contract_v1(continuous_path_certified, target_layer_order_certified)
+    {
+        return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+    }
     {
         let project = lock_project(&app_state).map_err(|_| STALE_MESSAGE.to_owned())?;
         let pose_is_current = project
@@ -3363,32 +3584,85 @@ async fn propose_current_stacked_fold_read_inner(
             return Err(STALE_MESSAGE.to_owned());
         }
     }
+    let mut installed_proposal_guard = None;
     if let Some(native_transaction) = native_transaction {
-        let token = match native_transaction {
-            NativeStackedFoldPremises::Tree(premises) => {
+        let (token, apply_mode) = match native_transaction {
+            NativeStackedFoldPremises::Tree(premises) => (
                 super::stacked_fold_transaction::install_pending_stacked_fold(
                     &transaction_state,
                     premises,
                     pose_capability,
                     layer_capability,
-                )?
-            }
-            NativeStackedFoldPremises::Graph(premises) => {
+                )?,
+                StackedFoldApplyModeDtoV1::Certified,
+            ),
+            NativeStackedFoldPremises::SpeculativeTree(premises) => (
+                super::stacked_fold_transaction::install_pending_speculative_stacked_fold_v1(
+                    &transaction_state,
+                    premises,
+                    pose_capability,
+                    layer_capability,
+                )?,
+                StackedFoldApplyModeDtoV1::SpeculativeUnproven,
+            ),
+            NativeStackedFoldPremises::Graph(premises) => (
                 super::stacked_fold_transaction::install_pending_stacked_fold_graph(
                     &transaction_state,
                     premises,
                     pose_capability,
                     layer_capability,
-                )?
-            }
+                )?,
+                StackedFoldApplyModeDtoV1::Certified,
+            ),
         };
-        transaction_proposal.transaction_token = Some(token);
-        transaction_proposal.ready_for_atomic_apply = true;
-        transaction_proposal.authorizes_project_mutation = true;
+        match apply_mode {
+            StackedFoldApplyModeDtoV1::Certified => {
+                transaction_proposal.publish_certified_v1(token);
+            }
+            StackedFoldApplyModeDtoV1::SpeculativeUnproven => {
+                transaction_proposal.publish_speculative_unproven_v1(token);
+            }
+            StackedFoldApplyModeDtoV1::None => unreachable!("native proposal always has a mode"),
+        }
+        installed_proposal_guard = Some(InstalledStackedFoldProposalGuard::new(
+            transaction_state,
+            token,
+        ));
+    }
+
+    #[cfg(test)]
+    let post_install_action = STACKED_FOLD_POST_INSTALL_ACTION_V1.swap(0, Ordering::AcqRel);
+    #[cfg(not(test))]
+    let post_install_action = 0_u8;
+    #[cfg(test)]
+    if post_install_action == 1 {
+        let _ = cancel_current_stacked_fold_read_v1();
+    }
+    if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != analysis_generation {
+        return Err(CANCELLED_MESSAGE.to_owned());
+    }
+    if post_install_action == 2
+        || !stacked_fold_read_binding_is_current_v1(
+            app_state,
+            foldability_state,
+            binding,
+            &transaction_proposal.source_fingerprint_sha256,
+        )?
+    {
+        return Err(STALE_MESSAGE.to_owned());
+    }
+    #[cfg(test)]
+    if post_install_action == 3 {
+        transaction_proposal.apply_contract_version = 0;
+    }
+    if !transaction_proposal
+        .has_valid_apply_contract_v1(continuous_path_certified, target_layer_order_certified)
+    {
+        return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
     }
     drop(worker_permit);
 
-    Ok(StackedFoldReadResponse {
+    let response = StackedFoldReadResponse {
         guard_model_id: ori_collision::STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
         proposal_model_id: ori_collision::STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
         material_map_model_id: ori_collision::STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1,
@@ -3432,42 +3706,51 @@ async fn propose_current_stacked_fold_read_inner(
             StackedFoldPathAnalysis::Graph {
                 diagnostic,
                 requested_angle_degrees,
-            } => StackedFoldContinuousPathDto {
-                model_id: ori_collision::STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
-                continuous_certificate_model_id: diagnostic.continuous_certificate_model_id(),
-                sampled_pose_count: diagnostic.leaf_count().saturating_add(1),
-                sampled_nonblocking_pose_count: if diagnostic
-                    .continuous_certificate_model_id()
-                    .is_some()
-                {
-                    diagnostic.leaf_count().saturating_add(1)
-                } else {
-                    0
-                },
-                interval_leaf_count: 0,
-                interval_pair_work: 0,
-                interval_candidate_limit: 0,
-                positive_endpoint_candidate_count: 0,
-                positive_endpoint_exact_pair_calls: 0,
-                positive_endpoint_candidate_limit: 0,
-                closure_required: true,
-                closure_leaf_count: diagnostic.leaf_count(),
-                closure_pair_work: diagnostic.pair_work(),
-                first_closure_failure_angle_degrees: diagnostic
-                    .first_closure_failure_angle_degrees(),
-                first_sampled_blocking_angle_degrees: None,
-                requested_angle_degrees,
-                continuous_clearance_certified: diagnostic
-                    .continuous_certificate_model_id()
-                    .is_some(),
-                safe_stop_angle_degrees: if diagnostic.continuous_certificate_model_id().is_some() {
-                    requested_angle_degrees
-                } else {
-                    0.0
-                },
-                authorizes_project_mutation: false,
-                paper_thickness_mm,
-            },
+            } => {
+                let sampled_pose_count = diagnostic
+                    .leaf_count()
+                    .checked_add(1)
+                    .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+                StackedFoldContinuousPathDto {
+                    model_id: ori_collision::STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
+                    continuous_certificate_model_id: diagnostic.continuous_certificate_model_id(),
+                    sampled_pose_count,
+                    sampled_nonblocking_pose_count: if diagnostic
+                        .continuous_certificate_model_id()
+                        .is_some()
+                    {
+                        sampled_pose_count
+                    } else {
+                        0
+                    },
+                    interval_leaf_count: 0,
+                    interval_pair_work: 0,
+                    interval_candidate_limit: 0,
+                    positive_endpoint_candidate_count: 0,
+                    positive_endpoint_exact_pair_calls: 0,
+                    positive_endpoint_candidate_limit: 0,
+                    closure_required: true,
+                    closure_leaf_count: diagnostic.leaf_count(),
+                    closure_pair_work: diagnostic.pair_work(),
+                    first_closure_failure_angle_degrees: diagnostic
+                        .first_closure_failure_angle_degrees(),
+                    first_sampled_blocking_angle_degrees: None,
+                    requested_angle_degrees,
+                    continuous_clearance_certified: diagnostic
+                        .continuous_certificate_model_id()
+                        .is_some(),
+                    safe_stop_angle_degrees: if diagnostic
+                        .continuous_certificate_model_id()
+                        .is_some()
+                    {
+                        requested_angle_degrees
+                    } else {
+                        0.0
+                    },
+                    authorizes_project_mutation: false,
+                    paper_thickness_mm,
+                }
+            }
         },
         certified_path_graph,
         flat_endpoint_layer_order,
@@ -3485,7 +3768,31 @@ async fn propose_current_stacked_fold_read_inner(
         },
         authorizes_project_mutation: false,
         authorizes_apply_stacked_fold: false,
-    })
+    };
+    let _publication_guard = STACKED_FOLD_READ_PUBLICATION_GATE_V1
+        .lock()
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != analysis_generation {
+        return Err(CANCELLED_MESSAGE.to_owned());
+    }
+    if !stacked_fold_read_binding_is_current_v1(
+        app_state,
+        foldability_state,
+        binding,
+        &response.transaction_proposal.source_fingerprint_sha256,
+    )? {
+        return Err(STALE_MESSAGE.to_owned());
+    }
+    if !response
+        .transaction_proposal
+        .has_valid_apply_contract_v1(continuous_path_certified, target_layer_order_certified)
+    {
+        return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+    }
+    if let Some(guard) = installed_proposal_guard {
+        guard.disarm();
+    }
+    Ok(response)
 }
 
 fn lowercase_hex(bytes: [u8; 32]) -> String {
@@ -3523,7 +3830,7 @@ mod miura_cactus_test_support;
 mod theta_cycle_test_support;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // Keep the established `stacked_fold_read::tests::*` exact-filter surface
@@ -3555,6 +3862,93 @@ mod tests {
         assert_eq!(
             endpoint_collision_plan_v1(179.999, true),
             EndpointCollisionPlanV1::CertifiedPositiveThickness,
+        );
+    }
+
+    #[test]
+    fn speculative_endpoint_gate_requires_all_three_nonblocking_observations() {
+        let endpoint = |has_blocking_hold, penetrating_pair_count, indeterminate_pair_count| {
+            StackedFoldEndpointCollisionDto {
+                expected_pair_count: 1,
+                separated_pair_count: 1,
+                touching_pair_count: 0,
+                allowed_pair_count: 0,
+                penetrating_pair_count,
+                indeterminate_pair_count,
+                has_blocking_hold,
+            }
+        };
+        assert!(endpoint_allows_speculative_apply_v1(&endpoint(false, 0, 0)));
+        assert!(!endpoint_allows_speculative_apply_v1(&endpoint(true, 0, 0)));
+        assert!(!endpoint_allows_speculative_apply_v1(&endpoint(
+            false, 1, 0
+        )));
+        assert!(!endpoint_allows_speculative_apply_v1(&endpoint(
+            false, 0, 1
+        )));
+    }
+
+    #[test]
+    fn initial_layer_order_endpoint_admission_is_exact_and_fail_closed() {
+        let endpoint = |expected_pair_count,
+                        separated_pair_count,
+                        touching_pair_count,
+                        allowed_pair_count,
+                        penetrating_pair_count,
+                        indeterminate_pair_count,
+                        has_blocking_hold| StackedFoldEndpointCollisionDto {
+            expected_pair_count,
+            separated_pair_count,
+            touching_pair_count,
+            allowed_pair_count,
+            penetrating_pair_count,
+            indeterminate_pair_count,
+            has_blocking_hold,
+        };
+
+        let clear = admit_initial_layer_order_endpoint_v1(endpoint(4, 2, 1, 1, 0, 0, false), false)
+            .expect("an exactly accounted clear endpoint remains clear");
+        assert_eq!(clear.separated_pair_count, 2);
+        assert_eq!(clear.touching_pair_count, 1);
+        assert_eq!(clear.allowed_pair_count, 1);
+        assert_eq!(clear.indeterminate_pair_count, 0);
+        assert!(!clear.has_blocking_hold);
+
+        let admitted =
+            admit_initial_layer_order_endpoint_v1(endpoint(4, 1, 1, 0, 0, 2, true), true)
+                .expect("the authenticated initial layer order admits its persistent flat pairs");
+        assert_eq!(admitted.separated_pair_count, 1);
+        assert_eq!(admitted.touching_pair_count, 1);
+        assert_eq!(admitted.allowed_pair_count, 2);
+        assert_eq!(admitted.indeterminate_pair_count, 0);
+        assert!(!admitted.has_blocking_hold);
+
+        assert!(
+            admit_initial_layer_order_endpoint_v1(endpoint(1, 0, 0, 0, 0, 1, true), false,)
+                .is_none(),
+            "a raw indeterminate endpoint requires the exact admitted path"
+        );
+        assert!(
+            admit_initial_layer_order_endpoint_v1(endpoint(1, 0, 0, 0, 1, 0, true), true).is_none(),
+            "penetration remains blocking under every layer-order admission"
+        );
+        assert!(
+            admit_initial_layer_order_endpoint_v1(endpoint(2, 1, 0, 0, 0, 0, false), true)
+                .is_none(),
+            "an unaccounted candidate-only pair must fail closed"
+        );
+        assert!(
+            admit_initial_layer_order_endpoint_v1(endpoint(1, 0, 0, 0, 0, 1, false), true)
+                .is_none(),
+            "the raw blocking flag must agree with the pair dispositions"
+        );
+        assert!(
+            admit_initial_layer_order_endpoint_v1(
+                endpoint(usize::MAX, usize::MAX, 0, 1, 0, 0, false),
+                true,
+            )
+            .is_none(),
+            "count overflow must fail closed"
         );
     }
 
@@ -4178,7 +4572,7 @@ mod tests {
     // an unrelated preview observe a foreign cancellation.
     static STACKED_FOLD_READ_GENERATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    pub(super) fn lock_stacked_fold_read_generation_test() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn lock_stacked_fold_read_generation_test() -> std::sync::MutexGuard<'static, ()> {
         STACKED_FOLD_READ_GENERATION_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -9910,4 +10304,6 @@ mod tests {
             replacement
         );
     }
+
+    include!("stacked_fold_speculative_unproven_tests.rs");
 }

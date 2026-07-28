@@ -2433,10 +2433,12 @@ version = "0.1.0"
 dependencies = [
  "num-bigint",
  "num-rational",
+ "ori-collision",
  "ori-domain",
  "ori-foldability",
  "ori-geometry",
  "ori-kinematics",
+ "ori-numeric",
  "ori-topology",
  "serde",
  "serde_json",

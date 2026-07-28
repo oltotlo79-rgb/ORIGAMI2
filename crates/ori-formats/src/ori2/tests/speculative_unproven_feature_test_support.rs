@@ -63,28 +63,70 @@ pub(super) fn marked_archive(applied_base: bool) -> Ori2ProjectArchive {
     )
     .expect("applied pose");
     let project_id = ProjectId::new();
+    let project_instance_id = ProjectId::new();
+    let request_generation_id = ProjectId::new();
     let binding = SpeculativeUnprovenFoldBindingV1::new(
-        ProjectId::new(),
+        project_instance_id,
         project_id,
         editor.revision(),
         editor.fold_model_fingerprint_v1(),
         7,
-        ProjectId::new(),
+        request_generation_id,
         editor.paper().thickness_mm,
         SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
     )
     .expect("speculative binding");
     editor
-        .execute_stacked_fold_document_with_unproven_mark_v1(
+        .execute_stacked_fold_document(
             editor.revision(),
             target_pattern,
             paper,
             timeline,
             ProjectLayerDocumentV1::default(),
             applied_pose,
-            binding,
         )
-        .expect("marked stacked-fold apply");
+        .expect("ordinary stacked-fold history fixture");
+
+    // This format-layer fixture starts from an ordinary core history entry,
+    // then supplies the same strict untrusted wire that a saved speculative
+    // project contains. Reopening through the public semantic replay API
+    // validates the entry, inverse, binding, and mark together; raw persisted
+    // metadata never acts as Apply authority.
+    let mut history_json = serde_json::to_value(
+        editor
+            .export_history_v1(project_id)
+            .expect("ordinary stacked-fold history"),
+    )
+    .expect("history JSON value");
+    history_json["undo_stack"][0]["speculative_unproven_fold_v1"] = serde_json::json!({
+        "binding": {
+            "project_instance_id": binding.project_instance_id(),
+            "project_id": binding.project_id(),
+            "source_revision": binding.source_revision(),
+            "source_geometry_fingerprint_sha256":
+                binding.source_geometry_fingerprint_sha256(),
+            "pose_generation": binding.pose_generation(),
+            "request_generation_id": binding.request_generation_id(),
+            "paper_thickness_bits_be": binding.paper_thickness_bits().to_be_bytes(),
+            "approximate_blocking_observation": {
+                "status": "no_blocking_sample_observed"
+            }
+        },
+        "proof_status": {
+            "status": "awaiting_proof"
+        }
+    });
+    let marked_history =
+        serde_json::from_value(history_json).expect("strict marked editor history wire");
+    editor = EditorState::with_document_parts_layers_and_history_v1(
+        editor.pattern().clone(),
+        editor.paper().clone(),
+        editor.instruction_timeline().clone(),
+        editor.geometric_constraints().clone(),
+        editor.project_layers().clone(),
+        marked_history,
+    )
+    .expect("semantic replay of marked history");
     if applied_base {
         editor
             .execute(

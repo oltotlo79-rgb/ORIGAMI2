@@ -67,17 +67,24 @@ fn algebraic_pair_witness_is_a_distinct_strict_wire_counter() {
             pair_constraint_constructive_witness_count: 2,
             pair_constraint_algebraic_witness_count: 1,
             length_constraint_constructive_witness_count: 0,
+            zero_length_closure_constructive_witness_count: 0,
             authorizes_project_mutation: false,
-            replayable_across_runtimes: false,
+            replayable_across_runtimes,
             ..
         } if constraint_ids == &expected_ids
+            && *replayable_across_runtimes
+                == ori_numeric::deterministic_transcendental_model_supported_v1()
     ));
 
     let encoded = serde_json::to_value(semantic_mus).expect("serialize algebraic pair counters");
     let object = encoded
         .as_object()
         .expect("semantic certificate must be an object");
-    assert_eq!(object.len(), 15);
+    assert_eq!(object.len(), 17);
+    assert_eq!(
+        object["transcendental_model_id"],
+        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    );
     assert_eq!(object["pair_constraint_constructive_witness_count"], 2);
     assert_eq!(object["pair_constraint_algebraic_witness_count"], 1);
     assert_eq!(
@@ -88,6 +95,7 @@ fn algebraic_pair_witness_is_a_distinct_strict_wire_counter() {
             "pair_constraint_constructive_witness_count",
             "pair_constraint_algebraic_witness_count",
             "length_constraint_constructive_witness_count",
+            "zero_length_closure_constructive_witness_count",
         ]
         .into_iter()
         .map(|key| object[key].as_u64().expect("strict witness counter"))

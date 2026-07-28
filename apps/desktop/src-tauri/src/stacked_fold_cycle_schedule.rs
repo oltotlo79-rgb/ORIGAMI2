@@ -226,10 +226,11 @@ pub(super) fn bounded_primitive_endpoint_ratio_for_angle_v1(
         .flat_map(|denominator| (1_i64..=64).map(move |n| (n * sign, denominator)))
         .filter_map(|ratio| bounded_primitive_endpoint_ratio_v1(ratio.0, ratio.1).ok())
         .find(|(numerator, denominator)| {
-            (requested_angle_degrees
-                - 2.0 * (*numerator as f64).atan2(*denominator as f64).to_degrees())
-            .abs()
-                <= 1.0e-12
+            ori_kinematics::deterministic_half_angle_ratio_degrees_v1(
+                *numerator as f64,
+                *denominator as f64,
+            )
+            .is_some_and(|candidate| (requested_angle_degrees - candidate).abs() <= 1.0e-12)
         })
         .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)
 }

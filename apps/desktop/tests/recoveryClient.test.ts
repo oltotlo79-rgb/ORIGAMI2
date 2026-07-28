@@ -6,6 +6,10 @@ import {
   type VertexCoordinateExpressionBinding,
 } from '../src/lib/coreClient.ts'
 import {
+  BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+  BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+} from '../src/lib/boundaryLengthAuthority.ts'
+import {
   isUnverifiedLegacyV1EdgeGeometryBinding,
   sourceUsesEdgeGeometryReference,
 } from '../src/lib/edgeGeometryReferences.ts'
@@ -280,6 +284,55 @@ test('restore rejects identity, fresh-editor, envelope, and nested DTO drift', (
         }],
       },
     }),
+  ]) {
+    assert.equal(
+      parseRestoredRecoverySnapshot(invalid, AVAILABLE, EXPECTED),
+      null,
+    )
+  }
+})
+
+test('recovery strictly admits all native snapshot authority fields', () => {
+  const assetId = '70000000-0000-4000-8000-000000000007'
+  const asset = { asset_id: assetId, sha256: Array(32).fill(7) }
+  const valid = validSnapshot({ reference_model_assets: [asset] })
+  const parsed = parseRestoredRecoverySnapshot(valid, AVAILABLE, EXPECTED)
+  assert.deepEqual(parsed?.reference_model_assets, [asset])
+  assert.deepEqual(
+    parsed?.boundary_length_authority_v1,
+    valid.boundary_length_authority_v1,
+  )
+  assert.deepEqual(
+    parsed?.speculativeUnprovenFolds,
+    valid.speculativeUnprovenFolds,
+  )
+
+  const missingAssets = validSnapshot() as Record<string, unknown>
+  delete missingAssets.reference_model_assets
+  const missingAuthority = validSnapshot() as Record<string, unknown>
+  delete missingAuthority.boundary_length_authority_v1
+  const missingUnproven = validSnapshot() as Record<string, unknown>
+  delete missingUnproven.speculativeUnprovenFolds
+  const staleAuthority = validSnapshot()
+  staleAuthority.boundary_length_authority_v1.revision = 1
+  const unknownUnproven = validSnapshot()
+  Object.assign(unknownUnproven.speculativeUnprovenFolds.applied, {
+    futureCertified: 1,
+  })
+
+  for (const invalid of [
+    missingAssets,
+    missingAuthority,
+    missingUnproven,
+    validSnapshot({ reference_model_assets: [asset, { ...asset }] }),
+    validSnapshot({
+      reference_model_assets: [{ ...asset, sha256: Array(31).fill(7) }],
+    }),
+    validSnapshot({
+      reference_model_assets: [{ ...asset, future: true }],
+    }),
+    staleAuthority,
+    unknownUnproven,
   ]) {
     assert.equal(
       parseRestoredRecoverySnapshot(invalid, AVAILABLE, EXPECTED),
@@ -1386,9 +1439,40 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
     annotations: { schema_version: 1, annotations: [] },
     underlays: { schema_version: 1, underlays: [] },
     fold_model_fingerprint: 'a'.repeat(64),
+    reference_model_assets: [],
+    boundary_length_authority_v1: unavailableBoundaryLengthAuthority(),
+    speculativeUnprovenFolds: emptyUnprovenHistorySummary(),
     can_undo: false,
     can_redo: false,
     cutting_allowed: false,
     ...overrides,
+  }
+}
+
+function unavailableBoundaryLengthAuthority() {
+  return {
+    schema_version: BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+    model_id: BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    project_instance_id: RESTORED_INSTANCE_ID,
+    project_id: RECOVERED_PROJECT_ID,
+    revision: 0,
+    status: 'unavailable',
+    entries: [],
+  }
+}
+
+function emptyUnprovenHistorySummary() {
+  const counts = () => ({
+    awaitingProof: 0,
+    proofBlocked: 0,
+    unknownEvidenceInsufficient: 0,
+    unknownResourceLimit: 0,
+    unknownCancelled: 0,
+    unknownDeadlineReached: 0,
+  })
+  return {
+    applied: counts(),
+    unappliedRedo: counts(),
   }
 }

@@ -8,6 +8,9 @@ import {
   normalizeGeometricConstraintPreflightResponse,
 } from '../src/lib/geometricConstraints.ts'
 import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
+import {
   BINDING,
   certified,
   CORE,
@@ -75,17 +78,28 @@ test('accepts and deeply freezes the exact certified semantic-MUS DTO', () => {
   )
   assert.equal(MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS, 16)
   assert.equal(MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK, 20_000_000)
+  assert.equal(
+    normalized?.semantic_mus?.transcendental_model_id,
+    DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+  )
 })
 
 test('certified semantic-MUS parsing rejects malformed evidence and cross-check mismatches', () => {
   const missing = certified()
   delete missing.single_constraint_constructive_witness_count
+  const missingZeroClosure = certified()
+  delete missingZeroClosure.zero_length_closure_constructive_witness_count
+  const missingTranscendentalModel = certified()
+  delete missingTranscendentalModel.transcendental_model_id
   const tooManyIds = IDS.slice(0, 17)
   const invalid = [
     missing,
+    missingZeroClosure,
+    missingTranscendentalModel,
     { ...certified(), future: true },
     { ...certified(), status: 'future' },
     { ...certified(), model_id: 'future_model' },
+    { ...certified(), transcendental_model_id: 'future_model' },
     { ...certified(), constraint_ids: [] },
     { ...certified(), constraint_ids: [CORE[1], CORE[0]] },
     { ...certified(), constraint_ids: [CORE[0], CORE[0]] },
@@ -111,6 +125,8 @@ test('certified semantic-MUS parsing rejects malformed evidence and cross-check 
     { ...certified(), single_constraint_constructive_witness_count: -0 },
     { ...certified(), pair_constraint_constructive_witness_count: -1 },
     { ...certified(), pair_constraint_algebraic_witness_count: 0.5 },
+    { ...certified(), zero_length_closure_constructive_witness_count: -0 },
+    { ...certified(), zero_length_closure_constructive_witness_count: 3 },
     {
       ...certified(),
       current_assignment_witness_count: 1,
@@ -118,7 +134,7 @@ test('certified semantic-MUS parsing rejects malformed evidence and cross-check 
       single_constraint_constructive_witness_count: 1,
     },
     { ...certified(), authorizes_project_mutation: true },
-    { ...certified(), replayable_across_runtimes: true },
+    { ...certified(), replayable_across_runtimes: 'true' },
   ]
   for (const semanticMus of invalid) {
     assert.equal(
@@ -234,6 +250,7 @@ test('Unknown semantic-MUS parsing rejects impossible counters, phases, and lega
   const invalid = [
     { ...valid, future: true },
     { ...valid, model_id: 'future_model' },
+    { ...valid, transcendental_model_id: 'future_model' },
     { ...valid, reason: 'future' },
     { ...valid, direct_core_constraint_ids: [CORE[1], CORE[0]] },
     { ...valid, direct_core_constraint_ids: [CORE[0], CORE[0]] },

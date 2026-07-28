@@ -8,10 +8,12 @@ repository.workspace = true
 [dependencies]
 num-bigint.workspace = true
 num-rational = "=0.4.2"
+ori-collision = { path = "../ori-collision" }
 ori-domain = { path = "../ori-domain" }
 ori-foldability = { path = "../ori-foldability" }
 ori-geometry = { path = "../ori-geometry" }
 ori-kinematics = { path = "../ori-kinematics" }
+ori-numeric = { path = "../ori-numeric" }
 ori-topology = { path = "../ori-topology" }
 serde.workspace = true
 serde_json.workspace = true

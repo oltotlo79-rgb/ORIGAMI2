@@ -13,6 +13,12 @@ import type {
   GeometricConstraintPreflightResult,
   GeometricConstraintSolvePreview,
 } from '../src/lib/coreClient'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel'
+import {
+  GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+} from '../src/lib/geometricConstraints'
 import type { LocaleStore } from '../src/lib/i18n'
 import { localeFixture } from './localeTestFixture'
 
@@ -50,11 +56,13 @@ describe('GeometricConstraintPanel', () => {
       systemClassification: 'under_constrained',
       changedVertices: [{ vertexId: IDS[6], x: 12, y: 8 }],
       exactSatisfaction: {
-        modelId: 'geometric_constraint_current_runtime_exact_satisfaction_v1',
+        modelId:
+          GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+        transcendentalModelId: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
         constraintCount: 2,
         equationCount: 3,
         authorizesProjectMutation: false,
-        replayableAcrossRuntimes: false,
+        replayableAcrossRuntimes: true,
       },
     })
     const onApplySolve = vi.fn().mockResolvedValue(true)
@@ -71,7 +79,7 @@ describe('GeometricConstraintPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
     await screen.findByText(/Changed vertices: 1/u)
     expect(screen.getByText(
-      'In this runtime, the apply candidate exactly satisfies all 2 constraints and 3 binary64 residual equations. Explicit confirmation is still required to apply it.',
+      'The apply candidate exactly satisfies all 2 constraints and 3 deterministic binary64 residual equations. Re-certifiable under the frozen deterministic model; this does not claim portability of a serialized witness. Explicit confirmation is still required to apply it.',
     )).toBeTruthy()
     expect(onApplySolve).not.toHaveBeenCalled()
 
@@ -765,17 +773,25 @@ describe('GeometricConstraintPanel', () => {
     renderPanel({
       preflight: {
         status: 'proven_satisfiable',
-        model_id: 'geometric_constraint_current_runtime_exact_satisfaction_v1',
+        model_id:
+          GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+        transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
         constraint_count: 11,
         equation_count: 14,
         authorizes_project_mutation: false,
-        replayable_across_runtimes: false,
+        replayable_across_runtimes: true,
       },
     })
 
     const status = screen.getByRole('status')
     expect(status.textContent).toContain(
-      '現在の実行環境で、現在の配置は全11件・14方程式のbinary64残差を厳密に満たしています。',
+      '現在の配置は全11件・14方程式の決定論的binary64残差を厳密に満たしています。',
+    )
+    expect(status.textContent).toContain(
+      '凍結された決定論モデル下で再認証可能です。',
+    )
+    expect(status.textContent).toContain(
+      'シリアライズ済み証人の可搬性は主張しません。',
     )
     expect(status.textContent).not.toContain('未証明')
     expect(status.classList.contains('is-clear')).toBe(true)

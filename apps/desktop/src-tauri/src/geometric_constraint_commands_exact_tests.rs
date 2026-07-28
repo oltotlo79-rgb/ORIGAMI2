@@ -83,10 +83,17 @@ fn numerical_preview_promotes_only_the_exact_assignment_delta() {
         exact.model_id,
         ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
     );
+    assert_eq!(
+        exact.transcendental_model_id,
+        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    );
     assert_eq!(exact.constraint_count, 1);
     assert_eq!(exact.equation_count, 1);
     assert!(!exact.authorizes_project_mutation);
-    assert!(!exact.replayable_across_runtimes);
+    assert_eq!(
+        exact.replayable_across_runtimes,
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
+    );
     assert!(prepared.positions.iter().all(|(id, point)| {
         let original = pattern
             .vertices
@@ -128,12 +135,16 @@ fn numerical_preview_promotes_only_the_exact_assignment_delta() {
         ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
     );
     assert_eq!(
+        value["exactSatisfaction"]["transcendentalModelId"],
+        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    );
+    assert_eq!(
         value["exactSatisfaction"]["authorizesProjectMutation"],
         false,
     );
     assert_eq!(
         value["exactSatisfaction"]["replayableAcrossRuntimes"],
-        false,
+        ori_numeric::deterministic_transcendental_model_supported_v1(),
     );
 }
 
@@ -709,4 +720,116 @@ fn one_ulp_stage_tampering_fails_before_project_mutation() {
     );
     assert_eq!(project.editor.revision(), 1);
     assert_eq!(project.editor.pattern(), &before);
+}
+
+#[test]
+fn staged_exact_metadata_rejects_every_forged_identity_count_and_authority_field() {
+    let (pattern, document, start, _) = horizontal_fixture();
+    let solved = solve_geometric_constraints_v1(
+        &pattern,
+        &document,
+        start,
+        Point2::new(0.0, 0.0),
+        ConstraintSolveLimitsV1::default(),
+    )
+    .expect("numerical preview");
+    let prepared = prepare_geometric_constraint_solve(&pattern, &document, &solved);
+    let valid = prepared
+        .exact_satisfaction
+        .expect("axis exactification metadata");
+    recertify_staged_exact_geometric_constraint_solve(
+        &pattern,
+        &document,
+        &prepared.positions,
+        valid,
+    )
+    .expect("untampered metadata must re-certify");
+
+    let invalid = [
+        GeometricConstraintSolveExactSatisfaction {
+            model_id: "forged_exact_model",
+            ..valid
+        },
+        GeometricConstraintSolveExactSatisfaction {
+            transcendental_model_id: "forged_transcendental_model",
+            ..valid
+        },
+        GeometricConstraintSolveExactSatisfaction {
+            constraint_count: valid.constraint_count + 1,
+            ..valid
+        },
+        GeometricConstraintSolveExactSatisfaction {
+            equation_count: valid.equation_count + 1,
+            ..valid
+        },
+        GeometricConstraintSolveExactSatisfaction {
+            authorizes_project_mutation: true,
+            ..valid
+        },
+        GeometricConstraintSolveExactSatisfaction {
+            replayable_across_runtimes: !valid.replayable_across_runtimes,
+            ..valid
+        },
+    ];
+    for forged in invalid {
+        assert!(
+            recertify_staged_exact_geometric_constraint_solve(
+                &pattern,
+                &document,
+                &prepared.positions,
+                forged,
+            )
+            .is_err(),
+        );
+    }
+}
+
+#[test]
+fn saved_edge_geometry_is_deterministic_for_cardinals_and_one_ulp_neighbors() {
+    for (delta_x, delta_y, expected_length, expected_angle) in [
+        (1.0_f64, 0.0, 1.0_f64, 0.0_f64),
+        (0.0, 1.0, 1.0, 90.0),
+        (-1.0, 0.0, 1.0, 180.0),
+        (0.0, -1.0, 1.0, 270.0),
+    ] {
+        let (length, angle) = deterministic_saved_edge_reference_geometry(delta_x, delta_y)
+            .expect("finite cardinal edge");
+        assert_eq!(length.to_bits(), expected_length.to_bits());
+        assert_eq!(angle.to_bits(), expected_angle.to_bits());
+    }
+
+    let one = 1.0_f64.to_bits();
+    for delta_x in [
+        f64::from_bits(one - 1),
+        f64::from_bits(one),
+        f64::from_bits(one + 1),
+    ] {
+        let (length, angle) = deterministic_saved_edge_reference_geometry(delta_x, 1.0)
+            .expect("finite one-ULP neighbor");
+        assert_eq!(
+            length.to_bits(),
+            ori_numeric::deterministic_hypot_v1(delta_x, 1.0)
+                .expect("deterministic length")
+                .to_bits(),
+        );
+        let expected_angle = ori_numeric::deterministic_radians_to_degrees_v1(
+            ori_numeric::deterministic_atan2_v1(1.0, delta_x).expect("deterministic angle"),
+        )
+        .expect("deterministic degrees")
+        .rem_euclid(360.0);
+        assert_eq!(angle.to_bits(), expected_angle.to_bits());
+    }
+}
+
+#[test]
+fn saved_edge_geometry_fails_closed_for_degenerate_and_nonfinite_results() {
+    for (delta_x, delta_y) in [
+        (0.0, 0.0),
+        (-0.0, 0.0),
+        (f64::NAN, 1.0),
+        (f64::INFINITY, 1.0),
+        (f64::MAX, f64::MAX),
+    ] {
+        assert!(deterministic_saved_edge_reference_geometry(delta_x, delta_y).is_err(),);
+    }
 }

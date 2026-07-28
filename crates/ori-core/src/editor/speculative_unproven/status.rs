@@ -137,6 +137,8 @@ pub enum SpeculativeUnprovenFoldMetadataErrorV1 {
 pub enum SpeculativeUnprovenFoldApplyErrorV1 {
     #[error(transparent)]
     InvalidMetadata(#[from] SpeculativeUnprovenFoldMetadataErrorV1),
+    #[error("the speculative Apply target does not match the issued token seal")]
+    TargetSealMismatch,
     #[error("the speculative source revision does not match the current editor")]
     SourceRevisionMismatch,
     #[error("the speculative source geometry fingerprint is stale")]

@@ -701,9 +701,16 @@ pub(super) fn lock_revalidated_current_layer_order_for_commit<'a>(
 pub(super) fn invalidate_current_layer_order_after_history_mutation(
     state: &GlobalFlatFoldabilityState,
 ) -> Result<(), GlobalFlatFoldabilityCommandError> {
-    let mut slot = lock_foldability_state(state)?;
-    slot.current_layer_order = None;
+    lock_current_layer_order_for_history_mutation(state)?.invalidate_after_project_mutation();
     Ok(())
+}
+
+pub(super) fn lock_current_layer_order_for_history_mutation(
+    state: &GlobalFlatFoldabilityState,
+) -> Result<CurrentLayerOrderCommitGuard<'_>, GlobalFlatFoldabilityCommandError> {
+    Ok(CurrentLayerOrderCommitGuard {
+        slot: lock_foldability_state(state)?,
+    })
 }
 
 impl CurrentLayerOrderCapability {

@@ -48,7 +48,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 retains twenty-one legacy tags and tracks fifteen sound proof families', () => {
+test('EDT-009 retains its wire tags and tracks seventeen sound proof families', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
@@ -65,6 +65,7 @@ test('EDT-009 retains twenty-one legacy tags and tracks fifteen sound proof fami
   assert.ok(statusRow)
   const allowlist = [
     'DifferentFixedLengths',
+    'DifferentFixedAngles',
     'HorizontalAndVertical',
     'EqualLengthWithDifferentFixedLengths',
     'LengthRatioWithIncompatibleFixedLengths',
@@ -73,6 +74,7 @@ test('EDT-009 retains twenty-one legacy tags and tracks fifteen sound proof fami
     'ParallelWithPerpendicularOrientations',
     'SameOrientationWithFixedNonParallelAngle',
     'PerpendicularOrientationsWithFixedNonRightAngle',
+    'DifferentRotationalSymmetryAnglesWithFixedRadius',
     'PositiveFixedLengthInBoundedZeroLengthClosure',
     'ZeroLengthClosureReachesNondegenerateProvider',
     'EqualLengthWithNonUnitRatioAndFixedLength',
@@ -90,11 +92,14 @@ test('EDT-009 retains twenty-one legacy tags and tracks fifteen sound proof fami
   assert.deepEqual(documentedVariants, allowlist)
   assert.equal(
     enumVariants.filter((name) => !allowlist.includes(name)).length,
-    8,
+    6,
   )
   assert.match(statusRow, /legacy 21 variantをwire互換/u)
   assert.match(statusRow, /sound allowlist/u)
-  assert.match(statusRow, /残る8 variant/u)
+  assert.match(
+    status,
+    /2026-07-28 EDT-009現行訂正:[^\n]+sound familyは17[^\n]+legacy familyは6[^\n]+認識済み17 family[^\n]+semantic MUS/u,
+  )
   assert.match(statusRow, /`Unknown`へfail-closed/u)
   assert.match(statusRow, /全11種の一般充足可能性、完全な一般矛盾原因、一般最小不能部分集合は未完成/u)
 
@@ -154,18 +159,29 @@ test('EDT-009 retains twenty-one legacy tags and tracks fifteen sound proof fami
   )
   assert.ok(edtEvidence)
   assert.deepEqual(edtEvidence.limitations, [
-    'only fifteen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the eight retained legacy variants fail closed to Unknown',
+    'only seventeen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the frozen binary64 proof residuals; the six retained legacy variants fail closed to Unknown',
   ])
   assert.deepEqual(edtEvidence.missingAcceptance, [
-    'complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded exact-zero and directed length-ratio proof families',
+    'complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the seventeen recognized direct proof families',
   ])
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
       item.selector === 'fn horizontal_and_vertical_require_an_exact_noncollapse_witness()',
   ))
   assert.ok(edtEvidence.evidence.some(
-    (item: { selector: string }) =>
-      item.selector === 'fn partially_checked_fixed_angle_and_ratio_kinds_return_unknown()',
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraint_exactification/pair_constructive_algebraic_tests.rs'
+      && item.selector === 'fn two_rotations_use_only_the_complete_residual_overlay_collapse()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraint_exactification/pair_constructive/cardinal_rotation.rs'
+      && item.selector === 'pub(super) fn construct_cardinal_rotation_pair_candidate_v1(',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraint_exactification/pair_constructive_cardinal_rotation_tests.rs'
+      && item.selector === 'fn cardinal_rotation_and_either_fixed_radius_cover_the_full_finite_length_range()',
   ))
   assert.ok(edtEvidence.commits.includes(
     '27b26585cc33618061d4c3c51987c96eeead8982',
@@ -176,12 +192,12 @@ test('EDT-009 retains twenty-one legacy tags and tracks fifteen sound proof fami
   assert.ok(edtEvidence.evidence.some(
     (item: { path: string, selector: string }) =>
       item.path === 'crates/ori-core/src/constraints_same_orientation_angle_tests.rs'
-      && item.selector === 'fn zero_cross_classification_uses_the_shared_binary64_residual()',
+      && item.selector === 'fn witness_is_canonical_storage_invariant_and_irredundant()',
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { path: string, selector: string }) =>
       item.path === 'crates/ori-core/src/constraints_perpendicular_angle_tests.rs'
-      && item.selector === 'fn perpendicular_actual_classes_use_only_shared_binary64_operations()',
+      && item.selector === 'fn witness_is_canonical_storage_invariant_and_irredundant()',
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>

@@ -6,6 +6,7 @@ import {
   selectLocalizedText,
   type Locale,
 } from './i18n.ts'
+import { normalizeBoundaryLengthAuthorityV1 } from './boundaryLengthAuthority.ts'
 import { LENGTH_UNIT_PRESENTATION_TEXT } from './lengthUnitText.ts'
 
 export type AbsoluteLengthDisplayUnit = 'mm' | 'cm' | 'inch'
@@ -92,82 +93,39 @@ export function collectBoundaryLengthReferences(
   snapshot: ProjectSnapshot | null,
 ): readonly BoundaryLengthReference[] {
   if (!snapshot) return []
-  const boundaryIds = snapshot.paper.boundary_vertices
-  if (
-    boundaryIds.length < 3
-    || new Set(boundaryIds).size !== boundaryIds.length
-  ) return []
+  const authority = normalizeBoundaryLengthAuthorityV1(
+    snapshot.boundary_length_authority_v1,
+    snapshot,
+  )
+  if (!authority || authority.status !== 'available') return []
 
-  const verticesById = new Map<string, Array<{ x: number; y: number }>>()
-  for (const vertex of snapshot.crease_pattern.vertices) {
-    const current = verticesById.get(vertex.id)
-    if (current) current.push(vertex.position)
-    else verticesById.set(vertex.id, [vertex.position])
-  }
-
-  const edgeIdCounts = new Map<string, number>()
-  const boundaryEdgesByFirstEndpoint = new Map<
-    string,
-    Map<string, ProjectSnapshot['crease_pattern']['edges']>
-  >()
-  for (const edge of snapshot.crease_pattern.edges) {
-    edgeIdCounts.set(edge.id, (edgeIdCounts.get(edge.id) ?? 0) + 1)
-    if (edge.kind !== 'boundary') continue
-    const [firstEndpoint, secondEndpoint] = canonicalEndpointPair(
-      edge.start,
-      edge.end,
-    )
-    let bySecondEndpoint = boundaryEdgesByFirstEndpoint.get(firstEndpoint)
-    if (!bySecondEndpoint) {
-      bySecondEndpoint = new Map()
-      boundaryEdgesByFirstEndpoint.set(firstEndpoint, bySecondEndpoint)
-    }
-    const matchingEdges = bySecondEndpoint.get(secondEndpoint)
-    if (matchingEdges) matchingEdges.push(edge)
-    else bySecondEndpoint.set(secondEndpoint, [edge])
-  }
-
-  const references: BoundaryLengthReference[] = []
-  for (let index = 0; index < boundaryIds.length; index += 1) {
-    const startVertexId = boundaryIds[index]
-    const endVertexId = boundaryIds[(index + 1) % boundaryIds.length]
-    const startMatches = verticesById.get(startVertexId)
-    const endMatches = verticesById.get(endVertexId)
-    if (startMatches?.length !== 1 || endMatches?.length !== 1) continue
-    const start = startMatches[0]
-    const end = endMatches[0]
-    if (![start.x, start.y, end.x, end.y].every(Number.isFinite)) continue
-
-    const [firstEndpoint, secondEndpoint] = canonicalEndpointPair(
-      startVertexId,
-      endVertexId,
-    )
-    const matchingEdges = boundaryEdgesByFirstEndpoint
-      .get(firstEndpoint)
-      ?.get(secondEndpoint) ?? []
-    if (matchingEdges.length !== 1) continue
-    const edge = matchingEdges[0]
-    if (edgeIdCounts.get(edge.id) !== 1) continue
-
-    const lengthMm = Math.hypot(end.x - start.x, end.y - start.y)
-    if (!Number.isFinite(lengthMm) || lengthMm <= 0) continue
-    references.push(Object.freeze({
-      edgeId: edge.id,
-      startVertexId,
-      endVertexId,
+  const verticesById = new Map(
+    snapshot.crease_pattern.vertices.map(
+      (vertex) => [vertex.id, vertex.position] as const,
+    ),
+  )
+  const references = authority.entries.map((entry) => {
+    const start = verticesById.get(entry.start_vertex_id)
+    const end = verticesById.get(entry.end_vertex_id)
+    if (!start || !end) return null
+    return Object.freeze({
+      edgeId: entry.edge_id,
+      startVertexId: entry.start_vertex_id,
+      endVertexId: entry.end_vertex_id,
       start: Object.freeze({ x: start.x, y: start.y }),
       end: Object.freeze({ x: end.x, y: end.y }),
-      lengthMm,
-      boundaryIndex: index,
-    }))
-  }
-  return Object.freeze(references)
+      lengthMm: entry.length_mm,
+      boundaryIndex: entry.boundary_index,
+    })
+  })
+  if (references.some((reference) => reference === null)) return []
+  return Object.freeze(references as BoundaryLengthReference[])
 }
 
 export function resolveLengthDisplayUnit(
   snapshot: ProjectSnapshot | null,
-  references = collectBoundaryLengthReferences(snapshot),
 ): ResolvedLengthDisplayUnit {
+  const references = collectBoundaryLengthReferences(snapshot)
   const stored = snapshot?.paper.length_display_unit as unknown
   if (stored === 'mm' || stored === 'cm' || stored === 'inch') {
     return absoluteLengthDisplayUnit(stored)
@@ -414,10 +372,6 @@ function defaultMaximumFractionDigits(unit: ResolvedLengthDisplayUnit) {
 
 function unavailableLengthText(locale: Locale) {
   return selectLocalizedText(locale, LENGTH_UNIT_PRESENTATION_TEXT.unavailable)
-}
-
-function canonicalEndpointPair(first: string, second: string) {
-  return first <= second ? [first, second] : [second, first]
 }
 
 function float64Token(value: number) {

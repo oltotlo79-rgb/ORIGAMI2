@@ -72,7 +72,11 @@ pub(crate) fn dense_grid_schedule_ratio(
                     denominator: 1,
                 }],
                 requested_angle_degrees: if active {
-                    2.0 * (numerator as f64).atan2(denominator as f64).to_degrees()
+                    ori_kinematics::deterministic_half_angle_ratio_degrees_v1(
+                        numerator as f64,
+                        denominator as f64,
+                    )
+                    .unwrap()
                 } else {
                     0.0
                 },
@@ -135,7 +139,11 @@ pub(crate) fn advance_collective_schedule(
                     denominator: 1,
                 }],
                 requested_angle_degrees: if active {
-                    2.0 * 2.0_f64.atan2(denominator as f64).to_degrees()
+                    ori_kinematics::deterministic_half_angle_ratio_degrees_v1(
+                        2.0,
+                        denominator as f64,
+                    )
+                    .unwrap()
                 } else {
                     0.0
                 },
@@ -201,10 +209,11 @@ pub(crate) fn four_bay_cycle_schedule(hinges: &[ori_domain::EdgeId]) -> CycleSch
                     numerator: if index % 2 == 0 { 1 } else { q },
                     denominator: 1,
                 }],
-                requested_angle_degrees: 2.0
-                    * (if index % 2 == 0 { 1.0 } else { p as f64 })
-                        .atan2(if index % 2 == 0 { 1.0 } else { q as f64 })
-                        .to_degrees(),
+                requested_angle_degrees: ori_kinematics::deterministic_half_angle_ratio_degrees_v1(
+                    if index % 2 == 0 { 1.0 } else { p as f64 },
+                    if index % 2 == 0 { 1.0 } else { q as f64 },
+                )
+                .unwrap(),
             }
         })
         .collect::<Vec<_>>();
@@ -263,7 +272,7 @@ pub(crate) fn theta_cycle_schedule(
                     denominator: 1,
                 }],
                 requested_angle_degrees: if moves {
-                    2.0 * (2.0_f64 / 15.0).atan().to_degrees()
+                    ori_kinematics::deterministic_half_angle_ratio_degrees_v1(2.0, 15.0).unwrap()
                 } else {
                     0.0
                 },
@@ -343,10 +352,25 @@ fn bounded_endpoint_ratios_and_dyadic_request_counts_are_admitted() {
         );
     }
     for ratio in [(2, 3), (3, 7), (63, 64), (4, 3), (7, 3), (64, 1), (-4, 3)] {
-        let angle = 2.0 * (ratio.0 as f64).atan2(ratio.1 as f64).to_degrees();
+        let angle = ori_kinematics::deterministic_half_angle_ratio_degrees_v1(
+            ratio.0 as f64,
+            ratio.1 as f64,
+        )
+        .unwrap();
         assert_eq!(
             bounded_primitive_endpoint_ratio_for_angle_v1(angle),
             Ok(ratio)
+        );
+    }
+    let right_angle = ori_kinematics::deterministic_half_angle_ratio_degrees_v1(1.0, 1.0).unwrap();
+    assert_eq!(right_angle.to_bits(), 90.0_f64.to_bits());
+    for adjacent in [
+        f64::from_bits(right_angle.to_bits() - 1),
+        f64::from_bits(right_angle.to_bits() + 1),
+    ] {
+        assert_eq!(
+            bounded_primitive_endpoint_ratio_for_angle_v1(adjacent),
+            Ok((1, 1))
         );
     }
     for rejected_angle in [0.0, 180.0, -180.0, f64::INFINITY] {

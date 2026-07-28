@@ -8,6 +8,8 @@ import { PROOF_PROGRESS_STATES } from '../src/lib/proofProgressModel.ts'
 const TOP_LEVEL_KEYS = [
   'ariaLabel',
   'title',
+  'postApplyStarting',
+  'postApplyUnavailable',
   'statusLabel',
   'status',
   'certifiedBadge',
@@ -84,6 +86,13 @@ test('proof progress copy distinguishes proven, unproven, applied, and redo-only
   assert.doesNotMatch(TEXT.speculativeApplyWarning.en, /automatic/iu)
   assert.match(TEXT.appliedUnprovenWarning.ja, /現在の文書に適用/u)
   assert.match(TEXT.unappliedRedoNotice.ja, /現在は未適用/u)
+  assert.match(TEXT.postApplyStarting.en, /post-Apply proof job/iu)
+  assert.match(TEXT.postApplyUnavailable.ja, /未証明のまま/u)
+  assert.match(TEXT.postApplyUnavailable.en, /remains unproven/iu)
+  assert.doesNotMatch(
+    `${TEXT.postApplyUnavailable.ja}${TEXT.postApplyUnavailable.en}`,
+    /error|path|authority|geometry|座標|経路/iu,
+  )
 })
 
 test('ProofProgressPanel keeps all display copy in the typed catalog', () => {

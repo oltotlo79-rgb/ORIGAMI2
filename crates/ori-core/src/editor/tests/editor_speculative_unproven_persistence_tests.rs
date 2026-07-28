@@ -246,10 +246,42 @@ fn speculative_mark_is_coarse_and_legacy_wire_stays_unchanged() {
     )
     .expect("history JSON");
     let mark = &json["undo_stack"][0]["speculative_unproven_fold_v1"];
-    let encoded = serde_json::to_string(mark).expect("mark JSON");
-    for forbidden in ["vertex", "edge", "face", "coordinate", "shape"] {
-        assert!(!encoded.contains(forbidden), "{forbidden} leaked into mark");
+    fn assert_no_fine_geometry_keys(value: &serde_json::Value, path: &str) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, child) in fields {
+                    for forbidden in ["vertex", "edge", "face", "coordinate", "shape"] {
+                        assert!(
+                            !key.contains(forbidden),
+                            "{forbidden} key leaked into mark at {path}.{key}"
+                        );
+                    }
+                    assert_no_fine_geometry_keys(child, &format!("{path}.{key}"));
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    assert_no_fine_geometry_keys(child, &format!("{path}[{index}]"));
+                }
+            }
+            _ => {}
+        }
     }
+    // Inspect schema keys rather than opaque identity/fingerprint values:
+    // canonical UUIDs and SHA-256 strings may legitimately contain an English
+    // substring such as "face" by chance.
+    assert_no_fine_geometry_keys(mark, "speculative_unproven_fold_v1");
+    assert_eq!(
+        mark.as_object()
+            .expect("mark object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["binding", "proof_status"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
     assert_eq!(
         mark["binding"]
             .as_object()

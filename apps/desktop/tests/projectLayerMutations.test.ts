@@ -13,6 +13,13 @@ import {
   updateProjectLayerPresentation,
 } from '../src/lib/coreClient.ts'
 import { DEFAULT_PROJECT_LAYER_ID } from '../src/lib/projectLayers.ts'
+import {
+  BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+  BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+} from '../src/lib/boundaryLengthAuthority.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
 
 const INSTANCE_ID = '10000000-0000-4000-8000-000000000001'
 const PROJECT_ID = '20000000-0000-4000-8000-000000000001'
@@ -145,6 +152,48 @@ test('requires the exact native unproven-history summary and preserves it', () =
   assert.notEqual(
     admitted?.speculativeUnprovenFolds,
     base.speculativeUnprovenFolds,
+  )
+})
+
+test('requires a refreshed, immutable-geometry boundary length authority', () => {
+  const base = validBaseSnapshot()
+  const missing = validSnapshot() as Record<string, unknown>
+  delete missing.boundary_length_authority_v1
+  assert.equal(normalizeProjectLayerMutationSnapshot(missing, base), null)
+
+  const stale = validSnapshot()
+  stale.boundary_length_authority_v1.revision = 7
+  assert.equal(normalizeProjectLayerMutationSnapshot(stale, base), null)
+
+  const changedStatus = validSnapshot()
+  changedStatus.boundary_length_authority_v1.status = 'available'
+  assert.equal(normalizeProjectLayerMutationSnapshot(changedStatus, base), null)
+
+  const invalidBase = validBaseSnapshot() as Record<string, unknown>
+  delete invalidBase.boundary_length_authority_v1
+  assert.equal(
+    normalizeProjectLayerMutationSnapshot(
+      validSnapshot(),
+      invalidBase as never,
+    ),
+    null,
+  )
+
+  const admitted = normalizeProjectLayerMutationSnapshot(
+    validSnapshot(),
+    base,
+  )
+  assert.ok(admitted)
+  assert.notEqual(
+    admitted.boundary_length_authority_v1,
+    base.boundary_length_authority_v1,
+  )
+  assert.equal(
+    (
+      admitted.boundary_length_authority_v1 as
+        ReturnType<typeof unavailableBoundaryLengthAuthority>
+    ).revision,
+    8,
   )
 })
 
@@ -414,6 +463,7 @@ function validSnapshot() {
     underlays: {},
     fold_model_fingerprint: 'a'.repeat(64),
     reference_model_assets: [],
+    boundary_length_authority_v1: unavailableBoundaryLengthAuthority(8),
     can_undo: true,
     can_redo: false,
     cutting_allowed: false,
@@ -464,5 +514,19 @@ function validBaseSnapshot() {
     revision: 7,
     is_dirty: false,
     can_undo: false,
+    boundary_length_authority_v1: unavailableBoundaryLengthAuthority(7),
+  }
+}
+
+function unavailableBoundaryLengthAuthority(revision: number) {
+  return {
+    schema_version: BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+    model_id: BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    project_instance_id: INSTANCE_ID,
+    project_id: PROJECT_ID,
+    revision,
+    status: 'unavailable',
+    entries: [],
   }
 }

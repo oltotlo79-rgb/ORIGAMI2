@@ -29,6 +29,15 @@ use crate::{
     Revision,
 };
 
+mod speculative_unproven_token;
+
+#[cfg(test)]
+pub(crate) use speculative_unproven_token::issue_speculative_unproven_fold_token_for_test_v1;
+pub use speculative_unproven_token::{
+    SpeculativeUnprovenFoldTokenIssueErrorV1, SpeculativeUnprovenFoldTokenV1,
+    issue_speculative_unproven_fold_token_v1,
+};
+
 pub const DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES: usize = 2_048;
 pub const DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES: usize = 2_048;
 pub const DEFAULT_MAX_FACE_LINEAGE_BOUNDARY_HALF_EDGES: usize = 100_000;
@@ -221,6 +230,8 @@ pub const STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1: f64 = 1.0e-9;
 pub const DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS: usize = 2_000_000;
 pub const STACKED_FOLD_NON_FLAT_LAYER_ORDER_MODEL_ID_V1: &str =
     "native_stacked_fold_non_flat_planar_order_v1";
+pub const STACKED_FOLD_INITIAL_LAYER_ORDER_MODEL_ID_V1: &str =
+    "native_stacked_fold_initial_planar_order_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedFoldTopologyBuildLimitsV1 {
@@ -276,6 +287,27 @@ pub struct PreparedStackedFoldInitialPoseV1 {
     pose: MaterialTreePose,
 }
 
+/// Opaque production package binding the requested pose to its prepared
+/// geometry lineage and exact initial pose.
+///
+/// Callers cannot construct the package directly or replace one pose while
+/// retaining another package's authenticated lineage:
+///
+/// ```compile_fail
+/// use ori_core::{PreparedStackedFoldInitialPoseV1, PreparedStackedFoldRequestedPoseV1};
+/// use ori_kinematics::MaterialTreePose;
+///
+/// fn forge(
+///     initial: PreparedStackedFoldInitialPoseV1,
+///     pose: MaterialTreePose,
+/// ) -> PreparedStackedFoldRequestedPoseV1 {
+///     PreparedStackedFoldRequestedPoseV1 {
+///         initial,
+///         pose,
+///         requested_angle_degrees: 120.0,
+///     }
+/// }
+/// ```
 pub struct PreparedStackedFoldRequestedPoseV1 {
     initial: PreparedStackedFoldInitialPoseV1,
     pose: MaterialTreePose,
@@ -311,6 +343,17 @@ pub struct StackedFoldNonFlatLayerOrderV1 {
     source_overlap_cells_authenticated: usize,
     overlap_cells: Vec<StackedFoldNonFlatOverlapCellV1>,
     face_pair_orders: Vec<StackedFoldNonFlatFacePairOrderV1>,
+}
+
+/// Core-owned, source-lineage-derived order for one exact flat initial pose.
+///
+/// This value is observation evidence only. Its fields are private so only the
+/// native preparation path can bind a target proof to the source snapshot and
+/// complete target face-pair scan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StackedFoldInitialLayerOrderV1 {
+    layer_order: StackedFoldNonFlatLayerOrderV1,
+    paper_thickness_bits: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -526,10 +569,264 @@ impl StackedFoldNonFlatLayerOrderV1 {
     }
 }
 
+impl ori_collision::NonFlatLayerOrderStructuralSourceV1 for StackedFoldNonFlatLayerOrderV1 {
+    fn material_face_count(&self) -> usize {
+        self.material_faces.len()
+    }
+
+    fn material_face_id(&self, index: usize) -> Option<FaceId> {
+        self.material_faces.get(index).map(|face| face.face_id)
+    }
+
+    fn folded_face_count(&self) -> usize {
+        self.folded_faces.len()
+    }
+
+    fn folded_face(
+        &self,
+        index: usize,
+    ) -> Option<ori_collision::NonFlatFoldedFaceStructuralRefV1<'_>> {
+        self.folded_faces
+            .get(index)
+            .map(|folded| ori_collision::NonFlatFoldedFaceStructuralRefV1 {
+                face_id: folded.face.face_id,
+                dropped_world_axis: folded.dropped_world_axis,
+                source_to_plane: &folded.source_to_plane,
+            })
+    }
+
+    fn overlap_cell_count(&self) -> usize {
+        self.overlap_cells.len()
+    }
+
+    fn overlap_cell(
+        &self,
+        index: usize,
+    ) -> Option<ori_collision::NonFlatOverlapCellStructuralRefV1<'_>> {
+        self.overlap_cells
+            .get(index)
+            .map(|cell| ori_collision::NonFlatOverlapCellStructuralRefV1 {
+                boundary: &cell.boundary,
+                exact_boundary: &cell.exact_boundary,
+                lower_face: cell.lower_face,
+                upper_face: cell.upper_face,
+            })
+    }
+
+    fn face_pair_order_count(&self) -> usize {
+        self.face_pair_orders.len()
+    }
+
+    fn face_pair_order(
+        &self,
+        index: usize,
+    ) -> Option<ori_collision::NonFlatFacePairOrderStructuralV1> {
+        self.face_pair_orders.get(index).map(|pair| {
+            ori_collision::NonFlatFacePairOrderStructuralV1 {
+                lower_face: pair.lower_face,
+                upper_face: pair.upper_face,
+            }
+        })
+    }
+}
+
+impl StackedFoldInitialLayerOrderV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        STACKED_FOLD_INITIAL_LAYER_ORDER_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn tested_face_pairs(&self) -> usize {
+        self.layer_order.tested_face_pairs
+    }
+
+    /// Conservative in-process retention charge for schedulers that keep this
+    /// proof alive after speculative Apply.
+    #[must_use]
+    pub fn retained_bytes_upper_bound_v1(&self) -> Option<usize> {
+        let (rounded_boundary_capacity, exact_boundary_capacity) = self
+            .layer_order
+            .overlap_cells
+            .iter()
+            .try_fold((0_usize, 0_usize), |(rounded, exact), cell| {
+                Some((
+                    rounded.checked_add(cell.boundary.capacity())?,
+                    exact.checked_add(cell.exact_boundary.capacity())?,
+                ))
+            })?;
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.layer_order
+                    .material_faces
+                    .capacity()
+                    .checked_mul(256)?,
+            )?
+            .checked_add(
+                self.layer_order
+                    .folded_faces
+                    .capacity()
+                    .checked_mul(4_096)?,
+            )?
+            .checked_add(self.layer_order.hinge_angles.capacity().checked_mul(128)?)?
+            .checked_add(
+                self.layer_order
+                    .overlap_cells
+                    .capacity()
+                    .checked_mul(1_024)?,
+            )?
+            .checked_add(
+                self.layer_order
+                    .face_pair_orders
+                    .capacity()
+                    .checked_mul(128)?,
+            )?
+            .checked_add(rounded_boundary_capacity.checked_mul(128)?)?
+            .checked_add(exact_boundary_capacity.checked_mul(4_096)?)
+    }
+
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+}
+
+impl ori_collision::NonFlatLayerOrderStructuralSourceV1 for StackedFoldInitialLayerOrderV1 {
+    fn material_face_count(&self) -> usize {
+        self.layer_order.material_faces.len()
+    }
+
+    fn material_face_id(&self, index: usize) -> Option<FaceId> {
+        self.layer_order
+            .material_faces
+            .get(index)
+            .map(|face| face.face_id)
+    }
+
+    fn folded_face_count(&self) -> usize {
+        self.layer_order.folded_faces.len()
+    }
+
+    fn folded_face(
+        &self,
+        index: usize,
+    ) -> Option<ori_collision::NonFlatFoldedFaceStructuralRefV1<'_>> {
+        self.layer_order.folded_faces.get(index).map(|folded| {
+            ori_collision::NonFlatFoldedFaceStructuralRefV1 {
+                face_id: folded.face.face_id,
+                dropped_world_axis: folded.dropped_world_axis,
+                source_to_plane: &folded.source_to_plane,
+            }
+        })
+    }
+
+    fn overlap_cell_count(&self) -> usize {
+        self.layer_order.overlap_cells.len()
+    }
+
+    fn overlap_cell(
+        &self,
+        index: usize,
+    ) -> Option<ori_collision::NonFlatOverlapCellStructuralRefV1<'_>> {
+        self.layer_order.overlap_cells.get(index).map(|cell| {
+            ori_collision::NonFlatOverlapCellStructuralRefV1 {
+                boundary: &cell.boundary,
+                exact_boundary: &cell.exact_boundary,
+                lower_face: cell.lower_face,
+                upper_face: cell.upper_face,
+            }
+        })
+    }
+
+    fn face_pair_order_count(&self) -> usize {
+        self.layer_order.face_pair_orders.len()
+    }
+
+    fn face_pair_order(
+        &self,
+        index: usize,
+    ) -> Option<ori_collision::NonFlatFacePairOrderStructuralV1> {
+        self.layer_order.face_pair_orders.get(index).map(|pair| {
+            ori_collision::NonFlatFacePairOrderStructuralV1 {
+                lower_face: pair.lower_face,
+                upper_face: pair.upper_face,
+            }
+        })
+    }
+}
+
+impl ori_collision::StackedFoldInitialLayerOrderSourceV1 for StackedFoldInitialLayerOrderV1 {
+    fn tested_face_pairs_v1(&self) -> usize {
+        self.layer_order.tested_face_pairs
+    }
+
+    fn fixed_face_v1(&self) -> Option<FaceId> {
+        self.layer_order.fixed_face
+    }
+
+    fn hinge_angle_count_v1(&self) -> usize {
+        self.layer_order.hinge_angles.len()
+    }
+
+    fn hinge_angle_v1(&self, index: usize) -> Option<(EdgeId, u64)> {
+        self.layer_order
+            .hinge_angles
+            .get(index)
+            .map(|angle| (angle.edge(), angle.angle_degrees().to_bits()))
+    }
+
+    fn paper_thickness_bits_v1(&self) -> u64 {
+        self.paper_thickness_bits
+    }
+}
+
+/// The generic collision transport remains type-bound to this core evidence.
+/// A proof issued for an external implementation cannot substitute for the
+/// evidence consumed by the core/native mutation path.
+///
+/// ```compile_fail
+/// use ori_collision::NonFlatCellTransportProofV1;
+/// use ori_core::StackedFoldNonFlatLayerOrderV1;
+///
+/// struct ExternalSource;
+/// fn substitute_core_evidence(
+///     external: NonFlatCellTransportProofV1<ExternalSource>,
+/// ) -> NonFlatCellTransportProofV1<StackedFoldNonFlatLayerOrderV1> {
+///     external
+/// }
+/// ```
+impl ori_collision::NonFlatLayerOrderTransportSourceV1 for StackedFoldNonFlatLayerOrderV1 {
+    fn identity_namespace_v1(&self) -> ProjectId {
+        self.identity_namespace
+    }
+
+    fn target_revision_v1(&self) -> u64 {
+        self.target_revision
+    }
+
+    fn source_overlap_cells_authenticated_v1(&self) -> usize {
+        self.source_overlap_cells_authenticated
+    }
+
+    fn same_target_model_v1(&self, other: &Self) -> bool {
+        self.target_fingerprint == other.target_fingerprint
+            && self.material_faces == other.material_faces
+    }
+}
+
 #[derive(Debug, Error, PartialEq)]
 pub enum PrepareStackedFoldNonFlatLayerOrderErrorV1 {
     #[error("the requested endpoint is flat or invalid")]
     NotNonFlatEndpoint,
+    #[error("the prepared initial pose is not bit-exactly flat")]
+    InitialPoseNotFlat,
+    #[error("initial layer-order admission supports only bit-exact zero paper thickness")]
+    InitialThicknessUnsupported,
     #[error("the source layer snapshot is stale or belongs to another model")]
     SourceLayerOrderMismatch,
     #[error("target face-pair work exceeds its configured limit")]
@@ -3419,7 +3716,21 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
     }
-    let lineage = requested.initial.target.geometry.proof.lineage();
+    prepare_stacked_fold_layer_order_for_tree_pose_from_source_v1(
+        requested.initial.target(),
+        requested.pose(),
+        source_layer_order,
+        max_face_pairs,
+    )
+}
+
+fn prepare_stacked_fold_layer_order_for_tree_pose_from_source_v1(
+    target: &PreparedStackedFoldTargetModelV1,
+    pose: &MaterialTreePose,
+    source_layer_order: &impl NonFlatSourceLayerEvidenceV1,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let lineage = target.geometry.proof.lineage();
     if source_layer_order.identity_namespace() != Some(lineage.identity_namespace())
         || source_layer_order.revision() != lineage.source_revision()
         || source_layer_order.fingerprint() != Some(lineage.source_fingerprint())
@@ -3435,8 +3746,7 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
     if source_layer_order.material_faces() != source_faces {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
     }
-    let pose = requested.pose();
-    if !requested.initial.target.model.owns_pose(pose) {
+    if !target.model.owns_pose(pose) {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
     }
     let mut material_faces = lineage
@@ -3552,6 +3862,121 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
         overlap_cells,
         face_pair_orders,
     })
+}
+
+/// Prepares source-lineage-derived layer order for one authenticated flat
+/// initial pose.
+///
+/// Every target pair is tested by the shared tree-pose preparation path.
+/// Positive-area coincident descendants of one source face remain rejected by
+/// [`inherited_source_order`], and no tolerance-only result is collision
+/// authority; collision admission independently intersects this evidence with
+/// the exact general static diagnosis.
+pub fn prepare_stacked_fold_initial_layer_order_v1(
+    initial: &PreparedStackedFoldInitialPoseV1,
+    source_layer_order: &LayerOrderSnapshot,
+    max_face_pairs: usize,
+) -> Result<StackedFoldInitialLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let paper_thickness_mm = initial.target.geometry.candidate.paper.thickness_mm;
+    if paper_thickness_mm.to_bits() != 0.0_f64.to_bits() {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::InitialThicknessUnsupported);
+    }
+    if initial.pose.hinge_angles().iter().any(|angle| {
+        let bits = angle.angle_degrees().to_bits();
+        bits != 0.0_f64.to_bits() && bits != 180.0_f64.to_bits()
+    }) {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::InitialPoseNotFlat);
+    }
+    let layer_order = prepare_stacked_fold_layer_order_for_tree_pose_from_source_v1(
+        initial.target(),
+        initial.pose(),
+        source_layer_order,
+        max_face_pairs,
+    )?;
+    Ok(StackedFoldInitialLayerOrderV1 {
+        layer_order,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+    })
+}
+
+/// Reproduces the bounded requested path with strict initial-sample layer
+/// admission. The returned observation never carries continuous-path
+/// certification.
+pub fn diagnose_stacked_fold_requested_path_with_initial_layer_order_v1(
+    requested: &PreparedStackedFoldRequestedPoseV1,
+    paper_thickness_mm: f64,
+    limits: ori_collision::StackedFoldPathDiagnosticLimitsV1,
+    initial_layer_order: &StackedFoldInitialLayerOrderV1,
+) -> Result<
+    ori_collision::StackedFoldBoundedPathDiagnosticV1,
+    ori_collision::StackedFoldPathDiagnosticErrorV1,
+> {
+    let initial = requested.initial();
+    let lineage = initial.target.geometry.proof.lineage();
+    if initial_layer_order.layer_order.identity_namespace != lineage.identity_namespace()
+        || initial_layer_order.layer_order.target_revision != lineage.target_revision()
+        || initial_layer_order.layer_order.target_fingerprint != lineage.target_fingerprint()
+        || initial_layer_order.layer_order.fixed_face != initial.pose.fixed_face()
+        || initial_layer_order.layer_order.hinge_angles != initial.pose.hinge_angles()
+        || initial_layer_order.paper_thickness_bits != paper_thickness_mm.to_bits()
+        || initial
+            .target
+            .geometry
+            .candidate
+            .paper
+            .thickness_mm
+            .to_bits()
+            != paper_thickness_mm.to_bits()
+    {
+        return Err(ori_collision::StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable);
+    }
+    let source_angles = initial.pose.hinge_angles();
+    let target_angles = requested.pose.hinge_angles();
+    if source_angles.len() != target_angles.len()
+        || source_angles
+            .iter()
+            .zip(target_angles)
+            .any(|(source, target)| source.edge() != target.edge())
+    {
+        return Err(ori_collision::StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch);
+    }
+    let moving_hinges = source_angles
+        .iter()
+        .zip(target_angles)
+        .filter_map(|(source, target)| {
+            (source.angle_degrees().to_bits() != target.angle_degrees().to_bits())
+                .then_some(source.edge())
+        })
+        .collect::<Vec<_>>();
+    if moving_hinges.is_empty()
+        || source_angles
+            .iter()
+            .zip(target_angles)
+            .filter(|(source, target)| {
+                source.angle_degrees().to_bits() != target.angle_degrees().to_bits()
+            })
+            .any(|(_, target)| {
+                target.angle_degrees().to_bits() != requested.requested_angle_degrees.to_bits()
+            })
+    {
+        return Err(ori_collision::StackedFoldPathDiagnosticErrorV1::InvalidPath);
+    }
+    let admission = ori_collision::prepare_stacked_fold_initial_sample_layer_admission_v1(
+        initial.target.model(),
+        initial.pose(),
+        paper_thickness_mm,
+        limits.static_collision,
+        initial_layer_order,
+    )?;
+    ori_collision::diagnose_collective_hinge_path_with_initial_sample_layer_admission_v1(
+        initial.target.model(),
+        initial.pose(),
+        &moving_hinges,
+        requested.requested_angle_degrees(),
+        paper_thickness_mm,
+        limits,
+        &admission,
+    )
 }
 
 /// Re-authenticates layer order against one closure-certified cyclic endpoint.
@@ -5781,7 +6206,23 @@ mod tests {
 
     #[test]
     fn prepared_target_is_admitted_by_native_tree_kinematics() {
-        let fixture = simple_geometry_fixture();
+        let mut fixture = simple_geometry_fixture();
+        fixture.source_paper.thickness_mm = 0.0;
+        fixture.target_paper.thickness_mm = 0.0;
+        fixture.source_layer_order = proven_layer_order(
+            fixture.identity,
+            fixture.source_revision,
+            &fixture.source_pattern,
+            &fixture.source_paper,
+        );
+        assert_eq!(
+            fixture.source_paper.thickness_mm.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            fixture.target_paper.thickness_mm.to_bits(),
+            0.0_f64.to_bits()
+        );
         let geometry = prepare_stacked_fold_geometry_candidate_v1(
             fixture.identity,
             fixture.source_revision,
@@ -5838,13 +6279,45 @@ mod tests {
                 &CanonicalHingeAngles::new(Vec::new()).expect("empty angles"),
             )
             .expect("source pose");
-        let initial = prepare_stacked_fold_initial_pose_v1(target, &source_model, &source_pose)
+        let mut initial = prepare_stacked_fold_initial_pose_v1(target, &source_model, &source_pose)
             .expect("lift source pose");
         assert!(initial.target().model().owns_pose(initial.pose()));
         assert_eq!(initial.pose().hinge_angles().len(), 1);
         assert_eq!(initial.pose().hinge_angles()[0].angle_degrees(), 0.0);
+        let initial_layer_order =
+            prepare_stacked_fold_initial_layer_order_v1(&initial, &fixture.source_layer_order, 1)
+                .expect("prepare initial pair scan");
+        assert_eq!(
+            initial_layer_order.model_id(),
+            STACKED_FOLD_INITIAL_LAYER_ORDER_MODEL_ID_V1
+        );
+        assert_eq!(initial_layer_order.tested_face_pairs(), 1);
+        assert!(!initial_layer_order.authorizes_continuous_motion());
+        assert!(!initial_layer_order.authorizes_project_mutation());
+        for unsupported_zero_neighbor in [-0.0_f64, f64::from_bits(1)] {
+            initial.target.geometry.candidate.paper.thickness_mm = unsupported_zero_neighbor;
+            assert_eq!(
+                prepare_stacked_fold_initial_layer_order_v1(
+                    &initial,
+                    &fixture.source_layer_order,
+                    1,
+                ),
+                Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::InitialThicknessUnsupported)
+            );
+        }
+        initial.target.geometry.candidate.paper.thickness_mm = 0.0;
+        assert!(matches!(
+            ori_collision::prepare_stacked_fold_initial_sample_layer_admission_v1(
+                initial.target().model(),
+                initial.pose(),
+                0.0,
+                ori_collision::StaticCollisionLimits::default(),
+                &initial_layer_order,
+            ),
+            Err(ori_collision::StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable)
+        ));
         let requested =
-            prepare_stacked_fold_requested_pose_v1(initial, 90.0).expect("solve requested pose");
+            prepare_stacked_fold_requested_pose_v1(initial, 37.0).expect("solve requested pose");
         assert!(
             requested
                 .initial()
@@ -5852,8 +6325,18 @@ mod tests {
                 .model()
                 .owns_pose(requested.pose())
         );
-        assert_eq!(requested.requested_angle_degrees(), 90.0);
-        assert_eq!(requested.pose().hinge_angles()[0].angle_degrees(), 90.0);
+        assert_eq!(requested.requested_angle_degrees(), 37.0);
+        assert_eq!(requested.pose().hinge_angles()[0].angle_degrees(), 37.0);
+        let certified = ori_collision::diagnose_collective_hinge_path_from_pose_v1(
+            requested.initial().target().model(),
+            requested.initial().pose(),
+            requested.initial().pose().hinge_angles(),
+            requested.pose().hinge_angles(),
+            0.0,
+            ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .expect("continuous path diagnosis");
+        assert!(certified.continuous_clearance_certified());
         let non_flat_order = prepare_stacked_fold_non_flat_layer_order_v1(
             &requested,
             &fixture.source_layer_order,
@@ -6636,6 +7119,93 @@ mod tests {
         )
         .expect("global analysis");
         report.layer_order().expect("possible layer order").clone()
+    }
+
+    #[test]
+    fn core_non_flat_evidence_keeps_exact_transport_and_resource_behavior() {
+        let project = ProjectId::new();
+        let sheet = create_rectangular_sheet(100.0, 100.0, false).expect("rectangular sheet");
+        let (mut pattern, paper) = sheet.into_parts();
+        let hinge = EdgeId::new();
+        pattern.edges.push(Edge {
+            id: hinge,
+            start: paper.boundary_vertices[0],
+            end: paper.boundary_vertices[2],
+            kind: EdgeKind::Mountain,
+        });
+        let angles = CanonicalHingeAngles::new(vec![HingeAngle::new(hinge, 90.0).expect("angle")])
+            .expect("canonical angle");
+        let source_flat = proven_layer_order(project, 1, &pattern, &paper);
+        let fixed = source_flat.material_faces[0].face_id;
+        let source = revalidate_current_non_flat_layer_order_v1(
+            project,
+            1,
+            &pattern,
+            &paper,
+            Some(fixed),
+            &angles,
+            &source_flat,
+            1,
+        )
+        .expect("source non-flat evidence");
+        let target_flat = proven_layer_order(project, 2, &pattern, &paper);
+        let target = revalidate_current_non_flat_layer_order_v1(
+            project,
+            2,
+            &pattern,
+            &paper,
+            Some(fixed),
+            &angles,
+            &target_flat,
+            1,
+        )
+        .expect("target non-flat evidence");
+        let proof = ori_collision::certify_non_flat_cell_transport_v1(&source, &target)
+            .expect("exact core transport");
+        assert!(proof.is_for(&source, &target));
+        assert_eq!(proof.target().folded_faces().len(), 2);
+        assert!(matches!(
+            ori_collision::certify_non_flat_cell_transport_v1(&source, &source),
+            Err(ori_collision::NonFlatCellTransportErrorV1::BindingMismatch)
+        ));
+        assert!(matches!(
+            ori_collision::certify_non_flat_cell_transport_with_limits_v1(
+                &source,
+                &target,
+                ori_collision::NonFlatCellTransportLimitsV1 {
+                    max_faces: 1,
+                    ..ori_collision::NonFlatCellTransportLimitsV1::default()
+                },
+            ),
+            Err(ori_collision::NonFlatCellTransportErrorV1::ResourceLimit)
+        ));
+        let different_angles =
+            CanonicalHingeAngles::new(vec![HingeAngle::new(hinge, 80.0).expect("angle")])
+                .expect("canonical angle");
+        let different = revalidate_current_non_flat_layer_order_v1(
+            project,
+            2,
+            &pattern,
+            &paper,
+            Some(fixed),
+            &different_angles,
+            &target_flat,
+            1,
+        )
+        .expect("different core evidence");
+        assert!(!proof.is_for(&source, &different));
+        assert_eq!(
+            ori_collision::validate_non_flat_layer_order_structure_v1(&source),
+            Ok(())
+        );
+        assert_eq!(
+            ori_collision::validate_non_flat_layer_order_structure_v1(&target),
+            Ok(())
+        );
+        assert_eq!(
+            ori_collision::validate_non_flat_layer_order_structure_v1(proof.target()),
+            Ok(())
+        );
     }
 
     #[test]

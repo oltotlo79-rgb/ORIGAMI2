@@ -242,8 +242,8 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/constraints.rs",
-          "selector": "fn partially_checked_fixed_angle_and_ratio_kinds_return_unknown()"
+          "path": "crates/ori-core/src/constraint_exactification/pair_constructive_algebraic_tests.rs",
+          "selector": "fn two_rotations_use_only_the_complete_residual_overlay_collapse()"
         },
         {
           "kind": "test",
@@ -266,11 +266,6 @@
           "selector": "fn different_ratios_with_fixed_denominator_can_share_an_underflowed_zero_numerator()"
         },
         {
-          "kind": "test",
-          "path": "apps/desktop/tests/geometricConstraints.test.ts",
-          "selector": "different length ratio proof requires exactly three cause IDs"
-        },
-        {
           "kind": "production-symbol",
           "path": "crates/ori-core/src/constraints/bounded_zero_closure.rs",
           "selector": "pub(super) fn conflict_with_limits_and_observer("
@@ -289,11 +284,6 @@
           "kind": "test",
           "path": "crates/ori-core/src/constraint_solver.rs",
           "selector": "reverse_zero_length_ratio_underflow_is_solver_required"
-        },
-        {
-          "kind": "test",
-          "path": "apps/desktop/tests/geometricConstraints.test.ts",
-          "selector": "bounded zero-length closure parser binds u16 counts to the exact bounded cause size"
         },
         {
           "kind": "test",
@@ -348,7 +338,7 @@
         {
           "kind": "test",
           "path": "crates/ori-core/src/constraints_same_orientation_angle_tests.rs",
-          "selector": "fn zero_cross_classification_uses_the_shared_binary64_residual()"
+          "selector": "fn witness_is_canonical_storage_invariant_and_irredundant()"
         },
         {
           "kind": "test",
@@ -363,19 +353,44 @@
         {
           "kind": "test",
           "path": "crates/ori-core/src/constraints_perpendicular_angle_tests.rs",
-          "selector": "fn perpendicular_actual_classes_use_only_shared_binary64_operations()"
+          "selector": "fn witness_is_canonical_storage_invariant_and_irredundant()"
         },
         {
           "kind": "test",
           "path": "crates/ori-core/src/constraints_perpendicular_angle_limits_tests.rs",
           "selector": "fn exact_resource_and_work_limits_are_admitted_and_one_short_is_fail_closed()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "pub(crate) fn fixed_angle_zero_actual_enclosure_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_different_fixed_angles_tests.rs",
+          "selector": "fn rounded_aliases_and_overlapping_enclosures_remain_solver_required()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/direct_family_inventory.rs",
+          "selector": "fn public_semantic_pipeline_hard_inventory_is_seventeen_of_seventeen()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_exactification/pair_constructive/cardinal_rotation.rs",
+          "selector": "pub(super) fn construct_cardinal_rotation_pair_candidate_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/pair_constructive_cardinal_rotation_tests.rs",
+          "selector": "fn cardinal_rotation_and_either_fixed_radius_cover_the_full_finite_length_range()"
         }
       ],
       "limitations": [
-        "only fifteen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the eight retained legacy variants fail closed to Unknown"
+        "only seventeen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the frozen binary64 proof residuals; the six retained legacy variants fail closed to Unknown"
       ],
       "missingAcceptance": [
-        "complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded exact-zero and directed length-ratio proof families"
+        "complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the seventeen recognized direct proof families"
       ]
     },
     {

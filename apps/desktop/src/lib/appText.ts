@@ -224,6 +224,10 @@ export const APP_TEXT = Object.freeze({
     '正の有限な長さ、有限な角度、利用可能な線種を入力してください。',
     'Enter a positive finite length, a finite angle, and an available line type.',
   ),
+  theSpecifiedLengthAndAngleDoNotProduceFiniteCoordinates: localized(
+    '指定した長さと角度から有限な座標を作成できません。',
+    'The specified length and angle do not produce finite coordinates.',
+  ),
   addedAnEndpointAndLineFromTheSpecifiedLengthAnd: localized(
     '指定した長さと角度から終点と線を追加しました。',
     'Added an endpoint and line from the specified length and angle.',

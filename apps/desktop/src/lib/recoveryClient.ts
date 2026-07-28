@@ -19,6 +19,8 @@ import {
 import { normalizeGeometricConstraintDocument } from './geometricConstraints.ts'
 import { parseInstructionVisual } from './instructionTimeline.ts'
 import { normalizeProjectLayerDocument } from './projectLayers.ts'
+import { normalizeBoundaryLengthAuthorityV1 } from './boundaryLengthAuthority.ts'
+import { unprovenHistorySummaryFromSnapshotV1 } from './speculativeUnprovenWire.ts'
 
 export const RECOVERY_SCHEMA_VERSION = 1 as const
 
@@ -151,6 +153,9 @@ const PROJECT_SNAPSHOT_KEYS = [
   'annotations',
   'underlays',
   'fold_model_fingerprint',
+  'reference_model_assets',
+  'boundary_length_authority_v1',
+  'speculativeUnprovenFolds',
   'can_undo',
   'can_redo',
   'cutting_allowed',
@@ -161,6 +166,7 @@ const MAX_PATTERN_EDGES = 1_000_000
 const MAX_BOUNDARY_VERTICES = 1_000_000
 const MAX_INSTRUCTION_STEPS = 512
 const MAX_INSTRUCTION_HINGES_PER_STEP = 10_000
+const MAX_REFERENCE_MODEL_ASSETS = 8
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/u
 
 function parseAnnotations(
@@ -630,6 +636,48 @@ export function parseRecoveryCandidate(value: unknown): RecoveryCandidate | null
   }
 }
 
+function parseReferenceModelAssets(
+  value: unknown,
+): NonNullable<ProjectSnapshot['reference_model_assets']> | null {
+  const entries = snapshotExactArray(value, MAX_REFERENCE_MODEL_ASSETS)
+  if (!entries) return null
+  const assetIds = new Set<string>()
+  const parsed: NonNullable<ProjectSnapshot['reference_model_assets']> = []
+  for (const value of entries) {
+    const entry = exactDataRecord(value, ['asset_id', 'sha256'] as const)
+    const sha256 = entry
+      ? snapshotExactArray(entry.sha256, 32)
+      : null
+    if (
+      !entry
+      || !isCanonicalNonNilUuid(entry.asset_id)
+      || assetIds.has(entry.asset_id)
+      || !sha256
+      || sha256.length !== 32
+      || !sha256.every(isByte)
+    ) return null
+    assetIds.add(entry.asset_id)
+    parsed.push(Object.freeze({
+      asset_id: entry.asset_id,
+      sha256: Object.freeze(sha256) as number[],
+    }))
+  }
+  return Object.freeze(parsed) as NonNullable<
+    ProjectSnapshot['reference_model_assets']
+  >
+}
+
+function parseSpeculativeUnprovenSummary(value: unknown): unknown | null {
+  const summary = unprovenHistorySummaryFromSnapshotV1({
+    speculativeUnprovenFolds: value,
+  })
+  if (summary.kind !== 'known') return null
+  return Object.freeze({
+    applied: summary.applied,
+    unappliedRedo: summary.unappliedRedo,
+  })
+}
+
 /**
  * Validates replacement semantics in addition to the complete native snapshot
  * envelope. A recovery must keep the persisted project ID, issue a fresh
@@ -670,6 +718,24 @@ export function parseRestoredRecoverySnapshot(
     )
     const paper = parsePaper(record.paper)
     const creasePattern = parseCreasePattern(record.crease_pattern)
+    const boundaryLengthAuthority = paper && creasePattern
+      ? normalizeBoundaryLengthAuthorityV1(
+          record.boundary_length_authority_v1,
+          {
+            project_instance_id: record.project_instance_id,
+            project_id: record.project_id,
+            revision: record.revision,
+            paper,
+            crease_pattern: creasePattern,
+          },
+        )
+      : null
+    const referenceModelAssets = parseReferenceModelAssets(
+      record.reference_model_assets,
+    )
+    const speculativeUnprovenFolds = parseSpeculativeUnprovenSummary(
+      record.speculativeUnprovenFolds,
+    )
     const instructionTimeline = parseInstructionTimeline(
       record.instruction_timeline,
     )
@@ -695,6 +761,9 @@ export function parseRestoredRecoverySnapshot(
       !beginnerDesignProfile
       || !paper
       || !creasePattern
+      || !boundaryLengthAuthority
+      || !referenceModelAssets
+      || !speculativeUnprovenFolds
       || !instructionTimeline
       || !numericExpressions
       || !geometricConstraints
@@ -728,6 +797,9 @@ export function parseRestoredRecoverySnapshot(
       annotations,
       underlays,
       fold_model_fingerprint: record.fold_model_fingerprint,
+      reference_model_assets: referenceModelAssets,
+      boundary_length_authority_v1: boundaryLengthAuthority,
+      speculativeUnprovenFolds,
       can_undo: false,
       can_redo: false,
       cutting_allowed: record.cutting_allowed,
@@ -769,6 +841,24 @@ export function parsePathlessProjectSnapshot(
     )
     const paper = parsePaper(record.paper)
     const creasePattern = parseCreasePattern(record.crease_pattern)
+    const boundaryLengthAuthority = paper && creasePattern
+      ? normalizeBoundaryLengthAuthorityV1(
+          record.boundary_length_authority_v1,
+          {
+            project_instance_id: record.project_instance_id,
+            project_id: record.project_id,
+            revision: record.revision,
+            paper,
+            crease_pattern: creasePattern,
+          },
+        )
+      : null
+    const referenceModelAssets = parseReferenceModelAssets(
+      record.reference_model_assets,
+    )
+    const speculativeUnprovenFolds = parseSpeculativeUnprovenSummary(
+      record.speculativeUnprovenFolds,
+    )
     const instructionTimeline = parseInstructionTimeline(
       record.instruction_timeline,
     )
@@ -794,6 +884,9 @@ export function parsePathlessProjectSnapshot(
       !beginnerDesignProfile
       || !paper
       || !creasePattern
+      || !boundaryLengthAuthority
+      || !referenceModelAssets
+      || !speculativeUnprovenFolds
       || !instructionTimeline
       || !numericExpressions
       || !geometricConstraints
@@ -827,6 +920,9 @@ export function parsePathlessProjectSnapshot(
       annotations,
       underlays,
       fold_model_fingerprint: record.fold_model_fingerprint,
+      reference_model_assets: referenceModelAssets,
+      boundary_length_authority_v1: boundaryLengthAuthority,
+      speculativeUnprovenFolds,
       can_undo: record.can_undo,
       can_redo: record.can_redo,
       cutting_allowed: record.cutting_allowed,

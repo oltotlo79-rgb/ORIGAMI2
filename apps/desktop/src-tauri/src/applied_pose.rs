@@ -30,7 +30,7 @@ use std::{
 use ori_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, PersistentPairProofCacheRuntimeV1,
     ProofCacheEditEpochTicketV1, ProofCacheLimitsV1, ProofCacheOperationControlV1,
-    TOPOLOGY_CONTACT_POLICY_V2,
+    ProofCacheRuntimeRollbackSnapshotV1, TOPOLOGY_CONTACT_POLICY_V2,
 };
 use ori_core::{
     APPLIED_POSE_MODEL_ID_V1, AppliedPoseLimitsV1, AppliedPoseV1,
@@ -150,7 +150,7 @@ impl Default for CurrentAppliedPoseAuthority {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct CurrentAppliedPoseSlot {
     generation: u64,
     current: Option<Arc<CurrentAppliedPoseCertificate>>,
@@ -168,9 +168,44 @@ struct PoseSourceBinding {
     paper_thickness_bits: u64,
 }
 
+#[derive(Clone)]
 struct PendingNativePoseRequest {
     request_id: ProjectId,
     binding: Arc<PoseSourceBinding>,
+}
+
+struct CurrentAppliedPoseTransactionSnapshotV1 {
+    slot: CurrentAppliedPoseSlot,
+    pair_proof_cache: ProofCacheRuntimeRollbackSnapshotV1,
+}
+
+/// Armed rollback for a target-pose adoption that is not yet part of a fully
+/// published desktop transaction.
+pub(super) struct CurrentAppliedPoseTransactionRollbackV1 {
+    authority: CurrentAppliedPoseAuthority,
+    snapshot: Option<CurrentAppliedPoseTransactionSnapshotV1>,
+}
+
+impl CurrentAppliedPoseTransactionRollbackV1 {
+    pub(super) fn rollback(&mut self) -> Result<(), PoseAuthorityError> {
+        let snapshot = self
+            .snapshot
+            .take()
+            .ok_or(PoseAuthorityError::InternalInconsistency)?;
+        self.authority.restore_transaction_snapshot_v1(snapshot)
+    }
+
+    pub(super) fn disarm(mut self) {
+        self.snapshot = None;
+    }
+}
+
+impl Drop for CurrentAppliedPoseTransactionRollbackV1 {
+    fn drop(&mut self) {
+        if let Some(snapshot) = self.snapshot.take() {
+            let _ = self.authority.restore_transaction_snapshot_v1(snapshot);
+        }
+    }
 }
 
 /// Immutable data captured under the project lock and safe to prepare after
@@ -530,6 +565,43 @@ pub(super) fn restore_persisted_current_pose(
     project: &mut ProjectState,
     pose: &InstructionPose,
 ) -> Result<(), PoseAuthorityError> {
+    let (authority, captured) = capture_persisted_current_pose_request_v1(project, pose)?;
+    let prepared = captured.prepare()?;
+    authority.commit_prepared(project, prepared)?;
+    Ok(())
+}
+
+pub(super) fn restore_persisted_current_pose_transactional_v1(
+    project: &mut ProjectState,
+    pose: &InstructionPose,
+) -> Result<CurrentAppliedPoseTransactionRollbackV1, PoseAuthorityError> {
+    let authority = project.applied_pose_authority.clone();
+    let rollback = authority.begin_transaction_rollback_v1()?;
+    let (_, captured) = capture_persisted_current_pose_request_v1(project, pose)?;
+    let prepared = captured.prepare()?;
+    authority.commit_prepared(project, prepared)?;
+    Ok(rollback)
+}
+
+#[cfg(test)]
+pub(super) fn restore_persisted_current_pose_failing_after_prepare_for_test_v1(
+    project: &mut ProjectState,
+    pose: &InstructionPose,
+) -> Result<CurrentAppliedPoseTransactionRollbackV1, PoseAuthorityError> {
+    let authority = project.applied_pose_authority.clone();
+    let rollback = authority.begin_transaction_rollback_v1()?;
+    let (_, captured) = capture_persisted_current_pose_request_v1(project, pose)?;
+    let prepared = captured.prepare()?;
+    authority.commit_prepared_with_semantic_clone(project, prepared, |_| {
+        Err(PoseAuthorityError::SemanticPoseUnavailable)
+    })?;
+    Ok(rollback)
+}
+
+fn capture_persisted_current_pose_request_v1(
+    project: &ProjectState,
+    pose: &InstructionPose,
+) -> Result<(CurrentAppliedPoseAuthority, CapturedNativePoseRequest), PoseAuthorityError> {
     if pose.model != InstructionPoseModel::AbsoluteHingeAnglesV1
         || pose.source_model_fingerprint != project.editor.fold_model_fingerprint_v1()
     {
@@ -551,9 +623,7 @@ pub(super) fn restore_persisted_current_pose(
     };
     let authority = project.applied_pose_authority.clone();
     let captured = authority.capture_request(project, request)?;
-    let prepared = captured.prepare()?;
-    authority.commit_prepared(project, prepared)?;
-    Ok(())
+    Ok((authority, captured))
 }
 
 impl CurrentAppliedPoseAuthority {
@@ -839,6 +909,45 @@ impl CurrentAppliedPoseAuthority {
 
     pub(super) fn pair_proof_cache_runtime_v1(&self) -> PersistentPairProofCacheRuntimeV1 {
         self.pair_proof_cache.clone()
+    }
+
+    fn capture_transaction_snapshot_v1(
+        &self,
+    ) -> Result<CurrentAppliedPoseTransactionSnapshotV1, PoseAuthorityError> {
+        // The containing project is already locked. Preserve the global
+        // project -> pose -> cache order while taking one exact rollback image.
+        let slot = self.lock()?;
+        let pair_proof_cache = self
+            .pair_proof_cache
+            .capture_rollback_snapshot_v1()
+            .map_err(|_| PoseAuthorityError::LockUnavailable)?;
+        Ok(CurrentAppliedPoseTransactionSnapshotV1 {
+            slot: slot.clone(),
+            pair_proof_cache,
+        })
+    }
+
+    fn restore_transaction_snapshot_v1(
+        &self,
+        snapshot: CurrentAppliedPoseTransactionSnapshotV1,
+    ) -> Result<(), PoseAuthorityError> {
+        // Restore the cache while holding pose authority so rollback follows
+        // the same project -> pose -> cache order as normal adoption.
+        let mut slot = self.lock()?;
+        self.pair_proof_cache
+            .restore_rollback_snapshot_v1(snapshot.pair_proof_cache)
+            .map_err(|_| PoseAuthorityError::LockUnavailable)?;
+        *slot = snapshot.slot;
+        Ok(())
+    }
+
+    fn begin_transaction_rollback_v1(
+        &self,
+    ) -> Result<CurrentAppliedPoseTransactionRollbackV1, PoseAuthorityError> {
+        Ok(CurrentAppliedPoseTransactionRollbackV1 {
+            authority: self.clone(),
+            snapshot: Some(self.capture_transaction_snapshot_v1()?),
+        })
     }
 
     fn is_project_authority(&self, project: &ProjectState) -> bool {

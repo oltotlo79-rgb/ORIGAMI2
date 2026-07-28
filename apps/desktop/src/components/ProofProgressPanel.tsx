@@ -86,6 +86,16 @@ export function ProofProgressPanel({
                   total: safeProgress.total,
                 })}
           </p>
+          {model.postApplyNotice === 'starting' && (
+            <p data-testid="post-apply-proof-starting">
+              {text(TEXT.postApplyStarting)}
+            </p>
+          )}
+          {model.postApplyNotice === 'unavailable' && (
+            <p data-testid="post-apply-proof-unavailable">
+              {text(TEXT.postApplyUnavailable)}
+            </p>
+          )}
           {unprovenTrust && model.speculativeApplyAvailable && (
             <p role="note">{text(TEXT.speculativeApplyWarning)}</p>
           )}

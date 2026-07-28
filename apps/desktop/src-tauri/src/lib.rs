@@ -15,6 +15,7 @@ mod applied_pose;
 mod beginner_design_commands;
 mod beginner_recognition;
 mod beginner_skeleton_endpoint_commands;
+mod boundary_length_authority;
 mod constructed_vertex_commands;
 mod crease_export;
 mod crease_pattern_boundary_support;
@@ -43,6 +44,7 @@ mod recent_projects;
 mod recovery;
 mod runtime_update;
 mod save_path;
+mod speculative_unproven_summary_wire;
 mod stacked_fold_even_cycle_candidates;
 mod stacked_fold_live_hinge_registry;
 mod stacked_fold_read;
@@ -103,6 +105,7 @@ use project_lifecycle_commands::{
     save_project, save_project_as, update_project_memo, validate_project,
 };
 use proof_cache_edit_impact::commit_editor_pose_and_proof_invalidation_v1;
+use speculative_unproven_summary_wire::SpeculativeUnprovenFoldSummaryDtoV1;
 use stacked_fold_transaction::StackedFoldTransactionState;
 
 use base64::Engine as _;
@@ -293,8 +296,11 @@ use stacked_fold_read::{
 use stacked_fold_transaction::{
     apply_named_accordion_fold_transaction, apply_named_book_fold_transaction,
     apply_named_layer_selective_transaction, apply_named_reverse_fold_transaction,
-    apply_named_sink_fold_transaction, apply_stacked_fold_transaction,
-    cancel_stacked_fold_transaction_preview, preview_named_basic_fold_timeline,
+    apply_named_sink_fold_transaction, apply_speculative_stacked_fold_transaction,
+    apply_stacked_fold_transaction, cancel_post_apply_proof_job_v1,
+    cancel_stacked_fold_transaction_preview, poll_post_apply_proof_job_v1,
+    preview_named_basic_fold_timeline, revert_post_apply_proof_failure_v1,
+    start_post_apply_proof_job_v1,
 };
 #[cfg(test)]
 use svg_import_commands::*;
@@ -444,6 +450,7 @@ struct ProjectState {
     material_void_evidence: ori_domain::MaterialVoidEvidenceDocumentV1,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
+    saved_speculative_unproven_state: Option<ori_core::SpeculativeUnprovenFoldStateMarkerV1>,
 }
 
 impl ProjectState {
@@ -468,11 +475,14 @@ impl ProjectState {
             material_void_evidence: Default::default(),
             saved_revision: None,
             saved_document: None,
+            saved_speculative_unproven_state: None,
         };
         // The built-in startup sheet is a clean baseline. In contrast, a
         // user-created project uses `new_unsaved` and remains dirty until its
         // first successful save.
         project.saved_document = Some(project.document());
+        project.saved_speculative_unproven_state =
+            Some(project.editor.speculative_unproven_fold_state_marker_v1());
         project
     }
 
@@ -492,6 +502,7 @@ impl ProjectState {
             material_void_evidence: Default::default(),
             saved_revision: None,
             saved_document: None,
+            saved_speculative_unproven_state: None,
         }
     }
 
@@ -522,6 +533,8 @@ impl ProjectState {
         editor
             .restore_beginner_design_profile(document.beginner_design_profile)
             .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+        let saved_speculative_unproven_state =
+            Some(editor.speculative_unproven_fold_state_marker_v1());
         Ok(Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -535,6 +548,7 @@ impl ProjectState {
             reference_model_assets,
             material_void_evidence,
             saved_document: Some(saved_document),
+            saved_speculative_unproven_state,
             editor,
         })
     }
@@ -575,6 +589,8 @@ impl ProjectState {
         let reference_model_assets = document.reference_model_assets.clone();
         let material_void_evidence = document.material_void_evidence.clone();
         let archived_layer_evidence = project.layer_evidence.clone();
+        let saved_speculative_unproven_state =
+            Some(editor.speculative_unproven_fold_state_marker_v1());
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -588,6 +604,7 @@ impl ProjectState {
             reference_model_assets,
             material_void_evidence,
             saved_document: Some(saved_document),
+            saved_speculative_unproven_state,
             editor,
         };
         if let Some(pose) = persisted_pose.as_ref() {
@@ -635,6 +652,7 @@ impl ProjectState {
             reference_model_assets,
             material_void_evidence,
             saved_document: None,
+            saved_speculative_unproven_state: None,
             editor,
         };
         if let Some(pose) = persisted_pose.as_ref() {
@@ -830,6 +848,8 @@ impl ProjectState {
             || saved.beginner_design_profile != *self.editor.beginner_design_profile()
             || saved.texture_assets != self.texture_assets
             || saved.reference_model_assets != self.reference_model_assets
+            || self.saved_speculative_unproven_state.as_ref()
+                != Some(&self.editor.speculative_unproven_fold_state_marker_v1())
     }
 
     fn record_numeric_expression_edit(&mut self) {
@@ -1406,6 +1426,9 @@ struct ProjectSnapshot {
     can_redo: bool,
     cutting_allowed: bool,
     reference_model_assets: Vec<ReferenceModelAssetSummaryV1>,
+    boundary_length_authority_v1: boundary_length_authority::BoundaryLengthAuthorityV1,
+    #[serde(rename = "speculativeUnprovenFolds")]
+    speculative_unproven_folds: SpeculativeUnprovenFoldSummaryDtoV1,
 }
 
 #[derive(Debug, Serialize)]
@@ -4581,6 +4604,9 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
                 sha256: sha2::Sha256::digest(&asset.bytes).into(),
             })
             .collect(),
+        boundary_length_authority_v1:
+            boundary_length_authority::derive_boundary_length_authority_v1(project),
+        speculative_unproven_folds: project.editor.speculative_unproven_fold_summary_v1().into(),
     }
 }
 
@@ -4679,6 +4705,8 @@ fn save_project_to_destination(
     project.current_path = Some(path);
     project.saved_revision = Some(project.editor.revision());
     project.saved_document = Some(project.document());
+    project.saved_speculative_unproven_state =
+        Some(project.editor.speculative_unproven_fold_state_marker_v1());
     Ok(ProjectFileResponse {
         canceled: false,
         project: snapshot(project),
@@ -5813,6 +5841,11 @@ pub fn run() {
             read_live_hinge_registry_v1,
             cancel_stacked_fold_transaction_preview,
             apply_stacked_fold_transaction,
+            apply_speculative_stacked_fold_transaction,
+            start_post_apply_proof_job_v1,
+            poll_post_apply_proof_job_v1,
+            cancel_post_apply_proof_job_v1,
+            revert_post_apply_proof_failure_v1,
             preview_named_basic_fold_timeline,
             apply_named_book_fold_transaction,
             apply_named_reverse_fold_transaction,
@@ -6066,6 +6099,8 @@ pub fn run() {
 #[cfg(test)]
 #[path = "geometry_reference_compat_tests.rs"]
 mod geometry_reference_compat_tests;
-
+#[cfg(test)]
+#[path = "speculative_unproven_snapshot_tests.rs"]
+mod speculative_unproven_snapshot_tests;
 #[cfg(test)]
 mod tests;

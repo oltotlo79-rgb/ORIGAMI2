@@ -9,6 +9,12 @@ import {
   type ProofProgressPanelModel,
   type ProofProgressState,
 } from './proofProgressModel.ts'
+import type {
+  PostApplyProofSchedulerViewStateV1,
+} from './postApplyProofSchedulerCoordinator.ts'
+import type {
+  PostApplyProofStatusV1,
+} from './postApplyProofSchedulerClient.ts'
 import {
   unprovenHistorySummaryFromSnapshotV1,
 } from './speculativeUnprovenWire.ts'
@@ -29,12 +35,17 @@ export function createStackedFoldProofProgressModel(
     | 'revision'
     | 'speculativeUnprovenFolds'
   >,
+  postApplyProof: PostApplyProofSchedulerViewStateV1 = Object.freeze({
+    kind: 'idle',
+  }),
 ): ProofProgressPanelModel {
-  const unprovenHistory = unprovenHistorySummaryFromSnapshotV1(snapshot)
+  let unprovenHistory = unprovenHistorySummaryFromSnapshotV1(snapshot)
   let status: ProofProgressState | null = null
   let provenPairCount = 0
   let totalPairCount: number | null = null
   let speculativeApplyAvailable = false
+  let postApplyNotice: 'starting' | 'unavailable' | null = null
+  let proofFailure: ProofProgressPanelModel['proofFailure'] = null
 
   if (source.kind === 'reading') {
     // This is the pre-Apply safety read, not a persisted post-Apply proof
@@ -67,17 +78,65 @@ export function createStackedFoldProofProgressModel(
     }
   }
 
+  if (postApplyProof.kind === 'starting') {
+    status = 'proving'
+    provenPairCount = 0
+    totalPairCount = null
+    speculativeApplyAvailable = false
+    postApplyNotice = 'starting'
+  } else if (postApplyProof.kind === 'progress') {
+    status = postApplyStatusToPanelStatus(postApplyProof.progress.status)
+    provenPairCount = postApplyProof.progress.provenPairCount
+    totalPairCount = postApplyProof.progress.totalPairCount
+    speculativeApplyAvailable = false
+    proofFailure = postApplyProof.progress.proofFailure
+  } else if (postApplyProof.kind === 'unavailable') {
+    status = 'evidence_insufficient'
+    provenPairCount = 0
+    totalPairCount = null
+    speculativeApplyAvailable = false
+    postApplyNotice = 'unavailable'
+  }
+  if (
+    postApplyProof.kind !== 'idle'
+    && unprovenHistory.kind === 'absent'
+  ) {
+    // An absent legacy field is not evidence that the just-applied unproven
+    // history count is zero.
+    unprovenHistory = Object.freeze({ kind: 'unavailable' })
+  }
+
   return Object.freeze({
     status,
     provenPairCount,
     totalPairCount,
     unprovenHistory,
     speculativeApplyAvailable,
-    // The current native snapshot exposes only aggregate status counts. It
-    // does not publish a proof-result entry binding or a revert command, so a
-    // per-entry failure/revert affordance must not be inferred here.
-    proofFailure: null,
+    postApplyNotice,
+    proofFailure,
   })
+}
+
+function postApplyStatusToPanelStatus(
+  status: PostApplyProofStatusV1,
+): ProofProgressState {
+  switch (status) {
+    case 'proving':
+    case 'certified':
+    case 'blocked':
+    case 'stale':
+      return status
+    case 'unknown_evidence_insufficient':
+      return 'evidence_insufficient'
+    case 'unknown_resource_limit':
+      return 'resource_limit'
+    case 'unknown_cancelled':
+      return 'cancelled'
+    case 'unknown_deadline_reached':
+      return 'deadline'
+    default:
+      return 'evidence_insufficient'
+  }
 }
 
 export function shouldRenderStackedFoldProofProgress(

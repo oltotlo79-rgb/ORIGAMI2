@@ -2664,8 +2664,14 @@ fn symmetry_transforms_are_exact_at_cardinal_angles() {
         (180.0, Point2::new(-1.0, 0.0)),
         (270.0, Point2::new(3.0, 0.0)),
     ] {
-        let (sin, cos) = symmetry_sin_cos(angle);
+        let (sin, cos) = symmetry_sin_cos(angle).expect("finite cardinal angle");
         assert_eq!(rotate_point_about(point, center, sin, cos), expected);
+    }
+    let (sin, cos) = symmetry_sin_cos(37.5).expect("finite non-cardinal angle");
+    assert_eq!(sin.to_bits(), 0x3fe3_7af9_3f95_13ea);
+    assert_eq!(cos.to_bits(), 0x3fe9_6326_8b57_2492);
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(symmetry_sin_cos(invalid), None);
     }
 }
 
@@ -3436,10 +3442,12 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
         analyze_geometric_constraint_document(pattern, &exact_positive),
         GeometricConstraintPreflightResult::ProvenSatisfiable {
             model_id: ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+            transcendental_model_id: ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
             constraint_count: 1,
             equation_count: 1,
             authorizes_project_mutation: false,
-            replayable_across_runtimes: false,
+            replayable_across_runtimes:
+                ori_numeric::deterministic_transcendental_model_supported_v1(),
         }
     );
     assert_eq!(
@@ -3450,11 +3458,14 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
         .expect("serialize exact positive constraint result"),
         serde_json::json!({
             "status": "proven_satisfiable",
-            "model_id": "geometric_constraint_current_runtime_exact_satisfaction_v1",
+            "model_id": "geometric_constraint_deterministic_binary64_exact_satisfaction_v2",
+            "transcendental_model_id":
+                ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
             "constraint_count": 1,
             "equation_count": 1,
             "authorizes_project_mutation": false,
-            "replayable_across_runtimes": false,
+            "replayable_across_runtimes":
+                ori_numeric::deterministic_transcendental_model_supported_v1(),
         })
     );
 
@@ -6245,6 +6256,104 @@ fn loaded_numeric_expressions_are_re_evaluated_against_saved_adopted_values() {
     legacy.numeric_expressions = ProjectNumericExpressions::default();
     validate_loaded_numeric_expression_bindings(&legacy)
         .expect("legacy projects without expressions migrate safely");
+}
+
+#[test]
+fn polar_expression_loading_is_legacy_compatible_and_v2_bit_exact() {
+    let mut legacy = initial_project_state().document();
+    let start = legacy.crease_pattern.vertices[0].clone();
+    let target = legacy.crease_pattern.vertices[1].id;
+    let legacy_endpoint = Point2::new(12.25, -7.5);
+    legacy
+        .crease_pattern
+        .vertices
+        .iter_mut()
+        .find(|vertex| vertex.id == target)
+        .expect("target vertex")
+        .position = legacy_endpoint;
+    let mut legacy_binding = VertexCoordinateExpressions::new(
+        target,
+        legacy_endpoint.x.to_string(),
+        legacy_endpoint.y.to_string(),
+        legacy_endpoint.x,
+        legacy_endpoint.y,
+    );
+    legacy_binding.polar_construction = Some(PolarVertexConstructionExpressions {
+        schema_version: ori_formats::PROJECT_NUMERIC_EXPRESSIONS_SCHEMA_VERSION,
+        start_vertex: start.id,
+        adopted_start_x_mm: start.position.x,
+        adopted_start_y_mm: start.position.y,
+        length_source: "8".to_owned(),
+        angle_degrees_source: "37.5".to_owned(),
+        adopted_length_mm: 8.0,
+        adopted_angle_degrees: 37.5,
+    });
+    legacy.numeric_expressions.vertex_coordinates = vec![legacy_binding];
+    validate_loaded_numeric_expression_bindings(&legacy)
+        .expect("legacy creator-runtime coordinates remain loadable without trig replay");
+
+    let mut forged_legacy_start = legacy.clone();
+    forged_legacy_start.numeric_expressions.vertex_coordinates[0]
+        .polar_construction
+        .as_mut()
+        .expect("legacy polar metadata")
+        .adopted_start_x_mm += 1.0;
+    assert_eq!(
+        validate_loaded_numeric_expression_bindings(&forged_legacy_start),
+        Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())
+    );
+
+    let mut deterministic = legacy;
+    let endpoint =
+        ori_numeric::deterministic_polar_endpoint_v2(start.position.x, start.position.y, 8.0, 37.5)
+            .map(|(x, y)| Point2::new(x, y))
+            .expect("deterministic endpoint");
+    deterministic
+        .crease_pattern
+        .vertices
+        .iter_mut()
+        .find(|vertex| vertex.id == target)
+        .expect("target vertex")
+        .position = endpoint;
+    let binding = &mut deterministic.numeric_expressions.vertex_coordinates[0];
+    binding.x_source = endpoint.x.to_string();
+    binding.y_source = endpoint.y.to_string();
+    binding.adopted_x_mm = endpoint.x;
+    binding.adopted_y_mm = endpoint.y;
+    binding.schema_version =
+        ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2;
+    binding.transcendental_model_id =
+        Some(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.to_owned());
+    validate_loaded_numeric_expression_bindings(&deterministic)
+        .expect("V2 deterministic endpoint is bit-exact");
+
+    let mut forged_endpoint = deterministic.clone();
+    let forged_x = {
+        let binding = &mut forged_endpoint.numeric_expressions.vertex_coordinates[0];
+        binding.adopted_x_mm = f64::from_bits(binding.adopted_x_mm.to_bits() + 1);
+        binding.x_source = binding.adopted_x_mm.to_string();
+        binding.adopted_x_mm
+    };
+    forged_endpoint
+        .crease_pattern
+        .vertices
+        .iter_mut()
+        .find(|vertex| vertex.id == target)
+        .expect("target vertex")
+        .position
+        .x = forged_x;
+    assert_eq!(
+        validate_loaded_numeric_expression_bindings(&forged_endpoint),
+        Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())
+    );
+
+    let mut forged_model = deterministic;
+    forged_model.numeric_expressions.vertex_coordinates[0].transcendental_model_id =
+        Some("forged_model".to_owned());
+    assert_eq!(
+        validate_loaded_numeric_expression_bindings(&forged_model),
+        Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())
+    );
 }
 
 #[test]

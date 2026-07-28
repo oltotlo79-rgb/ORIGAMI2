@@ -14,6 +14,9 @@ import {
   normalizeGeometricConstraintKind,
   normalizeGeometricConstraintPreflightResponse,
 } from '../src/lib/geometricConstraints.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
 
 const uuid = (index: number) =>
   `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
@@ -1323,20 +1326,22 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     response({
       status: 'proven_satisfiable',
       model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: 11,
       equation_count: 14,
       authorizes_project_mutation: false,
-      replayable_across_runtimes: false,
+      replayable_across_runtimes: true,
     }),
     BINDING,
   )
   assert.deepEqual(exact?.result, {
     status: 'proven_satisfiable',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     constraint_count: 11,
     equation_count: 14,
     authorizes_project_mutation: false,
-    replayable_across_runtimes: false,
+    replayable_across_runtimes: true,
   })
   assertDeepFrozen(exact)
 
@@ -1344,6 +1349,7 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     {
       status: 'proven_satisfiable',
       model_id: 'future_model',
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: 11,
       equation_count: 14,
       authorizes_project_mutation: false,
@@ -1352,6 +1358,16 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     {
       status: 'proven_satisfiable',
       model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: 'future_model',
+      constraint_count: 11,
+      equation_count: 14,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: true,
+    },
+    {
+      status: 'proven_satisfiable',
+      model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: 0,
       equation_count: 0,
       authorizes_project_mutation: false,
@@ -1360,6 +1376,7 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     {
       status: 'proven_satisfiable',
       model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: MAX_GEOMETRIC_CONSTRAINT_RECORDS + 1,
       equation_count: MAX_GEOMETRIC_CONSTRAINT_RECORDS + 1,
       authorizes_project_mutation: false,
@@ -1368,6 +1385,7 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     {
       status: 'proven_satisfiable',
       model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: 2,
       equation_count: 1,
       authorizes_project_mutation: false,
@@ -1376,6 +1394,7 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     {
       status: 'proven_satisfiable',
       model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: 2,
       equation_count: 5,
       authorizes_project_mutation: false,
@@ -1384,6 +1403,7 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     {
       status: 'proven_satisfiable',
       model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: 2,
       equation_count: 2,
       authorizes_project_mutation: false,
@@ -1393,6 +1413,7 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     {
       status: 'proven_satisfiable',
       model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: 2,
       equation_count: 2,
       authorizes_project_mutation: true,
@@ -1401,10 +1422,11 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
     {
       status: 'proven_satisfiable',
       model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       constraint_count: 2,
       equation_count: 2,
       authorizes_project_mutation: false,
-      replayable_across_runtimes: true,
+      replayable_across_runtimes: 'true',
     },
   ]) {
     assert.equal(

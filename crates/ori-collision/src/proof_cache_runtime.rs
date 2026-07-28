@@ -159,6 +159,17 @@ pub struct PersistentPairProofCacheRuntimeV1 {
     inner: Arc<Mutex<ProofCacheRuntimeStateV1>>,
 }
 
+/// Opaque one-shot rollback image for one desktop-owned atomic pose adoption.
+///
+/// The fields and runtime identity are private, and the value is neither
+/// clonable nor serializable. Restoration succeeds only on the originating
+/// runtime and before more than the single expected pose-authority epoch
+/// transition has occurred.
+pub struct ProofCacheRuntimeRollbackSnapshotV1 {
+    inner: Arc<Mutex<ProofCacheRuntimeStateV1>>,
+    state: Option<ProofCacheRuntimeStateV1>,
+}
+
 struct ProofCacheRuntimeStateV1 {
     epoch: u64,
     binding: Option<ProofCacheRuntimeBindingV1>,
@@ -166,6 +177,19 @@ struct ProofCacheRuntimeStateV1 {
     impact_preparation_in_progress: bool,
     cache: PersistentPairProofCacheV1,
     progress: ProofCacheProgressV1,
+}
+
+impl Clone for ProofCacheRuntimeStateV1 {
+    fn clone(&self) -> Self {
+        Self {
+            epoch: self.epoch,
+            binding: self.binding.clone(),
+            pending_impact: self.pending_impact.clone(),
+            impact_preparation_in_progress: self.impact_preparation_in_progress,
+            cache: self.cache.clone_for_runtime_rollback_v1(),
+            progress: self.progress,
+        }
+    }
 }
 
 impl PersistentPairProofCacheRuntimeV1 {
@@ -183,6 +207,36 @@ impl PersistentPairProofCacheRuntimeV1 {
                 },
             })),
         })
+    }
+
+    pub fn capture_rollback_snapshot_v1(
+        &self,
+    ) -> Result<ProofCacheRuntimeRollbackSnapshotV1, ProofCacheRuntimeErrorV1> {
+        let state = self.lock_v1()?.clone();
+        Ok(ProofCacheRuntimeRollbackSnapshotV1 {
+            inner: Arc::clone(&self.inner),
+            state: Some(state),
+        })
+    }
+
+    pub fn restore_rollback_snapshot_v1(
+        &self,
+        mut snapshot: ProofCacheRuntimeRollbackSnapshotV1,
+    ) -> Result<(), ProofCacheRuntimeErrorV1> {
+        if !Arc::ptr_eq(&self.inner, &snapshot.inner) {
+            return Err(ProofCacheRuntimeErrorV1::InvalidBinding);
+        }
+        let before = snapshot
+            .state
+            .take()
+            .ok_or(ProofCacheRuntimeErrorV1::InvalidBinding)?;
+        let allowed_advanced_epoch = before.epoch.checked_add(1);
+        let mut state = self.lock_v1()?;
+        if state.epoch != before.epoch && Some(state.epoch) != allowed_advanced_epoch {
+            return Err(ProofCacheRuntimeErrorV1::StaleProof);
+        }
+        *state = before;
+        Ok(())
     }
 
     /// Captures the exact runtime epoch after the caller has acquired project

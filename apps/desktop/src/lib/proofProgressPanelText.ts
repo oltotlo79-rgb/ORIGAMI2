@@ -65,6 +65,14 @@ const unprovenStatuses = Object.freeze({
 export const PROOF_PROGRESS_PANEL_TEXT = Object.freeze({
   ariaLabel: localized('証明の進捗', 'Proof progress'),
   title: localized('証明の進捗', 'Proof progress'),
+  postApplyStarting: localized(
+    '事後証明ジョブを開始しています。',
+    'Starting the post-Apply proof job.',
+  ),
+  postApplyUnavailable: localized(
+    '事後証明の進捗を取得できません。折り操作は未証明のままです。',
+    'Post-Apply proof progress is unavailable. The fold remains unproven.',
+  ),
   statusLabel: localized('状態', 'Status'),
   status,
   certifiedBadge: localized('証明済み', 'Proven'),

@@ -90,7 +90,7 @@ pub use proof_cache::{
     ProofCacheKeyV1, ProofCacheLimitsV1, ProofCacheOperationControlV1, ProofCachePairWorkLimitsV1,
     ProofCachePairWorkV1, ProofCacheProgressV1, ProofCachePublishReportV1,
     ProofCacheRebindContextV1, ProofCacheRuntimeBindingV1, ProofCacheRuntimeCaptureV1,
-    ProofCacheRuntimeErrorV1,
+    ProofCacheRuntimeErrorV1, ProofCacheRuntimeRollbackSnapshotV1,
 };
 
 pub use block_composition::{
@@ -149,8 +149,9 @@ pub use continuous_path::{
     MultiHingeReliefUnionCertificateV2, MultiHingeReliefUnionCoveredPairV2,
     MultiHingeReliefUnionErrorV2, MultiHingeReliefUnionGapReportV2, MultiHingeReliefUnionGapV2,
     MultiHingeReliefUnionHingeGapV2, MultiHingeReliefUnionLimitsV2,
-    PositiveThicknessContinuousCertificateV1, PositiveThicknessTreeContinuousCertificateV1,
-    ReliefCoveredSharedHingePairV1, STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
+    NativeStackedFoldInitialSampleLayerAdmissionV1, PositiveThicknessContinuousCertificateV1,
+    PositiveThicknessTreeContinuousCertificateV1, ReliefCoveredSharedHingePairV1,
+    STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
     STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
@@ -165,9 +166,9 @@ pub use continuous_path::{
     SharedVertexContinuousCorridorGapV1, SharedVertexIntervalPositionV1,
     SharedVertexSectorBoundaryV1, SharedVertexTreeLayerTransportProofV1, SharedVertexWedgeCellV1,
     SharedVertexWedgeSeparationLowerV1, StackedFoldBoundedPathDiagnosticV1,
-    StackedFoldCyclePathDiagnosticV1, StackedFoldPathDiagnosticErrorV1,
-    StackedFoldPathDiagnosticLimitsV1, UniformCycleClosureRootsV1,
-    certify_canonical_positive_thickness_cycle_schedule_path_v1,
+    StackedFoldCyclePathDiagnosticV1, StackedFoldInitialLayerOrderSourceV1,
+    StackedFoldPathDiagnosticErrorV1, StackedFoldPathDiagnosticLimitsV1,
+    UniformCycleClosureRootsV1, certify_canonical_positive_thickness_cycle_schedule_path_v1,
     certify_multi_hinge_relief_union_v2, certify_multi_hinge_relief_union_with_cancel_v2,
     certify_positive_thickness_tree_continuous_path_v1,
     classify_exact_dyadic_path_self_intersection_v1,
@@ -175,8 +176,9 @@ pub use continuous_path::{
     compose_shared_hinge_relief_coverage_v1, diagnose_canonical_cycle_schedule_path_v1,
     diagnose_canonical_positive_thickness_cycle_schedule_path_v1,
     diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_from_pose_v1,
-    diagnose_collective_hinge_path_v1, diagnose_collective_hinge_path_with_pair_cache_v1,
-    diagnose_continuous_pair_coverage_v1,
+    diagnose_collective_hinge_path_v1,
+    diagnose_collective_hinge_path_with_initial_sample_layer_admission_v1,
+    diagnose_collective_hinge_path_with_pair_cache_v1, diagnose_continuous_pair_coverage_v1,
     diagnose_dyadic_shared_vertex_boundary_point_distances_v1,
     diagnose_dyadic_shared_vertex_interval_positions_v1,
     diagnose_dyadic_shared_vertex_sector_boundaries_v1,
@@ -188,6 +190,7 @@ pub use continuous_path::{
     diagnose_shared_vertex_continuous_corridor_gaps_v1, enumerate_uniform_cycle_closure_roots_v1,
     prepare_dyadic_face_transform_interval_registry_v1,
     prepare_shared_vertex_tree_layer_transport_v1,
+    prepare_stacked_fold_initial_sample_layer_admission_v1,
     revalidate_multi_hinge_relief_union_certificate_v2,
     supports_scheduled_positive_thickness_path_v1,
 };
@@ -247,9 +250,11 @@ pub use hinge_relief::{
 };
 pub use non_flat_cell_transport::{
     NON_FLAT_CELL_TRANSPORT_MODEL_ID_V1, NonFlatCellTransportErrorV1, NonFlatCellTransportLimitsV1,
-    NonFlatCellTransportProofV1, certify_non_flat_cell_transport_v1,
-    certify_non_flat_cell_transport_with_limits_v1, preflight_non_flat_cell_transport_v1,
-    validate_non_flat_layer_order_structure_v1,
+    NonFlatCellTransportProofV1, NonFlatFacePairOrderStructuralV1,
+    NonFlatFoldedFaceStructuralRefV1, NonFlatLayerOrderStructuralSourceV1,
+    NonFlatLayerOrderTransportSourceV1, NonFlatOverlapCellStructuralRefV1,
+    certify_non_flat_cell_transport_v1, certify_non_flat_cell_transport_with_limits_v1,
+    preflight_non_flat_cell_transport_v1, validate_non_flat_layer_order_structure_v1,
 };
 pub use stacked_fold_read::{
     NativeStackedFoldMaterialMapV1, NativeStackedFoldReadGuardV1, NativeStackedFoldReadProposalV1,

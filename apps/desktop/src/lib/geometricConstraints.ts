@@ -5,6 +5,9 @@ import {
   type Locale,
 } from './i18n.ts'
 import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from './deterministicTranscendentalModel.ts'
+import {
   GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
   MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS,
   MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK,
@@ -31,7 +34,7 @@ export const MAX_DIRECT_CONFLICT_WITNESS_IDS = 256
 export const MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS = 16
 export const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS = 65_535
 export const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID =
-  'geometric_constraint_current_runtime_exact_satisfaction_v1' as const
+  'geometric_constraint_deterministic_binary64_exact_satisfaction_v2' as const
 
 export type ZeroLengthClosureProviderKindV1 =
   | 'point_on_line'
@@ -290,10 +293,12 @@ export type GeometricConstraintPreflightResultV1 =
   | Readonly<{
       status: 'proven_satisfiable'
       model_id: typeof GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
+      transcendental_model_id:
+        typeof DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
       constraint_count: number
       equation_count: number
       authorizes_project_mutation: false
-      replayable_across_runtimes: false
+      replayable_across_runtimes: boolean
     }>
   | Readonly<{
       status: 'no_direct_conflict'
@@ -864,6 +869,7 @@ function parsePreflightResult(
         !hasExactKeys(record, [
           'status',
           'model_id',
+          'transcendental_model_id',
           'constraint_count',
           'equation_count',
           'authorizes_project_mutation',
@@ -871,6 +877,8 @@ function parsePreflightResult(
         ])
         || record.model_id
           !== GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
+        || record.transcendental_model_id
+          !== DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
         || typeof record.constraint_count !== 'number'
         || !Number.isSafeInteger(record.constraint_count)
         || record.constraint_count < 1
@@ -880,15 +888,16 @@ function parsePreflightResult(
         || record.equation_count < record.constraint_count
         || record.equation_count > record.constraint_count * 2
         || record.authorizes_project_mutation !== false
-        || record.replayable_across_runtimes !== false
+        || typeof record.replayable_across_runtimes !== 'boolean'
       ) return null
       return Object.freeze({
         status: record.status,
         model_id: record.model_id,
+        transcendental_model_id: record.transcendental_model_id,
         constraint_count: record.constraint_count,
         equation_count: record.equation_count,
         authorizes_project_mutation: false as const,
-        replayable_across_runtimes: false as const,
+        replayable_across_runtimes: record.replayable_across_runtimes,
       })
     }
     case 'no_direct_conflict':

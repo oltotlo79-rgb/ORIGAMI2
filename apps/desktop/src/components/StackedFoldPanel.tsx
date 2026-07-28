@@ -63,6 +63,16 @@ import {
   reconcileSpeculativeStackedFoldApplyV1,
   type SpeculativeStackedFoldReconciliationAuthorityV1,
 } from '../lib/speculativeStackedFoldReconciliation.ts'
+import {
+  createRevertPostApplyProofFailureRequestV1,
+  POST_APPLY_PROOF_PROTOCOL_VERSION_V1,
+  revertPostApplyProofFailureV1,
+} from '../lib/postApplyProofSchedulerClient.ts'
+import type { ProofFailureViewModel } from '../lib/proofProgressModel.ts'
+import {
+  createPostApplyProofSchedulerCoordinatorV1,
+  type PostApplyProofSchedulerViewStateV1,
+} from '../lib/postApplyProofSchedulerCoordinator.ts'
 
 type SelectedLine = Readonly<{
   id: string
@@ -236,6 +246,17 @@ export function StackedFoldPanel({
   const [applying, setApplying] = useState(false)
   const applyInFlightRef = useRef(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
+  const postApplyProofMountedRef = useRef(true)
+  const [postApplyProof, setPostApplyProof] =
+    useState<PostApplyProofSchedulerViewStateV1>({ kind: 'idle' })
+  const postApplyProofScheduler = useMemo(
+    () => createPostApplyProofSchedulerCoordinatorV1({
+      onState(next) {
+        if (postApplyProofMountedRef.current) setPostApplyProof(next)
+      },
+    }),
+    [],
+  )
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
   const [selectedFace, setSelectedFace] = useState<string | null>(null)
   const [hoveredFace, setHoveredFace] = useState<string | null>(null)
@@ -316,6 +337,30 @@ export function StackedFoldPanel({
     setBasicFoldTimelinePreviewError(false)
     void cancelStackedFoldTransactionPreview(token).catch(() => undefined)
   }
+
+  useEffect(() => {
+    postApplyProofMountedRef.current = true
+    return () => {
+      postApplyProofMountedRef.current = false
+      // Keep cleanup restart-safe for React's development effect replay while
+      // invalidating both pending starts and active native jobs.
+      postApplyProofScheduler.cancel()
+    }
+  }, [postApplyProofScheduler])
+
+  useEffect(() => {
+    postApplyProofScheduler.observeAuthority({
+      version: POST_APPLY_PROOF_PROTOCOL_VERSION_V1,
+      projectInstanceId: snapshot.project_instance_id,
+      projectId: snapshot.project_id,
+      revision: snapshot.revision,
+    })
+  }, [
+    postApplyProofScheduler,
+    snapshot.project_instance_id,
+    snapshot.project_id,
+    snapshot.revision,
+  ])
 
   useEffect(() => {
     coordinator.invalidate()
@@ -575,6 +620,87 @@ export function StackedFoldPanel({
     }
   }
 
+  function startPostApplyProofForSnapshot(
+    next: ProjectSnapshot,
+    expected: SpeculativeStackedFoldReconciliationAuthorityV1,
+  ) {
+    if (
+      next.project_instance_id !== expected.projectInstanceId
+      || next.project_id !== expected.projectId
+      || next.revision !== expected.targetRevision
+    ) {
+      postApplyProofScheduler.markUnavailable()
+      return
+    }
+    startPostApplyProofForAuthority(expected)
+  }
+
+  function startPostApplyProofForAuthority(
+    expected: SpeculativeStackedFoldReconciliationAuthorityV1,
+  ) {
+    postApplyProofScheduler.start({
+      version: POST_APPLY_PROOF_PROTOCOL_VERSION_V1,
+      projectInstanceId: expected.projectInstanceId,
+      projectId: expected.projectId,
+      revision: expected.targetRevision,
+    })
+  }
+
+  async function requestPostApplyProofRevert(
+    failure: ProofFailureViewModel,
+  ) {
+    const proofState = postApplyProof
+    if (
+      disabled
+      || applying
+      || applyInFlightRef.current
+      || proofState.kind !== 'progress'
+    ) return
+
+    applyInFlightRef.current = true
+    setApplying(true)
+    let committed = false
+    try {
+      const authority = await refreshSnapshot()
+      const request = createRevertPostApplyProofFailureRequestV1(
+        proofState.progress,
+        authority.revision,
+        failure,
+      )
+      if (
+        !request
+        || authority.project_instance_id !== request.projectInstanceId
+        || authority.project_id !== request.projectId
+      ) {
+        throw new Error('stale atomic proof-revert authority')
+      }
+      const revision = await revertPostApplyProofFailureV1(request)
+      committed = true
+      const next = await refreshSnapshot()
+      if (
+        next.project_instance_id !== request.projectInstanceId
+        || next.project_id !== request.projectId
+        || next.revision !== revision
+      ) {
+        throw new Error('unexpected atomic proof-revert revision')
+      }
+      postApplyProofScheduler.cancel()
+      authorityRef.current = next
+      onApplied(next)
+      setView({ kind: 'idle' })
+      setConfirmed(false)
+      setSpeculativeConfirmed(false)
+    } catch {
+      postApplyProofScheduler.markUnavailable()
+      if (committed) {
+        setView({ kind: 'refresh_failed', outcome: 'applied' })
+      }
+    } finally {
+      applyInFlightRef.current = false
+      setApplying(false)
+    }
+  }
+
   async function apply() {
     const speculativeReady = view.kind === 'ready'
       && speculativeStackedFoldApplyIsCurrent(
@@ -605,10 +731,14 @@ export function StackedFoldPanel({
           targetRevision: view.response.transactionProposal.targetRevision,
         })
       : null
+    // A newly accepted Apply supersedes any proof job for the previous
+    // revision. Cancellation remains best-effort and never mutates history.
+    postApplyProofScheduler.cancel()
     applyInFlightRef.current = true
     setApplying(true)
     let committed = false
     const publishApplied = (next: ProjectSnapshot) => {
+      authorityRef.current = next
       tokenRef.current = null
       setBasicFoldTimelinePreview(null)
       setBasicFoldTimelinePreviewError(false)
@@ -625,10 +755,14 @@ export function StackedFoldPanel({
         tokenRef.current = null
         setSpeculativeConfirmed(false)
         try {
-          await applySpeculativeStackedFoldTransaction({
+          const appliedRevision = await applySpeculativeStackedFoldTransaction({
             transactionToken: token,
             explicitConfirmation: true,
           })
+          if (appliedRevision !== speculativeAuthority!.targetRevision) {
+            throw new Error('unexpected speculative Apply revision')
+          }
+          startPostApplyProofForAuthority(speculativeAuthority!)
         } catch {
           const reconciliation =
             await reconcileSpeculativeStackedFoldApplyV1(
@@ -637,6 +771,10 @@ export function StackedFoldPanel({
             )
           if (reconciliation.kind === 'committed') {
             committed = true
+            startPostApplyProofForSnapshot(
+              reconciliation.snapshot,
+              speculativeAuthority!,
+            )
             publishApplied(reconciliation.snapshot)
           } else if (reconciliation.kind === 'unchanged') {
             setView({ kind: 'failed', reason: 'apply' })
@@ -937,6 +1075,10 @@ export function StackedFoldPanel({
             failedView.authority,
           )
         if (reconciliation.kind === 'committed') {
+          startPostApplyProofForSnapshot(
+            reconciliation.snapshot,
+            failedView.authority,
+          )
           onApplied(reconciliation.snapshot)
           setView({ kind: 'idle' })
         } else if (reconciliation.kind === 'unchanged') {
@@ -945,7 +1087,8 @@ export function StackedFoldPanel({
           setView(failedView)
         }
       } else {
-        onApplied(await refreshSnapshot())
+        const next = await refreshSnapshot()
+        onApplied(next)
         setView({ kind: 'idle' })
       }
     } catch {
@@ -965,8 +1108,8 @@ export function StackedFoldPanel({
       tokenRef.current,
     )
   const proofProgressModel = useMemo(
-    () => createStackedFoldProofProgressModel(view, snapshot),
-    [view, snapshot],
+    () => createStackedFoldProofProgressModel(view, snapshot, postApplyProof),
+    [view, snapshot, postApplyProof],
   )
   const certificateModelText = view.kind === 'ready'
     ? describeCertificateModel(
@@ -1675,6 +1818,9 @@ export function StackedFoldPanel({
           locale={locale}
           model={proofProgressModel}
           disabled={disabled || applying}
+          onRequestRevert={(failure) => {
+            void requestPostApplyProofRevert(failure)
+          }}
         />
       )}
       <CurrentNonFlatLayerOrderViewer

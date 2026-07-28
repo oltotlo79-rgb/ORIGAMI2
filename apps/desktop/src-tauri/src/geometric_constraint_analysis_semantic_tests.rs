@@ -132,3 +132,6 @@ mod algebraic_tests;
 
 #[path = "geometric_constraint_analysis/semantic_mus_length_tests.rs"]
 mod length_tests;
+
+#[path = "geometric_constraint_analysis/semantic_mus_zero_closure_tests.rs"]
+mod zero_closure_tests;

@@ -287,6 +287,13 @@ export function GeometricConstraintPanel({
                       solvePreview.exactSatisfaction.constraintCount,
                     equationCount:
                       solvePreview.exactSatisfaction.equationCount,
+                    scope: selectLocalizedText(
+                      locale,
+                      solvePreview.exactSatisfaction
+                          .replayableAcrossRuntimes
+                        ? TEXT.deterministicReplayableScope
+                        : TEXT.currentRuntimeFallbackScope,
+                    ),
                   },
                 )}
               </p>
@@ -707,6 +714,12 @@ function ConstraintPreflightStatus({
       {
         constraintCount: preflight.constraint_count,
         equationCount: preflight.equation_count,
+        scope: selectLocalizedText(
+          locale,
+          preflight.replayable_across_runtimes
+            ? TEXT.deterministicReplayableScope
+            : TEXT.currentRuntimeFallbackScope,
+        ),
       },
     )
   } else if (!analyzing && preflight?.status === 'no_direct_conflict') {
@@ -869,6 +882,13 @@ function SemanticMusStatus({
             pairConstructive: view.pairConstraintConstructiveWitnessCount,
             pairAlgebraic: view.pairConstraintAlgebraicWitnessCount,
             lengthConstructive: view.lengthConstraintConstructiveWitnessCount,
+            zeroClosure: view.zeroLengthClosureConstructiveWitnessCount,
+            scope: selectLocalizedText(
+              locale,
+              view.replayableAcrossRuntimes
+                ? TEXT.deterministicReplayableScope
+                : TEXT.currentRuntimeFallbackScope,
+            ),
             ids: view.constraintIds
               .map((id) => shortConstraintId(id, locale))
               .join(selectLocalizedText(locale, TEXT.idListSeparator)),

@@ -8,7 +8,7 @@ import { APP_TEXT as TEXT } from '../src/lib/appText.ts'
 import { formatLocalizedText } from '../src/lib/i18n.ts'
 
 test('app text catalog is closed and deeply frozen', () => {
-  assert.equal(Object.keys(TEXT).length, 862)
+  assert.equal(Object.keys(TEXT).length, 863)
   assert.equal(Object.isFrozen(TEXT), true)
 
   for (const entry of Object.values(TEXT)) {

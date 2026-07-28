@@ -1,4 +1,4 @@
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use ori_collision::StackedFoldBoundedPathDiagnosticV1;
 use ori_core::{
@@ -14,6 +14,26 @@ use ori_foldability::LayerOrderSnapshot;
 use ori_foldability::fold_model_fingerprint_v1;
 use sha2::{Digest, Sha256};
 use tauri::State;
+
+mod speculative_unproven;
+
+#[cfg(test)]
+pub(crate) use speculative_unproven::{
+    ApplySpeculativeStackedFoldRequestV1, apply_speculative_stacked_fold_transaction_inner_v1,
+    fail_next_speculative_target_pose_reissue_for_test_v1,
+};
+pub(super) use speculative_unproven::{
+    PendingSpeculativeStackedFoldPremisesV1, apply_speculative_stacked_fold_transaction,
+    install_pending_speculative_stacked_fold_v1, speculative_tree_diagnostic_is_issuable_v1,
+};
+#[allow(unused_imports)]
+pub(crate) use speculative_unproven::{
+    SpeculativeUnprovenFoldResolutionDtoV1, resolve_speculative_unproven_fold_native_v1,
+};
+pub(super) use speculative_unproven::{
+    cancel_post_apply_proof_job_v1, poll_post_apply_proof_job_v1,
+    revert_post_apply_proof_failure_v1, start_post_apply_proof_job_v1,
+};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,8 +55,9 @@ pub(super) struct BasicFoldTimelinePreviewResponse {
 use super::{
     AppState,
     applied_pose::{
-        CurrentAppliedPoseCapability, lock_revalidated_current_applied_pose_for_commit,
-        restore_persisted_current_pose,
+        CurrentAppliedPoseCapability, CurrentAppliedPoseTransactionRollbackV1,
+        lock_revalidated_current_applied_pose_for_commit,
+        restore_persisted_current_pose_transactional_v1,
     },
     global_flat_foldability::{
         CurrentLayerOrderCapability, GlobalFlatFoldabilityState,
@@ -46,7 +67,12 @@ use super::{
 };
 
 #[derive(Default)]
-pub(super) struct StackedFoldTransactionState(Mutex<StackedFoldTransactionSlot>);
+pub(super) struct StackedFoldTransactionState(
+    Mutex<StackedFoldTransactionSlot>,
+    Mutex<speculative_unproven::SpeculativeStackedFoldTransactionSlotV1>,
+    Mutex<()>,
+    Arc<Mutex<speculative_unproven::PostApplyProofRegistryV1>>,
+);
 
 #[cfg(test)]
 impl StackedFoldTransactionState {
@@ -57,6 +83,13 @@ impl StackedFoldTransactionState {
             .pending
             .as_ref()
             .map(|pending| pending.token)
+    }
+
+    pub(super) fn speculative_pending_token_for_test_v1(&self) -> Option<ProjectId> {
+        self.1
+            .lock()
+            .expect("speculative stacked-fold transaction test lock")
+            .active_generation
     }
 }
 
@@ -560,7 +593,7 @@ pub(super) struct PendingBlockwiseCurrentCyclePremisesV1 {
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum CurrentLayerEvidence {
     NonFlat(StackedFoldNonFlatLayerOrderV1),
     CertifiedFlat(LayerOrderSnapshot),
@@ -637,7 +670,6 @@ pub(super) fn install_pending_stacked_fold(
     layer_capability: CurrentLayerOrderCapability,
 ) -> Result<ProjectId, String> {
     let token = ProjectId::new();
-    let mut slot = lock_slot(state)?;
     let pending = PendingStackedFoldTransaction {
         token,
         expected_instance_id: premises.expected_instance_id,
@@ -666,6 +698,9 @@ pub(super) fn install_pending_stacked_fold(
     {
         return Err("The stacked-fold transaction premises are inconsistent.".to_owned());
     }
+    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
+    speculative_unproven::clear_pending_speculative_stacked_fold_v1(state)?;
+    let mut slot = lock_slot(state)?;
     slot.active_generation = Some(token);
     slot.pending = Some(pending);
     Ok(token)
@@ -707,6 +742,8 @@ pub(super) fn install_pending_stacked_fold_graph(
     ) {
         return Err("The stacked-fold graph transaction premises are inconsistent.".to_owned());
     }
+    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
+    speculative_unproven::clear_pending_speculative_stacked_fold_v1(state)?;
     let mut slot = lock_slot(state)?;
     slot.active_generation = Some(token);
     slot.pending = Some(pending);
@@ -787,6 +824,8 @@ pub(super) fn install_pending_current_cycle_pose_v1(
     {
         return Err("The current-cycle pose premises are inconsistent.".to_owned());
     }
+    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
+    speculative_unproven::clear_pending_speculative_stacked_fold_v1(state)?;
     let mut slot = lock_slot(state)?;
     slot.active_generation = Some(token);
     slot.pending = Some(pending);
@@ -846,6 +885,8 @@ pub(super) fn install_pending_blockwise_current_cycle_pose_v1(
     ) {
         return Err("The blockwise current-cycle premises are inconsistent.".to_owned());
     }
+    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
+    speculative_unproven::clear_pending_speculative_stacked_fold_v1(state)?;
     let mut slot = lock_slot(state)?;
     slot.active_generation = Some(token);
     slot.pending = Some(pending);
@@ -856,9 +897,22 @@ pub(super) fn cancel_pending_stacked_fold(
     state: &StackedFoldTransactionState,
     token: ProjectId,
 ) -> Result<(), String> {
+    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
+    if try_cancel_pending_certified_stacked_fold_v1(state, token)?
+        || speculative_unproven::try_cancel_pending_speculative_stacked_fold_v1(state, token)?
+    {
+        return Ok(());
+    }
+    Err("The stacked-fold transaction preview is stale.".to_owned())
+}
+
+fn try_cancel_pending_certified_stacked_fold_v1(
+    state: &StackedFoldTransactionState,
+    token: ProjectId,
+) -> Result<bool, String> {
     let mut slot = lock_slot(state)?;
     if slot.last_cancelled == Some(token) {
-        return Ok(());
+        return Ok(true);
     }
     if slot.active_generation != Some(token)
         || slot
@@ -866,12 +920,12 @@ pub(super) fn cancel_pending_stacked_fold(
             .as_ref()
             .is_some_and(|pending| pending.token() != token)
     {
-        return Err("The stacked-fold transaction preview is stale.".to_owned());
+        return Ok(false);
     }
     slot.pending = None;
     slot.active_generation = None;
     slot.last_cancelled = Some(token);
-    Ok(())
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1672,6 +1726,7 @@ fn apply_stacked_fold_transaction_with_title(
     named_title: Option<&str>,
     compiled_timeline: Option<ori_domain::InstructionTimeline>,
 ) -> Result<u64, String> {
+    let _mode_guard = lock_transaction_mode_gate_v1(transaction_state)?;
     let mut transaction_slot = lock_slot(transaction_state)?;
     let pending = transaction_slot
         .pending
@@ -1896,18 +1951,20 @@ fn apply_stacked_fold_transaction_with_title(
             )
         },
     );
-    let editor_before = project.editor.clone();
-    // Keep an independent rollback image until both target authorities have
-    // been installed. Pose reissue can succeed while layer-order reissue
-    // still fails (for example on generation exhaustion or tampered target
-    // provenance), and the document commit must remain all-or-nothing.
-    let editor_before_layer_install = editor_before.clone();
+    // Keep an exact rollback image until both target authorities have been
+    // installed. This includes history/dirty state and every saved baseline;
+    // pose authority and its pair-cache epoch use a separate one-shot guard.
+    let project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
     let persisted_current_pose = timeline
         .steps
         .last()
         .map(|step| step.pose.clone())
         .ok_or_else(|| "The certified path timeline is inconsistent.".to_owned())?;
     if let Some(CurrentLayerEvidence::NonFlat(proof)) = &applied_layer_order {
+        let expected_target_revision =
+            pending.expected_revision.checked_add(1).ok_or_else(|| {
+                "The non-flat target layer authority cannot advance its revision.".to_owned()
+            })?;
         let target_fingerprint = fold_model_fingerprint_v1(&candidate_pattern, &candidate_paper);
         let pose_angles_match = proof.hinge_angles().len()
             == persisted_current_pose.hinge_angles.len()
@@ -1920,7 +1977,7 @@ fn apply_stacked_fold_transaction_with_title(
                         && sealed.angle_degrees().to_bits() == persisted.angle_degrees.to_bits()
                 });
         if proof.identity_namespace() != project.project_id
-            || proof.target_revision() != pending.expected_revision.saturating_add(1)
+            || proof.target_revision() != expected_target_revision
             || proof.target_fingerprint() != target_fingerprint
             || proof.fixed_face() != persisted_current_pose.fixed_face
             || !pose_angles_match
@@ -1939,8 +1996,10 @@ fn apply_stacked_fold_transaction_with_title(
             applied_pose,
         )
         .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
+    project.record_numeric_expression_edit();
     drop(_pose_guard);
-    reissue_target_pose_or_rollback(&mut project, &persisted_current_pose, editor_before)?;
+    let mut pose_rollback =
+        reissue_target_pose_or_rollback(&mut project, &persisted_current_pose, &project_before)?;
     match (&applied_layer_order, layer_guard) {
         (Some(CurrentLayerEvidence::NonFlat(_)) | None, layer_guard) => {
             if let Some(layer_guard) = layer_guard {
@@ -1954,7 +2013,8 @@ fn apply_stacked_fold_transaction_with_title(
                     .is_ok()
             });
             if !layer_install_succeeded {
-                project.editor = editor_before_layer_install;
+                let _ = pose_rollback.rollback();
+                project_before.restore(&mut project);
                 return Err(
                     "The certified target layer order could not be installed atomically."
                         .to_owned(),
@@ -1967,6 +2027,7 @@ fn apply_stacked_fold_transaction_with_title(
         _ if target.is_none() => applied_layer_order.clone(),
         _ => None,
     };
+    pose_rollback.disarm();
     drop(project);
     transaction_slot.pending = None;
     transaction_slot.active_generation = None;
@@ -1981,16 +2042,67 @@ fn apply_stacked_fold_transaction_with_title(
     Ok(result.revision)
 }
 
+struct StackedFoldProjectRollbackSnapshotV1 {
+    editor: ori_core::EditorState,
+    current_layer_evidence: Option<CurrentLayerEvidence>,
+    numeric_expressions: super::ProjectNumericExpressions,
+    saved_revision: Option<u64>,
+    saved_document: Option<super::ProjectDocument>,
+    saved_speculative_unproven_state: Option<ori_core::SpeculativeUnprovenFoldStateMarkerV1>,
+}
+
+impl StackedFoldProjectRollbackSnapshotV1 {
+    fn capture(project: &super::ProjectState) -> Self {
+        Self {
+            editor: project.editor.clone(),
+            current_layer_evidence: project.current_layer_evidence.clone(),
+            numeric_expressions: project.numeric_expressions.clone(),
+            saved_revision: project.saved_revision,
+            saved_document: project.saved_document.clone(),
+            saved_speculative_unproven_state: project.saved_speculative_unproven_state.clone(),
+        }
+    }
+
+    fn restore(&self, project: &mut super::ProjectState) {
+        project.editor = self.editor.clone();
+        project.current_layer_evidence = self.current_layer_evidence.clone();
+        project.numeric_expressions = self.numeric_expressions.clone();
+        project.saved_revision = self.saved_revision;
+        project.saved_document = self.saved_document.clone();
+        project.saved_speculative_unproven_state = self.saved_speculative_unproven_state.clone();
+    }
+}
+
 fn reissue_target_pose_or_rollback(
     project: &mut super::ProjectState,
     persisted_current_pose: &InstructionPose,
-    editor_before: ori_core::EditorState,
-) -> Result<(), String> {
-    if restore_persisted_current_pose(project, persisted_current_pose).is_err() {
-        project.editor = editor_before;
-        return Err("The target pose authority could not be installed atomically.".to_owned());
+    project_before: &StackedFoldProjectRollbackSnapshotV1,
+) -> Result<CurrentAppliedPoseTransactionRollbackV1, String> {
+    reissue_target_pose_or_rollback_with_v1(
+        project,
+        persisted_current_pose,
+        project_before,
+        restore_persisted_current_pose_transactional_v1,
+    )
+}
+
+fn reissue_target_pose_or_rollback_with_v1(
+    project: &mut super::ProjectState,
+    persisted_current_pose: &InstructionPose,
+    project_before: &StackedFoldProjectRollbackSnapshotV1,
+    restore: impl FnOnce(
+        &mut super::ProjectState,
+        &InstructionPose,
+    ) -> Result<
+        CurrentAppliedPoseTransactionRollbackV1,
+        super::applied_pose::PoseAuthorityError,
+    >,
+) -> Result<CurrentAppliedPoseTransactionRollbackV1, String> {
+    if let Ok(rollback) = restore(project, persisted_current_pose) {
+        return Ok(rollback);
     }
-    Ok(())
+    project_before.restore(project);
+    Err("The target pose authority could not be installed atomically.".to_owned())
 }
 
 fn lock_slot(
@@ -2000,6 +2112,24 @@ fn lock_slot(
         .0
         .lock()
         .map_err(|_| "The stacked-fold transaction registry is unavailable.".to_owned())
+}
+
+fn lock_transaction_mode_gate_v1(
+    state: &StackedFoldTransactionState,
+) -> Result<MutexGuard<'_, ()>, String> {
+    state
+        .2
+        .lock()
+        .map_err(|_| "The stacked-fold transaction mode registry is unavailable.".to_owned())
+}
+
+fn clear_pending_certified_stacked_fold_v1(
+    state: &StackedFoldTransactionState,
+) -> Result<(), String> {
+    let mut slot = lock_slot(state)?;
+    slot.active_generation = None;
+    slot.pending = None;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2030,7 +2160,7 @@ mod tests {
     #[test]
     fn target_pose_reissue_failure_restores_the_complete_editor() {
         let mut project = super::super::initial_project_state();
-        let editor_before = project.editor.clone();
+        let project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
         let document_before = project.document();
         project.editor = ori_core::EditorState::with_paper(
             ori_domain::CreasePattern::empty(),
@@ -2043,7 +2173,7 @@ mod tests {
             hinge_angles: Vec::new(),
         };
         assert!(
-            reissue_target_pose_or_rollback(&mut project, &invalid_pose, editor_before).is_err()
+            reissue_target_pose_or_rollback(&mut project, &invalid_pose, &project_before).is_err()
         );
         assert_eq!(project.document(), document_before);
     }

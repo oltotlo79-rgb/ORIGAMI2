@@ -569,6 +569,20 @@ Schema
 
 厳密数値手順、DTO、上限、表示契約の詳細は`docs/local-flat-foldability-design.md`を正本とする。
 
+### 9.5 実行環境間の数値再現性
+
+証明権威、永続座標の生成・再検証、および再現可能な入出力は、`ori-numeric`の凍結モデル`ori_binary64_libm_0_2_16_no_arch_cardinal_v1`を使用する。モデルは`libm 0.2.16`をdefault featureなしで固定し、角度換算係数、cardinal angle分岐、signed-zeroの扱い、演算順まで契約に含める。CIとreleaseはworkspace全体のfeature treeを検査し、version差替えや`libm/arch`のfeature統合が起きた時点でbuild前に失敗する。依存version、定数、分岐、演算順またはzero正規化を変更する場合は、既存model IDの意味を変更せず新しいIDとschemaへ移行する。
+
+数値solverの反復previewは証明権威ではないためplatformの`sin`、`cos`、`atan2`、`hypot`を維持する。exact satisfaction、構成的SAT証人、direct conflictおよびsemantic MUSの再認証だけを決定論モデルへ分離し、previewの収束値、tolerance、rankを証明へ昇格しない。非有限入力・結果、未対応model、未検証targetでは肯定証拠を発行しない。
+
+`replayable_across_runtimes`は、同じ凍結modelのgolden bit corpusを継続実行するx86-64 Windows/MSVC、x86-64 Linux/GNU、AArch64 macOSでだけtrueとする。それ以外のtargetは同じkernelがcompileできてもfalseへ閉じる。WindowsとmacOSのrelease matrix、およびLinux CIは、release build前に`ori-numeric`のbit-exact回帰を必須gateとして実行する。ここでいう再現性は同じ入力を同じmodelで再認証できることを意味し、process-local opaque証人そのもののserialize・移送可能性は主張しない。
+
+同じ頂点・同じunordered edge pairに複数の`FixedAngle`がある場合、保存degreeのbit差だけを矛盾証拠にしない。各degreeを凍結換算し、`actual - expected`、`+ π`、`rem_euclid(2π)`、`- π`のbinary64演算順について、残差がexact zeroとなり得るactual angleをπの隣接値間隔から外向きに包囲する。二つの包囲区間が厳密に分離する場合だけ`DifferentFixedAngles`を肯定し、最小subnormalの換算collapse、signed zero、隣接degree、包囲区間の接触・重複は`Unknown`へ閉じる。肯定した2制約coreは各1件削除後に別々の構成的SAT証人を再認証できた場合だけsemantic MUSへ昇格する。
+
+極座標作図の新規永続bindingはschema v2とmodel IDを保存し、始点、式の採用値および決定論的終点の全bitを読込時に再検証する。旧schema v1は作成runtimeの三角関数を再実行せず、archiveで認証済みの保存座標、始点ID、式の採用値を正本として互換読込する。schema v2を含む`.ori2`は専用required featureを宣言し、未対応readerが黙って解釈しないようにする。WebViewの角度・円交点候補を実座標へ保存する操作は、候補provenanceとproject/revisionをnativeへ渡し、current geometryから同じ決定論モデルで再構成できた場合だけ原子的に適用する。
+
+SVGのrotate/skew、FOLD角度、折りschedule、collision certificateのbinding fingerprintなど、保存・共有・再認証へ流れる出力も同じmodelまたは明示的にversion化した派生modelへ束縛する。画面上の距離、候補順位、pointer hit testなど表示専用の計算はplatform演算を使用できるが、その値だけでproject mutationや肯定証拠を認可しない。
+
 ## 10. UI設計
 
 ### 10.1 ワークスペース
@@ -749,6 +763,7 @@ project instance・ID・revision・形式を固定
 - 計測対象は、利用者向け安全停止へ移るグローバル例外と上位の起動・解析・3D runtime境界に限定する。キャンセル、stale結果の破棄、入力/編集拒否、ファイル権限・破損、作業上限、`indeterminate`、独立資源のbest-effort cleanupを予期しない障害として一括記録しない。
 - frontend runtimeはメモリ内集計を先に完了し、Tauri環境でだけ`record_unexpected_diagnostic({ scope })`をfire-and-forgetで呼ぶ。任意文字列、error、context、作品snapshot、保存先pathはIPCへ渡さない。frontendとnativeの両方でscope別65回/sessionへ制限し、同期例外・非同期拒否・永続化失敗を診断機能自身へ再帰させない。
 - Rustはfrontendと完全に同じ`origami2.redacted-diagnostics.v1`の`{schema, unexpected}`だけをstrict enum・unknown field拒否・固定15件・固定順で再検証し、Tauriのアプリ専用log領域にある`redacted-diagnostics-v1.json`だけへ保存する。別形状を同じschema名で扱わず、アプリ版やOS等のnative metadataも加えない。
+- 自動保存する`redacted-diagnostics-v1.json`のschema v1は`{schema, unexpected}`のまま変更しない。利用者が手動で確認・保存するpreviewだけを独立schema `origami2.redacted-diagnostics.v2`とし、`unexpected`に加えて`speculativeUnprovenFolds.applied`と`speculativeUnprovenFolds.unappliedRedo`の各々へ、固定6状態（`awaitingProof`、`proofBlocked`、`unknownEvidenceInsufficient`、`unknownResourceLimit`、`unknownCancelled`、`unknownDeadlineReached`）の粗い件数だけを含める。ID、geometry、path、binding、fingerprintその他のraw情報は含めず、preview表示と手動保存は同一generationでcacheした正確に同じbytesを使用する。
 - 保存は8 KiBを上限にbucketが変わる時だけ行う。同じdirectoryのcreate-new一時ファイルへ書込み、同期、同一handle再読込、bytes一致確認後に原子的置換し、POSIXでは親directoryも同期する。Unix系の新規file modeは`0600`を上限とし、既存owner modeがより厳しい場合はそれを保持する。24時間を超えた診断用一時ファイルだけを起動時に最大512件走査・32件削除し、通常ファイル以外と無関係な名前には触れない。
 - 読込時は8 KiB超過、JSON破損、unknown/欠落field、scope順序・重複・件数不一致を空の内部状態へfail closedし、元ファイルは次の正当な記録まで変更しない。永続化に一度失敗したsessionは以後のdisk I/Oを停止する。commandは真のasync functionで非同期gateを取得してから明示的にblocking poolへ移し、blocking jobを常時1本に制限する。WebViewのasync worker上ではmutex待ちや`sync_all`を実行しない。
 - 共有用previewはnative側で永続化gate内の集計snapshotからcanonical JSONを一度だけ生成し、単調増加する`preview_generation`、UTF-8 byte長、JSON文字列を返す。nativeは最新1世代の正確なbytesをprivate cacheへ保持し、frontendはschema、固定field、15 scopeの順序、bucket、byte長、8 KiB上限、canonical再serialize一致をIPC入口で検証する。

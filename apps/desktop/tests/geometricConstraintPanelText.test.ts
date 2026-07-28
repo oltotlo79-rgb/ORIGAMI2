@@ -25,6 +25,8 @@ const SIMPLE_KEYS = [
   'degreesOfFreedom',
   'condition',
   'exactSatisfaction',
+  'deterministicReplayableScope',
+  'currentRuntimeFallbackScope',
   'detailSeparator',
   'movePreview',
   'apply',
@@ -192,7 +194,7 @@ test('geometric constraint panel catalog is exact, closed, and deeply frozen', (
   }
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    '83d5ebbca54be8d3767ab160f72c44ff6e83b17f54243f7a8fbdf7c6903ed63f',
+    '2756bdf1eb280a63c86088f9b7ef2eca20c61ccff782aa9e2e6ad24cdb04ea6b',
   )
   assert.equal(Object.hasOwn(TEXT, 'ja'), false)
   assert.equal(TEXT.title.ja, '幾何制約')
@@ -216,12 +218,12 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
     directConflictCount: { ja: ['count'], en: ['count'] },
     unknownStatus: { ja: ['reason'], en: ['reason'] },
     provenSatisfiable: {
-      ja: ['constraintCount', 'equationCount'],
-      en: ['constraintCount', 'equationCount'],
+      ja: ['constraintCount', 'equationCount', 'scope'],
+      en: ['constraintCount', 'equationCount', 'scope'],
     },
     exactSatisfaction: {
-      ja: ['constraintCount', 'equationCount'],
-      en: ['constraintCount', 'equationCount'],
+      ja: ['constraintCount', 'equationCount', 'scope'],
+      en: ['constraintCount', 'equationCount', 'scope'],
     },
     causingConstraints: { ja: ['ids'], en: ['ids'] },
     additionalDirectConflicts: { ja: ['count'], en: ['count'] },
@@ -242,6 +244,8 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
         'pairConstructive',
         'pairAlgebraic',
         'lengthConstructive',
+        'zeroClosure',
+        'scope',
         'ids',
       ],
       en: [
@@ -255,6 +259,8 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
         'pairConstructive',
         'pairAlgebraic',
         'lengthConstructive',
+        'zeroClosure',
+        'scope',
         'ids',
       ],
     },

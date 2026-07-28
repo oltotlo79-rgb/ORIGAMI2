@@ -284,7 +284,7 @@ pub(super) fn mirror_edge_left_right(
         expected_revision,
         id,
         |point| mirror_point_left_right(point, axis_x_mm),
-        |point| {
+        |point, _adopted| {
             (
                 format!("2*({axis_x_expression})-({})", point.x),
                 point.y.to_string(),
@@ -811,10 +811,8 @@ pub(super) fn rotate_edge_about_point(
     {
         return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
     }
-    let (sin, cos) = symmetry_sin_cos(angle_degrees);
-    if !sin.is_finite() || !cos.is_finite() {
-        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
-    }
+    let (sin, cos) = symmetry_sin_cos(angle_degrees)
+        .ok_or_else(|| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
     transform_edge_points(
         state,
         expected_project_instance_id,
@@ -822,17 +820,12 @@ pub(super) fn rotate_edge_about_point(
         expected_revision,
         id,
         |point| rotate_point_about(point, Point2::new(center_x_mm, center_y_mm), sin, cos),
-        |point| {
-            (
-                format!(
-                    "({center_x_expression})+(({})-({center_x_expression}))*cos(({angle_degrees_expression})*pi/180)-(({})-({center_y_expression}))*sin(({angle_degrees_expression})*pi/180)",
-                    point.x, point.y
-                ),
-                format!(
-                    "({center_y_expression})+(({})-({center_x_expression}))*sin(({angle_degrees_expression})*pi/180)+(({})-({center_y_expression}))*cos(({angle_degrees_expression})*pi/180)",
-                    point.x, point.y
-                ),
-            )
+        |_point, adopted| {
+            // The certified scalar-expression grammar intentionally excludes
+            // transcendental functions. Persist the native deterministic
+            // endpoint as round-trippable literals instead of writing
+            // unevaluable `sin`/`cos` expressions into the project.
+            (adopted.x.to_string(), adopted.y.to_string())
         },
     )
 }
@@ -847,14 +840,8 @@ pub(super) fn rotate_point_about(point: Point2, center: Point2, sin: f64, cos: f
     Point2::new(center.x + x * cos - y * sin, center.y + x * sin + y * cos)
 }
 
-pub(super) fn symmetry_sin_cos(angle_degrees: f64) -> (f64, f64) {
-    match angle_degrees.rem_euclid(360.0) {
-        0.0 => (0.0, 1.0),
-        90.0 => (1.0, 0.0),
-        180.0 => (0.0, -1.0),
-        270.0 => (-1.0, 0.0),
-        angle => angle.to_radians().sin_cos(),
-    }
+pub(super) fn symmetry_sin_cos(angle_degrees: f64) -> Option<(f64, f64)> {
+    ori_numeric::deterministic_sin_cos_degrees_v1(angle_degrees).ok()
 }
 
 fn transform_edge_points(
@@ -864,7 +851,7 @@ fn transform_edge_points(
     expected_revision: u64,
     id: EdgeId,
     transform: impl Fn(Point2) -> Point2,
-    expression: impl Fn(Point2) -> (String, String),
+    expression: impl Fn(Point2, Point2) -> (String, String),
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     let edge = project
@@ -913,7 +900,7 @@ fn transform_edge_points(
         (edge.start, start, start_position),
         (edge.end, end, end_position),
     ] {
-        let (x_source, y_source) = expression(previous);
+        let (x_source, y_source) = expression(previous, adopted);
         project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
             vertex, x_source, y_source, adopted.x, adopted.y,
         ));

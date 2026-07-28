@@ -100,11 +100,12 @@ pub use interval::{
     atan_interval_v1, sin_cos_degrees_interval_v1,
 };
 pub use schedule::{
-    CanonicalCycleScheduleV1, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
-    CycleSchedulePrepareErrorV1, GeneratedMultiHingePathCandidateV1, HalfAngleDomainV1,
-    HalfAngleRationalEntryInputV1, MultiHingePathCandidateErrorV1, MultiHingePathCandidateLimitsV1,
-    PoleFreeBernsteinCertificateV1, PreparedHalfAngleRationalEntryV1, RationalCoefficientV1,
-    admit_canonical_multi_hinge_path_candidate_v1,
+    CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2, CanonicalCycleScheduleV1, CycleScheduleEntryInputV1,
+    CycleScheduleLimitsV1, CycleSchedulePrepareErrorV1, GeneratedMultiHingePathCandidateV1,
+    HalfAngleDomainV1, HalfAngleRationalEntryInputV1, MultiHingePathCandidateErrorV1,
+    MultiHingePathCandidateLimitsV1, PoleFreeBernsteinCertificateV1,
+    PreparedHalfAngleRationalEntryV1, RationalCoefficientV1,
+    admit_canonical_multi_hinge_path_candidate_v1, deterministic_half_angle_ratio_degrees_v1,
     evaluate_half_angle_rational_degrees_interval_v1,
     evaluate_half_angle_rational_derivative_interval_v1, evaluate_pole_free_atan2_interval_v1,
     evaluate_pole_free_rational_dyadic_v1, evaluate_pole_free_rational_interval_v1,

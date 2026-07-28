@@ -1,7 +1,5 @@
 use crate::KinematicsError;
 
-const DEGREES_TO_RADIANS: f64 = 0.017_453_292_519_943_295;
-
 /// One finite point or free vector in a caller-selected Cartesian frame.
 ///
 /// The fields are private so non-finite coordinates cannot inhabit this type.
@@ -193,24 +191,14 @@ impl RigidTransform {
 
 /// Deterministic sine and cosine for the signed angle range used internally.
 ///
-/// Cardinal results are represented exactly; other angles use the pinned
-/// `libm` implementation used by portable instruction export.
+/// Cardinal results are represented exactly; other angles use the frozen
+/// cross-runtime binary64 kernel shared with proof and persistence contracts.
 pub fn deterministic_sin_cos_degrees(angle_degrees: f64) -> Result<(f64, f64), KinematicsError> {
     if !angle_degrees.is_finite() || !(-180.0..=180.0).contains(&angle_degrees) {
         return Err(KinematicsError::UnrepresentableGeometry);
     }
-    let (sine, cosine) = match canonical_zero(angle_degrees) {
-        0.0 => (0.0, 1.0),
-        90.0 => (1.0, 0.0),
-        -90.0 => (-1.0, 0.0),
-        180.0 | -180.0 => (0.0, -1.0),
-        angle => libm::sincos(angle * DEGREES_TO_RADIANS),
-    };
-    if sine.is_finite() && cosine.is_finite() {
-        Ok((canonical_zero(sine), canonical_zero(cosine)))
-    } else {
-        Err(KinematicsError::UnrepresentableGeometry)
-    }
+    ori_numeric::deterministic_sin_cos_degrees_v1(angle_degrees)
+        .map_err(|_| KinematicsError::UnrepresentableGeometry)
 }
 
 pub(crate) const fn canonical_zero(value: f64) -> f64 {

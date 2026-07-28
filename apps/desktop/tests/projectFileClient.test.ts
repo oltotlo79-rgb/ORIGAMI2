@@ -6,6 +6,13 @@ import {
   createProjectFileClient,
   normalizeProjectFileResponse,
 } from '../src/lib/projectFileClient.ts'
+import {
+  BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+  BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+} from '../src/lib/boundaryLengthAuthority.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
 const INSTANCE_ID = '10000000-0000-4000-8000-000000000001'
 const PROJECT_ID = '20000000-0000-4000-8000-000000000002'
 
@@ -58,8 +65,35 @@ function validProjectSnapshot() {
     element_metadata: { vertices: [], edges: [], faces: [] },
     annotations: { schema_version: 1, annotations: [] },
     underlays: { schema_version: 1, underlays: [] },
-    fold_model_fingerprint: 'a'.repeat(64), can_undo: false, can_redo: false,
+    fold_model_fingerprint: 'a'.repeat(64),
+    reference_model_assets: [],
+    boundary_length_authority_v1: {
+      schema_version: BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+      model_id: BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+      project_instance_id: INSTANCE_ID,
+      project_id: PROJECT_ID,
+      revision: 4,
+      status: 'unavailable',
+      entries: [],
+    },
+    speculativeUnprovenFolds: {
+      applied: emptyUnprovenCounts(),
+      unappliedRedo: emptyUnprovenCounts(),
+    },
+    can_undo: false, can_redo: false,
     cutting_allowed: false,
+  }
+}
+
+function emptyUnprovenCounts() {
+  return {
+    awaitingProof: 0,
+    proofBlocked: 0,
+    unknownEvidenceInsufficient: 0,
+    unknownResourceLimit: 0,
+    unknownCancelled: 0,
+    unknownDeadlineReached: 0,
   }
 }
 

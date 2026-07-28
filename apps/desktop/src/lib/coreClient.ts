@@ -67,6 +67,10 @@ import {
 import {
   DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
 } from './deterministicTranscendentalModel.ts'
+import {
+  normalizeBoundaryLengthAuthorityV1,
+  type BoundaryLengthAuthorityV1,
+} from './boundaryLengthAuthority.ts'
 import type {
   UnprovenHistoryStatusCountsView,
 } from './proofProgressModel.ts'
@@ -221,6 +225,7 @@ export type ProjectSnapshot = {
     vertex_redo_stack?: Array<VertexCoordinateExpressionTransition | null>
   }
   fold_model_fingerprint: string
+  boundary_length_authority_v1?: unknown
   reference_model_assets?: Array<{ asset_id: string; sha256: number[] }>
   speculativeUnprovenFolds?: unknown
 }
@@ -6129,6 +6134,7 @@ const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
   'annotations',
   'underlays',
   'fold_model_fingerprint',
+  'boundary_length_authority_v1',
   'can_undo',
   'can_redo',
   'cutting_allowed',
@@ -6201,7 +6207,17 @@ function normalizeProjectLayerMutationBaseSnapshot(
     record.project_layers,
     creasePattern.edges as readonly Readonly<{ id: string }>[],
   )
-  if (!projectLayers) return null
+  const boundaryLengthAuthority = normalizeBoundaryLengthAuthorityV1(
+    record.boundary_length_authority_v1,
+    {
+      project_instance_id: record.project_instance_id,
+      project_id: record.project_id,
+      revision: record.revision,
+      paper: record.paper,
+      crease_pattern: creasePattern,
+    },
+  )
+  if (!projectLayers || !boundaryLengthAuthority) return null
 
   return Object.freeze({
     project_instance_id: record.project_instance_id,
@@ -6228,6 +6244,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     annotations: record.annotations as ProjectSnapshot['annotations'],
     underlays: record.underlays as ProjectSnapshot['underlays'],
     fold_model_fingerprint: record.fold_model_fingerprint,
+    boundary_length_authority_v1: boundaryLengthAuthority,
     reference_model_assets: referenceModelAssets.map((asset) => ({
       asset_id: String(asset!.asset_id),
       sha256: [...(asset!.sha256 as number[])],
@@ -6343,7 +6360,27 @@ export function normalizeProjectLayerMutationSnapshot(
     record.project_layers,
     base.crease_pattern.edges,
   )
-  if (!projectLayers) return null
+  const boundaryLengthAuthority = normalizeBoundaryLengthAuthorityV1(
+    record.boundary_length_authority_v1,
+    {
+      project_instance_id: record.project_instance_id,
+      project_id: record.project_id,
+      revision: record.revision,
+      paper: base.paper,
+      crease_pattern: base.crease_pattern,
+    },
+  )
+  const baseBoundaryLengthAuthority = (
+    base.boundary_length_authority_v1 as BoundaryLengthAuthorityV1
+  )
+  if (
+    !projectLayers
+    || !boundaryLengthAuthority
+    || !sameBoundaryLengthAuthorityEntries(
+      boundaryLengthAuthority,
+      baseBoundaryLengthAuthority,
+    )
+  ) return null
 
   return Object.freeze({
     project_instance_id: base.project_instance_id,
@@ -6365,11 +6402,37 @@ export function normalizeProjectLayerMutationSnapshot(
     annotations: base.annotations,
     underlays: base.underlays,
     fold_model_fingerprint: base.fold_model_fingerprint,
+    boundary_length_authority_v1: boundaryLengthAuthority,
     reference_model_assets: base.reference_model_assets,
     can_undo: record.can_undo,
     can_redo: record.can_redo,
     cutting_allowed: base.cutting_allowed,
     speculativeUnprovenFolds: baseUnprovenSummary,
+  })
+}
+
+function sameBoundaryLengthAuthorityEntries(
+  left: BoundaryLengthAuthorityV1,
+  right: BoundaryLengthAuthorityV1,
+): boolean {
+  if (
+    left.status !== right.status
+    || left.entries.length !== right.entries.length
+  ) return false
+  return left.entries.every((entry, index) => {
+    const other = right.entries[index]
+    return Boolean(
+      other
+      && entry.boundary_index === other.boundary_index
+      && entry.edge_id === other.edge_id
+      && entry.start_vertex_id === other.start_vertex_id
+      && entry.end_vertex_id === other.end_vertex_id
+      && Object.is(entry.length_mm, other.length_mm)
+      && entry.length_bits_be.length === other.length_bits_be.length
+      && entry.length_bits_be.every(
+        (byte, byteIndex) => byte === other.length_bits_be[byteIndex],
+      )
+    )
   })
 }
 

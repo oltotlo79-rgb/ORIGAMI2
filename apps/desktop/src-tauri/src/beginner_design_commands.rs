@@ -2112,19 +2112,25 @@ pub(super) fn normalized_contour_error_millionths(
             ]
         })
         .collect::<Vec<_>>();
-    let point_segment_distance = |point: [f64; 2], start: [f64; 2], end: [f64; 2]| {
+    let point_segment_distance = |point: [f64; 2], start: [f64; 2], end: [f64; 2]| -> Option<f64> {
         let delta = [end[0] - start[0], end[1] - start[1]];
         let length_squared = delta[0] * delta[0] + delta[1] * delta[1];
+        if !length_squared.is_finite() {
+            return None;
+        }
         if length_squared <= f64::EPSILON {
-            return f64::INFINITY;
+            return Some(f64::INFINITY);
         }
         let projection = (((point[0] - start[0]) * delta[0] + (point[1] - start[1]) * delta[1])
             / length_squared)
             .clamp(0.0, 1.0);
-        (point[0] - start[0] - projection * delta[0])
-            .hypot(point[1] - start[1] - projection * delta[1])
+        ori_numeric::deterministic_hypot_v1(
+            point[0] - start[0] - projection * delta[0],
+            point[1] - start[1] - projection * delta[1],
+        )
+        .ok()
     };
-    let directed = |source: &[[f64; 2]], destination: &[[f64; 2]]| {
+    let directed = |source: &[[f64; 2]], destination: &[[f64; 2]]| -> Option<f64> {
         source
             .iter()
             .enumerate()
@@ -2138,22 +2144,22 @@ pub(super) fn normalized_contour_error_millionths(
                     ]
                 })
             })
-            .map(|point| {
-                destination
-                    .iter()
-                    .enumerate()
-                    .map(|(index, start)| {
-                        point_segment_distance(
+            .try_fold(0.0_f64, |maximum, point| {
+                let minimum = destination.iter().enumerate().try_fold(
+                    f64::INFINITY,
+                    |minimum, (index, start)| {
+                        let distance = point_segment_distance(
                             point,
                             *start,
                             destination[(index + 1) % destination.len()],
-                        )
-                    })
-                    .fold(f64::INFINITY, f64::min)
+                        )?;
+                        Some(minimum.min(distance))
+                    },
+                )?;
+                Some(maximum.max(minimum))
             })
-            .fold(0.0_f64, f64::max)
     };
-    let maximum = directed(&target, &generated).max(directed(&generated, &target));
+    let maximum = directed(&target, &generated)?.max(directed(&generated, &target)?);
     u32::try_from((maximum * 1_000_000.0).round() as u64).ok()
 }
 
@@ -2573,7 +2579,9 @@ pub(super) fn validate_beginner_manufacturability_v1(
         else {
             return Err("manufacturability_missing_vertex");
         };
-        if (start.x - end.x).hypot(start.y - end.y) < MIN_CREASE_SPACING_MM {
+        let edge_length = ori_numeric::deterministic_hypot_v1(start.x - end.x, start.y - end.y)
+            .map_err(|_| "manufacturability_non_finite_geometry")?;
+        if edge_length < MIN_CREASE_SPACING_MM {
             return Err("manufacturability_minimum_crease_spacing");
         }
     }

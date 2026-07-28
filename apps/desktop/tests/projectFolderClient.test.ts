@@ -9,6 +9,13 @@ import {
   projectFolderClientErrorMessage,
 } from '../src/lib/projectFolderClient.ts'
 import type { Locale } from '../src/lib/i18n.ts'
+import {
+  BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+  BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+} from '../src/lib/boundaryLengthAuthority.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
 
 const INSTANCE_ID = '11111111-1111-4111-8111-111111111111'
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222'
@@ -259,9 +266,40 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
     annotations: { schema_version: 1, annotations: [] },
     underlays: { schema_version: 1, underlays: [] },
     fold_model_fingerprint: 'a'.repeat(64),
+    reference_model_assets: [],
+    boundary_length_authority_v1: unavailableBoundaryLengthAuthority(),
+    speculativeUnprovenFolds: emptyUnprovenHistorySummary(),
     can_undo: false,
     can_redo: false,
     cutting_allowed: false,
     ...overrides,
+  }
+}
+
+function unavailableBoundaryLengthAuthority() {
+  return {
+    schema_version: BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+    model_id: BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    project_instance_id: INSTANCE_ID,
+    project_id: PROJECT_ID,
+    revision: 4,
+    status: 'unavailable',
+    entries: [],
+  }
+}
+
+function emptyUnprovenHistorySummary() {
+  const counts = () => ({
+    awaitingProof: 0,
+    proofBlocked: 0,
+    unknownEvidenceInsufficient: 0,
+    unknownResourceLimit: 0,
+    unknownCancelled: 0,
+    unknownDeadlineReached: 0,
+  })
+  return {
+    applied: counts(),
+    unappliedRedo: counts(),
   }
 }

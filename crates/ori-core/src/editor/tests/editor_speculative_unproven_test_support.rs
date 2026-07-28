@@ -77,20 +77,67 @@ pub(super) fn binding(
     .expect("valid speculative binding")
 }
 
+pub(super) fn token_for_target(
+    fixture: &SpeculativeFixture,
+    target_revision: Revision,
+    target_pattern: &CreasePattern,
+    target_paper: &Paper,
+    target_pose: &AppliedPoseV1,
+) -> crate::SpeculativeUnprovenFoldTokenV1 {
+    token_for_binding_target(
+        binding(
+            fixture,
+            SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+        ),
+        target_revision,
+        target_pattern,
+        target_paper,
+        target_pose,
+    )
+}
+
+pub(super) fn token_for_binding_target(
+    binding: SpeculativeUnprovenFoldBindingV1,
+    target_revision: Revision,
+    target_pattern: &CreasePattern,
+    target_paper: &Paper,
+    target_pose: &AppliedPoseV1,
+) -> crate::SpeculativeUnprovenFoldTokenV1 {
+    crate::stacked_fold::issue_speculative_unproven_fold_token_for_test_v1(
+        binding,
+        target_revision,
+        target_pattern,
+        target_paper,
+        target_pose,
+    )
+    .expect("valid target-bound speculative token")
+}
+
 pub(super) fn apply_marked(
     fixture: &mut SpeculativeFixture,
     binding: SpeculativeUnprovenFoldBindingV1,
 ) {
+    let expected_revision = fixture.editor.revision();
+    let target_revision = expected_revision
+        .checked_add(1)
+        .expect("speculative test target revision");
+    let token = token_for_binding_target(
+        binding,
+        target_revision,
+        &fixture.target_pattern,
+        &fixture.paper,
+        &fixture.applied_pose,
+    );
     fixture
         .editor
         .execute_stacked_fold_document_with_unproven_mark_v1(
-            fixture.editor.revision(),
+            expected_revision,
             fixture.target_pattern.clone(),
             fixture.paper.clone(),
             fixture.timeline.clone(),
             ProjectLayerDocumentV1::default(),
             fixture.applied_pose.clone(),
-            binding,
+            token,
         )
         .expect("atomic speculative Apply");
 }

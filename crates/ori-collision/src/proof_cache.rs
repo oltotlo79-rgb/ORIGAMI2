@@ -45,7 +45,7 @@ pub use key::{ProofCacheCertificateModelV1, ProofCacheKeyInputV1, ProofCacheKeyV
 pub use runtime::{
     PersistentPairProofCacheRuntimeV1, ProofCacheEditEpochTicketV1,
     ProofCacheEditInvalidationOutcomeV1, ProofCacheProgressV1, ProofCacheRuntimeBindingV1,
-    ProofCacheRuntimeCaptureV1, ProofCacheRuntimeErrorV1,
+    ProofCacheRuntimeCaptureV1, ProofCacheRuntimeErrorV1, ProofCacheRuntimeRollbackSnapshotV1,
 };
 pub use work::{
     ProofCacheErrorV1, ProofCacheLimitsV1, ProofCacheOperationControlV1,
@@ -84,6 +84,14 @@ impl PersistentPairProofCacheV1 {
             entries: BTreeMap::new(),
             logical_storage_bytes: 0,
         })
+    }
+
+    pub(super) fn clone_for_runtime_rollback_v1(&self) -> Self {
+        Self {
+            limits: self.limits,
+            entries: self.entries.clone(),
+            logical_storage_bytes: self.logical_storage_bytes,
+        }
     }
 
     #[must_use]

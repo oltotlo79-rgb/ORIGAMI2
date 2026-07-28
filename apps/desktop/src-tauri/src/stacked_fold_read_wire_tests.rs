@@ -152,6 +152,165 @@ fn transaction_proposal_failure_classes_are_explicit_and_fail_closed() {
     assert_eq!(ready, serde_json::json!([]));
 }
 
+fn transaction_proposal_fixture_v1() -> StackedFoldTransactionProposalDto {
+    StackedFoldTransactionProposalDto {
+        apply_contract_version: STACKED_FOLD_APPLY_CONTRACT_VERSION_V1,
+        apply_mode: StackedFoldApplyModeDtoV1::None,
+        transaction_token: None,
+        speculative_unproven_available: false,
+        source_project_id: ProjectId::new(),
+        source_revision: 3,
+        target_revision: 4,
+        source_fingerprint_sha256: "11".repeat(32),
+        target_fingerprint_sha256: "22".repeat(32),
+        added_vertex_count: 1,
+        added_edge_count: 2,
+        mountain_crease_count: 1,
+        valley_crease_count: 1,
+        timeline_step_count: 1,
+        timeline_complete_hinge_angle_count: 2,
+        requested_angle_degrees: 90.0,
+        ready_for_atomic_apply: false,
+        failure_classes: vec![StackedFoldTransactionFailureClassDto::ContinuousPathUncertified],
+        authorizes_project_mutation: false,
+    }
+}
+
+#[test]
+fn transaction_apply_modes_serialize_exactly_and_preserve_authority_separation() {
+    let token = ProjectId::new();
+    let mut proposal = transaction_proposal_fixture_v1();
+    assert!(proposal.has_valid_apply_contract_v1(false, true));
+    let none = serde_json::to_value(&proposal).unwrap();
+    assert_eq!(none["applyContractVersion"], serde_json::json!(1));
+    assert_eq!(none["applyMode"], serde_json::json!("none"));
+    assert_eq!(none["transactionToken"], serde_json::Value::Null);
+    assert_eq!(
+        none["speculativeUnprovenAvailable"],
+        serde_json::json!(false)
+    );
+
+    proposal.publish_speculative_unproven_v1(token);
+    assert!(proposal.has_valid_apply_contract_v1(false, true));
+    let speculative = serde_json::to_value(&proposal).unwrap();
+    assert_eq!(
+        speculative["applyMode"],
+        serde_json::json!("speculative_unproven")
+    );
+    assert_eq!(speculative["transactionToken"], serde_json::json!(token));
+    assert_eq!(
+        speculative["speculativeUnprovenAvailable"],
+        serde_json::json!(true)
+    );
+    assert_eq!(speculative["readyForAtomicApply"], serde_json::json!(false));
+    assert_eq!(
+        speculative["authorizesProjectMutation"],
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        speculative["failureClasses"],
+        serde_json::json!(["continuous_path_uncertified"])
+    );
+
+    proposal.publish_certified_v1(token);
+    assert!(proposal.has_valid_apply_contract_v1(true, true));
+    let certified = serde_json::to_value(&proposal).unwrap();
+    assert_eq!(certified["applyMode"], serde_json::json!("certified"));
+    assert_eq!(
+        certified["speculativeUnprovenAvailable"],
+        serde_json::json!(false)
+    );
+    assert_eq!(certified["readyForAtomicApply"], serde_json::json!(true));
+    assert_eq!(
+        certified["authorizesProjectMutation"],
+        serde_json::json!(true)
+    );
+}
+
+#[test]
+fn transaction_apply_contract_rejects_every_cross_mode_authority_mix() {
+    let mut proposal = transaction_proposal_fixture_v1();
+    proposal.transaction_token = Some(ProjectId::new());
+    assert!(!proposal.has_valid_apply_contract_v1(false, true));
+
+    proposal.apply_mode = StackedFoldApplyModeDtoV1::SpeculativeUnproven;
+    proposal.speculative_unproven_available = true;
+    assert!(proposal.has_valid_apply_contract_v1(false, true));
+    proposal.ready_for_atomic_apply = true;
+    assert!(!proposal.has_valid_apply_contract_v1(false, true));
+    proposal.ready_for_atomic_apply = false;
+    proposal.authorizes_project_mutation = true;
+    assert!(!proposal.has_valid_apply_contract_v1(false, true));
+
+    proposal.apply_mode = StackedFoldApplyModeDtoV1::Certified;
+    proposal.speculative_unproven_available = false;
+    proposal.ready_for_atomic_apply = true;
+    assert!(!proposal.has_valid_apply_contract_v1(false, true));
+    proposal.failure_classes.clear();
+    assert!(proposal.has_valid_apply_contract_v1(true, true));
+    proposal.speculative_unproven_available = true;
+    assert!(!proposal.has_valid_apply_contract_v1(true, true));
+
+    proposal.publish_certified_v1(ProjectId::new());
+    proposal.failure_classes =
+        vec![StackedFoldTransactionFailureClassDto::ContinuousPathUncertified];
+    assert!(!proposal.has_valid_apply_contract_v1(true, true));
+    proposal.publish_speculative_unproven_v1(ProjectId::new());
+    proposal.failure_classes.clear();
+    assert!(!proposal.has_valid_apply_contract_v1(false, true));
+
+    let mut none = transaction_proposal_fixture_v1();
+    none.failure_classes = vec![
+        StackedFoldTransactionFailureClassDto::TargetLayerOrderUnavailable,
+        StackedFoldTransactionFailureClassDto::ContinuousPathUncertified,
+    ];
+    assert!(!none.has_valid_apply_contract_v1(false, false));
+}
+
+#[test]
+fn transaction_failure_classes_must_exactly_match_computed_evidence() {
+    for (continuous, layer, expected) in [
+        (true, true, Vec::new()),
+        (
+            false,
+            true,
+            vec![StackedFoldTransactionFailureClassDto::ContinuousPathUncertified],
+        ),
+        (
+            true,
+            false,
+            vec![StackedFoldTransactionFailureClassDto::TargetLayerOrderUnavailable],
+        ),
+        (
+            false,
+            false,
+            vec![
+                StackedFoldTransactionFailureClassDto::ContinuousPathUncertified,
+                StackedFoldTransactionFailureClassDto::TargetLayerOrderUnavailable,
+            ],
+        ),
+    ] {
+        let mut proposal = transaction_proposal_fixture_v1();
+        proposal.failure_classes = expected;
+        assert!(proposal.has_valid_apply_contract_v1(continuous, layer));
+
+        proposal.failure_classes.reverse();
+        if proposal.failure_classes.len() > 1 {
+            assert!(!proposal.has_valid_apply_contract_v1(continuous, layer));
+        }
+        proposal.failure_classes = transaction_failure_classes(continuous, layer);
+        proposal
+            .failure_classes
+            .push(StackedFoldTransactionFailureClassDto::ContinuousPathUncertified);
+        assert!(!proposal.has_valid_apply_contract_v1(continuous, layer));
+    }
+
+    let proposal = transaction_proposal_fixture_v1();
+    assert!(!proposal.has_valid_apply_contract_v1(true, true));
+    assert!(!proposal.has_valid_apply_contract_v1(true, false));
+    assert!(!proposal.has_valid_apply_contract_v1(false, false));
+}
+
 #[test]
 fn explicit_half_angle_schedule_uses_graph_proof_boundary_for_tree_topology() {
     assert!(requires_graph_schedule_boundary_v1(false, true));

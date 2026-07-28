@@ -29,6 +29,8 @@ use svgtypes::{
 use thiserror::Error;
 
 const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
+const SVG_IMPORT_GEOMETRY_MODEL_ID_V2: &str =
+    "ori_svg_import_geometry_v2__ori_binary64_libm_0_2_16_no_arch_cardinal_v1";
 const MAX_STYLE_TEXT_BYTES: usize = 256 * 1024;
 const MAX_DASH_ITEMS: usize = 32;
 const MAX_CLASS_TOKENS: usize = 32;
@@ -239,6 +241,16 @@ pub struct SvgPreview {
 }
 
 impl SvgPreview {
+    /// Frozen numeric domain used to turn SVG transforms into import geometry.
+    ///
+    /// A caller that caches or fingerprints a parsed preview must include this
+    /// identifier. Changing the deterministic transcendental model or affine
+    /// operation order requires a new SVG import geometry model identifier.
+    #[must_use]
+    pub const fn geometry_model_id(&self) -> &'static str {
+        SVG_IMPORT_GEOMETRY_MODEL_ID_V2
+    }
+
     #[must_use]
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
@@ -2600,9 +2612,8 @@ fn parse_transform(value: &str, parser: &mut SvgParser) -> Result<Affine, SvgImp
                 ..Affine::IDENTITY
             },
             TransformListToken::Rotate { angle } => {
-                let radians = angle.to_radians();
-                let cosine = radians.cos();
-                let sine = radians.sin();
+                let (sine, cosine) = ori_numeric::deterministic_sin_cos_degrees_v1(angle)
+                    .map_err(|_| SvgImportError::InvalidTransform)?;
                 Affine {
                     a: cosine,
                     b: sine,
@@ -2612,14 +2623,20 @@ fn parse_transform(value: &str, parser: &mut SvgParser) -> Result<Affine, SvgImp
                     f: 0.0,
                 }
             }
-            TransformListToken::SkewX { angle } => Affine {
-                c: angle.to_radians().tan(),
-                ..Affine::IDENTITY
-            },
-            TransformListToken::SkewY { angle } => Affine {
-                b: angle.to_radians().tan(),
-                ..Affine::IDENTITY
-            },
+            TransformListToken::SkewX { angle } => {
+                let tangent = deterministic_svg_tangent_degrees_v2(angle)?;
+                Affine {
+                    c: tangent,
+                    ..Affine::IDENTITY
+                }
+            }
+            TransformListToken::SkewY { angle } => {
+                let tangent = deterministic_svg_tangent_degrees_v2(angle)?;
+                Affine {
+                    b: tangent,
+                    ..Affine::IDENTITY
+                }
+            }
         };
         transform = transform.multiply(matrix);
         if !transform.is_finite_and_invertible() {
@@ -2627,6 +2644,19 @@ fn parse_transform(value: &str, parser: &mut SvgParser) -> Result<Affine, SvgImp
         }
     }
     Ok(transform)
+}
+
+fn deterministic_svg_tangent_degrees_v2(angle: f64) -> Result<f64, SvgImportError> {
+    let (sine, cosine) = ori_numeric::deterministic_sin_cos_degrees_v1(angle)
+        .map_err(|_| SvgImportError::InvalidTransform)?;
+    if cosine == 0.0 {
+        return Err(SvgImportError::InvalidTransform);
+    }
+    let tangent = sine / cosine;
+    if !tangent.is_finite() {
+        return Err(SvgImportError::InvalidTransform);
+    }
+    Ok(if tangent == 0.0 { 0.0 } else { tangent })
 }
 
 fn warn_unknown_attributes(
@@ -3435,6 +3465,97 @@ mod tests {
         assert_approx(start.y, 0.0);
         assert_approx(end.x, 10.0);
         assert_approx(end.y, 10.0);
+    }
+
+    #[test]
+    fn svg_transform_model_is_frozen_and_cardinal_rotation_is_bit_exact() {
+        let preview = preview(r#"<line transform="rotate(90)" x1="1" y1="0" x2="2" y2="0"/>"#);
+        assert_eq!(
+            preview.geometry_model_id(),
+            "ori_svg_import_geometry_v2__ori_binary64_libm_0_2_16_no_arch_cardinal_v1"
+        );
+        assert!(
+            preview
+                .geometry_model_id()
+                .ends_with(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1)
+        );
+        let edge = preview.edges()[0];
+        let endpoint = preview.vertices()[edge.vertices[0]].position;
+        assert_eq!(endpoint.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(endpoint.y.to_bits(), 1.0_f64.to_bits());
+    }
+
+    #[test]
+    fn rotation_and_skew_are_bit_exact_one_ulp_around_a_cardinal_angle() {
+        for angle in [
+            f64::from_bits(90.0_f64.to_bits() - 1),
+            f64::from_bits(90.0_f64.to_bits() + 1),
+        ] {
+            let encoded_angle = format!("{angle:.17}");
+            assert_eq!(
+                encoded_angle
+                    .parse::<f64>()
+                    .expect("encoded angle")
+                    .to_bits(),
+                angle.to_bits()
+            );
+            let rotated = preview(&format!(
+                r#"<line transform="rotate({encoded_angle})" x1="1.25" y1="-0.75" x2="2" y2="0"/>"#
+            ));
+            let edge = rotated.edges()[0];
+            let actual = rotated.vertices()[edge.vertices[0]].position;
+            let (sine, cosine) =
+                ori_numeric::deterministic_sin_cos_degrees_v1(angle).expect("finite angle");
+            let expected_x = cosine * 1.25 + (-sine) * -0.75 + 0.0;
+            let expected_y = sine * 1.25 + cosine * -0.75 + 0.0;
+            assert_eq!(actual.x.to_bits(), expected_x.to_bits());
+            assert_eq!(actual.y.to_bits(), expected_y.to_bits());
+
+            let skewed = preview(&format!(
+                r#"<line transform="skewX({encoded_angle})" x1="0" y1="1" x2="1" y2="1"/>"#
+            ));
+            let edge = skewed.edges()[0];
+            let actual = skewed.vertices()[edge.vertices[0]].position;
+            let expected_tangent = sine / cosine;
+            assert!(expected_tangent.is_finite());
+            assert_eq!(actual.x.to_bits(), expected_tangent.to_bits());
+            assert_eq!(actual.y.to_bits(), 1.0_f64.to_bits());
+        }
+    }
+
+    #[test]
+    fn singular_cardinal_skew_fails_closed() {
+        for transform in ["skewX(90)", "skewY(-90)", "skewX(270)", "skewY(-270)"] {
+            let source = standard_document(&format!(
+                r#"<line transform="{transform}" x1="0" y1="0" x2="1" y2="1"/>"#
+            ));
+            assert!(matches!(
+                read_svg_preview(source.as_bytes()),
+                Err(SvgImportError::InvalidTransform)
+            ));
+        }
+    }
+
+    #[test]
+    fn deterministic_transform_bits_reach_converted_crease_geometry() {
+        let preview =
+            preview(r#"<line transform="rotate(90 50 50)" x1="10" y1="20" x2="20" y2="20"/>"#);
+        let boundary = candidate(&preview, SvgBoundaryCandidateKind::ViewBox);
+        let converted = preview
+            .convert(&conversion_options(
+                &preview,
+                SvgGroupTarget::Mountain,
+                Some(boundary),
+            ))
+            .expect("deterministic transformed geometry converts");
+        assert!(
+            converted
+                .crease_pattern()
+                .vertices
+                .iter()
+                .any(|vertex| vertex.position.x.to_bits() == 80.0_f64.to_bits()
+                    && vertex.position.y.to_bits() == 10.0_f64.to_bits())
+        );
     }
 
     #[test]

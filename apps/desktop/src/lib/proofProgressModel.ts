@@ -63,6 +63,7 @@ export type ProofProgressPanelModel = Readonly<{
   totalPairCount: number | null
   unprovenHistory: UnprovenHistorySummaryView
   speculativeApplyAvailable: boolean
+  postApplyNotice?: 'starting' | 'unavailable' | null
   proofFailure: ProofFailureViewModel | null
 }>
 

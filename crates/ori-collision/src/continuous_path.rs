@@ -22,16 +22,22 @@ use crate::cayley::prepare_swept_tree_hinge_thickness_boundaries_v1;
 use crate::{
     HingeReliefLinearAngleScheduleV1, HingeReliefPolicyLimitsV1, HingeReliefPolicyRecordV1,
     NativeHingeReliefLocalIntervalCertificateV1, NativeHingeReliefPrerequisiteV1,
-    PositiveThicknessGraphLimitsV1, StaticCollisionLimits, diagnose_static_collision_geometry,
-    prepare_positive_thickness_pair_separation_v1, prepare_single_hinge_thickness_boundary_v1,
-    prove_positive_thickness_graph_geometry_v1, revalidate_hinge_relief_local_intervals_v1,
-    revalidate_positive_thickness_pair_separation_v1,
+    PositiveThicknessGraphLimitsV1, StaticCollisionDiagnosticSnapshot, StaticCollisionLimits,
+    diagnose_static_collision_geometry, prepare_positive_thickness_pair_separation_v1,
+    prepare_single_hinge_thickness_boundary_v1, prove_positive_thickness_graph_geometry_v1,
+    revalidate_hinge_relief_local_intervals_v1, revalidate_positive_thickness_pair_separation_v1,
     revalidate_single_hinge_thickness_boundary_v1, revalidate_tree_hinge_thickness_boundaries_v1,
     static_collision::prepare_positive_thickness_tree_endpoint_topology_memo_v1,
 };
 
+mod initial_sample_layer_admission;
 mod multi_hinge_union;
 mod pair_proof_cache;
+use initial_sample_layer_admission::initial_sample_layer_admission_matches_snapshot_v1;
+pub use initial_sample_layer_admission::{
+    NativeStackedFoldInitialSampleLayerAdmissionV1, StackedFoldInitialLayerOrderSourceV1,
+    prepare_stacked_fold_initial_sample_layer_admission_v1,
+};
 pub use multi_hinge_union::{
     MAX_MULTI_HINGE_UNION_GEOMETRY_HINGES_V2, MAX_MULTI_HINGE_UNION_HINGES_V2,
     MAX_MULTI_HINGE_UNION_PAIRS_V2, MAX_MULTI_HINGE_UNION_STORAGE_BYTES_V2,
@@ -2640,6 +2646,10 @@ pub enum StackedFoldPathDiagnosticErrorV1 {
     ProofCacheUnavailable,
     #[error("the pair-proof result became stale before publication")]
     StaleProofCacheResult,
+    #[error("the initial layer-order admission failed closed")]
+    InitialLayerOrderUnavailable,
+    #[error("the initial layer-order admission exceeds its resource bound")]
+    InitialLayerOrderResourceLimit,
 }
 
 /// Opaque positive-thickness Tree-path evidence.  It retains the complete
@@ -2658,7 +2668,8 @@ impl PositiveThicknessTreeContinuousCertificateV1 {
     pub fn binding_fingerprint_v1(&self) -> [u8; 32] {
         let mut hash = sha2::Sha256::new();
         use sha2::Digest as _;
-        hash.update(b"positive_thickness_tree_continuous_certificate_v1");
+        hash.update(b"positive_thickness_tree_continuous_certificate_deterministic_axis_norm_v2");
+        hash.update(ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.as_bytes());
         for angles in [&self.source_absolute, &self.target_absolute] {
             for angle in angles.as_slice() {
                 hash.update(angle.edge().canonical_bytes());
@@ -2927,10 +2938,9 @@ fn positive_endpoint_candidates_v1(
                     let start = axes_source[index];
                     let end = axes_source[(index + 1) % axes_source.len()];
                     let axis = [-(end[2] - start[2]), end[0] - start[0]];
-                    let norm = axis[0].hypot(axis[1]);
-                    if !norm.is_finite() || norm == 0.0 {
+                    let Some(norm) = deterministic_planar_axis_norm_v1(axis) else {
                         return false;
-                    }
+                    };
                     let project = |points: &Vec<[f64; 3]>| {
                         points.iter().fold(
                             (f64::INFINITY, f64::NEG_INFINITY),
@@ -2981,6 +2991,11 @@ fn positive_endpoint_candidates_v1(
     Some(candidates)
 }
 
+fn deterministic_planar_axis_norm_v1(axis: [f64; 2]) -> Option<f64> {
+    let norm = ori_numeric::deterministic_hypot_v1(axis[0], axis[1]).ok()?;
+    (norm > 0.0).then_some(norm)
+}
+
 fn faces_share_material_vertex_v1(
     model: &MaterialTreeKinematicsModel,
     first: FaceId,
@@ -3014,6 +3029,47 @@ pub fn diagnose_collective_hinge_path_v1(
         paper_thickness_mm,
         limits,
         None,
+    )
+}
+
+/// Diagnoses a collective path while admitting one independently ordered,
+/// exact flat-stack initial sample.
+///
+/// The admission is exact-instance-bound to `model` and `initial_pose`.
+/// Samples after index zero use the unchanged general path policy, and the
+/// resulting diagnostic can never report a continuous certificate.
+pub fn diagnose_collective_hinge_path_with_initial_sample_layer_admission_v1<T>(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    moving_hinges: &[EdgeId],
+    requested_angle_degrees: f64,
+    paper_thickness_mm: f64,
+    limits: StackedFoldPathDiagnosticLimitsV1,
+    admission: &NativeStackedFoldInitialSampleLayerAdmissionV1<T>,
+) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
+    if paper_thickness_mm.to_bits() != 0.0_f64.to_bits() {
+        return Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable);
+    }
+    let (source_absolute, target_absolute) =
+        collective_path_absolute_angles_v1(initial_pose, moving_hinges, requested_angle_degrees)?;
+    let matches_initial_snapshot = |snapshot: &StaticCollisionDiagnosticSnapshot| {
+        initial_sample_layer_admission_matches_snapshot_v1(
+            admission,
+            model,
+            initial_pose,
+            paper_thickness_mm,
+            snapshot,
+        )
+    };
+    diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
+        model,
+        initial_pose,
+        source_absolute,
+        target_absolute.as_slice(),
+        paper_thickness_mm,
+        limits,
+        None,
+        Some(&matches_initial_snapshot),
     )
 }
 
@@ -3081,6 +3137,31 @@ fn diagnose_collective_hinge_path_from_pose_with_optional_cache_v1(
     limits: StackedFoldPathDiagnosticLimitsV1,
     pair_cache: Option<&PositiveEndpointPairCacheUseV1<'_>>,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
+    diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
+        model,
+        initial_pose,
+        source_absolute,
+        target_absolute,
+        paper_thickness_mm,
+        limits,
+        pair_cache,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    source_absolute: &[HingeAngle],
+    target_absolute: &[HingeAngle],
+    paper_thickness_mm: f64,
+    limits: StackedFoldPathDiagnosticLimitsV1,
+    pair_cache: Option<&PositiveEndpointPairCacheUseV1<'_>>,
+    initial_sample_layer_snapshot_matches: Option<
+        &dyn Fn(&StaticCollisionDiagnosticSnapshot) -> bool,
+    >,
+) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
     if initial_pose.hinge_angles() != source_absolute
         || source_absolute.len() != target_absolute.len()
         || source_absolute
@@ -3121,6 +3202,7 @@ fn diagnose_collective_hinge_path_from_pose_with_optional_cache_v1(
         paper_thickness_mm,
         limits,
         pair_cache,
+        initial_sample_layer_snapshot_matches,
     )
 }
 
@@ -3134,6 +3216,9 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
     paper_thickness_mm: f64,
     limits: StackedFoldPathDiagnosticLimitsV1,
     pair_cache: Option<&PositiveEndpointPairCacheUseV1<'_>>,
+    initial_sample_layer_snapshot_matches: Option<
+        &dyn Fn(&StaticCollisionDiagnosticSnapshot) -> bool,
+    >,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
     if limits.sample_intervals == 0 || limits.sample_intervals > MAX_STACKED_FOLD_PATH_SAMPLES_V1 {
         return Err(StackedFoldPathDiagnosticErrorV1::InvalidLimits);
@@ -3202,6 +3287,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
             .is_some_and(|maximum| path_excursion_degrees <= maximum);
     let mut all_positive_thickness_outer_shells = positive_thickness;
 
+    let has_initial_sample_layer_admission = initial_sample_layer_snapshot_matches.is_some();
     let mut sampled_nonblocking_pose_count = 0;
     let mut first_sampled_blocking_angle_degrees = None;
     let mut positive_endpoint_memo_pair_entries = 0;
@@ -3381,7 +3467,19 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                     pair.shared_hinge_boundary_contact_proven()
                 }
             });
+        let initial_layer_order_admitted = if index == 0 {
+            match initial_sample_layer_snapshot_matches {
+                Some(matches) if matches(&snapshot) => true,
+                Some(_) => {
+                    return Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable);
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
         if snapshot.has_prominent_blocking_hold()
+            && !initial_layer_order_admitted
             && !(zero_thickness && analytic_single_hinge_topology)
             && !(zero_thickness && analytic_collinear_tree_topology)
             && !(zero_thickness && interval_two_hinge_chain_topology)
@@ -3398,20 +3496,24 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
         first_sampled_blocking_angle_degrees,
         requested_angle_degrees,
         analytic_single_hinge_clearance: analytic_single_hinge_topology
+            && !has_initial_sample_layer_admission
             && (!positive_thickness || requested_angle_degrees <= 90.0)
             && (zero_thickness || all_positive_thickness_outer_shells)
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         analytic_collinear_tree_clearance: analytic_collinear_tree_topology
+            && !has_initial_sample_layer_admission
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         analytic_positive_two_hinge_clearance: positive_two_hinge_topology
+            && !has_initial_sample_layer_admission
             && positive_tree_max_angle_degrees_v1(model.hinges().len())
                 .is_some_and(|maximum| path_excursion_degrees <= maximum)
             && all_positive_thickness_outer_shells
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         interval_two_hinge_chain_clearance: interval_two_hinge_chain_topology
+            && !has_initial_sample_layer_admission
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         interval_tree_hinge_count: if interval_two_hinge_chain_topology {
@@ -5843,6 +5945,27 @@ mod tests {
     use ori_topology::{FaceExtractionInput, FaceKey, analyze_faces};
 
     use super::*;
+
+    #[test]
+    fn planar_separation_axis_norm_is_deterministic_and_fail_closed() {
+        assert_eq!(
+            deterministic_planar_axis_norm_v1([3.0, 4.0]).map(f64::to_bits),
+            Some(5.0_f64.to_bits())
+        );
+        assert_eq!(
+            deterministic_planar_axis_norm_v1([f64::from_bits(1.0_f64.to_bits() + 1), 0.0,])
+                .map(f64::to_bits),
+            Some(1.0_f64.to_bits() + 1)
+        );
+        for rejected in [
+            [0.0, -0.0],
+            [f64::NAN, 1.0],
+            [f64::INFINITY, 1.0],
+            [f64::MAX, f64::MAX],
+        ] {
+            assert_eq!(deterministic_planar_axis_norm_v1(rejected), None);
+        }
+    }
 
     fn fixed_id<T: serde::de::DeserializeOwned>(prefix: &str, index: u64) -> T {
         serde_json::from_str(&format!("\"00000000-0000-4000-{prefix}-{index:012x}\"")).unwrap()

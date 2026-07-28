@@ -1,6 +1,9 @@
 import {
   GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
 } from '../src/lib/geometricConstraints.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
 
 export const uuid = (index: number) =>
   `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
@@ -18,6 +21,7 @@ export function certified(
   return {
     status: 'certified',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     constraint_ids: CORE,
     constraint_count: 2,
     direct_oracle_calls: 7,
@@ -29,8 +33,9 @@ export function certified(
     pair_constraint_constructive_witness_count: 0,
     pair_constraint_algebraic_witness_count: 0,
     length_constraint_constructive_witness_count: 0,
+    zero_length_closure_constructive_witness_count: 0,
     authorizes_project_mutation: false,
-    replayable_across_runtimes: false,
+    replayable_across_runtimes: true,
     ...overrides,
   }
 }
@@ -41,6 +46,7 @@ export function unknown(
   return {
     status: 'unknown',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     reason: 'cancelled',
     direct_core_constraint_ids: CORE,
     direct_oracle_calls: 7,

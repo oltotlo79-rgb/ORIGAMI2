@@ -245,6 +245,7 @@ pub(super) enum GeometricConstraintPreflightResult {
     },
     ProvenSatisfiable {
         model_id: &'static str,
+        transcendental_model_id: &'static str,
         constraint_count: usize,
         equation_count: usize,
         authorizes_project_mutation: bool,
@@ -690,12 +691,29 @@ pub(super) fn finish_exact_geometric_constraint_satisfaction(
     if let Some(stop) = observer.checkpoint() {
         return stopped_geometric_constraint_analysis_result(document, stop);
     }
+    let constraint_count = certificate.constraint_count();
+    let equation_count = certificate.equation_count();
+    let maximum_equation_count = constraint_count.checked_mul(2);
+    if certificate.model_id() != GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1
+        || certificate.transcendental_model_id()
+            != ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+        || certificate.authorizes_project_mutation()
+        || certificate.replayable_across_runtimes()
+            != ori_numeric::deterministic_transcendental_model_supported_v1()
+        || constraint_count != document.constraints.len()
+        || constraint_count == 0
+        || equation_count < constraint_count
+        || maximum_equation_count.is_none_or(|maximum| equation_count > maximum)
+    {
+        return invalid_geometric_constraint_analysis_result(document);
+    }
     GeometricConstraintPreflightResult::ProvenSatisfiable {
-        model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
-        constraint_count: certificate.constraint_count(),
-        equation_count: certificate.equation_count(),
-        authorizes_project_mutation: false,
-        replayable_across_runtimes: false,
+        model_id: certificate.model_id(),
+        transcendental_model_id: certificate.transcendental_model_id(),
+        constraint_count,
+        equation_count,
+        authorizes_project_mutation: certificate.authorizes_project_mutation(),
+        replayable_across_runtimes: certificate.replayable_across_runtimes(),
     }
 }
 

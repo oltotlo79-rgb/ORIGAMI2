@@ -546,9 +546,10 @@ fn prepare_pose(
                 adjacency[incident[0]].push(incident[1]);
                 adjacency[incident[1]].push(incident[0]);
                 let axis = normalize3(sub3(target[edge[1]], target[edge[0]]))?;
-                let angle = dot3(axis, cross3(normals[incident[0]], normals[incident[1]]))
-                    .atan2(dot3(normals[incident[0]], normals[incident[1]]))
-                    .to_degrees();
+                let angle = deterministic_signed_angle_degrees_v1(
+                    dot3(axis, cross3(normals[incident[0]], normals[incident[1]])),
+                    dot3(normals[incident[0]], normals[incident[1]]),
+                )?;
                 if (assignment == "M" && angle >= -1e-10) || (assignment == "V" && angle <= 1e-10) {
                     return Err(Fold3dFramesImportErrorV1::PoseUnavailable);
                 }
@@ -602,6 +603,14 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
+}
+fn deterministic_signed_angle_degrees_v1(
+    sine_numerator: f64,
+    cosine_denominator: f64,
+) -> Result<f64, Fold3dFramesImportErrorV1> {
+    ori_numeric::deterministic_atan2_v1(sine_numerator, cosine_denominator)
+        .and_then(ori_numeric::deterministic_radians_to_degrees_v1)
+        .map_err(|_| Fold3dFramesImportErrorV1::PoseUnavailable)
 }
 fn normalize3(a: [f64; 3]) -> Result<[f64; 3], Fold3dFramesImportErrorV1> {
     let n = norm3(a);
@@ -788,5 +797,21 @@ mod tests {
         assert_eq!(proposal.hinge_angles_degrees().len(), 1);
         assert!(proposal.hinge_angles_degrees()[0].1 > 89.999);
         assert!(!proposal.authorizes_project_mutation());
+    }
+
+    #[test]
+    fn persisted_fold_frame_angles_use_the_frozen_transcendental_model() {
+        assert_eq!(
+            deterministic_signed_angle_degrees_v1(1.0, 0.0).map(f64::to_bits),
+            Ok(90.0_f64.to_bits())
+        );
+        assert_eq!(
+            deterministic_signed_angle_degrees_v1(-1.0, 0.0).map(f64::to_bits),
+            Ok((-90.0_f64).to_bits())
+        );
+        assert_eq!(
+            deterministic_signed_angle_degrees_v1(f64::NAN, 1.0),
+            Err(Fold3dFramesImportErrorV1::PoseUnavailable)
+        );
     }
 }

@@ -6,6 +6,9 @@ import {
   MAX_GEOMETRIC_CONSTRAINT_RECORDS,
   normalizeGeometricConstraintPreflightResponse,
 } from '../src/lib/geometricConstraints.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
 
 const uuid = (index: number) =>
   `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
@@ -23,20 +26,26 @@ function response(result: unknown) {
   }
 }
 
-function exactResult(constraintCount: number, equationCount: number) {
+function exactResult(
+  constraintCount: number,
+  equationCount: number,
+  replayableAcrossRuntimes = true,
+) {
   return {
     status: 'proven_satisfiable',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     constraint_count: constraintCount,
     equation_count: equationCount,
     authorizes_project_mutation: false,
-    replayable_across_runtimes: false,
+    replayable_across_runtimes: replayableAcrossRuntimes,
   }
 }
 
-test('exact satisfiability DTO accepts both inclusive count boundaries and freezes them', () => {
+test('exact satisfiability DTO accepts both replay scopes and inclusive count boundaries', () => {
   for (const result of [
     exactResult(1, 1),
+    exactResult(1, 2, false),
     exactResult(
       MAX_GEOMETRIC_CONSTRAINT_RECORDS,
       MAX_GEOMETRIC_CONSTRAINT_RECORDS * 2,
@@ -57,6 +66,8 @@ test('exact satisfiability DTO rejects malformed model and every numeric boundar
   const invalid = [
     { ...base, model_id: 'geometric_constraint_binary64_exact_satisfaction_v2' },
     { ...base, model_id: '' },
+    { ...base, transcendental_model_id: 'forged_model' },
+    { ...base, transcendental_model_id: '' },
     { ...base, constraint_count: 0 },
     { ...base, constraint_count: -1 },
     { ...base, constraint_count: 1.5 },
@@ -73,18 +84,27 @@ test('exact satisfiability DTO rejects malformed model and every numeric boundar
     { ...base, equation_count: 5 },
     { ...base, authorizes_project_mutation: true },
     { ...base, authorizes_project_mutation: 'false' },
-    { ...base, replayable_across_runtimes: true },
     { ...base, replayable_across_runtimes: 'false' },
     { ...base, future: true },
     {
       status: base.status,
       model_id: base.model_id,
+      transcendental_model_id: base.transcendental_model_id,
       constraint_count: base.constraint_count,
     },
     {
       status: base.status,
       model_id: base.model_id,
+      transcendental_model_id: base.transcendental_model_id,
       equation_count: base.equation_count,
+    },
+    {
+      status: base.status,
+      model_id: base.model_id,
+      constraint_count: base.constraint_count,
+      equation_count: base.equation_count,
+      authorizes_project_mutation: base.authorizes_project_mutation,
+      replayable_across_runtimes: base.replayable_across_runtimes,
     },
   ]
 
@@ -101,6 +121,7 @@ test('exact satisfiability DTO rejects inherited symbol non-enumerable and acces
     status: 'proven_satisfiable',
   }), {
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     constraint_count: 1,
     equation_count: 1,
     authorizes_project_mutation: false,
@@ -126,6 +147,10 @@ test('exact satisfiability DTO rejects inherited symbol non-enumerable and acces
       enumerable: true,
       value:
         GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+    },
+    transcendental_model_id: {
+      enumerable: true,
+      value: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     },
     constraint_count: {
       enumerable: true,

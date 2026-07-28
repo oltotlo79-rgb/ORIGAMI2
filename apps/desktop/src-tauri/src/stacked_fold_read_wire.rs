@@ -289,17 +289,30 @@ pub(super) struct StackedFoldFlatEndpointLayerOrderDto {
     pub(super) overlap_cell_count: usize,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum StackedFoldTransactionFailureClassDto {
     ContinuousPathUncertified,
     TargetLayerOrderUnavailable,
 }
 
+pub(super) const STACKED_FOLD_APPLY_CONTRACT_VERSION_V1: u8 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum StackedFoldApplyModeDtoV1 {
+    None,
+    Certified,
+    SpeculativeUnproven,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct StackedFoldTransactionProposalDto {
+    pub(super) apply_contract_version: u8,
+    pub(super) apply_mode: StackedFoldApplyModeDtoV1,
     pub(super) transaction_token: Option<ProjectId>,
+    pub(super) speculative_unproven_available: bool,
     pub(super) source_project_id: ProjectId,
     pub(super) source_revision: u64,
     pub(super) target_revision: u64,
@@ -315,6 +328,66 @@ pub(super) struct StackedFoldTransactionProposalDto {
     pub(super) ready_for_atomic_apply: bool,
     pub(super) failure_classes: Vec<StackedFoldTransactionFailureClassDto>,
     pub(super) authorizes_project_mutation: bool,
+}
+
+impl StackedFoldTransactionProposalDto {
+    pub(super) fn publish_certified_v1(&mut self, token: ProjectId) {
+        self.apply_mode = StackedFoldApplyModeDtoV1::Certified;
+        self.transaction_token = Some(token);
+        self.speculative_unproven_available = false;
+        self.ready_for_atomic_apply = true;
+        self.authorizes_project_mutation = true;
+        self.failure_classes.clear();
+        debug_assert!(self.has_valid_apply_contract_v1(true, true));
+    }
+
+    pub(super) fn publish_speculative_unproven_v1(&mut self, token: ProjectId) {
+        self.apply_mode = StackedFoldApplyModeDtoV1::SpeculativeUnproven;
+        self.transaction_token = Some(token);
+        self.speculative_unproven_available = true;
+        self.ready_for_atomic_apply = false;
+        self.authorizes_project_mutation = false;
+        self.failure_classes =
+            vec![StackedFoldTransactionFailureClassDto::ContinuousPathUncertified];
+        debug_assert!(self.has_valid_apply_contract_v1(false, true));
+    }
+
+    #[must_use]
+    pub(super) fn has_valid_apply_contract_v1(
+        &self,
+        continuous_path_certified: bool,
+        target_layer_order_certified: bool,
+    ) -> bool {
+        self.apply_contract_version == STACKED_FOLD_APPLY_CONTRACT_VERSION_V1
+            && self.failure_classes
+                == transaction_failure_classes(
+                    continuous_path_certified,
+                    target_layer_order_certified,
+                )
+            && match self.apply_mode {
+                StackedFoldApplyModeDtoV1::None => {
+                    self.transaction_token.is_none()
+                        && !self.speculative_unproven_available
+                        && !self.ready_for_atomic_apply
+                        && !self.authorizes_project_mutation
+                }
+                StackedFoldApplyModeDtoV1::Certified => {
+                    self.transaction_token.is_some()
+                        && !self.speculative_unproven_available
+                        && self.ready_for_atomic_apply
+                        && self.authorizes_project_mutation
+                        && self.failure_classes.is_empty()
+                }
+                StackedFoldApplyModeDtoV1::SpeculativeUnproven => {
+                    self.transaction_token.is_some()
+                        && self.speculative_unproven_available
+                        && !self.ready_for_atomic_apply
+                        && !self.authorizes_project_mutation
+                        && self.failure_classes.as_slice()
+                            == [StackedFoldTransactionFailureClassDto::ContinuousPathUncertified]
+                }
+            }
+    }
 }
 
 #[derive(Debug, Serialize)]

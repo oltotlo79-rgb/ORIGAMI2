@@ -7,6 +7,43 @@ use ori_domain::{EdgeId, FaceId, VertexId};
 use super::*;
 
 #[test]
+fn one_shot_pose_transaction_rollback_restores_the_exact_cache_epoch() {
+    let fixture = model4_fixture(0);
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    let capture = publish_fixture_to_runtime(&runtime, &fixture);
+    let before = runtime.progress_v1().expect("initial progress");
+    assert_eq!(before.persistent_cached_pairs, 1);
+    let rollback = runtime
+        .capture_rollback_snapshot_v1()
+        .expect("opaque rollback snapshot");
+    runtime
+        .advance_pose_authority_v1(fixture.key.revision)
+        .expect("one pose-authority transition");
+    assert_eq!(
+        runtime.progress_v1().expect("advanced progress").epoch,
+        before.epoch.checked_add(1).expect("bounded test epoch")
+    );
+    runtime
+        .restore_rollback_snapshot_v1(rollback)
+        .expect("exact originating runtime rollback");
+    assert_eq!(runtime.progress_v1().expect("restored progress"), before);
+    let (footprints, exact_poses) = current_snapshots(&fixture);
+    let lookup = runtime
+        .lookup_two_hinge_positive_v1(
+            &capture,
+            fixture.key.issuer_context,
+            footprints,
+            exact_poses,
+            std::slice::from_ref(&fixture.key),
+            &generous_work_limits(),
+            operation_control(),
+        )
+        .expect("restored proof-cache lookup");
+    assert_eq!(lookup.hits().len(), 1);
+    assert_eq!(lookup.missing_entries(), 0);
+}
+
+#[test]
 fn consecutive_disjoint_edits_aggregate_from_original_revision_and_retain_proof() {
     let fixture = model4_fixture(0);
     let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);

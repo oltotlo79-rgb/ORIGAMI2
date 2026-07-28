@@ -43,7 +43,7 @@ test('a selected vertex can create an endpoint from an explicit length and angle
   assert.match(appSource, /value="polar_endpoint"/)
   assert.match(appSource, /Draw line by length and angle/)
   const polarStart = appSource.indexOf("form.get('vertex_action') === 'polar_endpoint'")
-  const polarEnd = appSource.indexOf('const xDisplayExpression', polarStart)
+  const polarEnd = appSource.indexOf("const xDisplayExpression", polarStart)
   assert.notEqual(polarStart, -1)
   assert.notEqual(polarEnd, -1)
   const polarSubmit = appSource.slice(polarStart, polarEnd)

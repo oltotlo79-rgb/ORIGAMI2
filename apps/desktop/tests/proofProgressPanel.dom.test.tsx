@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ProofProgressPanel } from '../src/components/ProofProgressPanel.tsx'
@@ -128,6 +128,44 @@ describe('ProofProgressPanel', () => {
     }
   })
 
+  it('announces post-Apply start and transport failure with fixed redacted text', () => {
+    const view = render(<ProofProgressPanel locale="en" model={{
+      ...baseModel,
+      status: 'proving',
+      provenPairCount: 0,
+      totalPairCount: null,
+      postApplyNotice: 'starting',
+      unprovenHistory: {
+        kind: 'known',
+        applied: { ...emptyCounts, awaitingProof: 1 },
+        unappliedRedo: emptyCounts,
+        appliedTotal: 1,
+        unappliedRedoTotal: 0,
+      },
+    }} />)
+    const starting = screen.getByTestId('post-apply-proof-starting')
+    expect(starting.textContent).toBe('Starting the post-Apply proof job.')
+    expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite')
+    expect(screen.getByTestId('applied-unproven-warning').textContent).toContain(
+      '1 unproven fold operation(s)',
+    )
+
+    view.rerender(<ProofProgressPanel locale="en" model={{
+      ...baseModel,
+      status: 'evidence_insufficient',
+      provenPairCount: 0,
+      totalPairCount: null,
+      postApplyNotice: 'unavailable',
+    }} />)
+    expect(screen.getByTestId('post-apply-proof-unavailable').textContent).toBe(
+      'Post-Apply proof progress is unavailable. The fold remains unproven.',
+    )
+    expect(screen.getByTestId('unproven-proof-badge')).toBeTruthy()
+    expect(view.container.textContent).not.toMatch(
+      /stack trace|[A-Z]:\\|authority|geometry|coordinate/iu,
+    )
+  })
+
   it('proofFailureOffersRevertButDoesNotAutoRevert', () => {
     const onRequestRevert = vi.fn()
     render(<ProofProgressPanel locale="en" model={{
@@ -188,6 +226,42 @@ describe('ProofProgressPanel', () => {
     expect(onRequestRevert).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '2 手分を戻すよう要求' }))
     expect(onRequestRevert).toHaveBeenCalledTimes(1)
+  })
+
+  it('a recomputed terminal report resets destructive confirmation', async () => {
+    const initial: ProofProgressPanelModel = {
+      ...baseModel,
+      status: 'blocked',
+      proofFailure: {
+        location: 'applied_retained_undo',
+        reason: 'blocked',
+        subsequentEditCount: 1,
+        undoStepsToRevert: 2,
+      },
+    }
+    const view = render(
+      <ProofProgressPanel locale="en" model={initial} onRequestRevert={vi.fn()} />,
+    )
+    const checkbox = screen.getByRole('checkbox') as HTMLInputElement
+    fireEvent.click(checkbox)
+    expect(checkbox.checked).toBe(true)
+
+    view.rerender(
+      <ProofProgressPanel locale="en" model={{
+        ...initial,
+        proofFailure: {
+          ...initial.proofFailure!,
+          subsequentEditCount: 2,
+          undoStepsToRevert: 3,
+        },
+      }} onRequestRevert={vi.fn()} />,
+    )
+    await waitFor(() => expect(
+      (screen.getByRole('checkbox') as HTMLInputElement).checked,
+    ).toBe(false))
+    expect((screen.getByRole('button', {
+      name: 'Request revert by 3 undo step(s)',
+    }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('does not expose raw identifiers, paths, errors, coordinates, or shape data', () => {

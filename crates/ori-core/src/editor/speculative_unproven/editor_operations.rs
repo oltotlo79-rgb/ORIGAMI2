@@ -1,5 +1,7 @@
 use ori_domain::{CreasePattern, InstructionTimeline, Paper, ProjectLayerDocumentV1};
 
+use crate::stacked_fold::SpeculativeUnprovenFoldTokenV1;
+
 use super::{
     super::{AppliedPoseV1, CommandResult, EditorState, Revision},
     MAX_PENDING_SPECULATIVE_UNPROVEN_FOLDS_V1, SpeculativeApproximateBlockingObservationV1,
@@ -22,7 +24,9 @@ impl EditorState {
     ///
     /// The desktop layer must reauthenticate project-instance, project,
     /// pose-generation, and request-generation fields immediately before this
-    /// call. Core independently rechecks every editor-owned binding.
+    /// call. Core consumes the opaque one-shot token, rechecks its exact target
+    /// seal against these owned arguments, and independently rechecks every
+    /// editor-owned binding before any mutation.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_stacked_fold_document_with_unproven_mark_v1(
         &mut self,
@@ -32,8 +36,11 @@ impl EditorState {
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
         applied_pose: AppliedPoseV1,
-        binding: SpeculativeUnprovenFoldBindingV1,
+        token: SpeculativeUnprovenFoldTokenV1,
     ) -> Result<CommandResult, SpeculativeUnprovenFoldApplyErrorV1> {
+        let binding = token
+            .into_unproven_binding_for_target_v1(expected_revision, &pattern, &paper, &applied_pose)
+            .ok_or(SpeculativeUnprovenFoldApplyErrorV1::TargetSealMismatch)?;
         binding.validate()?;
         if binding.source_revision() != expected_revision || self.revision() != expected_revision {
             return Err(SpeculativeUnprovenFoldApplyErrorV1::SourceRevisionMismatch);

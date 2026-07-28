@@ -639,3 +639,95 @@ fn native_generic_tree_canonicalizer_reuses_domain_bar_ceiling() {
     .unwrap()));
     assert!(crate::beginner_design_commands::canonical_generic_tree_segments_v1(&exact).is_none());
 }
+
+#[test]
+fn beginner_manufacturability_is_deterministic_at_adjacent_spacing_bits() {
+    let threshold = 1.0e-6_f64;
+    let below = f64::from_bits(threshold.to_bits() - 1);
+    let above = f64::from_bits(threshold.to_bits() + 1);
+    let pattern = |length| {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: start,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: end,
+                    position: Point2::new(length, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: EdgeId::new(),
+                start,
+                end,
+                kind: EdgeKind::Valley,
+            }],
+        }
+    };
+
+    assert_eq!(
+        validate_beginner_manufacturability_v1(&pattern(below), &Paper::default()),
+        Err("manufacturability_minimum_crease_spacing")
+    );
+    for length in [threshold, above] {
+        assert_eq!(
+            validate_beginner_manufacturability_v1(&pattern(length), &Paper::default()),
+            Ok(())
+        );
+    }
+    for length in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            validate_beginner_manufacturability_v1(&pattern(length), &Paper::default()),
+            Err("manufacturability_non_finite_geometry")
+        );
+    }
+}
+
+#[test]
+fn beginner_contour_authority_rejects_non_finite_distance_inputs() {
+    let target = [[0, 0], [10, 0], [10, 10], [0, 10]];
+    let generated = |invalid| {
+        [Point2::new(0.0, 0.0), Point2::new(1.0, 0.0), invalid]
+            .into_iter()
+            .map(|position| Vertex {
+                id: VertexId::new(),
+                position,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        normalized_contour_error_millionths(&target, &generated(Point2::new(f64::NAN, 1.0)),),
+        None
+    );
+    assert_eq!(
+        normalized_contour_error_millionths(&target, &generated(Point2::new(f64::INFINITY, 1.0)),),
+        None
+    );
+}
+
+#[test]
+fn beginner_contour_authority_ignores_duplicate_finite_segments() {
+    let target = [[0, 0], [10, 0], [10, 10], [0, 10]];
+    let generated = [
+        Point2::new(0.0, 0.0),
+        Point2::new(1.0, 0.0),
+        Point2::new(1.0, 0.0),
+        Point2::new(1.0, 1.0),
+        Point2::new(0.0, 1.0),
+    ]
+    .into_iter()
+    .map(|position| Vertex {
+        id: VertexId::new(),
+        position,
+    })
+    .collect::<Vec<_>>();
+
+    assert_eq!(
+        normalized_contour_error_millionths(&target, &generated),
+        Some(0)
+    );
+}

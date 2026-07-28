@@ -40,8 +40,8 @@ export function useProjectCanvasProjection(
     [snapshot],
   )
   const lengthDisplayUnit = useMemo(
-    () => resolveLengthDisplayUnit(snapshot, boundaryLengthReferences),
-    [boundaryLengthReferences, snapshot],
+    () => resolveLengthDisplayUnit(snapshot),
+    [snapshot],
   )
   const rectangularPaperSize = useMemo(
     () => resolveRectangularPaperSize(snapshot),

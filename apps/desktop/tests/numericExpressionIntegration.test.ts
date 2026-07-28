@@ -249,6 +249,14 @@ test('vertex and polar construction expressions retain source, ID, and native au
     recovery,
     /record\.schema_version === 2[\s\S]*?DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1[\s\S]*?polar !== undefined/u,
   )
+  assert.match(
+    patternEditNative,
+    /rotate_edge_about_point[\s\S]*?symmetry_sin_cos[\s\S]*?adopted\.x\.to_string\(\)[\s\S]*?adopted\.y\.to_string\(\)/u,
+  )
+  assert.doesNotMatch(
+    patternEditNative,
+    /format!\(\s*"\([^"]*\)\*cos\(/u,
+  )
 })
 
 test('whole-line translation is one native edit with expression-backed endpoint history', () => {

@@ -22,6 +22,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
 };
 
+#[path = "diagnostics/share_v2.rs"]
+mod share_v2;
+use share_v2::SharedDiagnosticsV2;
+
 const DIAGNOSTICS_FILE_NAME: &str = "redacted-diagnostics-v1.json";
 #[cfg(test)]
 const DIAGNOSTICS_SCHEMA: &str = "origami2.redacted-diagnostics.v1";
@@ -290,9 +294,21 @@ impl DiagnosticsState {
             .record(scope)
     }
 
+    #[cfg(test)]
     fn prepare_share_preview(&self) -> Result<DiagnosticsSharePreviewResponse, DiagnosticsError> {
+        self.prepare_share_preview_with_unproven(
+            ori_core::SpeculativeUnprovenFoldSummaryV1::default(),
+        )
+    }
+
+    fn prepare_share_preview_with_unproven(
+        &self,
+        unproven: ori_core::SpeculativeUnprovenFoldSummaryV1,
+    ) -> Result<DiagnosticsSharePreviewResponse, DiagnosticsError> {
         let counts = self.store.lock().map_err(|_| DiagnosticsError)?.counts;
-        let bytes = serialize_canonical_diagnostics(&StoredDiagnostics::from_counts(&counts))?;
+        let bytes = share_v2::serialize_canonical(&SharedDiagnosticsV2::from_counts_and_unproven(
+            &counts, unproven,
+        ))?;
         let byte_length = u32::try_from(bytes.len()).map_err(|_| DiagnosticsError)?;
         let json = String::from_utf8(bytes.clone()).map_err(|_| DiagnosticsError)?;
 
@@ -329,7 +345,7 @@ impl DiagnosticsState {
         if cached.preview_generation != preview_generation {
             return Err(DiagnosticsError);
         }
-        validate_canonical_diagnostics(&cached.bytes)?;
+        share_v2::validate_canonical(&cached.bytes)?;
         Ok(cached.clone())
     }
 }
@@ -398,6 +414,11 @@ pub(crate) async fn record_unexpected_diagnostic(
 pub(crate) async fn prepare_diagnostics_share_preview(
     app_handle: AppHandle,
 ) -> Result<DiagnosticsSharePreviewResponse, &'static str> {
+    let unproven = {
+        let app_state = app_handle.state::<super::AppState>();
+        let project = super::lock_project(&app_state).map_err(|_| GENERIC_DIAGNOSTICS_ERROR)?;
+        project.editor.speculative_unproven_fold_summary_v1()
+    };
     let blocking_app_handle = app_handle.clone();
     let persistence_gate = app_handle
         .state::<DiagnosticsState>()
@@ -408,7 +429,7 @@ pub(crate) async fn prepare_diagnostics_share_preview(
         let _persistence_guard = persistence_guard;
         blocking_app_handle
             .state::<DiagnosticsState>()
-            .prepare_share_preview()
+            .prepare_share_preview_with_unproven(unproven)
     })
     .await
     .map_err(|_| GENERIC_DIAGNOSTICS_ERROR)?
@@ -450,7 +471,11 @@ async fn save_diagnostics_share_preview_inner(
     tauri::async_runtime::spawn_blocking(move || {
         let _share_save_guard = share_save_guard;
         let _persistence_guard = persistence_guard;
-        complete_diagnostics_share_save(cached, Some(destination), persist_canonical_diagnostics)
+        complete_diagnostics_share_save(
+            cached,
+            Some(destination),
+            persist_canonical_shared_diagnostics_v2,
+        )
     })
     .await
     .map_err(|_| DiagnosticsError)?
@@ -487,7 +512,7 @@ fn complete_diagnostics_share_save<F>(
 where
     F: FnOnce(&Path, &[u8]) -> Result<(), DiagnosticsError>,
 {
-    validate_canonical_diagnostics(&cached.bytes)?;
+    share_v2::validate_canonical(&cached.bytes)?;
     let byte_length = u32::try_from(cached.bytes.len()).map_err(|_| DiagnosticsError)?;
     let canceled = match destination {
         Some(destination) => {
@@ -546,6 +571,21 @@ fn validate_canonical_diagnostics(bytes: &[u8]) -> Result<(), DiagnosticsError> 
 
 fn persist_canonical_diagnostics(destination: &Path, bytes: &[u8]) -> Result<(), DiagnosticsError> {
     validate_canonical_diagnostics(bytes)?;
+    persist_validated_diagnostics_bytes(destination, bytes)
+}
+
+fn persist_canonical_shared_diagnostics_v2(
+    destination: &Path,
+    bytes: &[u8],
+) -> Result<(), DiagnosticsError> {
+    share_v2::validate_canonical(bytes)?;
+    persist_validated_diagnostics_bytes(destination, bytes)
+}
+
+fn persist_validated_diagnostics_bytes(
+    destination: &Path,
+    bytes: &[u8],
+) -> Result<(), DiagnosticsError> {
     let parent = destination.parent().ok_or(DiagnosticsError)?;
     fs::create_dir_all(parent).map_err(|_| DiagnosticsError)?;
     let mut staged = StagedDiagnosticsFile::create(parent, destination)?;
@@ -901,7 +941,7 @@ mod tests {
         let saved = complete_diagnostics_share_save(
             after_record,
             Some(export.clone()),
-            persist_canonical_diagnostics,
+            persist_canonical_shared_diagnostics_v2,
         )
         .unwrap();
         assert_eq!(
@@ -977,7 +1017,7 @@ mod tests {
                 .is_err()
         );
         let noncanonical = format!(" {}", first.json);
-        assert!(validate_canonical_diagnostics(noncanonical.as_bytes()).is_err());
+        assert!(share_v2::validate_canonical(noncanonical.as_bytes()).is_err());
 
         {
             let mut cache = state.share_preview_cache.lock().unwrap();
@@ -1015,7 +1055,7 @@ mod tests {
             complete_diagnostics_share_save(
                 cached,
                 Some(failed_destination.clone()),
-                persist_canonical_diagnostics,
+                persist_canonical_shared_diagnostics_v2,
             ),
             Err(DiagnosticsError)
         );

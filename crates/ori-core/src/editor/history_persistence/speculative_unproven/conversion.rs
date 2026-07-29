@@ -209,6 +209,7 @@ fn validate_unproven_mark_for_entry(
     mark: &SpeculativeUnprovenFoldMarkV1,
     forward: &Command,
     inverse: &Inverse,
+    persistence_provenance: HistoryEntryPersistenceProvenance,
     project_id: ProjectId,
 ) -> Result<(), EditorHistoryErrorV1> {
     mark.binding
@@ -222,13 +223,22 @@ fn validate_unproven_mark_for_entry(
     {
         return Err(EditorHistoryErrorV1::InvalidSpeculativeUnprovenMetadata);
     }
-    let (
-        Command::ApplyStackedFoldDocument(..),
-        Inverse::RestoreStackedFoldDocument { pattern, paper, .. },
-    ) = (forward, inverse)
-    else {
+    let authorized_shape = matches!(
+        (persistence_provenance, forward),
+        (
+            HistoryEntryPersistenceProvenance::Canonical,
+            Command::ApplyStackedFoldDocument(..)
+        ) | (
+            HistoryEntryPersistenceProvenance::LegacyApplyStackedFoldDocumentV1,
+            Command::ApplyBeginnerGeneratedDocument { .. }
+        )
+    );
+    let Inverse::RestoreStackedFoldDocument { pattern, paper, .. } = inverse else {
         return Err(EditorHistoryErrorV1::InvalidSpeculativeUnprovenMetadata);
     };
+    if !authorized_shape {
+        return Err(EditorHistoryErrorV1::InvalidSpeculativeUnprovenMetadata);
+    }
     if mark.binding.source_geometry_fingerprint_sha256()
         != crate::fold_model_fingerprint::fold_model_fingerprint_v1(pattern, paper)
         || mark.binding.paper_thickness_bits() != paper.thickness_mm.to_bits()
@@ -270,7 +280,13 @@ pub(in crate::editor::history_persistence) fn validate_editor_unproven_history(
     }
     for entry in editor.undo_stack.iter().chain(&editor.redo_stack) {
         if let Some(mark) = &entry.speculative_unproven_fold {
-            validate_unproven_mark_for_entry(mark, &entry.forward, &entry.inverse, project_id)?;
+            validate_unproven_mark_for_entry(
+                mark,
+                &entry.forward,
+                &entry.inverse,
+                entry.persistence_provenance,
+                project_id,
+            )?;
             collect_binding(mark, &mut bindings, &mut pending)?;
         }
     }

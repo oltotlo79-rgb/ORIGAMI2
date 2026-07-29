@@ -207,6 +207,280 @@ fn speculative_wire_tampering_is_fail_closed_at_every_boundary() {
 }
 
 #[test]
+fn legacy_marked_stacked_fold_replays_as_beginner_and_preserves_its_wire_tag() {
+    let mut fixture = fixture();
+    let binding = binding(
+        &fixture,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut fixture, binding);
+    let mut json = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("export V2 marked history"),
+    )
+    .expect("history JSON");
+    assert_eq!(
+        json["undo_stack"][0]["forward"]["kind"],
+        json!("apply_stacked_fold_document_v2")
+    );
+    json["undo_stack"][0]["forward"]["kind"] = json!("apply_stacked_fold_document");
+
+    let history = serde_json::from_value::<EditorHistoryV1>(json).expect("legacy marked wire");
+    let mut reopened = reopen(&fixture.editor, history).expect("reopen legacy marked history");
+    assert!(
+        reopened
+            .clone_predecessor_if_last_stacked_fold_v1()
+            .is_none(),
+        "the ambiguous legacy tag must not restore stacked-fold authority"
+    );
+    assert_eq!(
+        reopened
+            .speculative_unproven_fold_summary_v1()
+            .applied
+            .awaiting_proof,
+        1
+    );
+
+    let reexported = serde_json::to_value(
+        reopened
+            .export_history_v1(fixture.project_id)
+            .expect("re-export legacy marked history"),
+    )
+    .expect("re-exported JSON");
+    assert_eq!(
+        reexported["undo_stack"][0]["forward"]["kind"],
+        json!("apply_stacked_fold_document")
+    );
+
+    reopened.undo(0).expect("undo legacy marked entry");
+    let undone = serde_json::to_value(
+        reopened
+            .export_history_v1(fixture.project_id)
+            .expect("export legacy Redo entry"),
+    )
+    .expect("Redo JSON");
+    assert_eq!(
+        undone["redo_stack"][0]["forward"]["kind"],
+        json!("apply_stacked_fold_document")
+    );
+    reopened.redo(1).expect("redo legacy marked entry");
+    assert!(
+        reopened
+            .clone_predecessor_if_last_stacked_fold_v1()
+            .is_none(),
+        "Undo/Redo must preserve nonauthority provenance"
+    );
+}
+
+#[test]
+fn legacy_marked_redo_stack_survives_two_reopens_without_authority() {
+    let mut fixture = fixture();
+    let binding = binding(
+        &fixture,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut fixture, binding);
+    let mut legacy_json = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("export marked history"),
+    )
+    .expect("marked history JSON");
+    legacy_json["undo_stack"][0]["forward"]["kind"] = json!("apply_stacked_fold_document");
+    let expected_mark = legacy_json["undo_stack"][0]["speculative_unproven_fold_v1"].clone();
+
+    let history =
+        serde_json::from_value::<EditorHistoryV1>(legacy_json).expect("legacy marked wire");
+    let mut first_reopened =
+        reopen(&fixture.editor, history).expect("first legacy marked history reopen");
+    first_reopened
+        .undo(0)
+        .expect("move legacy marked entry to Redo");
+    let redo_history = first_reopened
+        .export_history_v1(fixture.project_id)
+        .expect("export legacy marked Redo stack");
+    let redo_json = serde_json::to_value(&redo_history).expect("legacy Redo JSON");
+    assert_eq!(
+        redo_json["redo_stack"][0]["forward"]["kind"],
+        json!("apply_stacked_fold_document")
+    );
+    assert_eq!(
+        redo_json["redo_stack"][0]["speculative_unproven_fold_v1"],
+        expected_mark
+    );
+
+    let mut redo_reopened =
+        reopen(&first_reopened, redo_history).expect("reopen legacy marked Redo stack");
+    assert_eq!(
+        redo_reopened
+            .speculative_unproven_fold_summary_v1()
+            .unapplied_redo
+            .awaiting_proof,
+        1
+    );
+    redo_reopened
+        .redo(0)
+        .expect("apply reopened legacy marked Redo entry");
+    assert!(
+        redo_reopened
+            .clone_predecessor_if_last_stacked_fold_v1()
+            .is_none(),
+        "reopened legacy Redo must remain nonauthority after Apply"
+    );
+    assert_eq!(
+        redo_reopened
+            .speculative_unproven_fold_summary_v1()
+            .applied
+            .awaiting_proof,
+        1
+    );
+
+    let reapplied_history = redo_reopened
+        .export_history_v1(fixture.project_id)
+        .expect("re-export reapplied legacy marked history");
+    let reapplied_json =
+        serde_json::to_value(&reapplied_history).expect("reapplied legacy history JSON");
+    assert_eq!(
+        reapplied_json["undo_stack"][0]["forward"]["kind"],
+        json!("apply_stacked_fold_document")
+    );
+    assert_eq!(
+        reapplied_json["undo_stack"][0]["speculative_unproven_fold_v1"],
+        expected_mark
+    );
+
+    let final_reopened =
+        reopen(&redo_reopened, reapplied_history).expect("second legacy marked history reopen");
+    assert!(
+        final_reopened
+            .clone_predecessor_if_last_stacked_fold_v1()
+            .is_none(),
+        "a second reopen must not elevate the legacy wire tag"
+    );
+    assert_eq!(
+        final_reopened
+            .speculative_unproven_fold_summary_v1()
+            .applied
+            .awaiting_proof,
+        1
+    );
+    let final_json = serde_json::to_value(
+        final_reopened
+            .export_history_v1(fixture.project_id)
+            .expect("export twice-reopened legacy history"),
+    )
+    .expect("twice-reopened legacy history JSON");
+    assert_eq!(
+        final_json["undo_stack"][0]["forward"]["kind"],
+        json!("apply_stacked_fold_document")
+    );
+    assert_eq!(
+        final_json["undo_stack"][0]["speculative_unproven_fold_v1"],
+        expected_mark
+    );
+}
+
+#[test]
+fn only_legacy_provenance_can_pair_a_beginner_command_with_a_speculative_mark() {
+    let mut fixture = fixture();
+    let binding = binding(
+        &fixture,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut fixture, binding);
+    let v2_history = fixture
+        .editor
+        .export_history_v1(fixture.project_id)
+        .expect("export V2 marked history");
+    let reopened_v2 =
+        reopen(&fixture.editor, v2_history.clone()).expect("V2 marked history remains supported");
+    assert!(
+        reopened_v2
+            .clone_predecessor_if_last_stacked_fold_v1()
+            .is_some()
+    );
+
+    let mut explicit_beginner = serde_json::to_value(v2_history).expect("marked history JSON");
+    explicit_beginner["undo_stack"][0]["forward"]["kind"] =
+        json!("apply_beginner_generated_document");
+    let history =
+        serde_json::from_value::<EditorHistoryV1>(explicit_beginner).expect("beginner marked wire");
+    assert!(matches!(
+        reopen(&fixture.editor, history),
+        Err(EditorHistoryErrorV1::InvalidSpeculativeUnprovenMetadata)
+    ));
+}
+
+#[test]
+fn legacy_marked_history_rejects_source_inverse_or_fingerprint_tampering() {
+    let mut fixture = fixture();
+    let binding = binding(
+        &fixture,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut fixture, binding);
+    let mut legacy = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("export marked history"),
+    )
+    .expect("history JSON");
+    legacy["undo_stack"][0]["forward"]["kind"] = json!("apply_stacked_fold_document");
+
+    let mut inverse_tampered = legacy.clone();
+    let source_x =
+        inverse_tampered["undo_stack"][0]["inverse"]["pattern"]["vertices"][0]["position"]["x"]
+            .as_f64()
+            .expect("source vertex x");
+    inverse_tampered["undo_stack"][0]["inverse"]["pattern"]["vertices"][0]["position"]["x"] =
+        json!(source_x + 0.25);
+    let history =
+        serde_json::from_value::<EditorHistoryV1>(inverse_tampered).expect("finite inverse wire");
+    assert!(reopen(&fixture.editor, history).is_err());
+
+    let mut fingerprint_tampered = legacy;
+    fingerprint_tampered["undo_stack"][0]["speculative_unproven_fold_v1"]["binding"]["source_geometry_fingerprint_sha256"] =
+        json!("0".repeat(64));
+    let history = serde_json::from_value::<EditorHistoryV1>(fingerprint_tampered)
+        .expect("well-shaped fingerprint wire");
+    assert!(matches!(
+        reopen(&fixture.editor, history),
+        Err(EditorHistoryErrorV1::InvalidSpeculativeUnprovenMetadata)
+    ));
+}
+
+#[test]
+fn legacy_marked_history_rejects_target_only_finite_forward_tampering() {
+    let mut fixture = fixture();
+    let binding = binding(
+        &fixture,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut fixture, binding);
+    let mut legacy = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("export marked history"),
+    )
+    .expect("marked history JSON");
+    legacy["undo_stack"][0]["forward"]["kind"] = json!("apply_stacked_fold_document");
+    legacy["undo_stack"][0]["forward"]["instruction_timeline"]["steps"][0]["pose"]["hinge_angles"]
+        [0]["angle_degrees"] = json!(91.0);
+
+    let history =
+        serde_json::from_value::<EditorHistoryV1>(legacy).expect("finite target-tampered wire");
+    assert!(matches!(
+        reopen(&fixture.editor, history),
+        Err(EditorHistoryErrorV1::CurrentDocumentMismatch)
+    ));
+}
+
+#[test]
 fn speculative_mark_is_coarse_and_legacy_wire_stays_unchanged() {
     let legacy = EditorState::new(CreasePattern::empty())
         .export_history_v1(ProjectId::new())

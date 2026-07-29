@@ -1,20 +1,24 @@
 use std::sync::Arc;
 
 use ori_collision::StackedFoldPathDiagnosticLimitsV1;
-use ori_domain::{
-    BeginnerDesignProfileV1, InstructionHingeAngle, InstructionPose, InstructionPoseModel,
-    InstructionStep, InstructionStepId, InstructionTimeline, InstructionVisual,
-    MIN_INSTRUCTION_DURATION_MS, ProjectId, ProjectLayerDocumentV1,
-};
 #[cfg(test)]
-use ori_domain::{CreasePattern, Paper};
+use ori_domain::Paper;
+use ori_domain::{
+    BeginnerDesignProfileV1, CreasePattern, DEFAULT_PROJECT_LAYER_ID, EdgeLayerAssignmentV1,
+    InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
+    InstructionStepId, InstructionTimeline, InstructionVisual, MAX_INSTRUCTION_HINGE_RECORDS,
+    MAX_INSTRUCTION_STEPS, MAX_LAYER_EDGE_ASSIGNMENTS, MIN_INSTRUCTION_DURATION_MS, ProjectId,
+    ProjectLayerDocumentV1, validate_instruction_timeline,
+    validate_project_layer_document_against_pattern_v1, validate_project_layer_document_v1,
+};
 use thiserror::Error;
 
 use crate::{
     AppliedPoseErrorV1, AppliedPoseLimitsV1, AppliedPoseV1, MAX_REVISION,
-    PreparedStackedFoldRequestedPoseV1, Revision, SpeculativeApproximateBlockingObservationV1,
-    SpeculativeUnprovenFoldBindingV1, SpeculativeUnprovenFoldMetadataErrorV1,
-    StackedFoldDocumentCommandV1, StackedFoldInitialLayerOrderV1,
+    PreparedStackedFoldRequestedPoseV1, Revision, SourceEdgeSubdivisionV1,
+    SpeculativeApproximateBlockingObservationV1, SpeculativeUnprovenFoldBindingV1,
+    SpeculativeUnprovenFoldMetadataErrorV1, StackedFoldDocumentCommandV1,
+    StackedFoldInitialLayerOrderV1,
     diagnose_stacked_fold_requested_path_with_initial_layer_order_v1, prepare_applied_pose_v1,
 };
 
@@ -84,6 +88,12 @@ pub enum SpeculativeUnprovenFoldTokenIssueErrorV1 {
     SourceGeometryFingerprintMismatch,
     #[error("the diagnostic paper thickness does not match the live editor")]
     SourcePaperThicknessMismatch,
+    #[error("the prepared paper presentation does not match the live editor")]
+    SourcePaperPresentationMismatch,
+    #[error("the target no longer preserves the live paper-edge ratio reference")]
+    TargetLengthDisplayReferenceInvalid,
+    #[error("the prepared initial pose does not match the live editor's semantic source pose")]
+    SourceAppliedPoseMismatch,
     #[error("the production bounded path diagnostic could not be reproduced")]
     PathDiagnosticUnavailable,
     #[error("a continuously certified path must use certified Apply")]
@@ -102,6 +112,26 @@ pub enum SpeculativeUnprovenFoldTokenIssueErrorV1 {
     TargetSealResourceCountOverflow,
     #[error("memory for the speculative target seal could not be reserved")]
     TargetSealAllocationFailed,
+    #[error(
+        "the speculative target instruction step count {actual} exceeds the supported maximum {maximum}"
+    )]
+    TargetInstructionTimelineStepLimitExceeded { actual: usize, maximum: usize },
+    #[error(
+        "the speculative target instruction hinge-record count {actual} exceeds the supported maximum {maximum}"
+    )]
+    TargetInstructionTimelineHingeRecordLimitExceeded { actual: usize, maximum: usize },
+    #[error("the speculative instruction step identity collides with the live timeline")]
+    TargetInstructionTimelineStepIdCollision,
+    #[error("the derived speculative target instruction timeline is invalid")]
+    InvalidTargetInstructionTimeline,
+    #[error(
+        "the transported target layer-assignment count {actual} exceeds the supported maximum {maximum}"
+    )]
+    TargetProjectLayerAssignmentLimitExceeded { actual: usize, maximum: usize },
+    #[error("the speculative fold would modify an edge on a locked project layer")]
+    LockedSourceProjectLayerWouldBeModified,
+    #[error("the derived speculative target project-layer document is invalid")]
+    InvalidTargetProjectLayers,
     #[error("the speculative target semantic pose is invalid: {0}")]
     InvalidTargetPose(#[from] AppliedPoseErrorV1),
 }
@@ -312,26 +342,22 @@ impl SpeculativeUnprovenTargetSealV1 {
                 })
                 .collect(),
         };
-        let mut instruction_timeline = source_instruction_timeline.clone();
-        instruction_timeline
-            .steps
-            .try_reserve(1)
-            .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
-        instruction_timeline.steps.push(InstructionStep {
-            id: InstructionStepId::new(),
-            title: "Stacked fold (awaiting proof)".to_owned(),
-            description: String::new(),
-            caution: String::new(),
-            duration_ms: MIN_INSTRUCTION_DURATION_MS,
-            visual: InstructionVisual::default(),
-            pose: persisted_pose,
-        });
         let candidate = geometry.candidate();
+        let instruction_timeline = append_speculative_instruction_step_v1(
+            source_instruction_timeline,
+            persisted_pose,
+            InstructionStepId::new(),
+        )?;
+        let project_layers = transport_project_layers_to_target_v1(
+            source_project_layers,
+            geometry.proof().source_edges(),
+            &candidate.pattern,
+        )?;
         let command = StackedFoldDocumentCommandV1::new(
             candidate.pattern.clone(),
             candidate.paper.clone(),
             instruction_timeline,
-            source_project_layers.clone(),
+            project_layers,
             Box::new(source_beginner_design_profile.clone()),
         );
         Ok(Self {
@@ -397,6 +423,201 @@ impl SpeculativeUnprovenTargetSealV1 {
     }
 }
 
+fn append_speculative_instruction_step_v1(
+    source: &InstructionTimeline,
+    persisted_pose: InstructionPose,
+    step_id: InstructionStepId,
+) -> Result<InstructionTimeline, SpeculativeUnprovenFoldTokenIssueErrorV1> {
+    let source_hinge_record_count = source.steps.iter().fold(0_usize, |total, step| {
+        total.saturating_add(step.pose.hinge_angles.len())
+    });
+    check_target_instruction_timeline_resource_counts_v1(
+        source.steps.len(),
+        source_hinge_record_count,
+        persisted_pose.hinge_angles.len(),
+    )?;
+    if source.steps.iter().any(|step| step.id == step_id) {
+        return Err(
+            SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineStepIdCollision,
+        );
+    }
+    validate_instruction_timeline(source)
+        .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetInstructionTimeline)?;
+
+    let target_step_count = source.steps.len().saturating_add(1);
+    let mut steps = Vec::new();
+    steps
+        .try_reserve_exact(target_step_count)
+        .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
+    steps.extend(source.steps.iter().cloned());
+    steps.push(InstructionStep {
+        id: step_id,
+        title: "Stacked fold (awaiting proof)".to_owned(),
+        description: String::new(),
+        caution: String::new(),
+        duration_ms: MIN_INSTRUCTION_DURATION_MS,
+        visual: InstructionVisual::default(),
+        pose: persisted_pose,
+    });
+    let target = InstructionTimeline { steps };
+    validate_instruction_timeline(&target)
+        .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetInstructionTimeline)?;
+    Ok(target)
+}
+
+fn check_target_instruction_timeline_resource_counts_v1(
+    source_step_count: usize,
+    source_hinge_record_count: usize,
+    target_hinge_record_count: usize,
+) -> Result<(), SpeculativeUnprovenFoldTokenIssueErrorV1> {
+    let target_step_count = source_step_count.saturating_add(1);
+    if target_step_count > MAX_INSTRUCTION_STEPS {
+        return Err(
+            SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineStepLimitExceeded {
+                actual: target_step_count,
+                maximum: MAX_INSTRUCTION_STEPS,
+            },
+        );
+    }
+
+    let target_total_hinge_record_count =
+        source_hinge_record_count.saturating_add(target_hinge_record_count);
+    if target_total_hinge_record_count > MAX_INSTRUCTION_HINGE_RECORDS {
+        return Err(
+            SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineHingeRecordLimitExceeded {
+                actual: target_total_hinge_record_count,
+                maximum: MAX_INSTRUCTION_HINGE_RECORDS,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn transport_project_layers_to_target_v1(
+    source: &ProjectLayerDocumentV1,
+    source_subdivisions: &[SourceEdgeSubdivisionV1],
+    target_pattern: &CreasePattern,
+) -> Result<ProjectLayerDocumentV1, SpeculativeUnprovenFoldTokenIssueErrorV1> {
+    validate_project_layer_document_v1(source)
+        .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers)?;
+
+    let default_layer = source
+        .layers
+        .iter()
+        .find(|layer| layer.id == DEFAULT_PROJECT_LAYER_ID)
+        .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers)?;
+    if default_layer.locked {
+        return Err(
+            SpeculativeUnprovenFoldTokenIssueErrorV1::LockedSourceProjectLayerWouldBeModified,
+        );
+    }
+
+    let mut previous_source_edge = None;
+    for subdivision in source_subdivisions {
+        let source_edge = subdivision.source_edge();
+        let source_edge_bytes = source_edge.canonical_bytes();
+        if source_edge_bytes == [0; 16]
+            || previous_source_edge.is_some_and(|previous| previous >= source_edge_bytes)
+        {
+            return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers);
+        }
+        previous_source_edge = Some(source_edge_bytes);
+
+        let target_edges = subdivision.target_edges();
+        if target_edges.is_empty()
+            || target_edges
+                .iter()
+                .any(|edge| edge.canonical_bytes() == [0; 16])
+            || target_edges
+                .windows(2)
+                .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
+            || target_edges
+                .binary_search_by_key(&source_edge_bytes, |edge| edge.canonical_bytes())
+                .is_err()
+        {
+            return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers);
+        }
+
+        if target_edges != [source_edge] {
+            let source_layer = source.layer_for_edge(source_edge);
+            let layer = source
+                .layers
+                .iter()
+                .find(|layer| layer.id == source_layer)
+                .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers)?;
+            if layer.locked {
+                return Err(
+                    SpeculativeUnprovenFoldTokenIssueErrorV1::LockedSourceProjectLayerWouldBeModified,
+                );
+            }
+        }
+    }
+
+    let mut target_assignment_count = 0_usize;
+    for assignment in &source.edge_assignments {
+        let subdivision_index = source_subdivisions
+            .binary_search_by_key(&assignment.edge.canonical_bytes(), |subdivision| {
+                subdivision.source_edge().canonical_bytes()
+            })
+            .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers)?;
+        target_assignment_count = target_assignment_count
+            .checked_add(source_subdivisions[subdivision_index].target_edges().len())
+            .unwrap_or(usize::MAX);
+        if target_assignment_count > MAX_LAYER_EDGE_ASSIGNMENTS {
+            return Err(
+                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetProjectLayerAssignmentLimitExceeded {
+                    actual: target_assignment_count,
+                    maximum: MAX_LAYER_EDGE_ASSIGNMENTS,
+                },
+            );
+        }
+    }
+
+    let mut layers = Vec::new();
+    layers
+        .try_reserve_exact(source.layers.len())
+        .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
+    layers.extend(source.layers.iter().cloned());
+
+    let mut edge_assignments = Vec::new();
+    edge_assignments
+        .try_reserve_exact(target_assignment_count)
+        .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
+    for assignment in &source.edge_assignments {
+        let subdivision_index = source_subdivisions
+            .binary_search_by_key(&assignment.edge.canonical_bytes(), |subdivision| {
+                subdivision.source_edge().canonical_bytes()
+            })
+            .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers)?;
+        edge_assignments.extend(
+            source_subdivisions[subdivision_index]
+                .target_edges()
+                .iter()
+                .copied()
+                .map(|edge| EdgeLayerAssignmentV1 {
+                    edge,
+                    layer: assignment.layer,
+                }),
+        );
+    }
+    edge_assignments.sort_unstable_by_key(|assignment| assignment.edge.canonical_bytes());
+    if edge_assignments
+        .windows(2)
+        .any(|pair| pair[0].edge == pair[1].edge)
+    {
+        return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers);
+    }
+
+    let target = ProjectLayerDocumentV1 {
+        schema_version: source.schema_version,
+        layers,
+        edge_assignments,
+    };
+    validate_project_layer_document_against_pattern_v1(&target, target_pattern)
+        .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers)?;
+    Ok(target)
+}
+
 fn check_target_seal_resource_counts_v1(
     hinge_count: usize,
 ) -> Result<(), SpeculativeUnprovenFoldTokenIssueErrorV1> {
@@ -459,6 +680,87 @@ fn lowercase_sha256(bytes: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ori_domain::{
+        Edge, EdgeId, EdgeKind, LayerContentKindV1, LayerId, LayerRecordV1, VertexId,
+    };
+
+    fn instruction_pose() -> InstructionPose {
+        InstructionPose {
+            model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+            source_model_fingerprint: "00".repeat(32),
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        }
+    }
+
+    fn instruction_step(id: InstructionStepId) -> InstructionStep {
+        InstructionStep {
+            id,
+            title: "Source step".to_owned(),
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: MIN_INSTRUCTION_DURATION_MS,
+            visual: InstructionVisual::default(),
+            pose: instruction_pose(),
+        }
+    }
+
+    fn source_edge_subdivisions(
+        mut records: Vec<(EdgeId, Vec<EdgeId>)>,
+    ) -> Vec<SourceEdgeSubdivisionV1> {
+        records.sort_unstable_by_key(|(source_edge, _)| source_edge.canonical_bytes());
+        records
+            .into_iter()
+            .map(|(source_edge, mut target_edges)| {
+                target_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+                SourceEdgeSubdivisionV1 {
+                    source_edge,
+                    target_edges,
+                }
+            })
+            .collect()
+    }
+
+    fn pattern_with_edges(edges: &[EdgeId]) -> CreasePattern {
+        CreasePattern {
+            vertices: Vec::new(),
+            edges: edges
+                .iter()
+                .copied()
+                .map(|id| Edge {
+                    id,
+                    start: VertexId::new(),
+                    end: VertexId::new(),
+                    kind: EdgeKind::Mountain,
+                })
+                .collect(),
+        }
+    }
+
+    fn project_layers_with_assignment(
+        source_edge: EdgeId,
+        assignment_layer_locked: bool,
+    ) -> ProjectLayerDocumentV1 {
+        let assignment_layer = LayerId::new();
+        ProjectLayerDocumentV1 {
+            schema_version: ProjectLayerDocumentV1::default().schema_version,
+            layers: vec![
+                LayerRecordV1::default_crease_pattern(),
+                LayerRecordV1 {
+                    id: assignment_layer,
+                    name: "Fold details".to_owned(),
+                    content_kind: LayerContentKindV1::CreasePattern,
+                    visible: false,
+                    locked: assignment_layer_locked,
+                    opacity: 0.5,
+                },
+            ],
+            edge_assignments: vec![EdgeLayerAssignmentV1 {
+                edge: source_edge,
+                layer: assignment_layer,
+            }],
+        }
+    }
 
     fn target_seal() -> SpeculativeUnprovenTargetSealV1 {
         let sheet = crate::create_rectangular_sheet(80.0, 60.0, false)
@@ -670,6 +972,226 @@ mod tests {
                     maximum: ori_foldability::DEFAULT_MAX_HINGES,
                 }
             )
+        );
+    }
+
+    #[test]
+    fn speculative_instruction_step_is_validated_before_sealing() {
+        let source_id = InstructionStepId::new();
+        let target_id = InstructionStepId::new();
+        let source = InstructionTimeline {
+            steps: vec![instruction_step(source_id)],
+        };
+
+        let target = append_speculative_instruction_step_v1(&source, instruction_pose(), target_id)
+            .expect("valid derived timeline");
+
+        assert_eq!(target.steps.len(), 2);
+        assert_eq!(target.steps[0], source.steps[0]);
+        assert_eq!(target.steps[1].id, target_id);
+        assert_eq!(
+            target.steps[1].pose.model,
+            InstructionPoseModel::AbsoluteHingeAnglesV1
+        );
+        validate_instruction_timeline(&target).expect("derived timeline remains valid");
+    }
+
+    #[test]
+    fn speculative_instruction_step_id_collision_is_explicit() {
+        let step_id = InstructionStepId::new();
+        let source = InstructionTimeline {
+            steps: vec![instruction_step(step_id)],
+        };
+
+        assert_eq!(
+            append_speculative_instruction_step_v1(&source, instruction_pose(), step_id),
+            Err(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineStepIdCollision)
+        );
+    }
+
+    #[test]
+    fn invalid_derived_instruction_pose_is_rejected_before_sealing() {
+        let mut invalid_pose = instruction_pose();
+        invalid_pose.source_model_fingerprint = "not-a-sha256".to_owned();
+
+        assert_eq!(
+            append_speculative_instruction_step_v1(
+                &InstructionTimeline::default(),
+                invalid_pose,
+                InstructionStepId::new(),
+            ),
+            Err(SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetInstructionTimeline)
+        );
+    }
+
+    #[test]
+    fn speculative_instruction_timeline_limits_are_explicit() {
+        assert_eq!(
+            check_target_instruction_timeline_resource_counts_v1(
+                MAX_INSTRUCTION_STEPS,
+                0,
+                0
+            ),
+            Err(
+                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineStepLimitExceeded {
+                    actual: MAX_INSTRUCTION_STEPS + 1,
+                    maximum: MAX_INSTRUCTION_STEPS,
+                }
+            )
+        );
+        assert_eq!(
+            check_target_instruction_timeline_resource_counts_v1(
+                0,
+                MAX_INSTRUCTION_HINGE_RECORDS,
+                1,
+            ),
+            Err(
+                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineHingeRecordLimitExceeded {
+                    actual: MAX_INSTRUCTION_HINGE_RECORDS + 1,
+                    maximum: MAX_INSTRUCTION_HINGE_RECORDS,
+                }
+            )
+        );
+        assert_eq!(
+            check_target_instruction_timeline_resource_counts_v1(usize::MAX, 0, 0),
+            Err(
+                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineStepLimitExceeded {
+                    actual: usize::MAX,
+                    maximum: MAX_INSTRUCTION_STEPS,
+                }
+            )
+        );
+        assert_eq!(
+            check_target_instruction_timeline_resource_counts_v1(0, usize::MAX, 1),
+            Err(
+                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineHingeRecordLimitExceeded {
+                    actual: usize::MAX,
+                    maximum: MAX_INSTRUCTION_HINGE_RECORDS,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn non_default_layer_assignment_is_inherited_by_every_descendant_edge() {
+        let source_edge = EdgeId::new();
+        let split_edge = EdgeId::new();
+        let implicit_source_edge = EdgeId::new();
+        let new_crease = EdgeId::new();
+        let source_layers = project_layers_with_assignment(source_edge, false);
+        let assignment_layer = source_layers.edge_assignments[0].layer;
+        let subdivisions = source_edge_subdivisions(vec![
+            (source_edge, vec![source_edge, split_edge]),
+            (implicit_source_edge, vec![implicit_source_edge]),
+        ]);
+        let target_pattern =
+            pattern_with_edges(&[source_edge, split_edge, implicit_source_edge, new_crease]);
+
+        let target =
+            transport_project_layers_to_target_v1(&source_layers, &subdivisions, &target_pattern)
+                .expect("layer assignments are transported");
+
+        assert_eq!(target.layers, source_layers.layers);
+        assert_eq!(target.layer_for_edge(source_edge), assignment_layer);
+        assert_eq!(target.layer_for_edge(split_edge), assignment_layer);
+        assert_eq!(
+            target.layer_for_edge(implicit_source_edge),
+            DEFAULT_PROJECT_LAYER_ID
+        );
+        assert_eq!(target.layer_for_edge(new_crease), DEFAULT_PROJECT_LAYER_ID);
+        assert!(
+            target
+                .edge_assignments
+                .windows(2)
+                .all(|pair| pair[0].edge.canonical_bytes() < pair[1].edge.canonical_bytes())
+        );
+        validate_project_layer_document_against_pattern_v1(&target, &target_pattern)
+            .expect("transported layer document remains valid");
+    }
+
+    #[test]
+    fn locked_assigned_edge_may_survive_but_may_not_be_subdivided() {
+        let source_edge = EdgeId::new();
+        let split_edge = EdgeId::new();
+        let new_crease = EdgeId::new();
+        let source_layers = project_layers_with_assignment(source_edge, true);
+        let unchanged = source_edge_subdivisions(vec![(source_edge, vec![source_edge])]);
+        let unchanged_pattern = pattern_with_edges(&[source_edge, new_crease]);
+        transport_project_layers_to_target_v1(&source_layers, &unchanged, &unchanged_pattern)
+            .expect("an unchanged edge on a locked layer is preserved");
+
+        let subdivided =
+            source_edge_subdivisions(vec![(source_edge, vec![source_edge, split_edge])]);
+        let subdivided_pattern = pattern_with_edges(&[source_edge, split_edge, new_crease]);
+        assert_eq!(
+            transport_project_layers_to_target_v1(&source_layers, &subdivided, &subdivided_pattern,),
+            Err(SpeculativeUnprovenFoldTokenIssueErrorV1::LockedSourceProjectLayerWouldBeModified)
+        );
+    }
+
+    #[test]
+    fn locked_default_layer_rejects_the_new_implicit_crease_assignment() {
+        let source_edge = EdgeId::new();
+        let new_crease = EdgeId::new();
+        let mut source_layers = ProjectLayerDocumentV1::default();
+        source_layers.layers[0].locked = true;
+        let subdivisions = source_edge_subdivisions(vec![(source_edge, vec![source_edge])]);
+        let target_pattern = pattern_with_edges(&[source_edge, new_crease]);
+
+        assert_eq!(
+            transport_project_layers_to_target_v1(&source_layers, &subdivisions, &target_pattern,),
+            Err(SpeculativeUnprovenFoldTokenIssueErrorV1::LockedSourceProjectLayerWouldBeModified)
+        );
+    }
+
+    #[test]
+    fn duplicate_descendant_assignment_is_rejected_instead_of_deduplicated() {
+        let first_source_edge = EdgeId::new();
+        let second_source_edge = EdgeId::new();
+        let shared_descendant = EdgeId::new();
+        let assignment_layer = LayerId::new();
+        let mut edge_assignments = vec![
+            EdgeLayerAssignmentV1 {
+                edge: first_source_edge,
+                layer: assignment_layer,
+            },
+            EdgeLayerAssignmentV1 {
+                edge: second_source_edge,
+                layer: assignment_layer,
+            },
+        ];
+        edge_assignments.sort_unstable_by_key(|assignment| assignment.edge.canonical_bytes());
+        let source_layers = ProjectLayerDocumentV1 {
+            schema_version: ProjectLayerDocumentV1::default().schema_version,
+            layers: vec![
+                LayerRecordV1::default_crease_pattern(),
+                LayerRecordV1 {
+                    id: assignment_layer,
+                    name: "Fold details".to_owned(),
+                    content_kind: LayerContentKindV1::CreasePattern,
+                    visible: true,
+                    locked: false,
+                    opacity: 1.0,
+                },
+            ],
+            edge_assignments,
+        };
+        let subdivisions = source_edge_subdivisions(vec![
+            (
+                first_source_edge,
+                vec![first_source_edge, shared_descendant],
+            ),
+            (
+                second_source_edge,
+                vec![second_source_edge, shared_descendant],
+            ),
+        ]);
+        let target_pattern =
+            pattern_with_edges(&[first_source_edge, second_source_edge, shared_descendant]);
+
+        assert_eq!(
+            transport_project_layers_to_target_v1(&source_layers, &subdivisions, &target_pattern,),
+            Err(SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers)
         );
     }
 }

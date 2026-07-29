@@ -890,6 +890,15 @@ struct HistoryEntry {
     inverse: Inverse,
     applied_pose: AppliedPoseHistoryTransition,
     speculative_unproven_fold: Option<SpeculativeUnprovenFoldMarkV1>,
+    persistence_provenance: HistoryEntryPersistenceProvenance,
+}
+
+/// Non-persisted provenance needed to preserve the semantics of an ambiguous
+/// legacy V1 history tag without turning it into runtime authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryEntryPersistenceProvenance {
+    Canonical,
+    LegacyApplyStackedFoldDocumentV1,
 }
 
 /// Runtime-pose behavior attached to one document-history edge.
@@ -1880,6 +1889,24 @@ struct RectangularBoundary {
     max_y: f64,
 }
 
+fn document_element_ids_are_unique_and_non_nil(pattern: &CreasePattern) -> bool {
+    let mut vertex_ids = HashSet::new();
+    if vertex_ids.try_reserve(pattern.vertices.len()).is_err()
+        || pattern.vertices.iter().any(|vertex| {
+            vertex.id.canonical_bytes() == [0; 16] || !vertex_ids.insert(vertex.id)
+        })
+    {
+        return false;
+    }
+
+    let mut edge_ids = HashSet::new();
+    edge_ids.try_reserve(pattern.edges.len()).is_ok()
+        && pattern
+            .edges
+            .iter()
+            .all(|edge| edge.id.canonical_bytes() != [0; 16] && edge_ids.insert(edge.id))
+}
+
 fn undirected_endpoints_match(
     first_start: VertexId,
     first_end: VertexId,
@@ -2643,6 +2670,7 @@ impl EditorState {
                 inverse,
                 applied_pose,
                 speculative_unproven_fold: None,
+                persistence_provenance: HistoryEntryPersistenceProvenance::Canonical,
             },
             self.history_entry_limit,
         );
@@ -5491,6 +5519,12 @@ impl EditorState {
                 ref beginner_design_profile,
             } => {
                 if paper.thickness_mm.to_bits() != self.paper.thickness_mm.to_bits()
+                    || paper.cutting_allowed != self.paper.cutting_allowed
+                    || paper.length_display_unit != self.paper.length_display_unit
+                    || paper.front != self.paper.front
+                    || paper.back != self.paper.back
+                    || !document_element_ids_are_unique_and_non_nil(pattern)
+                    || !self.length_display_reference_survives_document_replacement(pattern, paper)
                     || instruction_timeline.steps.len() <= self.instruction_timeline.steps.len()
                     || instruction_timeline.steps.len()
                         > self.instruction_timeline.steps.len().saturating_add(31)
@@ -8273,6 +8307,63 @@ impl EditorState {
         } else {
             Ok(())
         }
+    }
+
+    fn length_display_reference_survives_document_replacement(
+        &self,
+        target_pattern: &CreasePattern,
+        target_paper: &Paper,
+    ) -> bool {
+        let LengthDisplayUnit::PaperEdgeRatio { reference_edge } = self.paper.length_display_unit
+        else {
+            return target_paper.length_display_unit == self.paper.length_display_unit;
+        };
+        if target_paper.length_display_unit != self.paper.length_display_unit
+            || self
+                .validated_length_display_reference_edge_length(reference_edge)
+                .is_err()
+        {
+            return false;
+        }
+        let Some(source_edge) = self
+            .pattern
+            .edges
+            .iter()
+            .find(|edge| edge.id == reference_edge)
+        else {
+            return false;
+        };
+        let mut target_matches = target_pattern
+            .edges
+            .iter()
+            .filter(|edge| edge.id == reference_edge);
+        let Some(target_edge) = target_matches.next() else {
+            return false;
+        };
+        if target_matches.next().is_some()
+            || target_edge.kind != EdgeKind::Boundary
+            || !undirected_endpoints_match(
+                source_edge.start,
+                source_edge.end,
+                target_edge.start,
+                target_edge.end,
+            )
+            || target_paper.boundary_vertices.len() < 3
+        {
+            return false;
+        }
+        target_paper
+            .boundary_vertices
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(index, start)| {
+                let end = target_paper.boundary_vertices
+                    [(index + 1) % target_paper.boundary_vertices.len()];
+                undirected_endpoints_match(target_edge.start, target_edge.end, *start, end)
+            })
+            .count()
+            == 1
     }
 
     fn ensure_length_display_reference_survives_vertex_move(
@@ -17304,6 +17395,270 @@ mod tests {
         pose_editor.redo(2).unwrap();
         assert_eq!(pose_editor.current_applied_pose(), Some(&after_pose));
         assert_eq!(pose_editor.instruction_timeline(), &timeline);
+    }
+
+    #[test]
+    fn stacked_fold_preserves_paper_presentation_and_ratio_reference_edge() {
+        let (_, source_pattern, mut source_paper) = simple_rectangular_editor();
+        let reference = source_pattern
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Boundary)
+            .expect("rectangle boundary edge")
+            .clone();
+        source_paper.length_display_unit = LengthDisplayUnit::PaperEdgeRatio {
+            reference_edge: reference.id,
+        };
+        let mut editor = EditorState::with_paper(source_pattern.clone(), source_paper.clone());
+        let before = editor_state_snapshot(&editor);
+
+        let source_position = |id| {
+            source_pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == id)
+                .expect("source boundary vertex")
+                .position
+        };
+        let start = source_position(reference.start);
+        let end = source_position(reference.end);
+        let middle = VertexId::new();
+        let mut split_pattern = source_pattern.clone();
+        split_pattern.vertices.push(Vertex {
+            id: middle,
+            position: Point2::new((start.x + end.x) * 0.5, (start.y + end.y) * 0.5),
+        });
+        split_pattern
+            .edges
+            .iter_mut()
+            .find(|edge| edge.id == reference.id)
+            .expect("target keeps the source edge ID")
+            .end = middle;
+        split_pattern.edges.push(Edge {
+            id: EdgeId::new(),
+            start: middle,
+            end: reference.end,
+            kind: EdgeKind::Boundary,
+        });
+        let mut split_paper = source_paper.clone();
+        let boundary_index = split_paper
+            .boundary_vertices
+            .iter()
+            .copied()
+            .enumerate()
+            .find_map(|(index, first)| {
+                let second = split_paper.boundary_vertices
+                    [(index + 1) % split_paper.boundary_vertices.len()];
+                undirected_endpoints_match(reference.start, reference.end, first, second)
+                    .then_some(index)
+            })
+            .expect("referenced paper boundary segment");
+        split_paper
+            .boundary_vertices
+            .insert(boundary_index + 1, middle);
+        assert!(validate_crease_pattern(&split_pattern).is_valid());
+        assert!(validate_paper(&split_paper, &split_pattern).is_valid());
+        assert!(source_edges_preserved_by_exact_subdivision(
+            &source_pattern,
+            &split_pattern,
+        ));
+        let split_timeline = InstructionTimeline {
+            steps: vec![instruction_step(
+                InstructionStepId::new(),
+                "split ratio reference",
+                crate::fold_model_fingerprint::fold_model_fingerprint_v1(
+                    &split_pattern,
+                    &split_paper,
+                ),
+            )],
+        };
+        assert_eq!(
+            editor.execute_stacked_fold_document(
+                0,
+                split_pattern,
+                split_paper,
+                split_timeline,
+                ProjectLayerDocumentV1::default(),
+                runtime_pose(0.0),
+            ),
+            Err(CommandError::InvalidStackedFoldDocument)
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+
+        let mut duplicate_vertex_pattern = source_pattern.clone();
+        duplicate_vertex_pattern.vertices.push(Vertex {
+            id: reference.start,
+            position: Point2::new(
+                (start.x + end.x) * 0.5 + 0.25,
+                (start.y + end.y) * 0.5 + 0.25,
+            ),
+        });
+        assert!(validate_crease_pattern(&duplicate_vertex_pattern).is_valid());
+        assert!(validate_paper(&source_paper, &duplicate_vertex_pattern).is_valid());
+        assert!(source_edges_preserved_by_exact_subdivision(
+            &source_pattern,
+            &duplicate_vertex_pattern,
+        ));
+        assert!(!document_element_ids_are_unique_and_non_nil(
+            &duplicate_vertex_pattern,
+        ));
+        let mut duplicate_edge_pattern = source_pattern.clone();
+        duplicate_edge_pattern.edges[1].id = duplicate_edge_pattern.edges[0].id;
+        assert!(!document_element_ids_are_unique_and_non_nil(
+            &duplicate_edge_pattern,
+        ));
+        let nil_vertex: VertexId =
+            serde_json::from_str("\"00000000-0000-0000-0000-000000000000\"")
+                .expect("nil vertex fixture");
+        let mut nil_vertex_pattern = source_pattern.clone();
+        nil_vertex_pattern.vertices[0].id = nil_vertex;
+        assert!(!document_element_ids_are_unique_and_non_nil(
+            &nil_vertex_pattern,
+        ));
+        let nil_edge: EdgeId =
+            serde_json::from_str("\"00000000-0000-0000-0000-000000000000\"")
+                .expect("nil edge fixture");
+        let mut nil_edge_pattern = source_pattern.clone();
+        nil_edge_pattern.edges[0].id = nil_edge;
+        assert!(!document_element_ids_are_unique_and_non_nil(
+            &nil_edge_pattern,
+        ));
+        let duplicate_vertex_timeline = InstructionTimeline {
+            steps: vec![instruction_step(
+                InstructionStepId::new(),
+                "duplicate target vertex identity",
+                crate::fold_model_fingerprint::fold_model_fingerprint_v1(
+                    &duplicate_vertex_pattern,
+                    &source_paper,
+                ),
+            )],
+        };
+        assert_eq!(
+            editor.execute_stacked_fold_document(
+                0,
+                duplicate_vertex_pattern,
+                source_paper.clone(),
+                duplicate_vertex_timeline,
+                ProjectLayerDocumentV1::default(),
+                runtime_pose(0.0),
+            ),
+            Err(CommandError::InvalidStackedFoldDocument)
+        );
+        assert_eq!(editor_state_snapshot(&editor), before);
+
+        let mut semantically_equivalent_pattern = source_pattern.clone();
+        let equivalent_reference = semantically_equivalent_pattern
+            .edges
+            .iter_mut()
+            .find(|edge| edge.id == reference.id)
+            .expect("equivalent target reference edge");
+        std::mem::swap(
+            &mut equivalent_reference.start,
+            &mut equivalent_reference.end,
+        );
+        let mut semantically_equivalent_paper = source_paper.clone();
+        let boundary_index = semantically_equivalent_paper
+            .boundary_vertices
+            .iter()
+            .copied()
+            .enumerate()
+            .find_map(|(index, first)| {
+                let second = semantically_equivalent_paper.boundary_vertices
+                    [(index + 1) % semantically_equivalent_paper.boundary_vertices.len()];
+                undirected_endpoints_match(reference.start, reference.end, first, second)
+                    .then_some(index)
+            })
+            .expect("equivalent referenced paper boundary segment");
+        semantically_equivalent_paper
+            .boundary_vertices
+            .rotate_left(boundary_index + 1);
+        assert!(validate_crease_pattern(&semantically_equivalent_pattern).is_valid());
+        assert!(
+            validate_paper(
+                &semantically_equivalent_paper,
+                &semantically_equivalent_pattern,
+            )
+            .is_valid()
+        );
+        let equivalent_timeline = InstructionTimeline {
+            steps: vec![instruction_step(
+                InstructionStepId::new(),
+                "preserve ratio reference",
+                crate::fold_model_fingerprint::fold_model_fingerprint_v1(
+                    &semantically_equivalent_pattern,
+                    &semantically_equivalent_paper,
+                ),
+            )],
+        };
+        editor
+            .execute_stacked_fold_document(
+                0,
+                semantically_equivalent_pattern,
+                semantically_equivalent_paper,
+                equivalent_timeline,
+                ProjectLayerDocumentV1::default(),
+                runtime_pose(0.0),
+            )
+            .expect("orientation and cyclic boundary order preserve the ratio reference");
+
+        let mut cutting_changed = editor.paper().clone();
+        cutting_changed.cutting_allowed = !cutting_changed.cutting_allowed;
+        let cutting_timeline = InstructionTimeline {
+            steps: vec![
+                editor.instruction_timeline().steps[0].clone(),
+                instruction_step(
+                    InstructionStepId::new(),
+                    "replace cutting policy",
+                    crate::fold_model_fingerprint::fold_model_fingerprint_v1(
+                        editor.pattern(),
+                        &cutting_changed,
+                    ),
+                ),
+            ],
+        };
+        let after_equivalent_apply = editor_state_snapshot(&editor);
+        assert_eq!(
+            editor.execute_stacked_fold_document(
+                1,
+                editor.pattern().clone(),
+                cutting_changed,
+                cutting_timeline,
+                editor.project_layers().clone(),
+                runtime_pose(0.0),
+            ),
+            Err(CommandError::InvalidStackedFoldDocument)
+        );
+        assert_eq!(editor_state_snapshot(&editor), after_equivalent_apply);
+
+        let mut presentation_changed = source_paper.clone();
+        presentation_changed.front.color.red ^= 1;
+        let presentation_timeline = InstructionTimeline {
+            steps: vec![instruction_step(
+                InstructionStepId::new(),
+                "replace paper presentation",
+                crate::fold_model_fingerprint::fold_model_fingerprint_v1(
+                    &source_pattern,
+                    &presentation_changed,
+                ),
+            )],
+        };
+        assert_eq!(
+            editor.execute_stacked_fold_document(
+                1,
+                source_pattern,
+                presentation_changed,
+                InstructionTimeline {
+                    steps: vec![
+                        editor.instruction_timeline().steps[0].clone(),
+                        presentation_timeline.steps[0].clone(),
+                    ],
+                },
+                ProjectLayerDocumentV1::default(),
+                runtime_pose(0.0),
+            ),
+            Err(CommandError::InvalidStackedFoldDocument)
+        );
+        assert_eq!(editor_state_snapshot(&editor), after_equivalent_apply);
     }
 
     #[test]

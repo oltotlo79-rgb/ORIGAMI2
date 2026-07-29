@@ -1907,8 +1907,28 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
 fn entry_to_wire(entry: &HistoryEntry) -> Result<HistoryEntryV1, EditorHistoryErrorV1> {
     validate_command_finite(&entry.forward)?;
     validate_inverse_finite(&entry.inverse)?;
+    let forward = match (entry.persistence_provenance, &entry.forward) {
+        (
+            HistoryEntryPersistenceProvenance::LegacyApplyStackedFoldDocumentV1,
+            Command::ApplyBeginnerGeneratedDocument {
+                pattern,
+                paper,
+                instruction_timeline,
+                project_layers,
+                beginner_design_profile,
+            },
+        ) => CommandV1::ApplyStackedFoldDocument {
+            pattern: pattern.clone(),
+            paper: paper.clone(),
+            instruction_timeline: instruction_timeline.clone(),
+            project_layers: project_layers.clone(),
+            beginner_design_profile: beginner_design_profile.clone(),
+        },
+        (HistoryEntryPersistenceProvenance::Canonical, _) => command_to_wire(&entry.forward)?,
+        _ => return Err(EditorHistoryErrorV1::EncodingFailed),
+    };
     Ok(HistoryEntryV1 {
-        forward: command_to_wire(&entry.forward)?,
+        forward,
         inverse: inverse_to_wire(&entry.inverse)?,
         speculative_unproven_fold_v1: entry.speculative_unproven_fold.as_ref().map(mark_to_wire),
     })
@@ -1916,7 +1936,21 @@ fn entry_to_wire(entry: &HistoryEntry) -> Result<HistoryEntryV1, EditorHistoryEr
 
 fn entry_from_wire(
     entry: HistoryEntryV1,
-) -> Result<(Command, Inverse, Option<SpeculativeUnprovenFoldMarkV1>), EditorHistoryErrorV1> {
+) -> Result<
+    (
+        Command,
+        Inverse,
+        Option<SpeculativeUnprovenFoldMarkV1>,
+        HistoryEntryPersistenceProvenance,
+    ),
+    EditorHistoryErrorV1,
+> {
+    let persistence_provenance =
+        if matches!(&entry.forward, CommandV1::ApplyStackedFoldDocument { .. }) {
+            HistoryEntryPersistenceProvenance::LegacyApplyStackedFoldDocumentV1
+        } else {
+            HistoryEntryPersistenceProvenance::Canonical
+        };
     let forward = command_from_wire(entry.forward)?;
     let inverse = inverse_from_wire(entry.inverse)?;
     let speculative_unproven_fold = entry
@@ -1925,7 +1959,12 @@ fn entry_from_wire(
         .transpose()?;
     validate_command_finite(&forward)?;
     validate_inverse_finite(&inverse)?;
-    Ok((forward, inverse, speculative_unproven_fold))
+    Ok((
+        forward,
+        inverse,
+        speculative_unproven_fold,
+        persistence_provenance,
+    ))
 }
 
 fn finite_point(point: Point2) -> bool {
@@ -2780,6 +2819,7 @@ fn replay_forward(
         inverse,
         applied_pose,
         speculative_unproven_fold: None,
+        persistence_provenance: HistoryEntryPersistenceProvenance::Canonical,
     })
 }
 
@@ -2973,18 +3013,19 @@ impl EditorState {
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut base = current.clone();
-        for (_, inverse, _) in undo_wire.iter().rev() {
+        for (_, inverse, _, _) in undo_wire.iter().rev() {
             apply_persisted_inverse(&mut base, inverse)?;
         }
 
         let mut rebuilt = base;
         let mut undo_stack = Vec::with_capacity(undo_wire.len());
-        for (forward, expected_inverse, mark) in undo_wire {
+        for (forward, expected_inverse, mark, persistence_provenance) in undo_wire {
             let mut generated = replay_forward(&mut rebuilt, forward)?;
             if !inverse_is_exact(&generated.inverse, &expected_inverse)? {
                 return Err(EditorHistoryErrorV1::InverseMismatch);
             }
             generated.speculative_unproven_fold = mark;
+            generated.persistence_provenance = persistence_provenance;
             undo_stack.push(generated);
         }
         if editor_document_parts_bytes(&rebuilt)? != expected_current {
@@ -2993,12 +3034,14 @@ impl EditorState {
 
         let mut redo_cursor = current.clone();
         let mut redo_application_order = Vec::with_capacity(redo_wire.len());
-        for (forward, expected_inverse, mark) in redo_wire.into_iter().rev() {
+        for (forward, expected_inverse, mark, persistence_provenance) in redo_wire.into_iter().rev()
+        {
             let mut generated = replay_forward(&mut redo_cursor, forward)?;
             if !inverse_is_exact(&generated.inverse, &expected_inverse)? {
                 return Err(EditorHistoryErrorV1::InverseMismatch);
             }
             generated.speculative_unproven_fold = mark;
+            generated.persistence_provenance = persistence_provenance;
             redo_application_order.push(generated);
         }
         redo_application_order.reverse();
@@ -3622,6 +3665,9 @@ mod tests {
         let sheet = crate::create_rectangular_sheet(80.0, 60.0, false).unwrap();
         let (source_pattern, mut paper) = sheet.into_parts();
         paper.thickness_mm = 0.1;
+        paper.length_display_unit = LengthDisplayUnit::PaperEdgeRatio {
+            reference_edge: source_pattern.edges[0].id,
+        };
         let mut target_pattern = source_pattern.clone();
         let hinge = EdgeId::new();
         target_pattern.edges.push(Edge {

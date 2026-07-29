@@ -4,6 +4,7 @@ use crate::stacked_fold::{
     PreparedStackedFoldRequestedPoseV1, SpeculativeUnprovenFoldTokenIssueErrorV1,
     SpeculativeUnprovenFoldTokenV1, StackedFoldInitialLayerOrderV1,
     issue_speculative_unproven_fold_token_v1,
+    prepared_stacked_fold_request_matches_applied_source_pose_v1,
 };
 
 use super::{
@@ -50,6 +51,33 @@ impl EditorState {
         }
         if paper_thickness_mm.to_bits() != self.paper().thickness_mm.to_bits() {
             return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::SourcePaperThicknessMismatch);
+        }
+        let requested_candidate = requested.initial().target().geometry().candidate();
+        let requested_paper = &requested_candidate.paper;
+        if requested_paper.cutting_allowed != self.paper().cutting_allowed
+            || requested_paper.length_display_unit != self.paper().length_display_unit
+            || requested_paper.front != self.paper().front
+            || requested_paper.back != self.paper().back
+        {
+            return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::SourcePaperPresentationMismatch);
+        }
+        if !self.length_display_reference_survives_document_replacement(
+            &requested_candidate.pattern,
+            requested_paper,
+        ) {
+            return Err(
+                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetLengthDisplayReferenceInvalid,
+            );
+        }
+        if !self.current_applied_pose().is_some_and(|current| {
+            prepared_stacked_fold_request_matches_applied_source_pose_v1(
+                requested,
+                self.pattern(),
+                self.paper(),
+                current,
+            )
+        }) {
+            return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseMismatch);
         }
         issue_speculative_unproven_fold_token_v1(
             self.runtime_instance_anchor.clone(),

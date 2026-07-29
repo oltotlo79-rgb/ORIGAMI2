@@ -1557,6 +1557,7 @@ fn prepare_face_lineage_from_geometry_v1(
     }
     if input.source_paper.thickness_mm.to_bits() != input.target_paper.thickness_mm.to_bits()
         || input.source_paper.cutting_allowed != input.target_paper.cutting_allowed
+        || input.source_paper.length_display_unit != input.target_paper.length_display_unit
         || input.source_paper.front != input.target_paper.front
         || input.source_paper.back != input.target_paper.back
     {
@@ -2253,6 +2254,164 @@ pub fn prepare_stacked_fold_initial_pose_v1(
         }
     }
     Ok(PreparedStackedFoldInitialPoseV1 { target, pose })
+}
+
+/// Reconstructs the live source pose and verifies that the opaque prepared
+/// request's initial target pose is its exact lineage lift.
+///
+/// This is an issuance-time check for one-shot speculative authority. It does
+/// not create a proof or mutation capability on its own.
+pub(crate) fn prepared_stacked_fold_request_matches_applied_source_pose_v1(
+    requested: &PreparedStackedFoldRequestedPoseV1,
+    source_pattern: &CreasePattern,
+    source_paper: &Paper,
+    current: &AppliedPoseV1,
+) -> bool {
+    if current.model_id() != APPLIED_POSE_MODEL_ID_V1 {
+        return false;
+    }
+    let initial = requested.initial();
+    let proof = initial.target().geometry().proof();
+    let lineage = proof.lineage();
+    if fold_model_fingerprint_v1(source_pattern, source_paper) != lineage.source_fingerprint() {
+        return false;
+    }
+    let Ok(topology) = simulation_snapshot(
+        lineage.identity_namespace(),
+        lineage.source_revision(),
+        source_paper,
+        source_pattern,
+        FaceLineageTopology::Source,
+    ) else {
+        return false;
+    };
+    let Ok(source_model) = MaterialTreeKinematicsModel::prepare(
+        source_pattern,
+        source_paper,
+        &topology,
+        TreeKinematicsLimits::default(),
+    ) else {
+        return false;
+    };
+    if source_model.face_ids() != current.face_ids()
+        || source_model.hinges().len() != current.hinge_angles().len()
+        || !source_model
+            .hinges()
+            .iter()
+            .zip(current.hinge_angles())
+            .all(|(hinge, angle)| hinge.edge() == angle.edge())
+    {
+        return false;
+    }
+    let Ok(source_angles) = current
+        .hinge_angles()
+        .iter()
+        .map(|angle| HingeAngle::new(angle.edge(), angle.angle_degrees()))
+        .collect::<Result<Vec<_>, _>>()
+        .and_then(CanonicalHingeAngles::new)
+    else {
+        return false;
+    };
+    // Native tree kinematics represents a hinge-free source without a fixed
+    // face, while the semantic desktop pose keeps its only material face as
+    // the anchor. Normalize only for the native solve, then compare the two
+    // representations explicitly below.
+    let solve_fixed_face = if source_model.hinges().is_empty() {
+        None
+    } else {
+        current.fixed_face()
+    };
+    let Ok(source_pose) = source_model.solve(solve_fixed_face, &source_angles) else {
+        return false;
+    };
+    let source_fixed_matches = source_pose.fixed_face() == current.fixed_face()
+        || (source_pose.hinge_angles().is_empty()
+            && source_pose.fixed_face().is_none()
+            && current
+                .fixed_face()
+                .is_some_and(|face| source_pose.face_ids() == [face]));
+    if !source_fixed_matches
+        || source_pose.face_ids() != current.face_ids()
+        || source_pose.hinge_angles().len() != current.hinge_angles().len()
+        || !source_pose
+            .hinge_angles()
+            .iter()
+            .zip(current.hinge_angles())
+            .all(|(native, semantic)| {
+                native.edge() == semantic.edge()
+                    && native.angle_degrees().to_bits() == semantic.angle_degrees().to_bits()
+            })
+    {
+        return false;
+    }
+
+    let source_angle_by_edge = source_pose
+        .hinge_angles()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees()))
+        .collect::<HashMap<_, _>>();
+    let mut expected_target_angles = HashMap::<EdgeId, f64>::new();
+    for subdivision in proof.source_edges() {
+        if let Some(angle) = source_angle_by_edge
+            .get(&subdivision.source_edge())
+            .copied()
+        {
+            for edge in subdivision.target_edges() {
+                expected_target_angles.insert(*edge, angle);
+            }
+        }
+    }
+    for subdivision in proof.expected_creases() {
+        for edge in subdivision.target_edges() {
+            expected_target_angles.insert(*edge, 0.0);
+        }
+    }
+    let target_pose = initial.pose();
+    if target_pose.hinge_angles().len() != initial.target().model().hinges().len()
+        || !initial
+            .target()
+            .model()
+            .hinges()
+            .iter()
+            .zip(target_pose.hinge_angles())
+            .all(|(hinge, actual)| {
+                hinge.edge() == actual.edge()
+                    && expected_target_angles
+                        .get(&hinge.edge())
+                        .is_some_and(|expected| {
+                            expected.to_bits() == actual.angle_degrees().to_bits()
+                        })
+            })
+    {
+        return false;
+    }
+    let expected_fixed_face = match source_pose.fixed_face() {
+        None if initial.target().model().hinges().is_empty() => None,
+        None => lineage
+            .records()
+            .first()
+            .and_then(|record| record.descendants().first())
+            .map(|face| face.face_id),
+        Some(source_fixed) => lineage
+            .records()
+            .iter()
+            .find(|record| record.source().face_id == source_fixed)
+            .and_then(|record| record.descendants().first())
+            .map(|face| face.face_id),
+    };
+    if expected_fixed_face != target_pose.fixed_face() {
+        return false;
+    }
+    lineage.records().iter().all(|record| {
+        let source_face = record.source().face_id;
+        source_pose
+            .face_transform(source_face)
+            .is_some_and(|source| {
+                record.descendants().iter().all(|descendant| {
+                    target_pose.face_transform(descendant.face_id) == Some(source)
+                })
+            })
+    })
 }
 
 /// Lifts the authenticated source embedding onto a proved target graph and
@@ -3497,11 +3656,12 @@ fn current_applied_pose_matches_reconstructed(
 ) -> bool {
     current.model_id() == target.pose_model_id
         && current.face_ids().len() == target.material_faces.len()
-        && current
-            .face_ids()
-            .iter()
-            .zip(&target.material_faces)
-            .all(|(current, target)| *current == target.face_id)
+        && current.face_ids().iter().all(|current| {
+            target
+                .material_faces
+                .iter()
+                .any(|target| *current == target.face_id)
+        })
         && current.fixed_face() == target.fixed_face
         && current.hinge_angles().len() == target.hinge_angles.len()
         && current
@@ -5477,7 +5637,7 @@ mod content_addressed_id_tests;
 
 #[cfg(test)]
 mod tests {
-    use ori_domain::{Edge, EdgeId, EdgeKind, Vertex};
+    use ori_domain::{Edge, EdgeId, EdgeKind, LengthDisplayUnit, Vertex};
     use ori_foldability::{
         GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, analyze_global_flat_foldability,
     };
@@ -6324,6 +6484,146 @@ mod tests {
         ));
         let requested =
             prepare_stacked_fold_requested_pose_v1(initial, 37.0).expect("solve requested pose");
+        let source_applied_pose = crate::prepare_applied_pose_v1(
+            source_model.face_ids(),
+            &[],
+            Some(source_model.face_ids()[0]),
+            &[],
+            crate::AppliedPoseLimitsV1::default(),
+        )
+        .expect("prepare exact source semantic pose");
+        assert!(
+            prepared_stacked_fold_request_matches_applied_source_pose_v1(
+                &requested,
+                &fixture.source_pattern,
+                &fixture.source_paper,
+                &source_applied_pose,
+            )
+        );
+        let unrelated_face = FaceId::new();
+        let unrelated_pose = crate::prepare_applied_pose_v1(
+            &[unrelated_face],
+            &[],
+            None,
+            &[],
+            crate::AppliedPoseLimitsV1::default(),
+        )
+        .expect("prepare an unrelated semantic pose");
+        assert!(
+            !prepared_stacked_fold_request_matches_applied_source_pose_v1(
+                &requested,
+                &fixture.source_pattern,
+                &fixture.source_paper,
+                &unrelated_pose,
+            )
+        );
+        let mut issuing_editor = crate::EditorState::with_paper(
+            fixture.source_pattern.clone(),
+            fixture.source_paper.clone(),
+        );
+        for revision in 0..fixture.source_revision {
+            issuing_editor
+                .execute(
+                    revision,
+                    crate::Command::UpdateProjectMemo {
+                        memo: format!("source revision {}", revision + 1),
+                    },
+                )
+                .expect("advance the live editor to the prepared source revision");
+        }
+        issuing_editor.adopt_current_applied_pose(source_applied_pose.clone());
+        assert_eq!(
+            issuing_editor
+                .issue_speculative_unproven_fold_token_v1(
+                    ProjectId::new(),
+                    &requested,
+                    &initial_layer_order,
+                    1,
+                    ProjectId::new(),
+                    fixture.source_paper.thickness_mm,
+                )
+                .err(),
+            Some(SpeculativeUnprovenFoldTokenIssueErrorV1::PathDiagnosticUnavailable)
+        );
+
+        let mut front_changed = fixture.source_paper.clone();
+        front_changed.front.color.red ^= 1;
+        let mut back_changed = fixture.source_paper.clone();
+        back_changed.back.color.blue ^= 1;
+        let mut display_unit_changed = fixture.source_paper.clone();
+        display_unit_changed.length_display_unit = LengthDisplayUnit::Centimeter;
+        for live_paper in [front_changed, back_changed, display_unit_changed] {
+            let mut presentation_drifted_editor =
+                crate::EditorState::with_paper(fixture.source_pattern.clone(), live_paper);
+            for revision in 0..fixture.source_revision {
+                presentation_drifted_editor
+                    .execute(
+                        revision,
+                        crate::Command::UpdateProjectMemo {
+                            memo: format!("source revision {}", revision + 1),
+                        },
+                    )
+                    .expect("advance the presentation-drifted editor");
+            }
+            presentation_drifted_editor.adopt_current_applied_pose(source_applied_pose.clone());
+            assert_eq!(
+                presentation_drifted_editor
+                    .issue_speculative_unproven_fold_token_v1(
+                        ProjectId::new(),
+                        &requested,
+                        &initial_layer_order,
+                        1,
+                        ProjectId::new(),
+                        fixture.source_paper.thickness_mm,
+                    )
+                    .err(),
+                Some(SpeculativeUnprovenFoldTokenIssueErrorV1::SourcePaperPresentationMismatch)
+            );
+        }
+
+        let mut cutting_policy_changed = fixture.source_paper.clone();
+        cutting_policy_changed.cutting_allowed = !cutting_policy_changed.cutting_allowed;
+        let mut cutting_policy_drifted_editor =
+            crate::EditorState::with_paper(fixture.source_pattern.clone(), cutting_policy_changed);
+        for revision in 0..fixture.source_revision {
+            cutting_policy_drifted_editor
+                .execute(
+                    revision,
+                    crate::Command::UpdateProjectMemo {
+                        memo: format!("source revision {}", revision + 1),
+                    },
+                )
+                .expect("advance the cutting-policy-drifted editor");
+        }
+        cutting_policy_drifted_editor.adopt_current_applied_pose(source_applied_pose.clone());
+        assert_eq!(
+            cutting_policy_drifted_editor
+                .issue_speculative_unproven_fold_token_v1(
+                    ProjectId::new(),
+                    &requested,
+                    &initial_layer_order,
+                    1,
+                    ProjectId::new(),
+                    fixture.source_paper.thickness_mm,
+                )
+                .err(),
+            Some(SpeculativeUnprovenFoldTokenIssueErrorV1::SourceGeometryFingerprintMismatch)
+        );
+
+        issuing_editor.adopt_current_applied_pose(unrelated_pose);
+        assert_eq!(
+            issuing_editor
+                .issue_speculative_unproven_fold_token_v1(
+                    ProjectId::new(),
+                    &requested,
+                    &initial_layer_order,
+                    1,
+                    ProjectId::new(),
+                    fixture.source_paper.thickness_mm,
+                )
+                .err(),
+            Some(SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseMismatch)
+        );
         assert!(
             requested
                 .initial()
@@ -8056,6 +8356,17 @@ mod tests {
         };
         assert_eq!(
             prepare_face_lineage_v1(paper_change, FaceLineageLimits::default()),
+            Err(FaceLineageError::PaperPropertiesChanged)
+        );
+
+        let mut changed_display_unit = fixture.target_paper.clone();
+        changed_display_unit.length_display_unit = LengthDisplayUnit::Centimeter;
+        let display_unit_change = FaceLineageInput {
+            target_paper: &changed_display_unit,
+            ..fixture.input()
+        };
+        assert_eq!(
+            prepare_face_lineage_v1(display_unit_change, FaceLineageLimits::default()),
             Err(FaceLineageError::PaperPropertiesChanged)
         );
     }

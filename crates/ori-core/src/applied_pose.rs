@@ -152,6 +152,7 @@ impl AppliedHingeAngleV1 {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedPoseV1 {
     model: AppliedPoseModelV1,
+    face_ids: Vec<FaceId>,
     fixed_face: Option<FaceId>,
     hinge_angles: Vec<AppliedHingeAngleV1>,
 }
@@ -172,6 +173,16 @@ impl AppliedPoseV1 {
         self.fixed_face
     }
 
+    /// Returns the complete canonical face registry used to validate this
+    /// semantic pose.
+    ///
+    /// Retaining the registry prevents a pose prepared for one face set from
+    /// being substituted into an otherwise shape-compatible target.
+    #[must_use]
+    pub fn face_ids(&self) -> &[FaceId] {
+        &self.face_ids
+    }
+
     #[must_use]
     pub fn hinge_angles(&self) -> &[AppliedHingeAngleV1] {
         &self.hinge_angles
@@ -187,6 +198,13 @@ impl AppliedPoseV1 {
     /// Returns [`AppliedPoseErrorV1::AllocationFailed`] when storage for the
     /// complete hinge-angle vector cannot be reserved.
     pub fn try_clone(&self) -> Result<Self, AppliedPoseErrorV1> {
+        let mut face_ids = Vec::new();
+        face_ids
+            .try_reserve_exact(self.face_ids.len())
+            .map_err(|_| AppliedPoseErrorV1::AllocationFailed {
+                resource: AppliedPoseResourceV1::Faces,
+            })?;
+        face_ids.extend_from_slice(&self.face_ids);
         let mut hinge_angles = Vec::new();
         hinge_angles
             .try_reserve_exact(self.hinge_angles.len())
@@ -196,6 +214,7 @@ impl AppliedPoseV1 {
         hinge_angles.extend_from_slice(&self.hinge_angles);
         Ok(Self {
             model: self.model,
+            face_ids,
             fixed_face: self.fixed_face,
             hinge_angles,
         })
@@ -308,6 +327,14 @@ fn prepare_applied_pose_inner(
         }
     }
 
+    let mut owned_faces = Vec::new();
+    owned_faces
+        .try_reserve_exact(expected_faces.len())
+        .map_err(|_| AppliedPoseErrorV1::AllocationFailed {
+            resource: AppliedPoseResourceV1::Faces,
+        })?;
+    owned_faces.extend_from_slice(expected_faces);
+
     let mut owned_angles = Vec::new();
     owned_angles
         .try_reserve_exact(hinge_angles.len())
@@ -327,6 +354,7 @@ fn prepare_applied_pose_inner(
 
     Ok(AppliedPoseV1 {
         model,
+        face_ids: owned_faces,
         fixed_face,
         hinge_angles: owned_angles,
     })
@@ -510,6 +538,7 @@ mod tests {
         .expect("valid complete pose");
 
         assert_eq!(pose.model_id(), APPLIED_POSE_MODEL_ID_V1);
+        assert_eq!(pose.face_ids(), faces);
         assert_eq!(pose.fixed_face(), Some(faces[1]));
         assert_eq!(pose.hinge_angles().len(), 2);
         assert_eq!(pose.hinge_angles()[0].edge(), hinges[0]);
@@ -561,6 +590,11 @@ mod tests {
         let cloned = pose.try_clone().expect("fallible clone");
 
         assert_eq!(cloned, pose);
+        assert_ne!(
+            cloned.face_ids().as_ptr(),
+            pose.face_ids().as_ptr(),
+            "a semantic duplicate must own an independent face-registry allocation"
+        );
         assert_ne!(
             cloned.hinge_angles().as_ptr(),
             pose.hinge_angles().as_ptr(),

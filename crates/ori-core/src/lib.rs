@@ -170,7 +170,7 @@ pub use stacked_fold::{
     StackedFoldTopologyBuildResourceV1, StackedFoldTopologyCandidateV1,
     build_stacked_fold_topology_v1,
     diagnose_stacked_fold_requested_path_with_initial_layer_order_v1,
-    finish_archived_refined_non_flat_layer_order_v1, issue_speculative_unproven_fold_token_v1,
+    finish_archived_refined_non_flat_layer_order_v1,
     prepare_archived_refined_non_flat_layer_order_v1, prepare_face_lineage_v1,
     prepare_stacked_fold_geometry_candidate_v1, prepare_stacked_fold_geometry_v1,
     prepare_stacked_fold_graph_non_flat_layer_order_from_non_flat_v1,

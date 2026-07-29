@@ -1,32 +1,37 @@
+use std::sync::Arc;
+
 use ori_collision::StackedFoldPathDiagnosticLimitsV1;
-use ori_domain::{CreasePattern, EdgeId, FaceId, Paper, ProjectId};
+use ori_domain::{
+    BeginnerDesignProfileV1, InstructionHingeAngle, InstructionPose, InstructionPoseModel,
+    InstructionStep, InstructionStepId, InstructionTimeline, InstructionVisual,
+    MIN_INSTRUCTION_DURATION_MS, ProjectId, ProjectLayerDocumentV1,
+};
+#[cfg(test)]
+use ori_domain::{CreasePattern, Paper};
 use thiserror::Error;
 
 use crate::{
-    APPLIED_POSE_MODEL_ID_V1, AppliedPoseV1, MAX_REVISION, PreparedStackedFoldRequestedPoseV1,
-    Revision, SpeculativeApproximateBlockingObservationV1, SpeculativeUnprovenFoldBindingV1,
-    SpeculativeUnprovenFoldMetadataErrorV1, StackedFoldInitialLayerOrderV1,
-    diagnose_stacked_fold_requested_path_with_initial_layer_order_v1,
+    AppliedPoseErrorV1, AppliedPoseLimitsV1, AppliedPoseV1, MAX_REVISION,
+    PreparedStackedFoldRequestedPoseV1, Revision, SpeculativeApproximateBlockingObservationV1,
+    SpeculativeUnprovenFoldBindingV1, SpeculativeUnprovenFoldMetadataErrorV1,
+    StackedFoldDocumentCommandV1, StackedFoldInitialLayerOrderV1,
+    diagnose_stacked_fold_requested_path_with_initial_layer_order_v1, prepare_applied_pose_v1,
 };
 
 const SPECULATIVE_TARGET_SEAL_FIXED_RECORDS_V1: usize = 4;
 
-struct SpeculativeUnprovenTargetHingeSealV1 {
-    edge: EdgeId,
-    angle_degrees_bits: u64,
-}
-
-/// Private, native-only binding between one issued token and its exact target.
+/// Private, native-only binding between one issued token, its source editor,
+/// and the complete command it may execute.
 ///
 /// This seal deliberately implements neither `Clone` nor persistence traits.
 /// It can leave this module only by being checked and destroyed together with
 /// its containing one-shot token.
 struct SpeculativeUnprovenTargetSealV1 {
+    editor_instance_anchor: Arc<()>,
+    source_applied_pose: Option<AppliedPoseV1>,
     target_revision: Revision,
-    target_geometry_fingerprint_sha256: [u8; 32],
-    pose_model_id: &'static str,
-    fixed_face: Option<FaceId>,
-    hinge_angles: Vec<SpeculativeUnprovenTargetHingeSealV1>,
+    command: StackedFoldDocumentCommandV1,
+    applied_pose: AppliedPoseV1,
 }
 
 /// Native-only, one-shot permission to record one speculative stacked fold.
@@ -61,22 +66,9 @@ struct SpeculativeUnprovenTargetSealV1 {
 /// ```
 ///
 /// Unauthenticated metadata and a caller-asserted observation cannot mint a
-/// token; issuance requires an opaque prepared production pose and reruns the
-/// bounded native path diagnostic:
-///
-/// ```compile_fail
-/// let _ = ori_core::issue_speculative_unproven_fold_token_v1(
-///     ori_domain::ProjectId::new(),
-///     ori_domain::ProjectId::new(),
-///     0,
-///     [0_u8; 32],
-///     1,
-///     ori_domain::ProjectId::new(),
-///     0.1,
-///     ori_core::SpeculativeApproximateBlockingObservationV1::
-///         no_blocking_sample_observed(),
-/// );
-/// ```
+/// token. Issuance is exposed only as an [`crate::EditorState`] method, which
+/// binds the complete target command to that exact live editor instance and
+/// reruns the bounded native path diagnostic.
 pub struct SpeculativeUnprovenFoldTokenV1 {
     binding: SpeculativeUnprovenFoldBindingV1,
     target_seal: SpeculativeUnprovenTargetSealV1,
@@ -86,6 +78,12 @@ pub struct SpeculativeUnprovenFoldTokenV1 {
 pub enum SpeculativeUnprovenFoldTokenIssueErrorV1 {
     #[error(transparent)]
     InvalidMetadata(#[from] SpeculativeUnprovenFoldMetadataErrorV1),
+    #[error("the prepared speculative source revision is stale")]
+    SourceRevisionMismatch,
+    #[error("the prepared speculative source geometry is stale")]
+    SourceGeometryFingerprintMismatch,
+    #[error("the diagnostic paper thickness does not match the live editor")]
+    SourcePaperThicknessMismatch,
     #[error("the production bounded path diagnostic could not be reproduced")]
     PathDiagnosticUnavailable,
     #[error("a continuously certified path must use certified Apply")]
@@ -104,6 +102,8 @@ pub enum SpeculativeUnprovenFoldTokenIssueErrorV1 {
     TargetSealResourceCountOverflow,
     #[error("memory for the speculative target seal could not be reserved")]
     TargetSealAllocationFailed,
+    #[error("the speculative target semantic pose is invalid: {0}")]
+    InvalidTargetPose(#[from] AppliedPoseErrorV1),
 }
 
 /// Issues a native one-shot token from an opaque production pose.
@@ -111,7 +111,12 @@ pub enum SpeculativeUnprovenFoldTokenIssueErrorV1 {
 /// Core reruns the bounded collision diagnostic itself. A caller cannot turn
 /// metadata, a hand-built binding, or a claimed nonblocking flag into Apply
 /// authority.
-pub fn issue_speculative_unproven_fold_token_v1(
+pub(crate) fn issue_speculative_unproven_fold_token_v1(
+    editor_instance_anchor: Arc<()>,
+    source_applied_pose: Option<&AppliedPoseV1>,
+    source_instruction_timeline: &InstructionTimeline,
+    source_project_layers: &ProjectLayerDocumentV1,
+    source_beginner_design_profile: &BeginnerDesignProfileV1,
     project_instance_id: ProjectId,
     requested: &PreparedStackedFoldRequestedPoseV1,
     initial_layer_order: &StackedFoldInitialLayerOrderV1,
@@ -146,7 +151,14 @@ pub fn issue_speculative_unproven_fold_token_v1(
     {
         return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetRevision);
     }
-    let target_seal = SpeculativeUnprovenTargetSealV1::capture_requested_v1(requested)?;
+    let target_seal = SpeculativeUnprovenTargetSealV1::capture_requested_v1(
+        editor_instance_anchor,
+        source_applied_pose,
+        source_instruction_timeline,
+        source_project_layers,
+        source_beginner_design_profile,
+        requested,
+    )?;
     issue_from_validated_parts_v1(
         project_instance_id,
         lineage.identity_namespace(),
@@ -222,31 +234,43 @@ impl SpeculativeUnprovenFoldTokenV1 {
             )
     }
 
-    /// Consumes the token and releases its persisted binding only when every
-    /// caller-supplied target dimension matches the private issuance seal.
+    /// Consumes the token and releases its binding plus the complete target
+    /// command only when the source is the exact editor instance and runtime
+    /// pose against which issuance occurred.
     ///
-    /// The target comparison happens before the editor mutation path receives
-    /// the binding, so every mismatch consumes the one-shot token while
-    /// leaving the editor untouched.
-    pub(crate) fn into_unproven_binding_for_target_v1(
+    /// No target document is accepted at consumption time, so a downstream
+    /// caller has no substitution surface for pattern, paper, timeline,
+    /// layers, face registry, or applied pose.
+    pub(crate) fn into_authorized_target_v1(
         self,
+        editor_instance_anchor: &Arc<()>,
         expected_source_revision: Revision,
-        pattern: &CreasePattern,
-        paper: &Paper,
-        applied_pose: &AppliedPoseV1,
-    ) -> Option<SpeculativeUnprovenFoldBindingV1> {
+        source_applied_pose: Option<&AppliedPoseV1>,
+    ) -> Option<(
+        SpeculativeUnprovenFoldBindingV1,
+        StackedFoldDocumentCommandV1,
+        AppliedPoseV1,
+    )> {
         let Self {
             binding,
             target_seal,
         } = self;
-        target_seal
-            .matches_apply_target_v1(expected_source_revision, pattern, paper, applied_pose)
-            .then_some(binding)
+        target_seal.into_authorized_target_v1(
+            editor_instance_anchor,
+            expected_source_revision,
+            source_applied_pose,
+            binding,
+        )
     }
 }
 
 impl SpeculativeUnprovenTargetSealV1 {
     fn capture_requested_v1(
+        editor_instance_anchor: Arc<()>,
+        source_applied_pose: Option<&AppliedPoseV1>,
+        source_instruction_timeline: &InstructionTimeline,
+        source_project_layers: &ProjectLayerDocumentV1,
+        source_beginner_design_profile: &BeginnerDesignProfileV1,
         requested: &PreparedStackedFoldRequestedPoseV1,
     ) -> Result<Self, SpeculativeUnprovenFoldTokenIssueErrorV1> {
         let geometry = requested.initial().target().geometry();
@@ -255,80 +279,121 @@ impl SpeculativeUnprovenTargetSealV1 {
         let hinge_count = pose.hinge_angles().len();
         check_target_seal_resource_counts_v1(hinge_count)?;
 
+        let mut hinge_ids = Vec::new();
+        hinge_ids
+            .try_reserve_exact(pose.hinges().len())
+            .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
+        hinge_ids.extend(pose.hinges().iter().map(|hinge| hinge.edge()));
         let mut hinge_angles = Vec::new();
         hinge_angles
             .try_reserve_exact(hinge_count)
             .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
-        hinge_angles.extend(pose.hinge_angles().iter().map(|angle| {
-            SpeculativeUnprovenTargetHingeSealV1 {
-                edge: angle.edge(),
-                angle_degrees_bits: angle.angle_degrees().to_bits(),
-            }
-        }));
-        Ok(Self {
-            target_revision: lineage.target_revision(),
-            target_geometry_fingerprint_sha256: lineage.target_fingerprint().0,
-            pose_model_id: APPLIED_POSE_MODEL_ID_V1,
+        hinge_angles.extend(
+            pose.hinge_angles()
+                .iter()
+                .map(|angle| (angle.edge(), angle.angle_degrees())),
+        );
+        let applied_pose = prepare_applied_pose_v1(
+            pose.face_ids(),
+            &hinge_ids,
+            pose.fixed_face(),
+            &hinge_angles,
+            AppliedPoseLimitsV1::default(),
+        )?;
+        let persisted_pose = InstructionPose {
+            model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+            source_model_fingerprint: lineage.target_fingerprint().to_hex(),
             fixed_face: pose.fixed_face(),
-            hinge_angles,
+            hinge_angles: hinge_angles
+                .iter()
+                .map(|(edge, angle_degrees)| InstructionHingeAngle {
+                    edge: *edge,
+                    angle_degrees: *angle_degrees,
+                })
+                .collect(),
+        };
+        let mut instruction_timeline = source_instruction_timeline.clone();
+        instruction_timeline
+            .steps
+            .try_reserve(1)
+            .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
+        instruction_timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: "Stacked fold (awaiting proof)".to_owned(),
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: MIN_INSTRUCTION_DURATION_MS,
+            visual: InstructionVisual::default(),
+            pose: persisted_pose,
+        });
+        let candidate = geometry.candidate();
+        let command = StackedFoldDocumentCommandV1::new(
+            candidate.pattern.clone(),
+            candidate.paper.clone(),
+            instruction_timeline,
+            source_project_layers.clone(),
+            Box::new(source_beginner_design_profile.clone()),
+        );
+        Ok(Self {
+            editor_instance_anchor,
+            source_applied_pose: source_applied_pose
+                .map(AppliedPoseV1::try_clone)
+                .transpose()?,
+            target_revision: lineage.target_revision(),
+            command,
+            applied_pose,
         })
     }
 
     #[cfg(test)]
     fn capture_applied_target_v1(
+        editor_instance_anchor: Arc<()>,
+        source_applied_pose: Option<&AppliedPoseV1>,
         target_revision: Revision,
         pattern: &CreasePattern,
         paper: &Paper,
+        instruction_timeline: &InstructionTimeline,
+        project_layers: &ProjectLayerDocumentV1,
+        beginner_design_profile: &BeginnerDesignProfileV1,
         applied_pose: &AppliedPoseV1,
     ) -> Result<Self, SpeculativeUnprovenFoldTokenIssueErrorV1> {
         let hinge_count = applied_pose.hinge_angles().len();
         check_target_seal_resource_counts_v1(hinge_count)?;
-        let mut hinge_angles = Vec::new();
-        hinge_angles
-            .try_reserve_exact(hinge_count)
-            .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
-        hinge_angles.extend(applied_pose.hinge_angles().iter().map(|angle| {
-            SpeculativeUnprovenTargetHingeSealV1 {
-                edge: angle.edge(),
-                angle_degrees_bits: angle.angle_degrees().to_bits(),
-            }
-        }));
         Ok(Self {
+            editor_instance_anchor,
+            source_applied_pose: source_applied_pose
+                .map(AppliedPoseV1::try_clone)
+                .transpose()?,
             target_revision,
-            target_geometry_fingerprint_sha256: ori_foldability::fold_model_fingerprint_v1(
-                pattern, paper,
-            )
-            .0,
-            pose_model_id: applied_pose.model_id(),
-            fixed_face: applied_pose.fixed_face(),
-            hinge_angles,
+            command: StackedFoldDocumentCommandV1::new(
+                pattern.clone(),
+                paper.clone(),
+                instruction_timeline.clone(),
+                project_layers.clone(),
+                Box::new(beginner_design_profile.clone()),
+            ),
+            applied_pose: applied_pose.try_clone()?,
         })
     }
 
-    fn matches_apply_target_v1(
-        &self,
+    fn into_authorized_target_v1(
+        self,
+        editor_instance_anchor: &Arc<()>,
         expected_source_revision: Revision,
-        pattern: &CreasePattern,
-        paper: &Paper,
-        applied_pose: &AppliedPoseV1,
-    ) -> bool {
-        expected_source_revision
+        source_applied_pose: Option<&AppliedPoseV1>,
+        binding: SpeculativeUnprovenFoldBindingV1,
+    ) -> Option<(
+        SpeculativeUnprovenFoldBindingV1,
+        StackedFoldDocumentCommandV1,
+        AppliedPoseV1,
+    )> {
+        let source_matches = Arc::ptr_eq(&self.editor_instance_anchor, editor_instance_anchor)
+            && self.source_applied_pose.as_ref() == source_applied_pose;
+        let revision_matches = expected_source_revision
             .checked_add(1)
             .filter(|revision| *revision <= MAX_REVISION)
-            == Some(self.target_revision)
-            && ori_foldability::fold_model_fingerprint_v1(pattern, paper).0
-                == self.target_geometry_fingerprint_sha256
-            && applied_pose.model_id() == self.pose_model_id
-            && applied_pose.fixed_face() == self.fixed_face
-            && applied_pose.hinge_angles().len() == self.hinge_angles.len()
-            && applied_pose
-                .hinge_angles()
-                .iter()
-                .zip(&self.hinge_angles)
-                .all(|(actual, sealed)| {
-                    actual.edge() == sealed.edge
-                        && actual.angle_degrees().to_bits() == sealed.angle_degrees_bits
-                })
+            == Some(self.target_revision);
+        (source_matches && revision_matches).then_some((binding, self.command, self.applied_pose))
     }
 }
 
@@ -353,16 +418,26 @@ fn check_target_seal_resource_counts_v1(
 #[cfg(test)]
 pub(crate) fn issue_speculative_unproven_fold_token_for_test_v1(
     binding: SpeculativeUnprovenFoldBindingV1,
+    editor_instance_anchor: Arc<()>,
+    source_applied_pose: Option<&AppliedPoseV1>,
     target_revision: Revision,
     pattern: &CreasePattern,
     paper: &Paper,
+    instruction_timeline: &InstructionTimeline,
+    project_layers: &ProjectLayerDocumentV1,
+    beginner_design_profile: &BeginnerDesignProfileV1,
     applied_pose: &AppliedPoseV1,
 ) -> Result<SpeculativeUnprovenFoldTokenV1, SpeculativeUnprovenFoldTokenIssueErrorV1> {
     binding.validate()?;
     let target_seal = SpeculativeUnprovenTargetSealV1::capture_applied_target_v1(
+        editor_instance_anchor,
+        source_applied_pose,
         target_revision,
         pattern,
         paper,
+        instruction_timeline,
+        project_layers,
+        beginner_design_profile,
         applied_pose,
     )?;
     Ok(SpeculativeUnprovenFoldTokenV1 {
@@ -386,13 +461,30 @@ mod tests {
     use super::*;
 
     fn target_seal() -> SpeculativeUnprovenTargetSealV1 {
-        SpeculativeUnprovenTargetSealV1 {
-            target_revision: 8,
-            target_geometry_fingerprint_sha256: [0xa5; 32],
-            pose_model_id: APPLIED_POSE_MODEL_ID_V1,
-            fixed_face: None,
-            hinge_angles: Vec::new(),
-        }
+        let sheet = crate::create_rectangular_sheet(80.0, 60.0, false)
+            .expect("rectangular target document");
+        let (pattern, paper) = sheet.into_parts();
+        let face = ori_domain::FaceId::new();
+        let pose = crate::prepare_applied_pose_v1(
+            &[face],
+            &[],
+            Some(face),
+            &[],
+            crate::AppliedPoseLimitsV1::default(),
+        )
+        .expect("single-face target pose");
+        SpeculativeUnprovenTargetSealV1::capture_applied_target_v1(
+            Arc::new(()),
+            None,
+            8,
+            &pattern,
+            &paper,
+            &InstructionTimeline::default(),
+            &ProjectLayerDocumentV1::default(),
+            &BeginnerDesignProfileV1::default(),
+            &pose,
+        )
+        .expect("target seal")
     }
 
     fn issue(
@@ -499,31 +591,68 @@ mod tests {
     }
 
     #[test]
-    fn target_seal_rejects_pose_model_and_order_substitution() {
-        let sheet = crate::create_rectangular_sheet(80.0, 60.0, false).expect("rectangular target");
-        let (pattern, paper) = sheet.into_parts();
-        let mut faces = [FaceId::new(), FaceId::new(), FaceId::new()];
-        faces.sort_by_key(FaceId::canonical_bytes);
-        let mut hinges = [EdgeId::new(), EdgeId::new()];
-        hinges.sort_by_key(EdgeId::canonical_bytes);
-        let pose = crate::prepare_applied_pose_v1(
-            &faces,
-            &hinges,
-            Some(faces[0]),
-            &[(hinges[0], 45.0), (hinges[1], 90.0)],
+    fn target_seal_requires_the_exact_editor_anchor_and_source_pose() {
+        let binding = SpeculativeUnprovenFoldBindingV1::new(
+            ProjectId::new(),
+            ProjectId::new(),
+            7,
+            "5a".repeat(32),
+            11,
+            ProjectId::new(),
+            0.25,
+            SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+        )
+        .expect("binding");
+        let seal = target_seal();
+        assert!(
+            seal.into_authorized_target_v1(&Arc::new(()), 7, None, binding)
+                .is_none()
+        );
+
+        let binding = SpeculativeUnprovenFoldBindingV1::new(
+            ProjectId::new(),
+            ProjectId::new(),
+            7,
+            "5a".repeat(32),
+            11,
+            ProjectId::new(),
+            0.25,
+            SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+        )
+        .expect("binding");
+        let seal = target_seal();
+        let anchor = seal.editor_instance_anchor.clone();
+        let face = ori_domain::FaceId::new();
+        let source_pose = crate::prepare_applied_pose_v1(
+            &[face],
+            &[],
+            Some(face),
+            &[],
             crate::AppliedPoseLimitsV1::default(),
         )
-        .expect("canonical target pose");
-        let mut seal =
-            SpeculativeUnprovenTargetSealV1::capture_applied_target_v1(1, &pattern, &paper, &pose)
-                .expect("target seal");
-        assert!(seal.matches_apply_target_v1(0, &pattern, &paper, &pose));
+        .expect("source pose");
+        assert!(
+            seal.into_authorized_target_v1(&anchor, 7, Some(&source_pose), binding)
+                .is_none()
+        );
 
-        seal.hinge_angles.swap(0, 1);
-        assert!(!seal.matches_apply_target_v1(0, &pattern, &paper, &pose));
-        seal.hinge_angles.swap(0, 1);
-        seal.pose_model_id = crate::CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1;
-        assert!(!seal.matches_apply_target_v1(0, &pattern, &paper, &pose));
+        let binding = SpeculativeUnprovenFoldBindingV1::new(
+            ProjectId::new(),
+            ProjectId::new(),
+            7,
+            "5a".repeat(32),
+            11,
+            ProjectId::new(),
+            0.25,
+            SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+        )
+        .expect("binding");
+        let seal = target_seal();
+        let anchor = seal.editor_instance_anchor.clone();
+        assert!(
+            seal.into_authorized_target_v1(&anchor, 7, None, binding)
+                .is_some()
+        );
     }
 
     #[test]

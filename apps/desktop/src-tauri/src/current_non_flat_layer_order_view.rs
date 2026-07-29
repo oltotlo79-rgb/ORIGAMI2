@@ -801,6 +801,7 @@ fn build_faces(
             .face_ids(),
     };
     validate_live_face_registry_v1(&face_ids, live)?;
+    validate_live_face_registry_v1(&face_ids, view.semantic_pose().face_ids())?;
     let mut total_points = 0usize;
     let mut faces = Vec::with_capacity(face_ids.len());
     for face_id in face_ids {

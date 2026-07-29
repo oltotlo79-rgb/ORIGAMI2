@@ -4,15 +4,11 @@ use std::sync::MutexGuard;
 
 use ori_collision::{StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticLimitsV1};
 use ori_core::{
-    AppliedPoseLimitsV1, PreparedStackedFoldRequestedPoseV1, SpeculativeUnprovenFoldTokenV1,
-    StackedFoldInitialLayerOrderV1, StackedFoldNonFlatLayerOrderV1,
+    PreparedStackedFoldRequestedPoseV1, StackedFoldInitialLayerOrderV1,
+    StackedFoldNonFlatLayerOrderV1,
     diagnose_stacked_fold_requested_path_with_initial_layer_order_v1,
-    issue_speculative_unproven_fold_token_v1, prepare_applied_pose_v1,
 };
-use ori_domain::{
-    InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
-    InstructionStepId, InstructionVisual, MIN_INSTRUCTION_DURATION_MS, ProjectId,
-};
+use ori_domain::{InstructionHingeAngle, InstructionPose, InstructionPoseModel, ProjectId};
 use ori_foldability::fold_model_fingerprint_v1;
 use tauri::State;
 
@@ -74,7 +70,6 @@ pub(crate) struct PendingSpeculativeStackedFoldPremisesV1 {
 
 struct PendingSpeculativeStackedFoldTransactionV1 {
     request_generation_id: ProjectId,
-    token: SpeculativeUnprovenFoldTokenV1,
     post_apply_binding: ori_core::SpeculativeUnprovenFoldBindingV1,
     requested: PreparedStackedFoldRequestedPoseV1,
     initial_layer_order: StackedFoldInitialLayerOrderV1,
@@ -137,18 +132,8 @@ pub(crate) fn install_pending_speculative_stacked_fold_v1(
         ori_core::SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
     )
     .map_err(|_| "The speculative stacked-fold binding is invalid.".to_owned())?;
-    let token = issue_speculative_unproven_fold_token_v1(
-        premises.expected_instance_id,
-        &premises.requested,
-        &premises.initial_layer_order,
-        premises.expected_pose_generation,
-        request_generation_id,
-        premises.paper_thickness_mm,
-    )
-    .map_err(|_| "The speculative stacked-fold token could not be issued.".to_owned())?;
     let pending = PendingSpeculativeStackedFoldTransactionV1 {
         request_generation_id,
-        token,
         post_apply_binding,
         requested: premises.requested,
         initial_layer_order: premises.initial_layer_order,
@@ -195,15 +180,17 @@ pub(crate) fn apply_speculative_stacked_fold_transaction_inner_v1(
         lock_project(app_state).map_err(|_| "The project is unavailable.".to_owned())?;
     let fingerprint = fold_model_fingerprint_v1(project.editor.pattern(), project.editor.paper()).0;
     if pending.expected_layer_generation != pending.layer_capability.generation()
-        || !pending.token.reauthenticates_v1(
-            project.instance_id,
-            project.project_id,
-            project.editor.revision(),
-            fingerprint,
-            pending.pose_capability.generation(),
-            request.transaction_token,
-            project.editor.paper().thickness_mm.to_bits(),
-        )
+        || pending.post_apply_binding.project_instance_id() != project.instance_id
+        || pending.post_apply_binding.project_id() != project.project_id
+        || pending.post_apply_binding.source_revision() != project.editor.revision()
+        || pending
+            .post_apply_binding
+            .source_geometry_fingerprint_sha256()
+            != lowercase_sha256_v1(fingerprint)
+        || pending.post_apply_binding.pose_generation() != pending.pose_capability.generation()
+        || pending.post_apply_binding.request_generation_id() != request.transaction_token
+        || pending.post_apply_binding.paper_thickness_bits()
+            != project.editor.paper().thickness_mm.to_bits()
     {
         return Err("The speculative stacked-fold preview is stale.".to_owned());
     }
@@ -221,25 +208,7 @@ pub(crate) fn apply_speculative_stacked_fold_transaction_inner_v1(
 
     let target = pending.requested.initial().target().geometry();
     let target_fingerprint = target.proof().lineage().target_fingerprint().0;
-    let candidate_pattern = target.candidate().pattern.clone();
-    let candidate_paper = target.candidate().paper.clone();
     let pose = pending.requested.pose();
-    let applied_pose = prepare_applied_pose_v1(
-        pose.face_ids(),
-        &pose
-            .hinges()
-            .iter()
-            .map(|hinge| hinge.edge())
-            .collect::<Vec<_>>(),
-        pose.fixed_face(),
-        &pose
-            .hinge_angles()
-            .iter()
-            .map(|angle| (angle.edge(), angle.angle_degrees()))
-            .collect::<Vec<_>>(),
-        AppliedPoseLimitsV1::default(),
-    )
-    .map_err(|_| "The speculative target pose is inconsistent.".to_owned())?;
     let persisted_pose = InstructionPose {
         model: InstructionPoseModel::AbsoluteHingeAnglesV1,
         source_model_fingerprint: target.proof().lineage().target_fingerprint().to_hex(),
@@ -253,31 +222,22 @@ pub(crate) fn apply_speculative_stacked_fold_transaction_inner_v1(
             })
             .collect(),
     };
-    let mut timeline = project.editor.instruction_timeline().clone();
-    timeline.steps.push(InstructionStep {
-        id: InstructionStepId::new(),
-        title: "Stacked fold (awaiting proof)".to_owned(),
-        description: String::new(),
-        caution: String::new(),
-        duration_ms: MIN_INSTRUCTION_DURATION_MS,
-        visual: InstructionVisual::default(),
-        pose: persisted_pose.clone(),
-    });
     validate_target_layer_order_v1(&project, &pending, &persisted_pose)?;
-    let layers = project.editor.project_layers().clone();
+    let token = project
+        .editor
+        .issue_speculative_unproven_fold_token_v1(
+            project.instance_id,
+            &pending.requested,
+            &pending.initial_layer_order,
+            pending.pose_capability.generation(),
+            request.transaction_token,
+            project.editor.paper().thickness_mm,
+        )
+        .map_err(|_| "The speculative stacked-fold token could not be issued.".to_owned())?;
     let project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
-    let expected_revision = project.editor.revision();
     let result = project
         .editor
-        .execute_stacked_fold_document_with_unproven_mark_v1(
-            expected_revision,
-            candidate_pattern,
-            candidate_paper,
-            timeline,
-            layers,
-            applied_pose,
-            pending.token,
-        )
+        .execute_stacked_fold_document_with_unproven_mark_v1(token)
         .map_err(|_| "The speculative stacked fold could not be applied atomically.".to_owned())?;
     project.record_numeric_expression_edit();
     drop(pose_guard);

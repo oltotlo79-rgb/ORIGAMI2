@@ -85,6 +85,7 @@ pub(super) fn token_for_target(
     target_pose: &AppliedPoseV1,
 ) -> crate::SpeculativeUnprovenFoldTokenV1 {
     token_for_binding_target(
+        fixture,
         binding(
             fixture,
             SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
@@ -97,6 +98,7 @@ pub(super) fn token_for_target(
 }
 
 pub(super) fn token_for_binding_target(
+    fixture: &SpeculativeFixture,
     binding: SpeculativeUnprovenFoldBindingV1,
     target_revision: Revision,
     target_pattern: &CreasePattern,
@@ -105,9 +107,14 @@ pub(super) fn token_for_binding_target(
 ) -> crate::SpeculativeUnprovenFoldTokenV1 {
     crate::stacked_fold::issue_speculative_unproven_fold_token_for_test_v1(
         binding,
+        fixture.editor.runtime_instance_anchor.clone(),
+        fixture.editor.current_applied_pose(),
         target_revision,
         target_pattern,
         target_paper,
+        &fixture.timeline,
+        &ProjectLayerDocumentV1::default(),
+        fixture.editor.beginner_design_profile(),
         target_pose,
     )
     .expect("valid target-bound speculative token")
@@ -122,6 +129,7 @@ pub(super) fn apply_marked(
         .checked_add(1)
         .expect("speculative test target revision");
     let token = token_for_binding_target(
+        fixture,
         binding,
         target_revision,
         &fixture.target_pattern,
@@ -130,15 +138,7 @@ pub(super) fn apply_marked(
     );
     fixture
         .editor
-        .execute_stacked_fold_document_with_unproven_mark_v1(
-            expected_revision,
-            fixture.target_pattern.clone(),
-            fixture.paper.clone(),
-            fixture.timeline.clone(),
-            ProjectLayerDocumentV1::default(),
-            fixture.applied_pose.clone(),
-            token,
-        )
+        .execute_stacked_fold_document_with_unproven_mark_v1(token)
         .expect("atomic speculative Apply");
 }
 

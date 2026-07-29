@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    sync::Arc,
+};
 
 use crate::{
     DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_VERTICES, GeometricConstraintErrorV1,
@@ -2153,6 +2156,14 @@ fn ensure_geometric_constraint_result_count(
 
 #[derive(Debug, Clone)]
 pub struct EditorState {
+    /// Non-persisted, unforgeable identity of this live editor instance.
+    ///
+    /// Clones intentionally share the anchor because they are transactional
+    /// snapshots of the same live editor. Fresh constructors and reopened
+    /// projects receive a new anchor, preventing native one-shot authorities
+    /// from being replayed into a separately created but byte-identical
+    /// editor.
+    runtime_instance_anchor: Arc<()>,
     pattern: CreasePattern,
     paper: Paper,
     geometric_constraints: GeometricConstraintDocumentV1,
@@ -2336,6 +2347,7 @@ impl EditorState {
         element_metadata: ElementMetadataDocumentV1,
     ) -> Self {
         Self {
+            runtime_instance_anchor: Arc::new(()),
             pattern,
             paper,
             geometric_constraints,
@@ -2655,16 +2667,29 @@ impl EditorState {
         project_layers: ProjectLayerDocumentV1,
         applied_pose: AppliedPoseV1,
     ) -> Result<CommandResult, CommandError> {
-        let pose_before = self.current_applied_pose.clone();
-        let result = self.execute(
+        self.execute_stacked_fold_document_command_v1(
             expected_revision,
-            Command::ApplyStackedFoldDocument(StackedFoldDocumentCommandV1::new(
+            StackedFoldDocumentCommandV1::new(
                 pattern,
                 paper,
                 instruction_timeline,
                 project_layers,
                 Box::new(self.beginner_design_profile.clone()),
-            )),
+            ),
+            applied_pose,
+        )
+    }
+
+    pub(crate) fn execute_stacked_fold_document_command_v1(
+        &mut self,
+        expected_revision: Revision,
+        command: StackedFoldDocumentCommandV1,
+        applied_pose: AppliedPoseV1,
+    ) -> Result<CommandResult, CommandError> {
+        let pose_before = self.current_applied_pose.clone();
+        let result = self.execute(
+            expected_revision,
+            Command::ApplyStackedFoldDocument(command),
         )?;
         self.current_applied_pose = Some(applied_pose.clone());
         let entry = self

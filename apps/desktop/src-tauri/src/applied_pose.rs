@@ -1372,6 +1372,7 @@ fn prepared_native_pose_is_internally_consistent(prepared: &PreparedNativePose) 
             } => {
                 !audit.closure_hinges().is_empty()
                     && !geometry.face_ids().is_empty()
+                    && geometry.face_ids() == prepared.semantic_pose.face_ids()
                     && pose.fixed_face()
                         == prepared
                             .semantic_pose
@@ -1438,6 +1439,7 @@ fn current_applied_pose_certificate_is_internally_consistent(
             } => {
                 claims.kinematics_model_id == "material_hinge_graph_pose_v1"
                     && geometry.face_ids() == claims.material_faces.as_ref()
+                    && geometry.face_ids() == claims.semantic_pose.face_ids()
                     && geometry
                         .hinges()
                         .iter()
@@ -1549,6 +1551,7 @@ fn current_applied_pose_capability_matches_locked_slot(
 
 fn material_pose_matches_semantic(pose: &MaterialTreePose, semantic: &AppliedPoseV1) -> bool {
     semantic.model_id() == APPLIED_POSE_MODEL_ID_V1
+        && pose.face_ids() == semantic.face_ids()
         && (pose.fixed_face() == semantic.fixed_face()
             || (pose.hinge_angles().is_empty()
                 && pose.fixed_face().is_none()
@@ -1568,6 +1571,7 @@ fn material_pose_matches_semantic(pose: &MaterialTreePose, semantic: &AppliedPos
 
 fn semantic_pose_bits_equal(first: &AppliedPoseV1, second: &AppliedPoseV1) -> bool {
     first.model_id() == second.model_id()
+        && first.face_ids() == second.face_ids()
         && first.fixed_face() == second.fixed_face()
         && first.hinge_angles().len() == second.hinge_angles().len()
         && first

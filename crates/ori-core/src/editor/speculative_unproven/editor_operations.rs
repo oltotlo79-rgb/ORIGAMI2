@@ -1,9 +1,13 @@
-use ori_domain::{CreasePattern, InstructionTimeline, Paper, ProjectLayerDocumentV1};
+use ori_domain::ProjectId;
 
-use crate::stacked_fold::SpeculativeUnprovenFoldTokenV1;
+use crate::stacked_fold::{
+    PreparedStackedFoldRequestedPoseV1, SpeculativeUnprovenFoldTokenIssueErrorV1,
+    SpeculativeUnprovenFoldTokenV1, StackedFoldInitialLayerOrderV1,
+    issue_speculative_unproven_fold_token_v1,
+};
 
 use super::{
-    super::{AppliedPoseV1, CommandResult, EditorState, Revision},
+    super::{CommandResult, EditorState},
     MAX_PENDING_SPECULATIVE_UNPROVEN_FOLDS_V1, SpeculativeApproximateBlockingObservationV1,
     SpeculativeUnprovenFoldApplyErrorV1, SpeculativeUnprovenFoldBindingV1,
     SpeculativeUnprovenFoldHistoryLocationV1, SpeculativeUnprovenFoldMarkV1,
@@ -20,29 +24,67 @@ enum MarkLocation {
 }
 
 impl EditorState {
+    /// Issues a native one-shot permission for one exact speculative command.
+    ///
+    /// Core derives and owns the complete target pattern, paper, instruction
+    /// timeline, project layers, beginner profile, face registry, and semantic
+    /// pose. The token is also tied to this live editor's non-persisted
+    /// instance anchor and current runtime pose.
+    pub fn issue_speculative_unproven_fold_token_v1(
+        &self,
+        project_instance_id: ProjectId,
+        requested: &PreparedStackedFoldRequestedPoseV1,
+        initial_layer_order: &StackedFoldInitialLayerOrderV1,
+        pose_generation: u64,
+        request_generation_id: ProjectId,
+        paper_thickness_mm: f64,
+    ) -> Result<SpeculativeUnprovenFoldTokenV1, SpeculativeUnprovenFoldTokenIssueErrorV1> {
+        let lineage = requested.initial().target().geometry().proof().lineage();
+        if lineage.source_revision() != self.revision() {
+            return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::SourceRevisionMismatch);
+        }
+        if lineage.source_fingerprint().to_hex() != self.fold_model_fingerprint_v1() {
+            return Err(
+                SpeculativeUnprovenFoldTokenIssueErrorV1::SourceGeometryFingerprintMismatch,
+            );
+        }
+        if paper_thickness_mm.to_bits() != self.paper().thickness_mm.to_bits() {
+            return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::SourcePaperThicknessMismatch);
+        }
+        issue_speculative_unproven_fold_token_v1(
+            self.runtime_instance_anchor.clone(),
+            self.current_applied_pose(),
+            self.instruction_timeline(),
+            self.project_layers(),
+            self.beginner_design_profile(),
+            project_instance_id,
+            requested,
+            initial_layer_order,
+            pose_generation,
+            request_generation_id,
+            paper_thickness_mm,
+        )
+    }
+
     /// Applies a stacked-fold document and unproven metadata as one entry.
     ///
-    /// The desktop layer must reauthenticate project-instance, project,
-    /// pose-generation, and request-generation fields immediately before this
-    /// call. Core consumes the opaque one-shot token, rechecks its exact target
-    /// seal against these owned arguments, and independently rechecks every
-    /// editor-owned binding before any mutation.
-    #[allow(clippy::too_many_arguments)]
+    /// Core consumes the opaque one-shot token and obtains the complete target
+    /// command from it. No caller-supplied pattern, paper, timeline, layers, or
+    /// pose can be substituted at Apply time.
     pub fn execute_stacked_fold_document_with_unproven_mark_v1(
         &mut self,
-        expected_revision: Revision,
-        pattern: CreasePattern,
-        paper: Paper,
-        instruction_timeline: InstructionTimeline,
-        project_layers: ProjectLayerDocumentV1,
-        applied_pose: AppliedPoseV1,
         token: SpeculativeUnprovenFoldTokenV1,
     ) -> Result<CommandResult, SpeculativeUnprovenFoldApplyErrorV1> {
-        let binding = token
-            .into_unproven_binding_for_target_v1(expected_revision, &pattern, &paper, &applied_pose)
+        let (binding, command, applied_pose) = token
+            .into_authorized_target_v1(
+                &self.runtime_instance_anchor,
+                self.revision(),
+                self.current_applied_pose(),
+            )
             .ok_or(SpeculativeUnprovenFoldApplyErrorV1::TargetSealMismatch)?;
         binding.validate()?;
-        if binding.source_revision() != expected_revision || self.revision() != expected_revision {
+        let expected_revision = binding.source_revision();
+        if self.revision() != expected_revision {
             return Err(SpeculativeUnprovenFoldApplyErrorV1::SourceRevisionMismatch);
         }
         if binding.source_geometry_fingerprint_sha256() != self.fold_model_fingerprint_v1() {
@@ -77,12 +119,9 @@ impl EditorState {
             return Err(SpeculativeUnprovenFoldApplyErrorV1::PendingMarkLimitReached);
         }
 
-        let result = self.execute_stacked_fold_document(
+        let result = self.execute_stacked_fold_document_command_v1(
             expected_revision,
-            pattern,
-            paper,
-            instruction_timeline,
-            project_layers,
+            command,
             applied_pose,
         )?;
         self.undo_stack

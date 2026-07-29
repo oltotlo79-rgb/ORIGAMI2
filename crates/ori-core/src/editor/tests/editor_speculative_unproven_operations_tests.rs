@@ -1,4 +1,4 @@
-use ori_domain::{CreasePattern, EdgeId, EdgeKind, FaceId, Paper, ProjectId};
+use ori_domain::ProjectId;
 
 use super::{speculative_unproven_test_support::*, *};
 
@@ -364,6 +364,7 @@ fn stable_request_identity_rejects_metadata_drift_at_runtime() {
     );
     let expected_revision = fixture.editor.revision();
     let token = token_for_binding_target(
+        &fixture,
         drifted,
         expected_revision
             .checked_add(1)
@@ -375,264 +376,81 @@ fn stable_request_identity_rejects_metadata_drift_at_runtime() {
     assert_eq!(
         fixture
             .editor
-            .execute_stacked_fold_document_with_unproven_mark_v1(
-                expected_revision,
-                fixture.target_pattern.clone(),
-                fixture.paper.clone(),
-                fixture.timeline.clone(),
-                ProjectLayerDocumentV1::default(),
-                fixture.applied_pose.clone(),
-                token,
-            ),
+            .execute_stacked_fold_document_with_unproven_mark_v1(token),
         Err(SpeculativeUnprovenFoldApplyErrorV1::DuplicateBinding)
     );
 }
 
 #[test]
-fn every_target_seal_dimension_rejects_atomically_before_apply() {
-    fn one_hinge_pose(
-        fixed_face: FaceId,
-        hinge: EdgeId,
-        angle_degrees: f64,
-        closed_graph: bool,
-    ) -> AppliedPoseV1 {
-        let mut faces = [fixed_face, FaceId::new()];
-        faces.sort_by_key(FaceId::canonical_bytes);
-        if closed_graph {
-            crate::prepare_closed_graph_applied_pose_v1(
-                &faces,
-                &[hinge],
-                fixed_face,
-                &[(hinge, angle_degrees)],
-                crate::AppliedPoseLimitsV1::default(),
-            )
-            .expect("valid closed-graph substitution pose")
-        } else {
-            crate::prepare_applied_pose_v1(
-                &faces,
-                &[hinge],
-                Some(fixed_face),
-                &[(hinge, angle_degrees)],
-                crate::AppliedPoseLimitsV1::default(),
-            )
-            .expect("valid tree substitution pose")
-        }
-    }
+fn target_command_is_owned_and_bound_to_the_exact_editor_instance() {
+    let original = fixture();
+    let token = token_for_target(
+        &original,
+        1,
+        &original.target_pattern,
+        &original.paper,
+        &original.applied_pose,
+    );
+    let mut separately_created = EditorState::with_paper(
+        original.editor.pattern().clone(),
+        original.editor.paper().clone(),
+    );
+    let before = format!("{separately_created:?}");
+    assert_eq!(
+        separately_created.execute_stacked_fold_document_with_unproven_mark_v1(token),
+        Err(SpeculativeUnprovenFoldApplyErrorV1::TargetSealMismatch)
+    );
+    assert_eq!(format!("{separately_created:?}"), before);
 
-    fn assert_rejected(
-        case: &str,
-        mut fixture: SpeculativeFixture,
-        sealed_target_revision: Revision,
-        expected_revision: Revision,
-        target_pattern: CreasePattern,
-        target_paper: Paper,
-        target_pose: AppliedPoseV1,
-    ) {
-        let token = token_for_target(
-            &fixture,
-            sealed_target_revision,
-            &fixture.target_pattern,
-            &fixture.paper,
-            &fixture.applied_pose,
-        );
-        let before_debug = format!("{:?}", fixture.editor);
-        let before_revision = fixture.editor.revision();
-        let before_marker = fixture.editor.speculative_unproven_fold_state_marker_v1();
-        let before_summary = fixture.editor.speculative_unproven_fold_summary_v1();
-        let before_pose = fixture.editor.current_applied_pose().cloned();
-        let before_undo = fixture.editor.can_undo();
-        let before_redo = fixture.editor.can_redo();
+    let original = fixture();
+    let token = token_for_target(
+        &original,
+        1,
+        &original.target_pattern,
+        &original.paper,
+        &original.applied_pose,
+    );
+    let mut transactional_clone = original.editor.clone();
+    transactional_clone
+        .execute_stacked_fold_document_with_unproven_mark_v1(token)
+        .expect("a rollback clone shares the exact live-editor anchor");
+    assert_eq!(transactional_clone.pattern(), &original.target_pattern);
+    assert_eq!(
+        transactional_clone.instruction_timeline(),
+        &original.timeline
+    );
+    assert_eq!(
+        transactional_clone.current_applied_pose(),
+        Some(&original.applied_pose)
+    );
+    assert_eq!(
+        transactional_clone
+            .current_applied_pose()
+            .expect("sealed pose")
+            .face_ids(),
+        original.applied_pose.face_ids()
+    );
+    assert_eq!(original.editor.revision(), 0);
 
-        let result = fixture
+    let mut fixture = fixture();
+    let token = token_for_target(
+        &fixture,
+        1,
+        &fixture.target_pattern,
+        &fixture.paper,
+        &fixture.applied_pose,
+    );
+    fixture
+        .editor
+        .adopt_current_applied_pose(fixture.applied_pose.clone());
+    assert_eq!(
+        fixture
             .editor
-            .execute_stacked_fold_document_with_unproven_mark_v1(
-                expected_revision,
-                target_pattern,
-                target_paper,
-                fixture.timeline.clone(),
-                ProjectLayerDocumentV1::default(),
-                target_pose,
-                token,
-            );
-
-        assert_eq!(
-            result,
-            Err(SpeculativeUnprovenFoldApplyErrorV1::TargetSealMismatch),
-            "{case}"
-        );
-        assert_eq!(format!("{:?}", fixture.editor), before_debug, "{case}");
-        assert_eq!(fixture.editor.revision(), before_revision, "{case}");
-        assert_eq!(
-            fixture.editor.speculative_unproven_fold_state_marker_v1(),
-            before_marker,
-            "{case}"
-        );
-        assert_eq!(
-            fixture.editor.speculative_unproven_fold_summary_v1(),
-            before_summary,
-            "{case}"
-        );
-        assert_eq!(
-            fixture.editor.current_applied_pose(),
-            before_pose.as_ref(),
-            "{case}"
-        );
-        assert_eq!(fixture.editor.can_undo(), before_undo, "{case}");
-        assert_eq!(fixture.editor.can_redo(), before_redo, "{case}");
-    }
-
-    let fixture = super::speculative_unproven_test_support::fixture();
-    let target_pattern = fixture.target_pattern.clone();
-    let target_paper = fixture.paper.clone();
-    let target_pose = fixture.applied_pose.clone();
-    assert_rejected(
-        "target revision",
-        fixture,
-        2,
-        0,
-        target_pattern,
-        target_paper,
-        target_pose,
+            .execute_stacked_fold_document_with_unproven_mark_v1(token),
+        Err(SpeculativeUnprovenFoldApplyErrorV1::TargetSealMismatch)
     );
-
-    let fixture = super::speculative_unproven_test_support::fixture();
-    let mut target_pattern = fixture.target_pattern.clone();
-    let first_edge = target_pattern
-        .edges
-        .first_mut()
-        .expect("rectangular target has boundary edges");
-    first_edge.kind = match first_edge.kind {
-        EdgeKind::Auxiliary => EdgeKind::Mountain,
-        _ => EdgeKind::Auxiliary,
-    };
-    let target_paper = fixture.paper.clone();
-    let target_pose = fixture.applied_pose.clone();
-    assert_rejected(
-        "target pattern fingerprint",
-        fixture,
-        1,
-        0,
-        target_pattern,
-        target_paper,
-        target_pose,
-    );
-
-    let fixture = super::speculative_unproven_test_support::fixture();
-    let target_pattern = fixture.target_pattern.clone();
-    let mut target_paper = fixture.paper.clone();
-    target_paper.thickness_mm = f64::from_bits(target_paper.thickness_mm.to_bits() + 1);
-    let target_pose = fixture.applied_pose.clone();
-    assert_rejected(
-        "target paper fingerprint",
-        fixture,
-        1,
-        0,
-        target_pattern,
-        target_paper,
-        target_pose,
-    );
-
-    let fixture = super::speculative_unproven_test_support::fixture();
-    let fixed_face = fixture
-        .applied_pose
-        .fixed_face()
-        .expect("fixture pose has a fixed face");
-    let hinge = fixture.applied_pose.hinge_angles()[0];
-    let target_pose = one_hinge_pose(fixed_face, hinge.edge(), hinge.angle_degrees(), true);
-    let target_pattern = fixture.target_pattern.clone();
-    let target_paper = fixture.paper.clone();
-    assert_rejected(
-        "pose model",
-        fixture,
-        1,
-        0,
-        target_pattern,
-        target_paper,
-        target_pose,
-    );
-
-    let fixture = super::speculative_unproven_test_support::fixture();
-    let hinge = fixture.applied_pose.hinge_angles()[0];
-    let target_pose = one_hinge_pose(FaceId::new(), hinge.edge(), hinge.angle_degrees(), false);
-    let target_pattern = fixture.target_pattern.clone();
-    let target_paper = fixture.paper.clone();
-    assert_rejected(
-        "fixed face",
-        fixture,
-        1,
-        0,
-        target_pattern,
-        target_paper,
-        target_pose,
-    );
-
-    let fixture = super::speculative_unproven_test_support::fixture();
-    let fixed_face = fixture
-        .applied_pose
-        .fixed_face()
-        .expect("fixture pose has a fixed face");
-    let target_pose = crate::prepare_applied_pose_v1(
-        &[fixed_face],
-        &[],
-        Some(fixed_face),
-        &[],
-        crate::AppliedPoseLimitsV1::default(),
-    )
-    .expect("valid zero-hinge substitution pose");
-    let target_pattern = fixture.target_pattern.clone();
-    let target_paper = fixture.paper.clone();
-    assert_rejected(
-        "hinge count",
-        fixture,
-        1,
-        0,
-        target_pattern,
-        target_paper,
-        target_pose,
-    );
-
-    let fixture = super::speculative_unproven_test_support::fixture();
-    let fixed_face = fixture
-        .applied_pose
-        .fixed_face()
-        .expect("fixture pose has a fixed face");
-    let hinge = fixture.applied_pose.hinge_angles()[0];
-    let target_pose = one_hinge_pose(fixed_face, EdgeId::new(), hinge.angle_degrees(), false);
-    let target_pattern = fixture.target_pattern.clone();
-    let target_paper = fixture.paper.clone();
-    assert_rejected(
-        "hinge edge",
-        fixture,
-        1,
-        0,
-        target_pattern,
-        target_paper,
-        target_pose,
-    );
-
-    let fixture = super::speculative_unproven_test_support::fixture();
-    let fixed_face = fixture
-        .applied_pose
-        .fixed_face()
-        .expect("fixture pose has a fixed face");
-    let hinge = fixture.applied_pose.hinge_angles()[0];
-    let target_pose = one_hinge_pose(
-        fixed_face,
-        hinge.edge(),
-        f64::from_bits(hinge.angle_degrees().to_bits() + 1),
-        false,
-    );
-    let target_pattern = fixture.target_pattern.clone();
-    let target_paper = fixture.paper.clone();
-    assert_rejected(
-        "hinge angle bits",
-        fixture,
-        1,
-        0,
-        target_pattern,
-        target_paper,
-        target_pose,
-    );
+    assert_eq!(fixture.editor.revision(), 0);
+    assert!(!fixture.editor.can_undo());
 }
 
 #[test]
@@ -648,6 +466,7 @@ fn stale_or_blocking_bindings_reject_atomically_before_apply() {
             fixture.editor.speculative_unproven_fold_state_marker_v1(),
         );
         let token = token_for_binding_target(
+            &fixture,
             binding,
             1,
             &fixture.target_pattern,
@@ -656,15 +475,7 @@ fn stale_or_blocking_bindings_reject_atomically_before_apply() {
         );
         let result = fixture
             .editor
-            .execute_stacked_fold_document_with_unproven_mark_v1(
-                0,
-                fixture.target_pattern.clone(),
-                fixture.paper.clone(),
-                fixture.timeline.clone(),
-                ProjectLayerDocumentV1::default(),
-                fixture.applied_pose.clone(),
-                token,
-            );
+            .execute_stacked_fold_document_with_unproven_mark_v1(token);
         assert_eq!(result, Err(expected));
         assert_eq!(
             (
@@ -737,6 +548,7 @@ fn stale_or_blocking_bindings_reject_atomically_before_apply() {
             .expect("valid observed angle"),
     );
     let token = token_for_binding_target(
+        &fixture,
         blocking,
         1,
         &fixture.target_pattern,
@@ -746,15 +558,7 @@ fn stale_or_blocking_bindings_reject_atomically_before_apply() {
     assert_eq!(
         fixture
             .editor
-            .execute_stacked_fold_document_with_unproven_mark_v1(
-                0,
-                fixture.target_pattern.clone(),
-                fixture.paper.clone(),
-                fixture.timeline.clone(),
-                ProjectLayerDocumentV1::default(),
-                fixture.applied_pose.clone(),
-                token,
-            ),
+            .execute_stacked_fold_document_with_unproven_mark_v1(token),
         Err(SpeculativeUnprovenFoldApplyErrorV1::ApproximateBlockingSampleObserved)
     );
     assert_eq!(fixture.editor.revision(), 0);

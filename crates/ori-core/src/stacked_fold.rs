@@ -33,9 +33,9 @@ mod speculative_unproven_token;
 
 #[cfg(test)]
 pub(crate) use speculative_unproven_token::issue_speculative_unproven_fold_token_for_test_v1;
+pub(crate) use speculative_unproven_token::issue_speculative_unproven_fold_token_v1;
 pub use speculative_unproven_token::{
     SpeculativeUnprovenFoldTokenIssueErrorV1, SpeculativeUnprovenFoldTokenV1,
-    issue_speculative_unproven_fold_token_v1,
 };
 
 pub const DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES: usize = 2_048;
@@ -3496,6 +3496,12 @@ fn current_applied_pose_matches_reconstructed(
     target: &ReconstructedRefinedTargetV1,
 ) -> bool {
     current.model_id() == target.pose_model_id
+        && current.face_ids().len() == target.material_faces.len()
+        && current
+            .face_ids()
+            .iter()
+            .zip(&target.material_faces)
+            .all(|(current, target)| *current == target.face_id)
         && current.fixed_face() == target.fixed_face
         && current.hinge_angles().len() == target.hinge_angles.len()
         && current

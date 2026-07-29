@@ -97,6 +97,43 @@ fn ratio_input(ratio_count: usize) -> RatioInput {
     (ratios, fixed_lengths, edge_ids)
 }
 
+fn reverse_domain_input() -> RatioInput {
+    let edges = (0..6).map(|_| EdgeId::new()).collect::<Vec<_>>();
+    let nodes = edges
+        .iter()
+        .map(EdgeId::canonical_bytes)
+        .collect::<Vec<_>>();
+    let edge_ids = nodes
+        .iter()
+        .copied()
+        .zip(edges.iter().copied())
+        .collect::<BTreeMap<_, _>>();
+    let mut ratios = BTreeMap::new();
+    for (numerator, denominator, ratio) in [
+        (4, 0, 11.0),
+        (0, 1, 2.0),
+        (1, 2, 3.0),
+        (2, 3, 5.0),
+        (3, 0, 0.1),
+    ] {
+        ratios.insert(
+            (nodes[numerator], nodes[denominator]),
+            vec![ScalarAssignment {
+                id: ConstraintId::new(),
+                value: ratio,
+            }],
+        );
+    }
+    let fixed_lengths = BTreeMap::from([(
+        nodes[4],
+        ScalarGroupSummary::new(ScalarAssignment {
+            id: ConstraintId::new(),
+            value: 7.0,
+        }),
+    )]);
+    (ratios, fixed_lengths, edge_ids)
+}
+
 fn direct_with(
     input: &RatioInput,
     limits: Limits,
@@ -168,6 +205,87 @@ fn witness_and_exact_work_storage_boundaries_are_fail_closed() {
             ..
         }
     ));
+}
+
+#[test]
+fn reverse_domain_exact_work_storage_and_every_stop_boundary_are_fail_closed() {
+    let input = reverse_domain_input();
+    let (expected, stats) = direct_with(&input, Limits::default(), &mut NoopObserver);
+    assert!(matches!(expected, Outcome::Proven(_)));
+    let exact = Limits {
+        max_work: stats.completed_work,
+        max_storage_units: stats.peak_storage_units,
+    };
+    assert_eq!(direct_with(&input, exact, &mut NoopObserver).0, expected);
+    assert!(matches!(
+        direct_with(
+            &input,
+            Limits {
+                max_work: exact.max_work - 1,
+                ..exact
+            },
+            &mut NoopObserver,
+        )
+        .0,
+        Outcome::Unknown {
+            reason: UnknownReason::WorkLimitExceeded,
+            ..
+        }
+    ));
+    assert!(matches!(
+        direct_with(
+            &input,
+            Limits {
+                max_storage_units: exact.max_storage_units - 1,
+                ..exact
+            },
+            &mut NoopObserver,
+        )
+        .0,
+        Outcome::Unknown {
+            reason: UnknownReason::StorageLimitExceeded,
+            ..
+        }
+    ));
+
+    struct StopAt {
+        phase: Phase,
+        minimum_work: u64,
+        control: ObserverControl,
+    }
+    impl Observer for StopAt {
+        fn checkpoint(&mut self, checkpoint: Checkpoint) -> ObserverControl {
+            if checkpoint.phase == self.phase && checkpoint.completed_work >= self.minimum_work {
+                self.control
+            } else {
+                ObserverControl::Continue
+            }
+        }
+    }
+
+    for (control, reason) in [
+        (ObserverControl::Cancelled, UnknownReason::Cancelled),
+        (
+            ObserverControl::DeadlineReached,
+            UnknownReason::DeadlineReached,
+        ),
+    ] {
+        for (phase, minimum_work) in [
+            (Phase::GraphBuild, 0),
+            (Phase::ProofSearch, 128),
+            (Phase::Complete, 0),
+        ] {
+            let mut observer = StopAt {
+                phase,
+                minimum_work,
+                control,
+            };
+            assert!(matches!(
+                direct_with(&input, Limits::default(), &mut observer).0,
+                Outcome::Unknown { reason: actual, .. } if actual == reason
+            ));
+        }
+    }
 }
 
 #[test]

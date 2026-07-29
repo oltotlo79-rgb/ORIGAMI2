@@ -455,12 +455,13 @@ pub enum DirectConstraintConflictKindV1 {
         fixed_edge: EdgeId,
     },
     /// A consistent positive finite `FixedLength` is used as the sole root of
-    /// a directed graph of consistent positive finite `LengthRatio` records.
-    /// Every arc is followed only from denominator to numerator using one
-    /// production binary64 multiplication. Two root-derived paths close at one
-    /// already forced finite edge, where the production residual is non-zero
-    /// or non-finite. The canonical witness contains the root constraint and
-    /// between three and 255 ratio constraints.
+    /// a graph of consistent positive finite `LengthRatio` records. Forward
+    /// arcs use the production binary64 multiplication. Reverse arcs use a
+    /// division-free bit-ordered search for the complete conservative
+    /// multiplication preimage, preserving underflow plateaus, overflow, and
+    /// rounding aliases. Two root-derived paths close at one edge with
+    /// disjoint value domains. The canonical witness contains the root
+    /// constraint and between three and 255 ratio constraints.
     InconsistentLengthRatioGraphWithFixedLength {
         fixed_edge: EdgeId,
         ratio_constraint_count: u16,

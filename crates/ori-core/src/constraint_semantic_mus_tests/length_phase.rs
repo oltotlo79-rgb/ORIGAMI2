@@ -148,6 +148,44 @@ pub(super) fn length_work_fixture() -> SemanticFixture {
     target_fixtures().remove(0).1
 }
 
+fn reverse_domain_fixture() -> SemanticFixture {
+    let (pattern, edges) = matching_pattern(5);
+    SemanticFixture {
+        pattern,
+        records: vec![
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: edges[4],
+                length_mm: 7.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: edges[4],
+                denominator_edge: edges[0],
+                ratio: 11.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: edges[0],
+                denominator_edge: edges[1],
+                ratio: 2.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: edges[1],
+                denominator_edge: edges[2],
+                ratio: 3.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: edges[2],
+                denominator_edge: edges[3],
+                ratio: 5.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: edges[3],
+                denominator_edge: edges[0],
+                ratio: 0.1,
+            }),
+        ],
+    }
+}
+
 #[test]
 fn bounded_length_language_promotes_exactly_the_three_target_families() {
     let fixtures = target_fixtures();
@@ -170,6 +208,27 @@ fn bounded_length_language_promotes_exactly_the_three_target_families() {
             4,
         );
     }
+}
+
+#[test]
+fn reverse_domain_core_has_a_fresh_exact_length_witness_after_every_deletion() {
+    let fixture = reverse_domain_fixture();
+    let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
+    assert!(has_family(&prepared.preflight(), Family::GeneralRatioGraph));
+    let certificate = certified(certify_bounded_current_runtime_semantic_mus_v1(&prepared));
+    assert_eq!(certificate.constraint_ids().len(), 6);
+    assert_eq!(certificate.current_assignment_witness_count(), 0);
+    assert_eq!(certificate.axis_exactification_witness_count(), 0);
+    assert_eq!(
+        certificate.single_constraint_constructive_witness_count(),
+        0
+    );
+    assert_eq!(certificate.pair_constraint_constructive_witness_count(), 0);
+    assert_eq!(certificate.pair_constraint_algebraic_witness_count(), 0);
+    assert_eq!(
+        certificate.length_constraint_constructive_witness_count(),
+        6
+    );
 }
 
 #[test]

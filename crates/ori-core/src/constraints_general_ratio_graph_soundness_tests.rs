@@ -1,10 +1,11 @@
 use super::GeometricConstraintKindV1;
 use super::general_ratio_graph_tests::{
-    Fixture, directed_cycle_records, prepare, record, remote_two_cycle_records, target,
+    Fixture, assert_target, directed_cycle_records, prepare, record, remote_two_cycle_records,
+    sorted_ids, target,
 };
 
 #[test]
-fn roots_groups_and_direction_are_never_combined_or_reversed() {
+fn roots_and_groups_are_not_combined_but_sound_reverse_domains_are_followed() {
     let fixture = Fixture::new();
     let [
         first_root,
@@ -88,6 +89,46 @@ fn roots_groups_and_direction_are_never_combined_or_reversed() {
                 };
             }
             item
-        });
-    assert!(target(&prepare(&fixture, reverse_only).preflight()).is_none());
+        })
+        .collect::<Vec<_>>();
+    let expected_ids = sorted_ids(reverse_only.iter().map(|record| record.id));
+    assert_target(
+        &prepare(&fixture, reverse_only).preflight(),
+        fixture.edges[0],
+        &expected_ids,
+    );
+}
+
+#[test]
+fn traversing_the_same_binary64_ratio_backward_then_forward_never_conflicts() {
+    let fixture = Fixture::new();
+    let root = fixture.edges[0];
+    let denominator = fixture.edges[1];
+    let round_trip = fixture.edges[2];
+    let records = [
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: root,
+            length_mm: 7.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: root,
+            denominator_edge: denominator,
+            ratio: 11.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: round_trip,
+            denominator_edge: denominator,
+            ratio: 11.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: root,
+            denominator_edge: round_trip,
+            ratio: 1.0,
+        }),
+    ];
+    assert!(
+        target(&prepare(&fixture, records).preflight()).is_none(),
+        "the conservative inverse followed by the identical production \
+         multiplication must retain its source value"
+    );
 }

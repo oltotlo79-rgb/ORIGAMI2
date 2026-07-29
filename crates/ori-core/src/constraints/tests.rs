@@ -3707,7 +3707,7 @@ fn three_ratio_cycle_uses_binary64_closure_instead_of_exact_unit_product() {
 }
 
 #[test]
-fn reverse_only_exact_real_ratio_graph_remains_solver_required_and_irredundant() {
+fn reverse_only_binary64_ratio_graph_is_proven_and_irredundant() {
     let fixture = Fixture::new();
     let records = vec![
         record(GeometricConstraintKindV1::FixedLength {
@@ -3742,8 +3742,30 @@ fn reverse_only_exact_real_ratio_graph_remains_solver_required_and_irredundant()
     ];
     let prepared =
         prepare(&fixture, &document(records.clone())).expect("bounded inconsistent ratio graph");
-    assert_solver_required(&prepared.preflight());
-    assert_bounded_direct_oracle_unknown(&prepared);
+    let expected_ids = {
+        let mut ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
+        canonicalize_constraint_ids(&mut ids);
+        ids
+    };
+    let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
+        panic!("sound reverse-domain closure must prove the inconsistent graph");
+    };
+    assert!(conflicts.iter().any(|conflict| {
+        matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
+                fixed_edge,
+                ratio_constraint_count: 5,
+            } if *fixed_edge == fixture.edges[4]
+        ) && conflict.constraint_ids() == expected_ids.as_slice()
+    }));
+    assert!(matches!(
+        find_bounded_direct_mus_v1(&prepared),
+        BoundedDirectMusV1::ProvenUnsatisfiable {
+            ref constraint_ids,
+            ..
+        } if constraint_ids == &expected_ids
+    ));
 
     let duplicate_fixed = record(GeometricConstraintKindV1::FixedLength {
         edge: fixture.edges[4],
@@ -3764,7 +3786,10 @@ fn reverse_only_exact_real_ratio_graph_remains_solver_required_and_irredundant()
         .expect("source-reordered equal duplicate assignments")
         .preflight();
     assert_eq!(forward, reversed);
-    assert_solver_required(&forward);
+    assert!(matches!(
+        forward,
+        ConstraintPreflightV1::DirectConflict { .. }
+    ));
 
     for removed in records.iter().map(|record| record.id) {
         let subset = records
@@ -3802,7 +3827,7 @@ fn reverse_only_exact_real_ratio_graph_remains_solver_required_and_irredundant()
 }
 
 #[test]
-fn general_ratio_graph_never_infers_the_forbidden_reverse_ratio_direction() {
+fn general_ratio_graph_uses_reverse_domains_without_reciprocal_substitution() {
     let fixture = Fixture::new();
     let fixed = record(GeometricConstraintKindV1::FixedLength {
         edge: fixture.edges[0],
@@ -3849,8 +3874,26 @@ fn general_ratio_graph_never_infers_the_forbidden_reverse_ratio_direction() {
     ];
     let prepared = prepare(&fixture, &document(records))
         .expect("two inconsistent ratio cycles connected to one remote fixed edge");
-    assert_solver_required(&prepared.preflight());
-    assert_bounded_direct_oracle_unknown(&prepared);
+    assert!(matches!(
+        prepared.preflight(),
+        ConstraintPreflightV1::DirectConflict { conflicts }
+            if conflicts.iter().any(|conflict| {
+                matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
+                        ratio_constraint_count: 3,
+                        ..
+                    }
+                ) && conflict.constraint_ids().len() == 4
+            })
+    ));
+    assert!(matches!(
+        find_bounded_direct_mus_v1(&prepared),
+        BoundedDirectMusV1::ProvenUnsatisfiable {
+            ref constraint_ids,
+            ..
+        } if constraint_ids.len() == 4
+    ));
 
     let reverse_kind = |record: &GeometricConstraintRecordV1| {
         let GeometricConstraintKindV1::LengthRatio {
@@ -3892,21 +3935,19 @@ fn general_ratio_graph_never_infers_the_forbidden_reverse_ratio_direction() {
     )
     .expect("fully direction-reversed remote two-edge cycle")
     .preflight();
-    assert!(!matches!(
-        oriented_forward,
-        ConstraintPreflightV1::DirectConflict { .. }
-    ));
-    assert!(matches!(
-        oriented_reverse,
-        ConstraintPreflightV1::DirectConflict { conflicts }
-            if conflicts.iter().any(|conflict| matches!(
-                conflict.conflict(),
-                DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
-                    ratio_constraint_count: 3,
-                    ..
-                }
-            ))
-    ));
+    for outcome in [oriented_forward, oriented_reverse] {
+        assert!(matches!(
+            outcome,
+            ConstraintPreflightV1::DirectConflict { conflicts }
+                if conflicts.iter().any(|conflict| matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
+                        ratio_constraint_count: 3,
+                        ..
+                    }
+                ))
+        ));
+    }
 }
 
 #[test]

@@ -17,9 +17,22 @@ mod ledger_tests;
 pub use binding::{SpeculativeApproximateBlockingObservationV1, SpeculativeUnprovenFoldBindingV1};
 pub use certification::{
     SpeculativeUnprovenFoldCertificationErrorV1, SpeculativeUnprovenFoldCertificationFailureV1,
-    SpeculativeUnprovenFoldCertifiedProofV1, SpeculativeUnprovenFoldResolutionTicketV1,
+    SpeculativeUnprovenFoldCertifiedProofV1,
+    SpeculativeUnprovenFoldLayeredFourFaceCertificationErrorV1,
+    SpeculativeUnprovenFoldLayeredFourFaceCertificationFailureV1,
+    SpeculativeUnprovenFoldLayeredFourFaceCertifiedProofV1,
+    SpeculativeUnprovenFoldLayeredThreeFaceCertificationErrorV1,
+    SpeculativeUnprovenFoldLayeredThreeFaceCertificationFailureV1,
+    SpeculativeUnprovenFoldLayeredThreeFaceCertifiedProofV1,
+    SpeculativeUnprovenFoldResolutionTicketV1,
+    bind_speculative_unproven_layered_four_face_chain_continuous_proof_v1,
+    bind_speculative_unproven_layered_four_face_chain_continuous_proof_with_control_v1,
+    bind_speculative_unproven_layered_three_face_continuous_proof_v1,
+    bind_speculative_unproven_layered_three_face_continuous_proof_with_control_v1,
     bind_speculative_unproven_tree_continuous_proof_v1,
+    bind_speculative_unproven_tree_continuous_proof_with_control_v1,
 };
+pub use editor_operations::SpeculativeUnprovenFoldCertifiedResolutionFailureV1;
 pub use ledger::SpeculativeUnprovenFoldStateMarkerV1;
 pub use status::{
     SpeculativeUnprovenFoldApplyErrorV1, SpeculativeUnprovenFoldApplyResourceV1,
@@ -38,4 +51,11 @@ pub(super) use ledger::{AppliedBaseUnprovenLedgerV1, AppliedBaseUnprovenMarkV1};
 pub(super) use status::SpeculativeUnprovenFoldMarkV1;
 
 #[cfg(test)]
-pub(crate) use certification::bind_resolution_ticket_for_test_v1;
+pub(crate) use certification::{
+    bind_layered_four_face_resolution_ticket_for_test_v1,
+    bind_layered_resolution_ticket_for_test_v1,
+    bind_layered_resolution_ticket_with_target_revision_for_test_v1,
+    bind_resolution_ticket_for_test_v1,
+};
+#[cfg(test)]
+pub(crate) use editor_operations::with_certified_resolution_precommit_panic_v1;

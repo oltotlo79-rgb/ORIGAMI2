@@ -40,6 +40,8 @@ mod speculative_unproven;
 pub use history_persistence::{
     EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1, EditorHistoryV1,
 };
+#[cfg(test)]
+use speculative_unproven::with_certified_resolution_precommit_panic_v1;
 use speculative_unproven::{
     AppliedBaseUnprovenLedgerV1, AppliedBaseUnprovenMarkV1, SpeculativeUnprovenFoldMarkV1,
 };
@@ -49,13 +51,25 @@ pub use speculative_unproven::{
     SpeculativeApproximateBlockingObservationV1, SpeculativeUnprovenFoldApplyErrorV1,
     SpeculativeUnprovenFoldApplyResourceV1, SpeculativeUnprovenFoldBindingV1,
     SpeculativeUnprovenFoldCertificationErrorV1, SpeculativeUnprovenFoldCertificationFailureV1,
-    SpeculativeUnprovenFoldCertifiedProofV1, SpeculativeUnprovenFoldHistoryLocationV1,
+    SpeculativeUnprovenFoldCertifiedProofV1, SpeculativeUnprovenFoldCertifiedResolutionFailureV1,
+    SpeculativeUnprovenFoldHistoryLocationV1,
+    SpeculativeUnprovenFoldLayeredFourFaceCertificationErrorV1,
+    SpeculativeUnprovenFoldLayeredFourFaceCertificationFailureV1,
+    SpeculativeUnprovenFoldLayeredFourFaceCertifiedProofV1,
+    SpeculativeUnprovenFoldLayeredThreeFaceCertificationErrorV1,
+    SpeculativeUnprovenFoldLayeredThreeFaceCertificationFailureV1,
+    SpeculativeUnprovenFoldLayeredThreeFaceCertifiedProofV1,
     SpeculativeUnprovenFoldMetadataErrorV1, SpeculativeUnprovenFoldProofOutcomeV1,
     SpeculativeUnprovenFoldResolutionErrorV1, SpeculativeUnprovenFoldResolutionReportV1,
     SpeculativeUnprovenFoldResolutionTicketV1, SpeculativeUnprovenFoldStateMarkerV1,
     SpeculativeUnprovenFoldStatusCountsV1, SpeculativeUnprovenFoldStatusV1,
     SpeculativeUnprovenFoldSummaryV1, SpeculativeUnprovenFoldUnknownReasonV1,
+    bind_speculative_unproven_layered_four_face_chain_continuous_proof_v1,
+    bind_speculative_unproven_layered_four_face_chain_continuous_proof_with_control_v1,
+    bind_speculative_unproven_layered_three_face_continuous_proof_v1,
+    bind_speculative_unproven_layered_three_face_continuous_proof_with_control_v1,
     bind_speculative_unproven_tree_continuous_proof_v1,
+    bind_speculative_unproven_tree_continuous_proof_with_control_v1,
 };
 
 pub type Revision = u64;

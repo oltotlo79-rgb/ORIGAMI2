@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+};
 
 use ori_domain::ProjectId;
 
@@ -15,7 +18,9 @@ use super::{
     MAX_PENDING_SPECULATIVE_UNPROVEN_FOLDS_V1, SpeculativeApproximateBlockingObservationV1,
     SpeculativeUnprovenFoldApplyErrorV1, SpeculativeUnprovenFoldApplyResourceV1,
     SpeculativeUnprovenFoldBindingV1, SpeculativeUnprovenFoldCertifiedProofV1,
-    SpeculativeUnprovenFoldHistoryLocationV1, SpeculativeUnprovenFoldMarkV1,
+    SpeculativeUnprovenFoldHistoryLocationV1,
+    SpeculativeUnprovenFoldLayeredFourFaceCertifiedProofV1,
+    SpeculativeUnprovenFoldLayeredThreeFaceCertifiedProofV1, SpeculativeUnprovenFoldMarkV1,
     SpeculativeUnprovenFoldProofOutcomeV1, SpeculativeUnprovenFoldResolutionErrorV1,
     SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionTicketV1,
     SpeculativeUnprovenFoldStateMarkerV1, SpeculativeUnprovenFoldStatusV1,
@@ -34,6 +39,46 @@ enum MarkLocationMatch {
     Missing,
     Unique(MarkLocation),
     Duplicate,
+}
+
+struct CertifiedResolutionPlanV1 {
+    location: MarkLocation,
+    report: SpeculativeUnprovenFoldResolutionReportV1,
+}
+
+/// Recoverable failure to consume one typed certification proof.
+///
+/// The editor is unchanged and the exact non-cloneable proof remains owned by
+/// this value. Callers can inspect the error and retry the proof against its
+/// owning editor with [`Self::into_proof`] or recover both values with
+/// [`Self::into_parts`].
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct SpeculativeUnprovenFoldCertifiedResolutionFailureV1<Proof> {
+    error: SpeculativeUnprovenFoldResolutionErrorV1,
+    proof: Proof,
+}
+
+impl<Proof> SpeculativeUnprovenFoldCertifiedResolutionFailureV1<Proof> {
+    #[must_use]
+    pub const fn error(&self) -> &SpeculativeUnprovenFoldResolutionErrorV1 {
+        &self.error
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (SpeculativeUnprovenFoldResolutionErrorV1, Proof) {
+        (self.error, self.proof)
+    }
+
+    #[must_use]
+    pub fn into_error(self) -> SpeculativeUnprovenFoldResolutionErrorV1 {
+        self.error
+    }
+
+    #[must_use]
+    pub fn into_proof(self) -> Proof {
+        self.proof
+    }
 }
 
 impl EditorState {
@@ -140,7 +185,7 @@ impl EditorState {
         (CommandResult, SpeculativeUnprovenFoldResolutionTicketV1),
         SpeculativeUnprovenFoldApplyErrorV1,
     > {
-        let (binding, command, applied_pose) = token
+        let (binding, command, applied_pose, prepared_request_issuer_seal) = token
             .into_authorized_target_v1(
                 &self.runtime_instance_anchor,
                 self.revision(),
@@ -224,6 +269,7 @@ impl EditorState {
             target_revision,
             target_geometry_fingerprint,
             target_applied_pose,
+            prepared_request_issuer_seal,
         );
         debug_assert_eq!(result.revision, target_revision);
         Ok((result, resolution_ticket))
@@ -320,20 +366,161 @@ impl EditorState {
     ///
     /// The document, revision, applied pose, and Undo/Redo entry order are
     /// unchanged. A foreign editor, metadata drift, duplicate location, or
-    /// terminal mark fails before any mutation.
+    /// terminal mark fails before any mutation. Callers that must retain the
+    /// proof after rejection should use
+    /// [`Self::try_resolve_speculative_unproven_fold_certified_v1`].
     pub fn resolve_speculative_unproven_fold_certified_v1(
         &mut self,
         proof: SpeculativeUnprovenFoldCertifiedProofV1,
     ) -> Result<SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionErrorV1>
     {
-        let (
-            editor_instance_anchor,
-            binding,
-            target_revision,
-            _target_geometry_fingerprint,
-            _target_applied_pose,
-        ) = proof.into_resolution_parts();
-        if !Arc::ptr_eq(&editor_instance_anchor, &self.runtime_instance_anchor) {
+        self.try_resolve_speculative_unproven_fold_certified_v1(proof)
+            .map_err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1::into_error)
+    }
+
+    /// Recoverable form of [`Self::resolve_speculative_unproven_fold_certified_v1`].
+    ///
+    /// Success consumes the proof exactly once. Every rejection leaves the
+    /// editor unchanged and returns that same proof for an owner-correct retry.
+    #[allow(clippy::result_large_err)]
+    pub fn try_resolve_speculative_unproven_fold_certified_v1(
+        &mut self,
+        proof: SpeculativeUnprovenFoldCertifiedProofV1,
+    ) -> Result<
+        SpeculativeUnprovenFoldResolutionReportV1,
+        SpeculativeUnprovenFoldCertifiedResolutionFailureV1<
+            SpeculativeUnprovenFoldCertifiedProofV1,
+        >,
+    > {
+        let (editor_instance_anchor, binding, target_revision) = proof.resolution_identity();
+        let resolution = catch_unwind(AssertUnwindSafe(|| {
+            self.resolve_speculative_unproven_fold_certified_parts_v1(
+                editor_instance_anchor,
+                binding,
+                target_revision,
+            )
+        }));
+        match resolution {
+            Ok(Ok(report)) => {
+                let _consumed = proof.into_resolution_parts();
+                Ok(report)
+            }
+            Ok(Err(error)) => {
+                Err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1 { error, proof })
+            }
+            Err(_) => Err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1 {
+                error: SpeculativeUnprovenFoldResolutionErrorV1::ResolutionPanicked,
+                proof,
+            }),
+        }
+    }
+
+    /// Consumes the distinct layered-three-face typed proof and removes only
+    /// its exact Awaiting mark. This grants no document or project mutation
+    /// authority beyond that already-applied metadata resolution. The
+    /// recoverable counterpart is
+    /// [`Self::try_resolve_speculative_unproven_fold_layered_three_face_certified_v1`].
+    pub fn resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+        &mut self,
+        proof: SpeculativeUnprovenFoldLayeredThreeFaceCertifiedProofV1,
+    ) -> Result<SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionErrorV1>
+    {
+        self.try_resolve_speculative_unproven_fold_layered_three_face_certified_v1(proof)
+            .map_err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1::into_error)
+    }
+
+    /// Recoverable form of
+    /// [`Self::resolve_speculative_unproven_fold_layered_three_face_certified_v1`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+        &mut self,
+        proof: SpeculativeUnprovenFoldLayeredThreeFaceCertifiedProofV1,
+    ) -> Result<
+        SpeculativeUnprovenFoldResolutionReportV1,
+        SpeculativeUnprovenFoldCertifiedResolutionFailureV1<
+            SpeculativeUnprovenFoldLayeredThreeFaceCertifiedProofV1,
+        >,
+    > {
+        let (editor_instance_anchor, binding, target_revision) = proof.resolution_identity();
+        let resolution = catch_unwind(AssertUnwindSafe(|| {
+            self.resolve_speculative_unproven_fold_certified_parts_v1(
+                editor_instance_anchor,
+                binding,
+                target_revision,
+            )
+        }));
+        match resolution {
+            Ok(Ok(report)) => {
+                let _consumed = proof.into_resolution_parts();
+                Ok(report)
+            }
+            Ok(Err(error)) => {
+                Err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1 { error, proof })
+            }
+            Err(_) => Err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1 {
+                error: SpeculativeUnprovenFoldResolutionErrorV1::ResolutionPanicked,
+                proof,
+            }),
+        }
+    }
+
+    /// Consumes the distinct layered-four-face-chain typed proof and removes
+    /// only its exact Awaiting mark. This grants no document or project
+    /// mutation authority beyond that already-applied metadata resolution. The
+    /// recoverable counterpart is
+    /// [`Self::try_resolve_speculative_unproven_fold_layered_four_face_certified_v1`].
+    pub fn resolve_speculative_unproven_fold_layered_four_face_certified_v1(
+        &mut self,
+        proof: SpeculativeUnprovenFoldLayeredFourFaceCertifiedProofV1,
+    ) -> Result<SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionErrorV1>
+    {
+        self.try_resolve_speculative_unproven_fold_layered_four_face_certified_v1(proof)
+            .map_err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1::into_error)
+    }
+
+    /// Recoverable form of
+    /// [`Self::resolve_speculative_unproven_fold_layered_four_face_certified_v1`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_resolve_speculative_unproven_fold_layered_four_face_certified_v1(
+        &mut self,
+        proof: SpeculativeUnprovenFoldLayeredFourFaceCertifiedProofV1,
+    ) -> Result<
+        SpeculativeUnprovenFoldResolutionReportV1,
+        SpeculativeUnprovenFoldCertifiedResolutionFailureV1<
+            SpeculativeUnprovenFoldLayeredFourFaceCertifiedProofV1,
+        >,
+    > {
+        let (editor_instance_anchor, binding, target_revision) = proof.resolution_identity();
+        let resolution = catch_unwind(AssertUnwindSafe(|| {
+            self.resolve_speculative_unproven_fold_certified_parts_v1(
+                editor_instance_anchor,
+                binding,
+                target_revision,
+            )
+        }));
+        match resolution {
+            Ok(Ok(report)) => {
+                let _consumed = proof.into_resolution_parts();
+                Ok(report)
+            }
+            Ok(Err(error)) => {
+                Err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1 { error, proof })
+            }
+            Err(_) => Err(SpeculativeUnprovenFoldCertifiedResolutionFailureV1 {
+                error: SpeculativeUnprovenFoldResolutionErrorV1::ResolutionPanicked,
+                proof,
+            }),
+        }
+    }
+
+    fn resolve_speculative_unproven_fold_certified_parts_v1(
+        &mut self,
+        editor_instance_anchor: &Arc<()>,
+        binding: &SpeculativeUnprovenFoldBindingV1,
+        target_revision: super::super::Revision,
+    ) -> Result<SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionErrorV1>
+    {
+        if !Arc::ptr_eq(editor_instance_anchor, &self.runtime_instance_anchor) {
             return Err(SpeculativeUnprovenFoldResolutionErrorV1::ForeignEditor);
         }
         binding.validate()?;
@@ -345,7 +532,7 @@ impl EditorState {
         {
             return Err(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof);
         }
-        let location = match self.find_mark_location(&binding) {
+        let location = match self.find_mark_location(binding) {
             MarkLocationMatch::Missing => {
                 return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound);
             }
@@ -354,31 +541,143 @@ impl EditorState {
                 return Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding);
             }
         };
-        let located = self.mark_at(location).expect("located mark");
-        if located.binding != binding {
+        let located = self
+            .mark_at(location)
+            .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+        if located.binding != *binding {
             return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingMetadataMismatch);
         }
         if located.status != SpeculativeUnprovenFoldStatusV1::AwaitingProof {
             return Err(SpeculativeUnprovenFoldResolutionErrorV1::AlreadyResolved);
         }
 
-        let report =
-            self.resolution_report(location, SpeculativeUnprovenFoldProofOutcomeV1::Certified);
-        let removed = match location {
-            MarkLocation::AppliedBase(index) => {
-                self.applied_base_unproven.retained_marks.remove(index).mark
-            }
-            MarkLocation::Undo(index) => self.undo_stack[index]
-                .speculative_unproven_fold
-                .take()
-                .expect("the validated Undo mark remains present"),
-            MarkLocation::Redo(index) => self.redo_stack[index]
-                .speculative_unproven_fold
-                .take()
-                .expect("the validated Redo mark remains present"),
+        let plan = CertifiedResolutionPlanV1 {
+            location,
+            report: self.certified_resolution_report_v1(location)?,
         };
-        debug_assert_eq!(removed.binding, binding);
-        Ok(report)
+        // The only intentionally catchable fault boundary is kept after the
+        // complete read-only preflight and before the sole mutation. The
+        // public recoverable wrappers still own `proof` while this function
+        // runs, so an unwind here returns that exact proof.
+        panic_before_certified_resolution_commit_if_forced_v1();
+        self.commit_certified_resolution_plan_v1(plan, binding)
+    }
+
+    fn certified_resolution_report_v1(
+        &self,
+        location: MarkLocation,
+    ) -> Result<SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionErrorV1>
+    {
+        let outcome = SpeculativeUnprovenFoldProofOutcomeV1::Certified;
+        match location {
+            MarkLocation::AppliedBase(index) => {
+                let retained = self
+                    .applied_base_unproven
+                    .retained_marks
+                    .get(index)
+                    .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+                Ok(SpeculativeUnprovenFoldResolutionReportV1 {
+                    location: SpeculativeUnprovenFoldHistoryLocationV1::AppliedTrimmedBase,
+                    outcome,
+                    subsequent_edit_count: retained.subsequent_applied_entries,
+                    undo_steps_to_revert: None,
+                })
+            }
+            MarkLocation::Undo(index) => {
+                let entry = self
+                    .undo_stack
+                    .get(index)
+                    .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+                if entry.speculative_unproven_fold.is_none() {
+                    return Err(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof);
+                }
+                let subsequent = self
+                    .undo_stack
+                    .len()
+                    .checked_sub(index.saturating_add(1))
+                    .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+                let subsequent_edit_count = u64::try_from(subsequent)
+                    .map_err(|_| SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+                let undo_steps_to_revert = u32::try_from(
+                    subsequent
+                        .checked_add(1)
+                        .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?,
+                )
+                .map_err(|_| SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+                Ok(SpeculativeUnprovenFoldResolutionReportV1 {
+                    location: SpeculativeUnprovenFoldHistoryLocationV1::AppliedRetainedUndo,
+                    outcome,
+                    subsequent_edit_count,
+                    undo_steps_to_revert: Some(undo_steps_to_revert),
+                })
+            }
+            MarkLocation::Redo(index) => {
+                let entry = self
+                    .redo_stack
+                    .get(index)
+                    .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+                if entry.speculative_unproven_fold.is_none() {
+                    return Err(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof);
+                }
+                Ok(SpeculativeUnprovenFoldResolutionReportV1 {
+                    location: SpeculativeUnprovenFoldHistoryLocationV1::UnappliedRedo,
+                    outcome,
+                    subsequent_edit_count: 0,
+                    undo_steps_to_revert: None,
+                })
+            }
+        }
+    }
+
+    fn commit_certified_resolution_plan_v1(
+        &mut self,
+        plan: CertifiedResolutionPlanV1,
+        binding: &SpeculativeUnprovenFoldBindingV1,
+    ) -> Result<SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionErrorV1>
+    {
+        // Repeat every location-local condition while the editor is still
+        // unchanged. No callback, assertion, allocation, or fallible
+        // conversion occurs after the mutation starts.
+        let located = self
+            .mark_at(plan.location)
+            .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+        if located.binding != *binding {
+            return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingMetadataMismatch);
+        }
+        if located.status != SpeculativeUnprovenFoldStatusV1::AwaitingProof {
+            return Err(SpeculativeUnprovenFoldResolutionErrorV1::AlreadyResolved);
+        }
+
+        match plan.location {
+            MarkLocation::AppliedBase(index) => {
+                if self
+                    .applied_base_unproven
+                    .retained_marks
+                    .get(index)
+                    .is_none()
+                {
+                    return Err(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof);
+                }
+                let _removed = self.applied_base_unproven.retained_marks.remove(index);
+            }
+            MarkLocation::Undo(index) => {
+                let mark = self
+                    .undo_stack
+                    .get_mut(index)
+                    .and_then(|entry| entry.speculative_unproven_fold.take())
+                    .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+                let _removed = mark;
+            }
+            MarkLocation::Redo(index) => {
+                let mark = self
+                    .redo_stack
+                    .get_mut(index)
+                    .and_then(|entry| entry.speculative_unproven_fold.take())
+                    .ok_or(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)?;
+                let _removed = mark;
+            }
+        }
+        Ok(plan.report)
     }
 
     #[must_use]
@@ -545,6 +844,43 @@ impl EditorState {
             },
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CERTIFIED_RESOLUTION_PRECOMMIT_PANIC_V1: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn panic_before_certified_resolution_commit_if_forced_v1() {
+    CERTIFIED_RESOLUTION_PRECOMMIT_PANIC_V1.with(|armed| {
+        if armed.replace(false) {
+            panic!("injected certified-resolution precommit panic");
+        }
+    });
+}
+
+#[cfg(not(test))]
+const fn panic_before_certified_resolution_commit_if_forced_v1() {}
+
+#[cfg(test)]
+pub(crate) fn with_certified_resolution_precommit_panic_v1<R>(operation: impl FnOnce() -> R) -> R {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CERTIFIED_RESOLUTION_PRECOMMIT_PANIC_V1.with(|armed| armed.set(false));
+        }
+    }
+
+    CERTIFIED_RESOLUTION_PRECOMMIT_PANIC_V1.with(|armed| {
+        assert!(
+            !armed.replace(true),
+            "certified-resolution fault already armed"
+        );
+    });
+    let _reset = Reset;
+    operation()
 }
 
 fn map_source_pose_match_error_v1(

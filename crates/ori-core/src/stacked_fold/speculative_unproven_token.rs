@@ -21,6 +21,7 @@ pub(crate) use fallible_clone::{
 };
 use fallible_clone::{try_clone_instruction_step_v1, try_owned_string};
 
+use super::PreparedStackedFoldRequestIssuerSealV1;
 use crate::{
     AppliedPoseErrorV1, AppliedPoseLimitsV1, AppliedPoseV1, MAX_REVISION,
     PreparedStackedFoldRequestedPoseV1, PreparedStackedFoldSourcePoseResourceV1, Revision,
@@ -44,6 +45,7 @@ struct SpeculativeUnprovenTargetSealV1 {
     target_revision: Revision,
     command: StackedFoldDocumentCommandV1,
     applied_pose: AppliedPoseV1,
+    prepared_request_issuer_seal: Option<PreparedStackedFoldRequestIssuerSealV1>,
 }
 
 /// Crate-private inputs for native speculative-token issuance.
@@ -363,6 +365,7 @@ impl SpeculativeUnprovenFoldTokenV1 {
         SpeculativeUnprovenFoldBindingV1,
         StackedFoldDocumentCommandV1,
         AppliedPoseV1,
+        Option<PreparedStackedFoldRequestIssuerSealV1>,
     )> {
         let Self {
             binding,
@@ -461,6 +464,9 @@ impl SpeculativeUnprovenTargetSealV1 {
             target_revision: lineage.target_revision(),
             command,
             applied_pose,
+            prepared_request_issuer_seal: Some(PreparedStackedFoldRequestIssuerSealV1::capture(
+                requested,
+            )),
         })
     }
 
@@ -499,6 +505,11 @@ impl SpeculativeUnprovenTargetSealV1 {
                 Box::new(beginner_design_profile),
             ),
             applied_pose: applied_pose.try_clone()?,
+            // This constructor exists only for editor unit tests that exercise
+            // document/history mutation without preparing native kinematics.
+            // Public certification rejects a ticket without an exact request
+            // issuer seal.
+            prepared_request_issuer_seal: None,
         })
     }
 
@@ -512,6 +523,7 @@ impl SpeculativeUnprovenTargetSealV1 {
         SpeculativeUnprovenFoldBindingV1,
         StackedFoldDocumentCommandV1,
         AppliedPoseV1,
+        Option<PreparedStackedFoldRequestIssuerSealV1>,
     )> {
         let source_matches = Arc::ptr_eq(&self.editor_instance_anchor, editor_instance_anchor)
             && self.source_applied_pose.as_ref() == source_applied_pose;
@@ -519,7 +531,12 @@ impl SpeculativeUnprovenTargetSealV1 {
             .checked_add(1)
             .filter(|revision| *revision <= MAX_REVISION)
             == Some(self.target_revision);
-        (source_matches && revision_matches).then_some((binding, self.command, self.applied_pose))
+        (source_matches && revision_matches).then_some((
+            binding,
+            self.command,
+            self.applied_pose,
+            self.prepared_request_issuer_seal,
+        ))
     }
 }
 

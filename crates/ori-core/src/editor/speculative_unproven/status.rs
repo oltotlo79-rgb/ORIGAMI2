@@ -197,6 +197,8 @@ pub enum SpeculativeUnprovenFoldResolutionErrorV1 {
     ForeignEditor,
     #[error("the certified proof is internally inconsistent")]
     InvalidCertifiedProof,
+    #[error("the certified proof resolution boundary panicked before mutation")]
+    ResolutionPanicked,
     #[error("certified resolution requires an opaque typed proof")]
     CertifiedRequiresTypedProof,
 }

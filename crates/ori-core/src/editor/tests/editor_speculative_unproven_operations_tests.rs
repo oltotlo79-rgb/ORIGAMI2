@@ -60,6 +60,88 @@ fn assert_speculative_apply_failpoint_is_atomic(
         .expect("the unchanged editor remains retryable");
 }
 
+#[derive(Debug)]
+struct LayeredResolverEditorStateV1 {
+    revision: Revision,
+    pattern: CreasePattern,
+    paper: Paper,
+    timeline: InstructionTimeline,
+    applied_pose: Option<AppliedPoseV1>,
+    undo_history: String,
+    redo_history: String,
+    undo_history_without_marks: String,
+    redo_history_without_marks: String,
+    marks: SpeculativeUnprovenFoldStateMarkerV1,
+}
+
+fn layered_resolver_editor_state_v1(editor: &EditorState) -> LayeredResolverEditorStateV1 {
+    let mut undo_without_marks = editor.undo_stack.clone();
+    for entry in &mut undo_without_marks {
+        entry.speculative_unproven_fold = None;
+    }
+    let mut redo_without_marks = editor.redo_stack.clone();
+    for entry in &mut redo_without_marks {
+        entry.speculative_unproven_fold = None;
+    }
+    LayeredResolverEditorStateV1 {
+        revision: editor.revision(),
+        pattern: editor.pattern().clone(),
+        paper: editor.paper().clone(),
+        timeline: editor.instruction_timeline().clone(),
+        applied_pose: editor.current_applied_pose().cloned(),
+        undo_history: format!("{:?}", editor.undo_stack),
+        redo_history: format!("{:?}", editor.redo_stack),
+        undo_history_without_marks: format!("{undo_without_marks:?}"),
+        redo_history_without_marks: format!("{redo_without_marks:?}"),
+        marks: editor.speculative_unproven_fold_state_marker_v1(),
+    }
+}
+
+fn assert_layered_resolver_failure_is_bit_identical_v1(
+    editor: &EditorState,
+    before: &LayeredResolverEditorStateV1,
+) {
+    assert_eq!(editor.revision(), before.revision);
+    assert_eq!(editor.pattern(), &before.pattern);
+    assert_eq!(editor.paper(), &before.paper);
+    assert_eq!(editor.instruction_timeline(), &before.timeline);
+    assert_eq!(editor.current_applied_pose(), before.applied_pose.as_ref());
+    assert_eq!(format!("{:?}", editor.undo_stack), before.undo_history);
+    assert_eq!(format!("{:?}", editor.redo_stack), before.redo_history);
+    assert_eq!(
+        editor.speculative_unproven_fold_state_marker_v1(),
+        before.marks
+    );
+}
+
+fn assert_layered_resolver_success_preserves_document_v1(
+    editor: &EditorState,
+    before: &LayeredResolverEditorStateV1,
+) {
+    assert_eq!(editor.revision(), before.revision);
+    assert_eq!(editor.pattern(), &before.pattern);
+    assert_eq!(editor.paper(), &before.paper);
+    assert_eq!(editor.instruction_timeline(), &before.timeline);
+    assert_eq!(editor.current_applied_pose(), before.applied_pose.as_ref());
+
+    let mut undo_without_marks = editor.undo_stack.clone();
+    for entry in &mut undo_without_marks {
+        entry.speculative_unproven_fold = None;
+    }
+    let mut redo_without_marks = editor.redo_stack.clone();
+    for entry in &mut redo_without_marks {
+        entry.speculative_unproven_fold = None;
+    }
+    assert_eq!(
+        format!("{undo_without_marks:?}"),
+        before.undo_history_without_marks
+    );
+    assert_eq!(
+        format!("{redo_without_marks:?}"),
+        before.redo_history_without_marks
+    );
+}
+
 #[test]
 fn unproven_mark_survives_undo_redo_and_restores_the_exact_marker() {
     let mut fixture = fixture();
@@ -908,6 +990,411 @@ fn typed_certification_failures_leave_every_mark_unchanged() {
             .speculative_unproven_fold_state_marker_v1(),
         metadata_marker
     );
+}
+
+#[test]
+fn recoverable_typed_resolvers_return_the_exact_proof_for_owner_retry() {
+    let mut tree = fixture();
+    let tree_binding = binding(
+        &tree,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let tree_ticket = apply_marked_with_ticket(&mut tree, tree_binding);
+    let mut foreign_tree_editor = EditorState::new(CreasePattern::empty());
+    let tree_failure = foreign_tree_editor
+        .try_resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(tree_ticket))
+        .expect_err("a foreign editor must reject the Tree proof");
+    assert_eq!(
+        tree_failure.error(),
+        &SpeculativeUnprovenFoldResolutionErrorV1::ForeignEditor
+    );
+    tree.editor
+        .try_resolve_speculative_unproven_fold_certified_v1(tree_failure.into_proof())
+        .expect("the exact returned Tree proof resolves on its owner");
+    assert_eq!(
+        tree.editor.speculative_unproven_fold_summary_v1(),
+        SpeculativeUnprovenFoldSummaryV1::default()
+    );
+
+    let mut three_face = fixture();
+    let three_face_binding = binding(
+        &three_face,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let three_face_ticket = apply_marked_with_ticket(&mut three_face, three_face_binding);
+    let mut foreign_three_face_editor = EditorState::new(CreasePattern::empty());
+    let three_face_failure = foreign_three_face_editor
+        .try_resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+            layered_proof_for_ticket(three_face_ticket),
+        )
+        .expect_err("a foreign editor must reject the three-face proof");
+    assert_eq!(
+        three_face_failure.error(),
+        &SpeculativeUnprovenFoldResolutionErrorV1::ForeignEditor
+    );
+    three_face
+        .editor
+        .try_resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+            three_face_failure.into_proof(),
+        )
+        .expect("the exact returned three-face proof resolves on its owner");
+    assert_eq!(
+        three_face.editor.speculative_unproven_fold_summary_v1(),
+        SpeculativeUnprovenFoldSummaryV1::default()
+    );
+
+    let mut four_face = fixture();
+    let four_face_binding = binding(
+        &four_face,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let four_face_ticket = apply_marked_with_ticket(&mut four_face, four_face_binding);
+    let mut foreign_four_face_editor = EditorState::new(CreasePattern::empty());
+    let four_face_failure = foreign_four_face_editor
+        .try_resolve_speculative_unproven_fold_layered_four_face_certified_v1(
+            layered_four_face_proof_for_ticket(four_face_ticket),
+        )
+        .expect_err("a foreign editor must reject the four-face proof");
+    assert_eq!(
+        four_face_failure.error(),
+        &SpeculativeUnprovenFoldResolutionErrorV1::ForeignEditor
+    );
+    four_face
+        .editor
+        .try_resolve_speculative_unproven_fold_layered_four_face_certified_v1(
+            four_face_failure.into_proof(),
+        )
+        .expect("the exact returned four-face proof resolves on its owner");
+    assert_eq!(
+        four_face.editor.speculative_unproven_fold_summary_v1(),
+        SpeculativeUnprovenFoldSummaryV1::default()
+    );
+
+    let mut missing_mark = fixture();
+    let mut same_owner_snapshot_without_mark = missing_mark.editor.clone();
+    let missing_binding = binding(
+        &missing_mark,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let missing_ticket = apply_marked_with_ticket(&mut missing_mark, missing_binding);
+    let missing_failure = same_owner_snapshot_without_mark
+        .try_resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(missing_ticket))
+        .expect_err("the owner snapshot without the mark must reject the proof");
+    assert_eq!(
+        missing_failure.error(),
+        &SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound
+    );
+    missing_mark
+        .editor
+        .try_resolve_speculative_unproven_fold_certified_v1(missing_failure.into_proof())
+        .expect("a mark-location rejection returns the exact proof for retry");
+}
+
+#[test]
+fn recoverable_typed_resolvers_return_exact_tree_three_and_four_proofs_after_precommit_panic() {
+    let mut tree = fixture();
+    let tree_binding = binding(
+        &tree,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let tree_ticket = apply_marked_with_ticket(&mut tree, tree_binding);
+    let tree_before = layered_resolver_editor_state_v1(&tree.editor);
+    let tree_failure = with_certified_resolution_precommit_panic_v1(|| {
+        tree.editor
+            .try_resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(tree_ticket))
+            .expect_err("the injected Tree precommit panic must be caught")
+    });
+    assert_eq!(
+        tree_failure.error(),
+        &SpeculativeUnprovenFoldResolutionErrorV1::ResolutionPanicked
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(&tree.editor, &tree_before);
+    tree.editor
+        .try_resolve_speculative_unproven_fold_certified_v1(tree_failure.into_proof())
+        .expect("the exact Tree proof remains retryable after the caught panic");
+
+    let mut three_face = fixture();
+    let three_face_binding = binding(
+        &three_face,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let three_face_ticket = apply_marked_with_ticket(&mut three_face, three_face_binding);
+    let three_face_before = layered_resolver_editor_state_v1(&three_face.editor);
+    let three_face_failure = with_certified_resolution_precommit_panic_v1(|| {
+        three_face
+            .editor
+            .try_resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+                layered_proof_for_ticket(three_face_ticket),
+            )
+            .expect_err("the injected three-face precommit panic must be caught")
+    });
+    assert_eq!(
+        three_face_failure.error(),
+        &SpeculativeUnprovenFoldResolutionErrorV1::ResolutionPanicked
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(&three_face.editor, &three_face_before);
+    three_face
+        .editor
+        .try_resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+            three_face_failure.into_proof(),
+        )
+        .expect("the exact three-face proof remains retryable after the caught panic");
+
+    let mut four_face = fixture();
+    let four_face_binding = binding(
+        &four_face,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let four_face_ticket = apply_marked_with_ticket(&mut four_face, four_face_binding);
+    let four_face_before = layered_resolver_editor_state_v1(&four_face.editor);
+    let four_face_failure = with_certified_resolution_precommit_panic_v1(|| {
+        four_face
+            .editor
+            .try_resolve_speculative_unproven_fold_layered_four_face_certified_v1(
+                layered_four_face_proof_for_ticket(four_face_ticket),
+            )
+            .expect_err("the injected four-face precommit panic must be caught")
+    });
+    assert_eq!(
+        four_face_failure.error(),
+        &SpeculativeUnprovenFoldResolutionErrorV1::ResolutionPanicked
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(&four_face.editor, &four_face_before);
+    four_face
+        .editor
+        .try_resolve_speculative_unproven_fold_layered_four_face_certified_v1(
+            four_face_failure.into_proof(),
+        )
+        .expect("the exact four-face proof remains retryable after the caught panic");
+}
+
+#[test]
+fn layered_typed_proof_resolves_only_its_exact_awaiting_mark() {
+    let mut exact = fixture();
+    let exact_binding = binding(
+        &exact,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let exact_ticket = apply_marked_with_ticket(&mut exact, exact_binding.clone());
+    let exact_before = layered_resolver_editor_state_v1(&exact.editor);
+    assert_eq!(
+        exact
+            .editor
+            .resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+                layered_proof_for_ticket(exact_ticket),
+            )
+            .expect("exact layered proof resolves its Awaiting mark")
+            .outcome,
+        SpeculativeUnprovenFoldProofOutcomeV1::Certified
+    );
+    assert_layered_resolver_success_preserves_document_v1(&exact.editor, &exact_before);
+    let exact_after_marks = exact.editor.speculative_unproven_fold_state_marker_v1();
+    assert_eq!(
+        exact_before.marks.applied_base,
+        exact_after_marks.applied_base
+    );
+    assert_eq!(exact_before.marks.redo_marks, exact_after_marks.redo_marks);
+    assert_eq!(exact_before.marks.undo_marks.len(), 1);
+    assert!(matches!(
+        exact_before.marks.undo_marks.as_slice(),
+        [Some(mark)] if mark.binding == exact_binding
+            && mark.status == SpeculativeUnprovenFoldStatusV1::AwaitingProof
+    ));
+    assert_eq!(exact_after_marks.undo_marks, vec![None]);
+    assert_eq!(
+        exact.editor.speculative_unproven_fold_summary_v1(),
+        SpeculativeUnprovenFoldSummaryV1::default()
+    );
+}
+
+#[test]
+fn layered_typed_proof_negative_matrix_preserves_the_exact_editor_state() {
+    let mut target_revision_drift = fixture();
+    let target_revision_drift_binding = binding(
+        &target_revision_drift,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let target_revision_drift_ticket =
+        apply_marked_with_ticket(&mut target_revision_drift, target_revision_drift_binding);
+    let target_revision_drift_before =
+        layered_resolver_editor_state_v1(&target_revision_drift.editor);
+    let drifted_target_revision = target_revision_drift
+        .editor
+        .revision()
+        .checked_add(1)
+        .expect("drifted target revision");
+    assert_eq!(
+        target_revision_drift
+            .editor
+            .resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+                layered_proof_for_ticket_with_target_revision(
+                    target_revision_drift_ticket,
+                    drifted_target_revision,
+                ),
+            ),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof)
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(
+        &target_revision_drift.editor,
+        &target_revision_drift_before,
+    );
+
+    let mut metadata_drift = fixture();
+    let exact_binding = binding(
+        &metadata_drift,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let metadata_ticket = apply_marked_with_ticket(&mut metadata_drift, exact_binding.clone());
+    let drifted_binding = SpeculativeUnprovenFoldBindingV1::new(
+        exact_binding.project_instance_id(),
+        exact_binding.project_id(),
+        exact_binding.source_revision(),
+        exact_binding
+            .source_geometry_fingerprint_sha256()
+            .to_owned(),
+        exact_binding.pose_generation() + 1,
+        exact_binding.request_generation_id(),
+        f64::from_bits(exact_binding.paper_thickness_bits()),
+        exact_binding.approximate_blocking_observation(),
+    )
+    .expect("well-formed metadata drift");
+    metadata_drift.editor.undo_stack[0]
+        .speculative_unproven_fold
+        .as_mut()
+        .expect("awaiting mark")
+        .binding = drifted_binding;
+    let metadata_drift_before = layered_resolver_editor_state_v1(&metadata_drift.editor);
+    assert_eq!(
+        metadata_drift
+            .editor
+            .resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+                layered_proof_for_ticket(metadata_ticket),
+            ),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingMetadataMismatch)
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(
+        &metadata_drift.editor,
+        &metadata_drift_before,
+    );
+
+    let mut duplicate = fixture();
+    let duplicate_binding = binding(
+        &duplicate,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let duplicate_ticket = apply_marked_with_ticket(&mut duplicate, duplicate_binding);
+    duplicate
+        .editor
+        .execute(
+            duplicate.editor.revision(),
+            Command::UpdateProjectMemo {
+                memo: "second history entry".to_owned(),
+            },
+        )
+        .expect("append history entry");
+    let duplicated_mark = duplicate.editor.undo_stack[0]
+        .speculative_unproven_fold
+        .clone();
+    duplicate.editor.undo_stack[1].speculative_unproven_fold = duplicated_mark;
+    let duplicate_before = layered_resolver_editor_state_v1(&duplicate.editor);
+    assert_eq!(
+        duplicate
+            .editor
+            .resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+                layered_proof_for_ticket(duplicate_ticket),
+            ),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding)
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(&duplicate.editor, &duplicate_before);
+
+    let mut missing = fixture();
+    let mut same_anchor_without_mark = missing.editor.clone();
+    let missing_binding = binding(
+        &missing,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let missing_ticket = apply_marked_with_ticket(&mut missing, missing_binding);
+    let missing_before = layered_resolver_editor_state_v1(&same_anchor_without_mark);
+    let missing_source_before = layered_resolver_editor_state_v1(&missing.editor);
+    assert_eq!(
+        same_anchor_without_mark.resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+            layered_proof_for_ticket(missing_ticket),
+        ),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound)
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(&same_anchor_without_mark, &missing_before);
+    assert_layered_resolver_failure_is_bit_identical_v1(&missing.editor, &missing_source_before);
+
+    let mut source = fixture();
+    let foreign_binding = binding(
+        &source,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let foreign_ticket = apply_marked_with_ticket(&mut source, foreign_binding);
+    let mut foreign_editor = EditorState::with_paper(
+        source.editor.pattern().clone(),
+        source.editor.paper().clone(),
+    );
+    let foreign_before = layered_resolver_editor_state_v1(&foreign_editor);
+    let foreign_source_before = layered_resolver_editor_state_v1(&source.editor);
+    assert_eq!(
+        foreign_editor.resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+            layered_proof_for_ticket(foreign_ticket),
+        ),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::ForeignEditor)
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(&foreign_editor, &foreign_before);
+    assert_layered_resolver_failure_is_bit_identical_v1(&source.editor, &foreign_source_before);
+
+    let mut blocked = fixture();
+    let blocked_binding = binding(
+        &blocked,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let blocked_ticket = apply_marked_with_ticket(&mut blocked, blocked_binding.clone());
+    blocked
+        .editor
+        .resolve_speculative_unproven_fold_v1(
+            &blocked_binding,
+            SpeculativeUnprovenFoldProofOutcomeV1::Blocked,
+        )
+        .expect("record blocked terminal mark");
+    let blocked_before = layered_resolver_editor_state_v1(&blocked.editor);
+    assert_eq!(
+        blocked
+            .editor
+            .resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+                layered_proof_for_ticket(blocked_ticket),
+            ),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::AlreadyResolved)
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(&blocked.editor, &blocked_before);
+
+    let mut unknown = fixture();
+    let unknown_binding = binding(
+        &unknown,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let unknown_ticket = apply_marked_with_ticket(&mut unknown, unknown_binding.clone());
+    unknown
+        .editor
+        .resolve_speculative_unproven_fold_v1(
+            &unknown_binding,
+            SpeculativeUnprovenFoldProofOutcomeV1::Unknown {
+                reason: SpeculativeUnprovenFoldUnknownReasonV1::ResourceLimit,
+            },
+        )
+        .expect("record unknown terminal mark");
+    let unknown_before = layered_resolver_editor_state_v1(&unknown.editor);
+    assert_eq!(
+        unknown
+            .editor
+            .resolve_speculative_unproven_fold_layered_three_face_certified_v1(
+                layered_proof_for_ticket(unknown_ticket),
+            ),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::AlreadyResolved)
+    );
+    assert_layered_resolver_failure_is_bit_identical_v1(&unknown.editor, &unknown_before);
 }
 
 #[test]

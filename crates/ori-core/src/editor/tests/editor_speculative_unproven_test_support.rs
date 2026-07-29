@@ -158,6 +158,28 @@ pub(super) fn proof_for_ticket(
     super::super::speculative_unproven::bind_resolution_ticket_for_test_v1(ticket)
 }
 
+pub(super) fn layered_proof_for_ticket(
+    ticket: SpeculativeUnprovenFoldResolutionTicketV1,
+) -> SpeculativeUnprovenFoldLayeredThreeFaceCertifiedProofV1 {
+    super::super::speculative_unproven::bind_layered_resolution_ticket_for_test_v1(ticket)
+}
+
+pub(super) fn layered_four_face_proof_for_ticket(
+    ticket: SpeculativeUnprovenFoldResolutionTicketV1,
+) -> SpeculativeUnprovenFoldLayeredFourFaceCertifiedProofV1 {
+    super::super::speculative_unproven::bind_layered_four_face_resolution_ticket_for_test_v1(ticket)
+}
+
+pub(super) fn layered_proof_for_ticket_with_target_revision(
+    ticket: SpeculativeUnprovenFoldResolutionTicketV1,
+    target_revision: Revision,
+) -> SpeculativeUnprovenFoldLayeredThreeFaceCertifiedProofV1 {
+    super::super::speculative_unproven::bind_layered_resolution_ticket_with_target_revision_for_test_v1(
+        ticket,
+        target_revision,
+    )
+}
+
 pub(super) fn reopen(
     editor: &EditorState,
     history: EditorHistoryV1,

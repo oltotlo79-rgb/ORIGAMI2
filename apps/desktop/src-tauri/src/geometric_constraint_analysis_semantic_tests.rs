@@ -135,3 +135,6 @@ mod length_tests;
 
 #[path = "geometric_constraint_analysis/semantic_mus_zero_closure_tests.rs"]
 mod zero_closure_tests;
+
+#[path = "geometric_constraint_analysis/semantic_mus_mirror_tests.rs"]
+mod mirror_tests;

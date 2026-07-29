@@ -122,6 +122,10 @@ fn assert_only_mirror_phase(certificate: &CurrentRuntimeSemanticMusV1) {
         0
     );
     assert_eq!(certificate.anchored_mirror_residual_only_witness_count(), 4);
+    assert_eq!(
+        certificate.unit_two_hop_parallel_residual_only_witness_count(),
+        0
+    );
 }
 
 fn phase_work(fixture: &SemanticFixture) -> (usize, usize) {

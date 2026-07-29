@@ -68,6 +68,10 @@ fn bounded_length_witness_is_a_distinct_strict_wire_counter() {
             pair_constraint_algebraic_witness_count: 0,
             length_constraint_constructive_witness_count: 4,
             zero_length_closure_constructive_witness_count: 0,
+            anchored_mirror_residual_only_witness_count: 0,
+            unit_parallel_fixed_angle_residual_only_witness_count: 0,
+            unit_terminal_two_hop_parallel_angle_residual_only_witness_count: 0,
+            unit_two_hop_parallel_residual_only_witness_count: 0,
             authorizes_project_mutation: false,
             replayable_across_runtimes,
             ..
@@ -81,4 +85,17 @@ fn bounded_length_witness_is_a_distinct_strict_wire_counter() {
         ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
     );
     assert_eq!(encoded["length_constraint_constructive_witness_count"], 4,);
+    assert_eq!(encoded["anchored_mirror_residual_only_witness_count"], 0,);
+    assert_eq!(
+        encoded["unit_parallel_fixed_angle_residual_only_witness_count"],
+        0,
+    );
+    assert_eq!(
+        encoded["unit_terminal_two_hop_parallel_angle_residual_only_witness_count"],
+        0,
+    );
+    assert_eq!(
+        encoded["unit_two_hop_parallel_residual_only_witness_count"],
+        0,
+    );
 }

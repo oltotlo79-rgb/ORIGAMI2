@@ -196,7 +196,7 @@ test('geometric constraint panel catalog is exact, closed, and deeply frozen', (
   }
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    '79152211b097390afdd57532c56cb7ed319fcafe553c75d662557c023e4e387f',
+    '64441222740fbe2fa08f32c0a19efadb4f5e13cf80452a72b0ecc6f8be049aa8',
   )
   assert.equal(Object.hasOwn(TEXT, 'ja'), false)
   assert.equal(TEXT.title.ja, '幾何制約')
@@ -248,6 +248,9 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
         'lengthConstructive',
         'zeroClosure',
         'mirrorResidual',
+        'unitParallelFixedAngleResidual',
+        'unitTerminalTwoHopParallelAngleResidual',
+        'unitTwoHopParallelResidual',
         'scope',
         'ids',
       ],
@@ -264,6 +267,9 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
         'lengthConstructive',
         'zeroClosure',
         'mirrorResidual',
+        'unitParallelFixedAngleResidual',
+        'unitTerminalTwoHopParallelAngleResidual',
+        'unitTwoHopParallelResidual',
         'scope',
         'ids',
       ],

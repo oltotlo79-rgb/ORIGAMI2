@@ -33,6 +33,10 @@ const CERTIFIED_SEMANTIC_MUS_KEYS = [
   'pair_constraint_algebraic_witness_count',
   'length_constraint_constructive_witness_count',
   'zero_length_closure_constructive_witness_count',
+  'anchored_mirror_residual_only_witness_count',
+  'unit_parallel_fixed_angle_residual_only_witness_count',
+  'unit_terminal_two_hop_parallel_angle_residual_only_witness_count',
+  'unit_two_hop_parallel_residual_only_witness_count',
   'authorizes_project_mutation',
   'replayable_across_runtimes',
 ] as const
@@ -52,6 +56,10 @@ export type GeometricConstraintSemanticMusCertifiedViewModel = Readonly<{
   pairConstraintAlgebraicWitnessCount: number
   lengthConstraintConstructiveWitnessCount: number
   zeroLengthClosureConstructiveWitnessCount: number
+  anchoredMirrorResidualOnlyWitnessCount: number
+  unitParallelFixedAngleResidualOnlyWitnessCount: number
+  unitTerminalTwoHopParallelAngleResidualOnlyWitnessCount: number
+  unitTwoHopParallelResidualOnlyWitnessCount: number
   replayableAcrossRuntimes: boolean
 }>
 
@@ -116,6 +124,14 @@ function snapshotCertifiedSemanticMus(
       record.length_constraint_constructive_witness_count as number,
     zero_length_closure_constructive_witness_count:
       record.zero_length_closure_constructive_witness_count as number,
+    anchored_mirror_residual_only_witness_count:
+      record.anchored_mirror_residual_only_witness_count as number,
+    unit_parallel_fixed_angle_residual_only_witness_count:
+      record.unit_parallel_fixed_angle_residual_only_witness_count as number,
+    unit_terminal_two_hop_parallel_angle_residual_only_witness_count:
+      record.unit_terminal_two_hop_parallel_angle_residual_only_witness_count as number,
+    unit_two_hop_parallel_residual_only_witness_count:
+      record.unit_two_hop_parallel_residual_only_witness_count as number,
     authorizes_project_mutation: false,
     replayable_across_runtimes:
       record.replayable_across_runtimes as boolean,
@@ -196,6 +212,10 @@ function buildCertifiedViewModel(
     result.pair_constraint_algebraic_witness_count,
     result.length_constraint_constructive_witness_count,
     result.zero_length_closure_constructive_witness_count,
+    result.anchored_mirror_residual_only_witness_count,
+    result.unit_parallel_fixed_angle_residual_only_witness_count,
+    result.unit_terminal_two_hop_parallel_angle_residual_only_witness_count,
+    result.unit_two_hop_parallel_residual_only_witness_count,
   ]
   if (
     !isPositiveSafeInteger(result.constraint_count)
@@ -204,11 +224,28 @@ function buildCertifiedViewModel(
     || result.constraint_ids.length !== result.constraint_count
     || result.deletion_witness_checks !== result.constraint_count
     || !isPositiveSafeInteger(result.direct_oracle_calls)
-    || !isNonNegativeSafeInteger(result.deletion_witness_work)
+    || !isPositiveSafeInteger(result.deletion_witness_work)
     || result.deletion_witness_work
       > MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK
     || methodCounts.some((count) =>
       !isNonNegativeSafeInteger(count) || count > result.constraint_count
+    )
+    || (
+      result.unit_parallel_fixed_angle_residual_only_witness_count !== 0
+      && (
+        result.unit_parallel_fixed_angle_residual_only_witness_count !== 3
+        || result.constraint_count !== 3
+      )
+    )
+    || (
+      result.unit_terminal_two_hop_parallel_angle_residual_only_witness_count
+        !== 0
+      && (
+        result
+          .unit_terminal_two_hop_parallel_angle_residual_only_witness_count
+          !== 5
+        || result.constraint_count !== 5
+      )
     )
     || methodCounts.reduce((sum, count) => sum + count, 0)
       !== result.constraint_count
@@ -235,6 +272,14 @@ function buildCertifiedViewModel(
       result.length_constraint_constructive_witness_count,
     zeroLengthClosureConstructiveWitnessCount:
       result.zero_length_closure_constructive_witness_count,
+    anchoredMirrorResidualOnlyWitnessCount:
+      result.anchored_mirror_residual_only_witness_count,
+    unitParallelFixedAngleResidualOnlyWitnessCount:
+      result.unit_parallel_fixed_angle_residual_only_witness_count,
+    unitTerminalTwoHopParallelAngleResidualOnlyWitnessCount:
+      result.unit_terminal_two_hop_parallel_angle_residual_only_witness_count,
+    unitTwoHopParallelResidualOnlyWitnessCount:
+      result.unit_two_hop_parallel_residual_only_witness_count,
     replayableAcrossRuntimes: result.replayable_across_runtimes,
   })
 }

@@ -395,7 +395,7 @@
         {
           "kind": "test",
           "path": "crates/ori-core/src/constraint_semantic_mus_tests/direct_family_inventory.rs",
-          "selector": "fn public_semantic_pipeline_hard_inventory_is_twenty_one_of_twenty_one()"
+          "selector": "fn public_semantic_pipeline_hard_inventory_is_twenty_four_of_twenty_four()"
         },
         {
           "kind": "test",
@@ -431,13 +431,148 @@
           "kind": "test",
           "path": "crates/ori-core/src/constraint_exactification/pair_constructive_cardinal_rotation_tests.rs",
           "selector": "fn cardinal_rotation_and_either_fixed_radius_cover_the_full_finite_length_range()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn unit_two_hop_parallel_conflict_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_unit_two_hop_parallel_tests.rs",
+          "selector": "fn exact_unit_two_hop_subset_emits_five_canonical_causes_and_is_direct_minimal()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_unit_two_hop_parallel_tests.rs",
+          "selector": "fn nonunit_one_ulp_missing_and_longer_paths_remain_solver_required()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_exactification/unit_two_hop_parallel_constructive.rs",
+          "selector": "pub(crate) fn construct_unit_two_hop_parallel_residual_exact_deletion_assignment_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/unit_two_hop_parallel_phase.rs",
+          "selector": "fn all_five_deletions_have_independent_production_exact_residual_witnesses()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/unit_two_hop_parallel_phase.rs",
+          "selector": "fn nonstar_topology_is_direct_but_the_dedicated_semantic_constructor_fails_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests.rs",
+          "selector": "fn direct_core_is_promoted_only_after_every_deletion_has_an_independent_exact_assignment()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/semantic_mus_certified_tests.rs",
+          "selector": "fn unit_terminal_two_hop_parallel_counter_crosses_the_native_dto_exactly_five_times()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraintSemanticMusMirrorCounter.test.ts",
+          "selector": "accepts, freezes, and projects the five unit-terminal two-hop witnesses"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_semantic_mus.rs",
+          "selector": "pub const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn unit_terminal_two_hop_parallel_angle_conflict_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_unit_terminal_two_hop_parallel_angle_tests.rs",
+          "selector": "fn exact_five_id_core_is_direct_canonical_and_deletion_minimal()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_unit_terminal_two_hop_parallel_angle_tests.rs",
+          "selector": "fn unit_and_ninety_degree_requirements_are_bit_exact()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_exactification/unit_terminal_two_hop_parallel_angle_constructive.rs",
+          "selector": "pub(crate) fn construct_unit_terminal_two_hop_parallel_angle_residual_exact_deletion_assignment_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/unit_terminal_two_hop_parallel_angle_phase.rs",
+          "selector": "fn exact_five_id_core_recertifies_all_deletions_and_publishes_only_the_new_counter()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/unit_terminal_two_hop_parallel_angle_phase.rs",
+          "selector": "fn nonstar_topology_keeps_the_direct_theorem_but_never_promotes_semantically()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/semantic_mus_certified_tests.rs",
+          "selector": "fn unit_terminal_two_hop_parallel_angle_counter_crosses_the_native_dto_exactly_five_times()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraintSemanticMusTwoHopAngleCounter.test.ts",
+          "selector": "accepts and projects the exact unit-terminal two-hop angle counter"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn is_proven_exact_forty_five_single_unit_parallel_angle_shape_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_exact45_single_unit_parallel_angle_tests.rs",
+          "selector": "fn exact_three_id_core_is_canonical_and_direct_mus()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_exact45_single_unit_parallel_angle_tests.rs",
+          "selector": "fn both_units_choose_one_canonical_minimum_and_never_emit_the_legacy_four_id_cause()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_exact45_single_unit_parallel_angle_tests.rs",
+          "selector": "fn non_forty_five_angles_retain_the_legacy_two_unit_four_id_boundary()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_exactification/unit_parallel_fixed_angle_constructive.rs",
+          "selector": "pub(crate) fn construct_unit_parallel_fixed_angle_residual_exact_deletion_assignment_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/unit_parallel_fixed_angle_phase.rs",
+          "selector": "fn exact_three_id_core_recertifies_every_deletion_in_the_dedicated_phase()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/unit_parallel_fixed_angle_phase.rs",
+          "selector": "fn constructor_rejects_nonexact_values_documents_and_nonstar_topology()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/semantic_mus_certified_tests.rs",
+          "selector": "fn unit_parallel_fixed_angle_counter_crosses_the_native_dto_exactly_three_times()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraintSemanticMusUnitParallelFixedAngleCounter.test.ts",
+          "selector": "accepts, freezes, and projects the exact unit parallel-fixed-angle counter"
         }
       ],
       "limitations": [
-        "only twenty-one of the twenty-four wire-compatible DirectConstraintConflictKindV1 variants have complete deletion-by-deletion semantic satisfiability witnesses; PerpendicularOrientationsInParallelComponent, NonParallelFixedAngleInParallelComponent, and ParallelWithFixedNonParallelAngle retain canonical unchecked constraint IDs and fail closed to a blocking solver-required Unknown without semantic certification or project-mutation authority"
+        "all twenty-four wire-compatible DirectConstraintConflictKindV1 variants have complete deletion-by-deletion semantic satisfiability witnesses within their recognized bounded proof families under geometric_constraint_deterministic_binary64_semantic_mus_v4; NonParallelFixedAngleInParallelComponent is semantically certified only for the canonical five-ID exact two-hop core with two Parallel constraints, bit-exact FixedAngle(90.0), and bit-exact FixedLength(1.0) on both terminals when its three real edges form a common-center star, while non-unit or missing terminal lengths, non-exact right angles, one-hop, paths of three or more hops, arbitrary parallel-component paths, and non-star semantic construction remain solver-required Unknown or fail closed; ParallelWithFixedNonParallelAngle is semantically certified only for the canonical three-ID core with Parallel, bit-exact FixedAngle(45.0), and one canonically selected bit-exact FixedLength(1.0) on either edge when both real edges form a common-center star and all three deletions are independently witnessed, while non-exact 45-degree or unit values, one-sided generic angles, and non-star semantic construction fail closed, and the retained generic-angle four-ID direct boundary still requires exact unit lengths on both edges; no semantic certificate authorizes project mutation"
       ],
       "missingAcceptance": [
-        "complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the twenty-one recognized semantic proof families"
+        "complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the twenty-four recognized bounded semantic proof families, including arbitrary-length parallel-component paths and generic or non-star angle topologies outside the exact five-ID right-angle and exact three-ID 45-degree cases"
       ]
     },
     {

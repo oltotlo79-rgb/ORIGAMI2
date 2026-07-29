@@ -11,10 +11,20 @@ const evidence = readFileSync('../../docs/requirements-design-evidence-2026-07-2
 const editor = readFileSync('../../crates/ori-core/src/editor.rs', 'utf8')
 const history = readFileSync('../../crates/ori-core/src/editor/history_persistence.rs', 'utf8')
 const constraints = readFileSync('../../crates/ori-core/src/constraints.rs', 'utf8')
+const semanticMus = readFileSync('../../crates/ori-core/src/constraint_semantic_mus.rs', 'utf8')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const nativeTests = readFileSync('src-tauri/src/tests.rs', 'utf8')
 const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const panel = readFileSync('src/components/InstructionTimelinePanel.tsx', 'utf8')
+
+const CURRENT_SEMANTIC_MUS_MODEL_ID
+  = 'geometric_constraint_deterministic_binary64_semantic_mus_v4'
+const CURRENT_SEMANTIC_INVENTORY_HEADING
+  = '## 2026-07-30 EDT-009 semantic MUS 現行正本訂正（v4・24/24）'
+const EDT_009_LIMITATION
+  = 'all twenty-four wire-compatible DirectConstraintConflictKindV1 variants have complete deletion-by-deletion semantic satisfiability witnesses within their recognized bounded proof families under geometric_constraint_deterministic_binary64_semantic_mus_v4; NonParallelFixedAngleInParallelComponent is semantically certified only for the canonical five-ID exact two-hop core with two Parallel constraints, bit-exact FixedAngle(90.0), and bit-exact FixedLength(1.0) on both terminals when its three real edges form a common-center star, while non-unit or missing terminal lengths, non-exact right angles, one-hop, paths of three or more hops, arbitrary parallel-component paths, and non-star semantic construction remain solver-required Unknown or fail closed; ParallelWithFixedNonParallelAngle is semantically certified only for the canonical three-ID core with Parallel, bit-exact FixedAngle(45.0), and one canonically selected bit-exact FixedLength(1.0) on either edge when both real edges form a common-center star and all three deletions are independently witnessed, while non-exact 45-degree or unit values, one-sided generic angles, and non-star semantic construction fail closed, and the retained generic-angle four-ID direct boundary still requires exact unit lengths on both edges; no semantic certificate authorizes project mutation'
+const EDT_009_MISSING_ACCEPTANCE
+  = 'complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the twenty-four recognized bounded semantic proof families, including arbitrary-length parallel-component paths and generic or non-star angle topologies outside the exact five-ID right-angle and exact three-ID 45-degree cases'
 
 test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]
@@ -48,7 +58,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 retains its wire tags and tracks twenty-one sound proof families', () => {
+test('EDT-009 retains its wire tags and tracks twenty-four sound proof families', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
@@ -72,6 +82,7 @@ test('EDT-009 retains its wire tags and tracks twenty-one sound proof families',
     'LengthRatioWithIncompatibleFixedLengths',
     'DifferentLengthRatios',
     'DifferentFixedLengthsInEqualLengthComponent',
+    'PerpendicularOrientationsInParallelComponent',
     'ParallelWithPerpendicularOrientations',
     'SameOrientationWithFixedNonParallelAngle',
     'PerpendicularOrientationsWithFixedNonRightAngle',
@@ -85,6 +96,8 @@ test('EDT-009 retains its wire tags and tracks twenty-one sound proof families',
     'NonReciprocalLengthRatiosWithFixedLength',
     'NonUnitLengthRatioCycleWithFixedLength',
     'InconsistentLengthRatioGraphWithFixedLength',
+    'NonParallelFixedAngleInParallelComponent',
+    'ParallelWithFixedNonParallelAngle',
   ]
   const documentedVariants = [
     ...statusRow.matchAll(/`(?<name>[A-Z][A-Za-z0-9]+)`/gu),
@@ -93,22 +106,52 @@ test('EDT-009 retains its wire tags and tracks twenty-one sound proof families',
     .filter((name): name is string => name !== undefined)
     .filter((name) => enumVariants.includes(name))
     .filter((name, index, names) => names.indexOf(name) === index)
-  const retained = [
-    'PerpendicularOrientationsInParallelComponent',
-    'NonParallelFixedAngleInParallelComponent',
-    'ParallelWithFixedNonParallelAngle',
-  ]
-  assert.deepEqual(documentedVariants, [...allowlist, ...retained])
+  assert.deepEqual(documentedVariants, allowlist)
   assert.deepEqual(
     enumVariants.filter((name) => !allowlist.includes(name)),
-    retained,
+    [],
   )
   assert.match(statusRow, /legacy 21 variantをwire互換/u)
   assert.match(statusRow, /sound semantic family/u)
-  assert.match(
-    status,
-    /2026-07-30 EDT-009二固定root比率domain・directed quarter-turn現行訂正:[^\n]+24 wire-compatible variant[^\n]+hard semantic inventoryは21 family[^\n]+残る3 family[^\n]+semantic MUS/u,
-  )
+  for (const document of [status, progress, evidence]) {
+    assert.equal(
+      document.indexOf(CURRENT_SEMANTIC_INVENTORY_HEADING),
+      document.indexOf('\n') + 2,
+    )
+    const currentSectionStart = document.indexOf(
+      CURRENT_SEMANTIC_INVENTORY_HEADING,
+    )
+    const nextSectionStart = document.indexOf(
+      '\n## ',
+      currentSectionStart + CURRENT_SEMANTIC_INVENTORY_HEADING.length,
+    )
+    const currentSection = document.slice(
+      currentSectionStart,
+      nextSectionStart === -1 ? undefined : nextSectionStart,
+    )
+    assert.match(currentSection, /24\/24 sound semantic proof family/u)
+    assert.ok(currentSection.includes(CURRENT_SEMANTIC_MUS_MODEL_ID))
+    assert.match(
+      currentSection,
+      /23番目の `NonParallelFixedAngleInParallelComponent`[\s\S]*canonical 5-ID cause[\s\S]*common-center star[\s\S]*5件すべての単独削除/u,
+    )
+    assert.match(
+      currentSection,
+      /24番目の `ParallelWithFixedNonParallelAngle`[\s\S]*canonical 3-ID cause[\s\S]*common-center star[\s\S]*3件すべての単独削除witness/u,
+    )
+    assert.match(
+      currentSection,
+      /one-sidedなgeneric angle[\s\S]*nonstar topology[\s\S]*generic angleの既存4-ID direct boundary/u,
+    )
+    assert.match(
+      currentSection,
+      /部分実装[\s\S]*実装済み85 \/ 部分実装2 \/ 未着手0[\s\S]*数式・幾何制約は85%[\s\S]*全体は81\.96%（表示82\.0%）/u,
+    )
+  }
+  assert.match(statusRow, /canonical 5-IDのunit-terminal two-hop core/u)
+  assert.match(statusRow, /common-center star/u)
+  assert.match(statusRow, /3-hop以上または任意長のparallel pathはsolver-required `Unknown`/u)
+  assert.ok(semanticMus.includes(`"${CURRENT_SEMANTIC_MUS_MODEL_ID}"`))
   assert.match(statusRow, /`Unknown`へfail-closed/u)
   assert.match(statusRow, /全11種の一般充足可能性、完全な一般矛盾原因、一般最小不能部分集合は未完成/u)
 
@@ -167,12 +210,177 @@ test('EDT-009 retains its wire tags and tracks twenty-one sound proof families',
     (requirement: { id: string }) => requirement.id === 'EDT-009',
   )
   assert.ok(edtEvidence)
-  assert.deepEqual(edtEvidence.limitations, [
-    'only twenty-one of the twenty-four wire-compatible DirectConstraintConflictKindV1 variants have complete deletion-by-deletion semantic satisfiability witnesses; PerpendicularOrientationsInParallelComponent, NonParallelFixedAngleInParallelComponent, and ParallelWithFixedNonParallelAngle retain canonical unchecked constraint IDs and fail closed to a blocking solver-required Unknown without semantic certification or project-mutation authority',
-  ])
-  assert.deepEqual(edtEvidence.missingAcceptance, [
-    'complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the twenty-one recognized semantic proof families',
-  ])
+  assert.deepEqual(edtEvidence.limitations, [EDT_009_LIMITATION])
+  assert.deepEqual(
+    edtEvidence.missingAcceptance,
+    [EDT_009_MISSING_ACCEPTANCE],
+  )
+  const requiredUnitTwoHopEvidence = [
+    [
+      'production-symbol',
+      'crates/ori-core/src/constraints.rs',
+      'fn unit_two_hop_parallel_conflict_v1(',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraints_unit_two_hop_parallel_tests.rs',
+      'fn exact_unit_two_hop_subset_emits_five_canonical_causes_and_is_direct_minimal()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraints_unit_two_hop_parallel_tests.rs',
+      'fn nonunit_one_ulp_missing_and_longer_paths_remain_solver_required()',
+    ],
+    [
+      'production-symbol',
+      'crates/ori-core/src/constraint_exactification/unit_two_hop_parallel_constructive.rs',
+      'pub(crate) fn construct_unit_two_hop_parallel_residual_exact_deletion_assignment_v1(',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_semantic_mus_tests/unit_two_hop_parallel_phase.rs',
+      'fn all_five_deletions_have_independent_production_exact_residual_witnesses()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_semantic_mus_tests/unit_two_hop_parallel_phase.rs',
+      'fn nonstar_topology_is_direct_but_the_dedicated_semantic_constructor_fails_closed()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_semantic_mus_tests.rs',
+      'fn direct_core_is_promoted_only_after_every_deletion_has_an_independent_exact_assignment()',
+    ],
+    [
+      'test',
+      'apps/desktop/src-tauri/src/geometric_constraint_analysis/semantic_mus_certified_tests.rs',
+      'fn unit_terminal_two_hop_parallel_counter_crosses_the_native_dto_exactly_five_times()',
+    ],
+    [
+      'test',
+      'apps/desktop/tests/geometricConstraintSemanticMusMirrorCounter.test.ts',
+      'accepts, freezes, and projects the five unit-terminal two-hop witnesses',
+    ],
+  ] as const
+  for (const [kind, path, selector] of requiredUnitTwoHopEvidence) {
+    assert.ok(
+      edtEvidence.evidence.some(
+        (item: { kind: string, path: string, selector: string }) =>
+          item.kind === kind
+          && item.path === path
+          && item.selector === selector,
+      ),
+      `missing EDT-009 evidence ${path} :: ${selector}`,
+    )
+  }
+  const requiredCurrentInventoryEvidence = [
+    [
+      'production-symbol',
+      'crates/ori-core/src/constraint_semantic_mus.rs',
+      'pub const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1',
+    ],
+    [
+      'production-symbol',
+      'crates/ori-core/src/constraints.rs',
+      'fn unit_terminal_two_hop_parallel_angle_conflict_v1(',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraints_unit_terminal_two_hop_parallel_angle_tests.rs',
+      'fn exact_five_id_core_is_direct_canonical_and_deletion_minimal()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraints_unit_terminal_two_hop_parallel_angle_tests.rs',
+      'fn unit_and_ninety_degree_requirements_are_bit_exact()',
+    ],
+    [
+      'production-symbol',
+      'crates/ori-core/src/constraint_exactification/unit_terminal_two_hop_parallel_angle_constructive.rs',
+      'pub(crate) fn construct_unit_terminal_two_hop_parallel_angle_residual_exact_deletion_assignment_v1(',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_semantic_mus_tests/unit_terminal_two_hop_parallel_angle_phase.rs',
+      'fn exact_five_id_core_recertifies_all_deletions_and_publishes_only_the_new_counter()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_semantic_mus_tests/unit_terminal_two_hop_parallel_angle_phase.rs',
+      'fn nonstar_topology_keeps_the_direct_theorem_but_never_promotes_semantically()',
+    ],
+    [
+      'test',
+      'apps/desktop/src-tauri/src/geometric_constraint_analysis/semantic_mus_certified_tests.rs',
+      'fn unit_terminal_two_hop_parallel_angle_counter_crosses_the_native_dto_exactly_five_times()',
+    ],
+    [
+      'test',
+      'apps/desktop/tests/geometricConstraintSemanticMusTwoHopAngleCounter.test.ts',
+      'accepts and projects the exact unit-terminal two-hop angle counter',
+    ],
+    [
+      'production-symbol',
+      'crates/ori-core/src/constraints.rs',
+      'fn is_proven_exact_forty_five_single_unit_parallel_angle_shape_v1(',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraints_exact45_single_unit_parallel_angle_tests.rs',
+      'fn exact_three_id_core_is_canonical_and_direct_mus()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraints_exact45_single_unit_parallel_angle_tests.rs',
+      'fn both_units_choose_one_canonical_minimum_and_never_emit_the_legacy_four_id_cause()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraints_exact45_single_unit_parallel_angle_tests.rs',
+      'fn non_forty_five_angles_retain_the_legacy_two_unit_four_id_boundary()',
+    ],
+    [
+      'production-symbol',
+      'crates/ori-core/src/constraint_exactification/unit_parallel_fixed_angle_constructive.rs',
+      'pub(crate) fn construct_unit_parallel_fixed_angle_residual_exact_deletion_assignment_v1(',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_semantic_mus_tests/unit_parallel_fixed_angle_phase.rs',
+      'fn exact_three_id_core_recertifies_every_deletion_in_the_dedicated_phase()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_semantic_mus_tests/unit_parallel_fixed_angle_phase.rs',
+      'fn constructor_rejects_nonexact_values_documents_and_nonstar_topology()',
+    ],
+    [
+      'test',
+      'apps/desktop/src-tauri/src/geometric_constraint_analysis/semantic_mus_certified_tests.rs',
+      'fn unit_parallel_fixed_angle_counter_crosses_the_native_dto_exactly_three_times()',
+    ],
+    [
+      'test',
+      'apps/desktop/tests/geometricConstraintSemanticMusUnitParallelFixedAngleCounter.test.ts',
+      'accepts, freezes, and projects the exact unit parallel-fixed-angle counter',
+    ],
+  ] as const
+  for (const [kind, path, selector] of requiredCurrentInventoryEvidence) {
+    assert.ok(
+      edtEvidence.evidence.some(
+        (item: { kind: string, path: string, selector: string }) =>
+          item.kind === kind
+          && item.path === path
+          && item.selector === selector,
+      ),
+      `missing EDT-009 current inventory evidence ${path} :: ${selector}`,
+    )
+  }
+  assert.ok(edtEvidence.evidence.some(
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraint_semantic_mus_tests/direct_family_inventory.rs'
+      && item.selector === 'fn public_semantic_pipeline_hard_inventory_is_twenty_four_of_twenty_four()',
+  ))
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
       item.selector === 'fn horizontal_and_vertical_require_an_exact_noncollapse_witness()',

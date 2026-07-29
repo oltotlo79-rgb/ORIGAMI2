@@ -5,7 +5,7 @@ import {
 export const MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS = 16
 export const MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK = 20_000_000
 export const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID =
-  'geometric_constraint_deterministic_binary64_semantic_mus_v2' as const
+  'geometric_constraint_deterministic_binary64_semantic_mus_v4' as const
 
 export type GeometricConstraintSemanticMusUnknownReasonV1 =
   | 'direct_oracle_incomplete'
@@ -34,6 +34,10 @@ export type GeometricConstraintSemanticMusV1 =
       pair_constraint_algebraic_witness_count: number
       length_constraint_constructive_witness_count: number
       zero_length_closure_constructive_witness_count: number
+      anchored_mirror_residual_only_witness_count: number
+      unit_parallel_fixed_angle_residual_only_witness_count: number
+      unit_terminal_two_hop_parallel_angle_residual_only_witness_count: number
+      unit_two_hop_parallel_residual_only_witness_count: number
       authorizes_project_mutation: false
       replayable_across_runtimes: boolean
     }>
@@ -98,7 +102,10 @@ type BoundedDirectMus =
 
 type DirectConflictResult = Readonly<{
   bounded_direct_mus: BoundedDirectMus
-  conflicts: readonly Readonly<{ constraint_ids: readonly string[] }>[]
+  conflicts: readonly Readonly<{
+    conflict: Readonly<{ kind: string }>
+    constraint_ids: readonly string[]
+  }>[]
 }>
 
 type StrictParserPrimitives = Readonly<{
@@ -155,6 +162,10 @@ function parseCertified(
       'pair_constraint_algebraic_witness_count',
       'length_constraint_constructive_witness_count',
       'zero_length_closure_constructive_witness_count',
+      'anchored_mirror_residual_only_witness_count',
+      'unit_parallel_fixed_angle_residual_only_witness_count',
+      'unit_terminal_two_hop_parallel_angle_residual_only_witness_count',
+      'unit_two_hop_parallel_residual_only_witness_count',
       'authorizes_project_mutation',
       'replayable_across_runtimes',
     ])
@@ -189,7 +200,7 @@ function parseCertified(
     || !isCount(
       record.deletion_witness_work,
       MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK,
-      true,
+      false,
     )
     || !isCount(record.current_assignment_witness_count, constraintIds.length, true)
     || !isCount(record.axis_exactification_witness_count, constraintIds.length, true)
@@ -218,6 +229,53 @@ function parseCertified(
       constraintIds.length,
       true,
     )
+    || !isCount(
+      record.anchored_mirror_residual_only_witness_count,
+      constraintIds.length,
+      true,
+    )
+    || !isCount(
+      record.unit_parallel_fixed_angle_residual_only_witness_count,
+      constraintIds.length,
+      true,
+    )
+    || !isCount(
+      record.unit_terminal_two_hop_parallel_angle_residual_only_witness_count,
+      constraintIds.length,
+      true,
+    )
+    || !isCount(
+      record.unit_two_hop_parallel_residual_only_witness_count,
+      constraintIds.length,
+      true,
+    )
+    || (
+      record.unit_parallel_fixed_angle_residual_only_witness_count !== 0
+      && (
+        record.unit_parallel_fixed_angle_residual_only_witness_count !== 3
+        || constraintIds.length !== 3
+        || !matchesOuterConflictKind(
+          constraintIds,
+          directResult.conflicts,
+          'parallel_with_fixed_non_parallel_angle',
+        )
+      )
+    )
+    || (
+      record.unit_terminal_two_hop_parallel_angle_residual_only_witness_count
+        !== 0
+      && (
+        record
+          .unit_terminal_two_hop_parallel_angle_residual_only_witness_count
+          !== 5
+        || constraintIds.length !== 5
+        || !matchesOuterConflictKind(
+          constraintIds,
+          directResult.conflicts,
+          'non_parallel_fixed_angle_in_parallel_component',
+        )
+      )
+    )
     || record.current_assignment_witness_count
       + record.axis_exactification_witness_count
       + record.single_constraint_constructive_witness_count
@@ -225,6 +283,10 @@ function parseCertified(
       + record.pair_constraint_algebraic_witness_count
       + record.length_constraint_constructive_witness_count
       + record.zero_length_closure_constructive_witness_count
+      + record.anchored_mirror_residual_only_witness_count
+      + record.unit_parallel_fixed_angle_residual_only_witness_count
+      + record.unit_terminal_two_hop_parallel_angle_residual_only_witness_count
+      + record.unit_two_hop_parallel_residual_only_witness_count
       !== constraintIds.length
     || record.authorizes_project_mutation !== false
     || typeof record.replayable_across_runtimes !== 'boolean'
@@ -259,6 +321,14 @@ function parseCertified(
       record.length_constraint_constructive_witness_count,
     zero_length_closure_constructive_witness_count:
       record.zero_length_closure_constructive_witness_count,
+    anchored_mirror_residual_only_witness_count:
+      record.anchored_mirror_residual_only_witness_count,
+    unit_parallel_fixed_angle_residual_only_witness_count:
+      record.unit_parallel_fixed_angle_residual_only_witness_count,
+    unit_terminal_two_hop_parallel_angle_residual_only_witness_count:
+      record.unit_terminal_two_hop_parallel_angle_residual_only_witness_count,
+    unit_two_hop_parallel_residual_only_witness_count:
+      record.unit_two_hop_parallel_residual_only_witness_count,
     authorizes_project_mutation: false,
     replayable_across_runtimes: record.replayable_across_runtimes,
   })
@@ -387,6 +457,7 @@ function unknownPhaseIsReachable(
   certified: number,
   work: number,
 ): boolean {
+  if (checks > 0 && work === 0) return false
   if (ids.length === 0) {
     return checks === 0 && certified === 0 && work === 0
       && (
@@ -431,9 +502,20 @@ function unknownMatchesBoundedDirect(
 
 function matchesOuterConflict(
   ids: readonly string[],
-  conflicts: readonly Readonly<{ constraint_ids: readonly string[] }>[],
+  conflicts: DirectConflictResult['conflicts'],
 ): boolean {
   return conflicts.some((conflict) => sameStrings(ids, conflict.constraint_ids))
+}
+
+function matchesOuterConflictKind(
+  ids: readonly string[],
+  conflicts: DirectConflictResult['conflicts'],
+  kind: string,
+): boolean {
+  return conflicts.some((conflict) =>
+    conflict.conflict.kind === kind
+    && sameStrings(ids, conflict.constraint_ids)
+  )
 }
 
 function sameStrings(first: readonly string[], second: readonly string[]): boolean {

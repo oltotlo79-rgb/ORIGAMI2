@@ -41,39 +41,56 @@ fn semantic_observer_and_mapping_preserve_cancel_and_deadline_distinctions() {
             GeometricConstraintSemanticMusUnknownReason::DeadlineReached,
         ),
     ] {
-        let (bounded, semantic) = map_semantic_direct_conflict_result(
-            &prepared,
-            ori_core::BoundedCurrentRuntimeSemanticMusV1::Unknown {
-                reason: core_reason,
-                direct_core_constraint_ids: direct_ids.clone(),
-                direct_oracle_calls: 7,
-                deletion_witness_checks: 0,
-                certified_deletion_witnesses: 0,
-                deletion_witness_work: 0,
-            },
-        )
-        .expect("a stop after direct proof keeps the direct core");
-        assert_eq!(
-            bounded,
-            BoundedDirectMusResult::ProvenUnsatisfiable {
-                constraint_ids: direct_ids.clone(),
-                oracle_calls: 7,
-            },
-        );
-        assert!(matches!(
-            semantic,
-            GeometricConstraintSemanticMusResult::Unknown {
-                model_id:
-                    ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
-                transcendental_model_id:
-                    ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
-                reason,
-                ref direct_core_constraint_ids,
-                authorizes_project_mutation: false,
-                replayable_across_runtimes: false,
-                ..
-            } if reason == dto_reason && direct_core_constraint_ids == &direct_ids
-        ));
+        for (deletion_witness_checks, certified_deletion_witnesses, deletion_witness_work) in
+            [(0, 0, 0), (0, 0, 1), (1, 0, 1)]
+        {
+            let expected_dto_checks =
+                u32::try_from(deletion_witness_checks).expect("test check count fits u32");
+            let expected_dto_certified =
+                u32::try_from(certified_deletion_witnesses).expect("test certified count fits u32");
+            let expected_dto_work =
+                u32::try_from(deletion_witness_work).expect("test work count fits u32");
+            let (bounded, semantic) = map_semantic_direct_conflict_result(
+                &prepared,
+                ori_core::BoundedCurrentRuntimeSemanticMusV1::Unknown {
+                    reason: core_reason,
+                    direct_core_constraint_ids: direct_ids.clone(),
+                    direct_oracle_calls: 7,
+                    deletion_witness_checks,
+                    certified_deletion_witnesses,
+                    deletion_witness_work,
+                },
+            )
+            .expect("a reachable stop phase keeps the direct core");
+            assert_eq!(
+                bounded,
+                BoundedDirectMusResult::ProvenUnsatisfiable {
+                    constraint_ids: direct_ids.clone(),
+                    oracle_calls: 7,
+                },
+            );
+            assert!(matches!(
+                semantic,
+                GeometricConstraintSemanticMusResult::Unknown {
+                    model_id:
+                        ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
+                    transcendental_model_id:
+                        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+                    reason,
+                    ref direct_core_constraint_ids,
+                    deletion_witness_checks: dto_checks,
+                    certified_deletion_witnesses: dto_certified,
+                    deletion_witness_work: dto_work,
+                    authorizes_project_mutation: false,
+                    replayable_across_runtimes: false,
+                    ..
+                } if reason == dto_reason
+                    && direct_core_constraint_ids == &direct_ids
+                    && dto_checks == expected_dto_checks
+                    && dto_certified == expected_dto_certified
+                    && dto_work == expected_dto_work
+            ));
+        }
     }
 
     for (
@@ -198,6 +215,14 @@ fn mapper_rejects_noncanonical_ids_inconsistent_phases_and_unchecked_integers() 
             direct_core_constraint_ids: canonical_direct_ids.clone(),
             direct_oracle_calls: 7,
             deletion_witness_checks: 1,
+            certified_deletion_witnesses: 0,
+            deletion_witness_work: 0,
+        },
+        ori_core::BoundedCurrentRuntimeSemanticMusV1::Unknown {
+            reason: ori_core::BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+            direct_core_constraint_ids: canonical_direct_ids.clone(),
+            direct_oracle_calls: 7,
+            deletion_witness_checks: 1,
             certified_deletion_witnesses: 1,
             deletion_witness_work: 1,
         },
@@ -211,11 +236,27 @@ fn mapper_rejects_noncanonical_ids_inconsistent_phases_and_unchecked_integers() 
         },
         ori_core::BoundedCurrentRuntimeSemanticMusV1::Unknown {
             reason: ori_core::BoundedSemanticMusUnknownReasonV1::DeletionWitnessUnavailable,
-            direct_core_constraint_ids: canonical_direct_ids,
+            direct_core_constraint_ids: canonical_direct_ids.clone(),
             direct_oracle_calls: 7,
             deletion_witness_checks: 1,
             certified_deletion_witnesses: 1,
             deletion_witness_work: 1,
+        },
+        ori_core::BoundedCurrentRuntimeSemanticMusV1::Unknown {
+            reason: ori_core::BoundedSemanticMusUnknownReasonV1::Cancelled,
+            direct_core_constraint_ids: canonical_direct_ids.clone(),
+            direct_oracle_calls: 7,
+            deletion_witness_checks: 1,
+            certified_deletion_witnesses: 0,
+            deletion_witness_work: 0,
+        },
+        ori_core::BoundedCurrentRuntimeSemanticMusV1::Unknown {
+            reason: ori_core::BoundedSemanticMusUnknownReasonV1::DeadlineReached,
+            direct_core_constraint_ids: canonical_direct_ids,
+            direct_oracle_calls: 7,
+            deletion_witness_checks: 1,
+            certified_deletion_witnesses: 0,
+            deletion_witness_work: 0,
         },
     ];
     for invalid in invalid_results {

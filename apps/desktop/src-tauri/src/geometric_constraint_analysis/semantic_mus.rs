@@ -23,6 +23,10 @@ pub(crate) enum GeometricConstraintSemanticMusResult {
         pair_constraint_algebraic_witness_count: u32,
         length_constraint_constructive_witness_count: u32,
         zero_length_closure_constructive_witness_count: u32,
+        anchored_mirror_residual_only_witness_count: u32,
+        unit_parallel_fixed_angle_residual_only_witness_count: u32,
+        unit_terminal_two_hop_parallel_angle_residual_only_witness_count: u32,
+        unit_two_hop_parallel_residual_only_witness_count: u32,
         authorizes_project_mutation: bool,
         replayable_across_runtimes: bool,
     },
@@ -119,7 +123,31 @@ pub(super) fn map_semantic_direct_conflict_result(
                 certificate.zero_length_closure_constructive_witness_count(),
                 constraint_ids.len(),
             )?;
+            let anchored_mirror_residual_only_witness_count = checked_semantic_count(
+                certificate.anchored_mirror_residual_only_witness_count(),
+                constraint_ids.len(),
+            )?;
+            let unit_parallel_fixed_angle_residual_only_witness_count = checked_semantic_count(
+                certificate.unit_parallel_fixed_angle_residual_only_witness_count(),
+                constraint_ids.len(),
+            )?;
+            let unit_terminal_two_hop_parallel_angle_residual_only_witness_count =
+                checked_semantic_count(
+                    certificate.unit_terminal_two_hop_parallel_angle_residual_only_witness_count(),
+                    constraint_ids.len(),
+                )?;
+            let unit_two_hop_parallel_residual_only_witness_count = checked_semantic_count(
+                certificate.unit_two_hop_parallel_residual_only_witness_count(),
+                constraint_ids.len(),
+            )?;
             if deletion_witness_checks != constraint_count
+                || deletion_witness_work == 0
+                || (unit_parallel_fixed_angle_residual_only_witness_count != 0
+                    && (unit_parallel_fixed_angle_residual_only_witness_count != 3
+                        || constraint_count != 3))
+                || (unit_terminal_two_hop_parallel_angle_residual_only_witness_count != 0
+                    && (unit_terminal_two_hop_parallel_angle_residual_only_witness_count != 5
+                        || constraint_count != 5))
                 || current_assignment_witness_count
                     .checked_add(axis_exactification_witness_count)
                     .and_then(|count| {
@@ -132,6 +160,20 @@ pub(super) fn map_semantic_direct_conflict_result(
                     })
                     .and_then(|count| {
                         count.checked_add(zero_length_closure_constructive_witness_count)
+                    })
+                    .and_then(|count| {
+                        count.checked_add(anchored_mirror_residual_only_witness_count)
+                    })
+                    .and_then(|count| {
+                        count.checked_add(unit_parallel_fixed_angle_residual_only_witness_count)
+                    })
+                    .and_then(|count| {
+                        count.checked_add(
+                            unit_terminal_two_hop_parallel_angle_residual_only_witness_count,
+                        )
+                    })
+                    .and_then(|count| {
+                        count.checked_add(unit_two_hop_parallel_residual_only_witness_count)
                     })
                     != Some(constraint_count)
                 || certificate.direct_oracle_calls() == 0
@@ -167,6 +209,10 @@ pub(super) fn map_semantic_direct_conflict_result(
                     pair_constraint_algebraic_witness_count,
                     length_constraint_constructive_witness_count,
                     zero_length_closure_constructive_witness_count,
+                    anchored_mirror_residual_only_witness_count,
+                    unit_parallel_fixed_angle_residual_only_witness_count,
+                    unit_terminal_two_hop_parallel_angle_residual_only_witness_count,
+                    unit_two_hop_parallel_residual_only_witness_count,
                     authorizes_project_mutation: certificate.authorizes_project_mutation(),
                     replayable_across_runtimes: certificate.replayable_across_runtimes(),
                 },
@@ -286,6 +332,9 @@ fn semantic_unknown_phase_is_consistent(
     certified_deletion_witnesses: usize,
     deletion_witness_work: usize,
 ) -> bool {
+    if deletion_witness_checks > 0 && deletion_witness_work == 0 {
+        return false;
+    }
     match reason {
         ori_core::BoundedSemanticMusUnknownReasonV1::DirectOracleIncomplete => direct_core_is_empty,
         ori_core::BoundedSemanticMusUnknownReasonV1::DeletionWitnessLimitExceeded => {

@@ -1052,7 +1052,16 @@ function parseDirectConflict(value: unknown): DirectConstraintConflictV1 | null 
     record.constraint_ids,
     MAX_DIRECT_CONFLICT_WITNESS_IDS,
   )
-  if (!constraintIds || constraintIds.length !== parsed.witnessSize) return null
+  if (
+    !constraintIds
+    || (
+      constraintIds.length !== parsed.witnessSize
+      && !(
+        parsed.conflict.kind === 'parallel_with_fixed_non_parallel_angle'
+        && constraintIds.length === 4
+      )
+    )
+  ) return null
   return Object.freeze({
     conflict: parsed.conflict,
     constraint_ids: constraintIds,
@@ -1290,7 +1299,7 @@ function parseDirectConflictKind(
         || typeof record.parallel_constraint_count !== 'number'
         || !Number.isSafeInteger(record.parallel_constraint_count)
         || record.parallel_constraint_count < 1
-        || record.parallel_constraint_count > MAX_DIRECT_CONFLICT_WITNESS_IDS - 2
+        || record.parallel_constraint_count > MAX_DIRECT_CONFLICT_WITNESS_IDS - 3
       ) return null
       return {
         conflict: Object.freeze({
@@ -1299,7 +1308,9 @@ function parseDirectConflictKind(
           vertical_edge: record.vertical_edge,
           parallel_constraint_count: record.parallel_constraint_count,
         }),
-        witnessSize: record.parallel_constraint_count + 2,
+        // The only published sound shape also carries one exact unit
+        // FixedLength record in addition to H, V, and the parallel path.
+        witnessSize: record.parallel_constraint_count + 3,
       }
     case 'non_parallel_fixed_angle_in_parallel_component':
       if (
@@ -1316,8 +1327,7 @@ function parseDirectConflictKind(
         || record.first_edge === record.second_edge
         || typeof record.parallel_constraint_count !== 'number'
         || !Number.isSafeInteger(record.parallel_constraint_count)
-        || record.parallel_constraint_count < 1
-        || record.parallel_constraint_count > MAX_DIRECT_CONFLICT_WITNESS_IDS - 1
+        || record.parallel_constraint_count !== 2
       ) return null
       return {
         conflict: Object.freeze({
@@ -1327,7 +1337,9 @@ function parseDirectConflictKind(
           second_edge: record.second_edge,
           parallel_constraint_count: record.parallel_constraint_count,
         }),
-        witnessSize: record.parallel_constraint_count + 1,
+        // The published theorem is exactly two Parallel records, one angle,
+        // and bit-exact unit FixedLength records on both terminal edges.
+        witnessSize: 5,
       }
     case 'parallel_with_fixed_non_parallel_angle':
       if (
@@ -1342,7 +1354,10 @@ function parseDirectConflictKind(
           first_edge: record.first_edge,
           second_edge: record.second_edge,
         }),
-        witnessSize: 2,
+        // The exact-45-degree cause carries one unit FixedLength (three IDs).
+        // The retained generic-angle boundary carries one on each edge (four
+        // IDs); parseDirectConflict admits that second exact legacy arity.
+        witnessSize: 3,
       }
     case 'same_orientation_with_fixed_non_parallel_angle':
       if (

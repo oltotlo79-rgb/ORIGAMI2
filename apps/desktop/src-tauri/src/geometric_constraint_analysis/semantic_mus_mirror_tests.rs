@@ -1,54 +1,71 @@
 use super::*;
 
 #[test]
-fn zero_length_closure_witness_is_a_distinct_strict_wire_counter() {
-    let vertices = std::array::from_fn::<_, 4, _>(|_| VertexId::new());
-    let target = EdgeId::new();
-    let forced = EdgeId::new();
+fn anchored_mirror_residual_only_counter_maps_and_serializes_exactly_once() {
+    let axis_start = VertexId::new();
+    let axis_end = VertexId::new();
+    let mut symmetry_vertices = [VertexId::new(), VertexId::new()];
+    symmetry_vertices.sort_unstable_by_key(VertexId::canonical_bytes);
+    let raw_source = symmetry_vertices[1];
+    let raw_target = symmetry_vertices[0];
+    let axis_edge = EdgeId::new();
+    let connector_edge = EdgeId::new();
+    let separation_edge = EdgeId::new();
     let pattern = CreasePattern {
         vertices: vec![
             Vertex {
-                id: vertices[0],
+                id: axis_start,
                 position: Point2::new(0.0, 0.0),
             },
             Vertex {
-                id: vertices[1],
-                position: Point2::new(1.0, 0.0),
+                id: axis_end,
+                position: Point2::new(2.0, 1.0),
             },
             Vertex {
-                id: vertices[2],
-                position: Point2::new(3.0, 0.0),
+                id: raw_source,
+                position: Point2::new(3.0, 5.0),
             },
             Vertex {
-                id: vertices[3],
-                position: Point2::new(3.0, 1.0),
+                id: raw_target,
+                position: Point2::new(7.0, 11.0),
             },
         ],
         edges: vec![
             Edge {
-                id: target,
-                start: vertices[0],
-                end: vertices[1],
+                id: axis_edge,
+                start: axis_start,
+                end: axis_end,
                 kind: EdgeKind::Auxiliary,
             },
             Edge {
-                id: forced,
-                start: vertices[2],
-                end: vertices[3],
+                id: connector_edge,
+                start: axis_start,
+                end: raw_source,
+                kind: EdgeKind::Auxiliary,
+            },
+            Edge {
+                id: separation_edge,
+                start: raw_source,
+                end: raw_target,
                 kind: EdgeKind::Auxiliary,
             },
         ],
     };
     let records = vec![
-        record(GeometricConstraintKindV1::Horizontal { edge: forced }),
-        record(GeometricConstraintKindV1::Vertical { edge: forced }),
-        record(GeometricConstraintKindV1::EqualLength {
-            first_edge: forced,
-            second_edge: target,
+        record(GeometricConstraintKindV1::MirrorSymmetry {
+            first_vertex: raw_source,
+            second_vertex: raw_target,
+            axis_edge,
         }),
         record(GeometricConstraintKindV1::FixedLength {
-            edge: target,
+            edge: separation_edge,
             length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal {
+            edge: connector_edge,
+        }),
+        record(GeometricConstraintKindV1::Vertical {
+            edge: connector_edge,
         }),
     ];
     let expected_ids = canonical_ids(&records);
@@ -57,10 +74,10 @@ fn zero_length_closure_witness_is_a_distinct_strict_wire_counter() {
         &document(records),
         &mut continuing_observer(),
     )
-    .expect("zero-length-closure semantic outcome");
+    .expect("anchored mirror semantic outcome");
     let semantic_mus = outcome
         .semantic_mus
-        .expect("zero-length-closure core must map to a semantic certificate");
+        .expect("anchored mirror core must map to a semantic certificate");
     assert!(matches!(
         &semantic_mus,
         GeometricConstraintSemanticMusResult::Certified {
@@ -73,8 +90,8 @@ fn zero_length_closure_witness_is_a_distinct_strict_wire_counter() {
             pair_constraint_constructive_witness_count: 0,
             pair_constraint_algebraic_witness_count: 0,
             length_constraint_constructive_witness_count: 0,
-            zero_length_closure_constructive_witness_count: 4,
-            anchored_mirror_residual_only_witness_count: 0,
+            zero_length_closure_constructive_witness_count: 0,
+            anchored_mirror_residual_only_witness_count: 4,
             unit_parallel_fixed_angle_residual_only_witness_count: 0,
             unit_terminal_two_hop_parallel_angle_residual_only_witness_count: 0,
             unit_two_hop_parallel_residual_only_witness_count: 0,
@@ -85,13 +102,9 @@ fn zero_length_closure_witness_is_a_distinct_strict_wire_counter() {
             && *replayable_across_runtimes
                 == ori_numeric::deterministic_transcendental_model_supported_v1()
     ));
-    let encoded =
-        serde_json::to_value(semantic_mus).expect("serialize zero-closure witness counter");
-    assert_eq!(
-        encoded["transcendental_model_id"],
-        ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
-    );
-    assert_eq!(encoded["zero_length_closure_constructive_witness_count"], 4,);
+
+    let encoded = serde_json::to_value(semantic_mus).expect("serialize anchored mirror counter");
+    assert_eq!(encoded["anchored_mirror_residual_only_witness_count"], 4,);
     let method_sum = [
         "current_assignment_witness_count",
         "axis_exactification_witness_count",

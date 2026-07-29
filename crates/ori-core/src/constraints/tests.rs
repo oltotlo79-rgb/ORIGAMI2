@@ -2695,7 +2695,11 @@ fn differing_fixed_length_angle_and_ratio_report_all_cause_ids() {
             DirectConstraintConflictKindV1::DifferentFixedAngles { .. }
         ) && same_ids(conflict.constraint_ids(), &[angle_a.id, angle_b.id])
     }));
-    assert!(conflicts.iter().all(is_proven_direct_conflict_v1));
+    assert!(
+        conflicts
+            .iter()
+            .all(|conflict| is_proven_direct_conflict_v1(conflict, prepared.constraints()))
+    );
 }
 
 #[test]
@@ -3071,7 +3075,11 @@ fn direct_three_constraint_relations_are_detected() {
         conflict.conflict(),
         DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
     )));
-    assert!(conflicts.iter().all(is_proven_direct_conflict_v1));
+    assert!(
+        conflicts
+            .iter()
+            .all(|conflict| is_proven_direct_conflict_v1(conflict, prepared.constraints()))
+    );
 }
 
 #[test]

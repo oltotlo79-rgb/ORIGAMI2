@@ -1348,6 +1348,10 @@ mod tests {
                 constraints.push(GeometricConstraintKindV1::Vertical {
                     edge: *edges.last().expect("parallel path has a final edge"),
                 });
+                constraints.push(GeometricConstraintKindV1::FixedLength {
+                    edge: *edges.last().expect("parallel path has a final edge"),
+                    length_mm: 1.0,
+                });
                 builder.finish(constraints)
             }
             QuarantinedDirectFamily::NonParallelFixedAngleInParallelComponent => {
@@ -1582,6 +1586,110 @@ mod tests {
         mirror_axis_fixed_separation_is_solver_required,
         MirrorSymmetryWithPointOnAxisAndFixedSeparation
     );
+
+    fn unit_two_hop_parallel_residual_example(vectors: [Point2; 3]) -> QuarantinedCounterexample {
+        let mut builder = CounterexampleBuilder::default();
+        let edges = vectors.map(|vector| builder.independent_edge(vector));
+        builder.finish([
+            GeometricConstraintKindV1::Horizontal { edge: edges[0] },
+            GeometricConstraintKindV1::Parallel {
+                first_edge: edges[0],
+                second_edge: edges[1],
+            },
+            GeometricConstraintKindV1::Parallel {
+                first_edge: edges[1],
+                second_edge: edges[2],
+            },
+            GeometricConstraintKindV1::Vertical { edge: edges[2] },
+            GeometricConstraintKindV1::FixedLength {
+                edge: edges[2],
+                length_mm: 1.0,
+            },
+        ])
+    }
+
+    #[test]
+    fn unit_terminal_two_hop_proof_covers_signed_zero_underflow_and_overflow_classes() {
+        let minimum = f64::from_bits(1);
+        let signed = unit_two_hop_parallel_residual_example([
+            Point2::new(-1.0, -0.0),
+            Point2::new(minimum, -3.0),
+            Point2::new(-0.0, -1.0),
+        ]);
+        let signed_values =
+            deterministic_proof_residuals_v1(&signed.pattern, &signed.document, &signed.positions)
+                .expect("signed-zero and subnormal vectors remain finite");
+        assert_eq!(signed_values[0], 0.0);
+        assert_eq!(signed_values[1].abs(), 1.0);
+        assert_eq!(signed_values[2], 0.0);
+        assert_eq!(signed_values[3], 0.0);
+        assert_eq!(signed_values[4], 0.0);
+        assert!(
+            !signed_values.iter().all(|value| *value == 0.0),
+            "the first parallel residual must expose the contradiction",
+        );
+
+        let overflow = unit_two_hop_parallel_residual_example([
+            Point2::new(f64::from_bits(0x7fdf_ffff_ffff_ffff), 0.0),
+            Point2::new(minimum, 3.0),
+            Point2::new(0.0, 1.0),
+        ]);
+        assert!(
+            matches!(
+                deterministic_proof_residuals_v1(
+                    &overflow.pattern,
+                    &overflow.document,
+                    &overflow.positions,
+                ),
+                Err(ConstraintSolveErrorV1::NonConvergent)
+            ),
+            "a non-finite normalized product must fail exact-zero certification",
+        );
+    }
+
+    #[test]
+    fn unit_terminal_two_hop_proof_rejects_nan_and_overflowed_vector_differences() {
+        for invalid_end_x in [f64::NAN, f64::MAX] {
+            let mut builder = CounterexampleBuilder::default();
+            let first_start = builder.vertex(Point2::new(
+                if invalid_end_x.is_nan() {
+                    0.0
+                } else {
+                    -f64::MAX
+                },
+                0.0,
+            ));
+            let first_end = builder.vertex(Point2::new(invalid_end_x, 0.0));
+            let first = builder.edge(first_start, first_end);
+            let middle = builder.independent_edge(Point2::new(0.0, 2.0));
+            let vertical = builder.independent_edge(Point2::new(0.0, 1.0));
+            let example = builder.finish([
+                GeometricConstraintKindV1::Horizontal { edge: first },
+                GeometricConstraintKindV1::Parallel {
+                    first_edge: first,
+                    second_edge: middle,
+                },
+                GeometricConstraintKindV1::Parallel {
+                    first_edge: middle,
+                    second_edge: vertical,
+                },
+                GeometricConstraintKindV1::Vertical { edge: vertical },
+                GeometricConstraintKindV1::FixedLength {
+                    edge: vertical,
+                    length_mm: 1.0,
+                },
+            ]);
+            assert_eq!(
+                deterministic_proof_residuals_v1(
+                    &example.pattern,
+                    &example.document,
+                    &example.positions,
+                ),
+                Err(ConstraintSolveErrorV1::NonConvergent),
+            );
+        }
+    }
+
     #[test]
     fn cardinal_rotation_proof_residual_subtracts_center_before_the_rotated_vector() {
         let huge = f64::from_bits(0x4630_0000_0000_0000);

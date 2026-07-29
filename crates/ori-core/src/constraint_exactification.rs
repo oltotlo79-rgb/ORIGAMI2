@@ -11,6 +11,9 @@ use crate::{
 mod length_constructive;
 mod pair_constructive;
 mod singleton_constructive;
+mod unit_parallel_fixed_angle_constructive;
+mod unit_terminal_two_hop_parallel_angle_constructive;
+mod unit_two_hop_parallel_constructive;
 mod zero_closure_constructive;
 
 pub(crate) use length_constructive::{
@@ -24,6 +27,18 @@ pub(crate) use pair_constructive::{
 };
 pub(crate) use singleton_constructive::MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1;
 pub use singleton_constructive::construct_single_constraint_exact_assignment_v1;
+pub(crate) use unit_parallel_fixed_angle_constructive::{
+    MAX_UNIT_PARALLEL_FIXED_ANGLE_RESIDUAL_ONLY_OVERLAY_VERTICES_V1,
+    construct_unit_parallel_fixed_angle_residual_exact_deletion_assignment_v1,
+};
+pub(crate) use unit_terminal_two_hop_parallel_angle_constructive::{
+    MAX_UNIT_TERMINAL_TWO_HOP_PARALLEL_ANGLE_RESIDUAL_ONLY_OVERLAY_VERTICES_V1,
+    construct_unit_terminal_two_hop_parallel_angle_residual_exact_deletion_assignment_v1,
+};
+pub(crate) use unit_two_hop_parallel_constructive::{
+    MAX_UNIT_TWO_HOP_PARALLEL_RESIDUAL_ONLY_OVERLAY_VERTICES_V1,
+    construct_unit_two_hop_parallel_residual_exact_deletion_assignment_v1,
+};
 pub(crate) use zero_closure_constructive::{
     construct_zero_length_closure_residual_exact_assignment_v1,
     zero_length_closure_constructive_candidate_bound_v1,

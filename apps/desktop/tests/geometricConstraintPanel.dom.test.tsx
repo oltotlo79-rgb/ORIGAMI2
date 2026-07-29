@@ -966,7 +966,7 @@ describe('GeometricConstraintPanel', () => {
           first_edge: IDS[0]!,
           second_edge: IDS[1]!,
         },
-        constraint_ids: [IDS[12]!, IDS[13]!],
+        constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
       }, '平行にした辺へ平行でない固定角'],
       [{
         conflict: {

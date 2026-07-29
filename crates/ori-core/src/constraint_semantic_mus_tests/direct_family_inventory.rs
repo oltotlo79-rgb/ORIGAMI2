@@ -4,6 +4,9 @@ use super::length_phase;
 use super::mirror_phase::anchored_mirror_inventory_fixture;
 use super::pair_phase;
 use super::singleton_phase::different_fixed_lengths_fixture;
+use super::unit_parallel_fixed_angle_phase::unit_parallel_fixed_angle_inventory_fixture;
+use super::unit_terminal_two_hop_parallel_angle_phase::unit_terminal_two_hop_parallel_angle_inventory_fixture;
+use super::unit_two_hop_parallel_phase::unit_two_hop_parallel_inventory_fixture;
 use super::zero_closure_phase::{Provider, zero_closure_fixture};
 use super::*;
 use crate::{ConstraintPreflightV1, DirectConstraintConflictKindV1};
@@ -15,6 +18,9 @@ enum InventoryFamily {
     EqualLengthWithDifferentFixedLengths,
     LengthRatioWithIncompatibleFixedLengths,
     ParallelWithPerpendicularOrientations,
+    PerpendicularOrientationsInParallelComponent,
+    NonParallelFixedAngleInParallelComponent,
+    ParallelWithFixedNonParallelAngle,
     SameOrientationWithFixedNonParallelAngle,
     PerpendicularOrientationsWithFixedNonRightAngle,
     DifferentRotationalSymmetryAnglesWithFixedRadius,
@@ -253,6 +259,18 @@ fn inventory() -> Vec<(InventoryFamily, SemanticFixture)> {
         (
             InventoryFamily::MirrorSymmetryWithPointOnAxisAndFixedSeparation,
             anchored_mirror_inventory_fixture(),
+        ),
+        (
+            InventoryFamily::PerpendicularOrientationsInParallelComponent,
+            unit_two_hop_parallel_inventory_fixture(),
+        ),
+        (
+            InventoryFamily::NonParallelFixedAngleInParallelComponent,
+            unit_terminal_two_hop_parallel_angle_inventory_fixture(),
+        ),
+        (
+            InventoryFamily::ParallelWithFixedNonParallelAngle,
+            unit_parallel_fixed_angle_inventory_fixture(),
         ),
     ];
     result.extend(
@@ -581,6 +599,17 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
                 InventoryFamily::ParallelWithPerpendicularOrientations,
                 DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
             ) | (
+                InventoryFamily::PerpendicularOrientationsInParallelComponent,
+                DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
+                    ..
+                }
+            ) | (
+                InventoryFamily::NonParallelFixedAngleInParallelComponent,
+                DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent { .. }
+            ) | (
+                InventoryFamily::ParallelWithFixedNonParallelAngle,
+                DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle { .. }
+            ) | (
                 InventoryFamily::SameOrientationWithFixedNonParallelAngle,
                 DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle { .. }
             ) | (
@@ -651,14 +680,14 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
 }
 
 #[test]
-fn public_semantic_pipeline_hard_inventory_is_twenty_one_of_twenty_one() {
+fn public_semantic_pipeline_hard_inventory_is_twenty_four_of_twenty_four() {
     const STABLE_WIRE_FAMILY_COUNT_V1: usize = 24;
     let inventory = inventory();
-    assert_eq!(inventory.len(), 21);
+    assert_eq!(inventory.len(), 24);
     assert_eq!(
         STABLE_WIRE_FAMILY_COUNT_V1 - inventory.len(),
-        3,
-        "exactly three stable wire families remain outside the public semantic inventory",
+        0,
+        "every stable wire family must be present in the public semantic inventory",
     );
     assert_eq!(
         inventory
@@ -666,7 +695,7 @@ fn public_semantic_pipeline_hard_inventory_is_twenty_one_of_twenty_one() {
             .map(|(family, _)| *family)
             .collect::<BTreeSet<_>>()
             .len(),
-        21,
+        24,
         "every supported direct family must have one distinct inventory row",
     );
 
@@ -710,7 +739,10 @@ fn public_semantic_pipeline_hard_inventory_is_twenty_one_of_twenty_one() {
                 + certificate.pair_constraint_algebraic_witness_count()
                 + certificate.length_constraint_constructive_witness_count()
                 + certificate.zero_length_closure_constructive_witness_count()
-                + certificate.anchored_mirror_residual_only_witness_count(),
+                + certificate.anchored_mirror_residual_only_witness_count()
+                + certificate.unit_parallel_fixed_angle_residual_only_witness_count()
+                + certificate.unit_terminal_two_hop_parallel_angle_residual_only_witness_count()
+                + certificate.unit_two_hop_parallel_residual_only_witness_count(),
             fixture.records.len(),
             "method counters must total exactly once for {family:?}",
         );
@@ -751,6 +783,30 @@ fn public_semantic_pipeline_hard_inventory_is_twenty_one_of_twenty_one() {
                 certificate.anchored_mirror_residual_only_witness_count(),
                 4,
                 "all four raw-source anchored cause deletions need dedicated overlays",
+            );
+        }
+        if family == InventoryFamily::PerpendicularOrientationsInParallelComponent {
+            assert_eq!(fixture.records.len(), 5);
+            assert_eq!(
+                certificate.unit_two_hop_parallel_residual_only_witness_count(),
+                5,
+                "all five exact unit-terminal two-hop cause deletions need dedicated overlays",
+            );
+        }
+        if family == InventoryFamily::NonParallelFixedAngleInParallelComponent {
+            assert_eq!(fixture.records.len(), 5);
+            assert_eq!(
+                certificate.unit_terminal_two_hop_parallel_angle_residual_only_witness_count(),
+                5,
+                "all five exact unit-terminal right-angle cause deletions need dedicated overlays",
+            );
+        }
+        if family == InventoryFamily::ParallelWithFixedNonParallelAngle {
+            assert_eq!(fixture.records.len(), 3);
+            assert_eq!(
+                certificate.unit_parallel_fixed_angle_residual_only_witness_count(),
+                3,
+                "all three exact unit/parallel/45-degree deletions need dedicated overlays",
             );
         }
     }

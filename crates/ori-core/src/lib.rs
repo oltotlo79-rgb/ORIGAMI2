@@ -17,6 +17,10 @@ mod constraint_semantic_mus_tests;
 mod constraint_solver;
 mod constraints;
 #[cfg(test)]
+mod constraints_exact45_single_unit_parallel_angle_tests;
+#[cfg(test)]
+mod constraints_unit_terminal_two_hop_parallel_angle_tests;
+#[cfg(test)]
 mod cycle_fold_transaction;
 mod editor;
 mod flat_surface;

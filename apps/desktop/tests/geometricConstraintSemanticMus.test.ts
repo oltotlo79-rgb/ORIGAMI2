@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
   MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS,
   MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS,
   MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK,
@@ -79,6 +80,16 @@ test('accepts and deeply freezes the exact certified semantic-MUS DTO', () => {
   assert.equal(MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS, 16)
   assert.equal(MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK, 20_000_000)
   assert.equal(
+    normalized?.semantic_mus?.status === 'certified'
+      ? normalized.semantic_mus.deletion_witness_work
+      : null,
+    100,
+  )
+  assert.equal(
+    GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+    'geometric_constraint_deterministic_binary64_semantic_mus_v4',
+  )
+  assert.equal(
     normalized?.semantic_mus?.transcendental_model_id,
     DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
   )
@@ -119,6 +130,7 @@ test('certified semantic-MUS parsing rejects malformed evidence and cross-check 
       deletion_witness_work:
         MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK + 1,
     },
+    { ...certified(), deletion_witness_work: 0 },
     { ...certified(), deletion_witness_work: -0 },
     { ...certified(), current_assignment_witness_count: -1 },
     { ...certified(), axis_exactification_witness_count: 3 },
@@ -221,6 +233,25 @@ test('accepts only reachable Unknown semantic-MUS phase states', () => {
     direct_core_constraint_ids: [],
     direct_oracle_calls: 0,
   })
+  const cancelledAfterDirect = unknown({
+    reason: 'cancelled',
+    direct_core_constraint_ids: CORE,
+    direct_oracle_calls: 7,
+  })
+  const deadlineAfterSetup = unknown({
+    reason: 'deadline_reached',
+    direct_core_constraint_ids: CORE,
+    direct_oracle_calls: 7,
+    deletion_witness_work: 99,
+  })
+  const cancelledDuringWitness = unknown({
+    reason: 'cancelled',
+    direct_core_constraint_ids: CORE,
+    direct_oracle_calls: 7,
+    deletion_witness_checks: 1,
+    certified_deletion_witnesses: 0,
+    deletion_witness_work: 99,
+  })
   for (const [semanticMus, bounded] of [
     [afterDirect, provenDirect()],
     [incompleteDirect, unknownDirect('oracle_incomplete', 4)],
@@ -228,6 +259,9 @@ test('accepts only reachable Unknown semantic-MUS phase states', () => {
     [setupWorkLimit, provenDirect()],
     [partialWorkLimit, provenDirect()],
     [cancelledBeforeDirect, unknownDirect('cancelled', 0)],
+    [cancelledAfterDirect, provenDirect()],
+    [deadlineAfterSetup, provenDirect()],
+    [cancelledDuringWitness, provenDirect()],
   ]) {
     const normalized = normalizeGeometricConstraintPreflightResponse(
       envelope(semanticMus, bounded),
@@ -324,8 +358,32 @@ test('Unknown semantic-MUS parsing rejects impossible counters, phases, and lega
       direct_core_constraint_ids: CORE,
       direct_oracle_calls: 7,
       deletion_witness_checks: 1,
+      certified_deletion_witnesses: 0,
+      deletion_witness_work: 0,
+    }),
+    unknown({
+      reason: 'deletion_witness_work_limit_exceeded',
+      direct_core_constraint_ids: CORE,
+      direct_oracle_calls: 7,
+      deletion_witness_checks: 1,
       certified_deletion_witnesses: 1,
       deletion_witness_work: 99,
+    }),
+    unknown({
+      reason: 'cancelled',
+      direct_core_constraint_ids: CORE,
+      direct_oracle_calls: 7,
+      deletion_witness_checks: 1,
+      certified_deletion_witnesses: 0,
+      deletion_witness_work: 0,
+    }),
+    unknown({
+      reason: 'deadline_reached',
+      direct_core_constraint_ids: CORE,
+      direct_oracle_calls: 7,
+      deletion_witness_checks: 1,
+      certified_deletion_witnesses: 0,
+      deletion_witness_work: 0,
     }),
   ]
   for (const semanticMus of invalid) {

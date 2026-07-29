@@ -169,7 +169,7 @@ fn direct_core_is_promoted_only_after_every_deletion_has_an_independent_exact_as
     );
     assert_eq!(
         certificate.model_id(),
-        "geometric_constraint_deterministic_binary64_semantic_mus_v2",
+        "geometric_constraint_deterministic_binary64_semantic_mus_v4",
     );
     assert_eq!(
         certificate.transcendental_model_id(),
@@ -192,6 +192,18 @@ fn direct_core_is_promoted_only_after_every_deletion_has_an_independent_exact_as
     );
     assert_eq!(
         certificate.zero_length_closure_constructive_witness_count(),
+        0,
+    );
+    assert_eq!(
+        certificate.unit_two_hop_parallel_residual_only_witness_count(),
+        0,
+    );
+    assert_eq!(
+        certificate.unit_parallel_fixed_angle_residual_only_witness_count(),
+        0,
+    );
+    assert_eq!(
+        certificate.unit_terminal_two_hop_parallel_angle_residual_only_witness_count(),
         0,
     );
     assert!(certificate.deletion_witness_work() > 0);
@@ -528,6 +540,15 @@ mod zero_closure_phase_limits;
 
 #[path = "constraint_semantic_mus_tests/mirror_phase.rs"]
 mod mirror_phase;
+
+#[path = "constraint_semantic_mus_tests/unit_two_hop_parallel_phase.rs"]
+mod unit_two_hop_parallel_phase;
+
+#[path = "constraint_semantic_mus_tests/unit_parallel_fixed_angle_phase.rs"]
+mod unit_parallel_fixed_angle_phase;
+
+#[path = "constraint_semantic_mus_tests/unit_terminal_two_hop_parallel_angle_phase.rs"]
+mod unit_terminal_two_hop_parallel_angle_phase;
 
 #[path = "constraint_semantic_mus_tests/direct_family_inventory.rs"]
 mod direct_family_inventory;

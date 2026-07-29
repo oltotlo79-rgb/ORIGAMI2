@@ -247,7 +247,13 @@ const DIRECT_CONFLICTS = [
       vertical_edge: EDGE_3,
       parallel_constraint_count: 2,
     },
-    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3, CONSTRAINT_4],
+    constraint_ids: [
+      CONSTRAINT_1,
+      CONSTRAINT_2,
+      CONSTRAINT_3,
+      CONSTRAINT_4,
+      CONSTRAINT_5,
+    ],
   },
   {
     conflict: {
@@ -257,7 +263,13 @@ const DIRECT_CONFLICTS = [
       second_edge: EDGE_3,
       parallel_constraint_count: 2,
     },
-    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+    constraint_ids: [
+      CONSTRAINT_1,
+      CONSTRAINT_2,
+      CONSTRAINT_3,
+      CONSTRAINT_4,
+      CONSTRAINT_5,
+    ],
   },
   {
     conflict: {
@@ -265,7 +277,7 @@ const DIRECT_CONFLICTS = [
       first_edge: EDGE_1,
       second_edge: EDGE_2,
     },
-    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
   },
   {
     conflict: {
@@ -789,6 +801,35 @@ test('normalizes all twenty-four conflict kinds and the bounded proof core', () 
   assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 256)
   assert.equal(MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS, 16)
   assert.equal(MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS, 65_535)
+})
+
+test('retains both exact three-ID and generic four-ID parallel-angle causes', () => {
+  const constraintIds = [
+    CONSTRAINT_1,
+    CONSTRAINT_2,
+    CONSTRAINT_3,
+    CONSTRAINT_4,
+  ]
+  const raw = response({
+    status: 'direct_conflict',
+    conflicts: [{
+      conflict: {
+        kind: 'parallel_with_fixed_non_parallel_angle',
+        first_edge: EDGE_1,
+        second_edge: EDGE_2,
+      },
+      constraint_ids: constraintIds,
+    }],
+    bounded_direct_mus: {
+      status: 'proven_unsatisfiable',
+      constraint_ids: constraintIds,
+      oracle_calls: 7,
+    },
+  })
+  const normalized =
+    normalizeGeometricConstraintPreflightResponse(raw, BINDING)
+  assert.deepEqual(normalized, raw)
+  assertDeepFrozen(normalized)
 })
 
 test('accepts the 256-ID cross-root witness boundary exactly', () => {
@@ -1821,7 +1862,30 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
         constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
       }],
     }),
-    ...[0, 256, 1.5].map((parallel_constraint_count) => response({
+    ...[
+      [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      [
+        CONSTRAINT_1,
+        CONSTRAINT_2,
+        CONSTRAINT_3,
+        CONSTRAINT_4,
+        CONSTRAINT_5,
+        CONSTRAINT_6,
+      ],
+    ].map((constraint_ids) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'non_parallel_fixed_angle_in_parallel_component',
+          vertex: VERTEX_1,
+          first_edge: EDGE_1,
+          second_edge: EDGE_3,
+          parallel_constraint_count: 2,
+        },
+        constraint_ids,
+      }],
+    })),
+    ...[0, 1, 3, 254, 256, 1.5].map((parallel_constraint_count) => response({
       status: 'direct_conflict',
       conflicts: [{
         conflict: {
@@ -1834,19 +1898,26 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
         constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
       }],
     })),
-    response({
+    ...[
+      [CONSTRAINT_1, CONSTRAINT_2],
+      [
+        CONSTRAINT_1,
+        CONSTRAINT_2,
+        CONSTRAINT_3,
+        CONSTRAINT_4,
+        CONSTRAINT_5,
+      ],
+    ].map((constraint_ids) => response({
       status: 'direct_conflict',
       conflicts: [{
         conflict: {
-          kind: 'non_parallel_fixed_angle_in_parallel_component',
-          vertex: VERTEX_1,
+          kind: 'parallel_with_fixed_non_parallel_angle',
           first_edge: EDGE_1,
-          second_edge: EDGE_3,
-          parallel_constraint_count: 1,
+          second_edge: EDGE_2,
         },
-        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+        constraint_ids,
       }],
-    }),
+    })),
     response({
       status: 'direct_conflict',
       conflicts: [{
@@ -2008,7 +2079,7 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
         ],
       }],
     })),
-    ...[0, 255, 1.5].map((parallel_constraint_count) => response({
+    ...[0, 254, 255, 1.5].map((parallel_constraint_count) => response({
       status: 'direct_conflict',
       conflicts: [{
         conflict: {
@@ -2017,7 +2088,12 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
           vertical_edge: EDGE_3,
           parallel_constraint_count,
         },
-        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
       }],
     })),
     response({
@@ -2029,7 +2105,12 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
           vertical_edge: EDGE_3,
           parallel_constraint_count: 2,
         },
-        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
       }],
     }),
     ...[

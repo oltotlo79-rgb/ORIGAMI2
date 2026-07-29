@@ -50,6 +50,11 @@ pub const DEFAULT_MAX_CONSTRAINT_PRECHECKS: usize = 10_000;
 pub const MAX_DIRECT_CONFLICT_CAUSE_IDS_V1: usize = 256;
 const MAX_GENERAL_EQUAL_GRAPH_WORK_V1: u64 = 40_000;
 const MAX_GENERAL_PARALLEL_GRAPH_WORK_V1: u64 = 40_000;
+const MAX_UNIT_TWO_HOP_PARALLEL_WORK_V1: u64 = 40_000;
+const MAX_UNIT_TWO_HOP_PARALLEL_STORAGE_UNITS_V1: usize = DEFAULT_MAX_CONSTRAINT_PRECHECKS * 2;
+const MAX_UNIT_TERMINAL_ANGLE_PARALLEL_WORK_V1: u64 = 40_000;
+const MAX_UNIT_TERMINAL_ANGLE_PARALLEL_STORAGE_UNITS_V1: usize =
+    DEFAULT_MAX_CONSTRAINT_PRECHECKS * 2;
 
 type CanonicalId = [u8; 16];
 
@@ -485,22 +490,65 @@ pub enum DirectConstraintConflictKindV1 {
         second_edge: EdgeId,
         equal_constraint_count: u16,
     },
+    /// An exact horizontal edge and an exact vertical edge are joined by
+    /// exactly two `Parallel` records through one distinct middle edge. The
+    /// vertical terminal also has one consistent bit-exact unit
+    /// `FixedLength`.
+    ///
+    /// The unit terminal removes the otherwise exploitable scale factor from
+    /// the second normalized cross. If that residual underflows to zero, the
+    /// pinned `libm::hypot` exponent-gap branch makes the middle edge's
+    /// magnitude bit-identical to its vertical component. The first
+    /// normalized cross then evaluates to signed one or a non-zero-safe
+    /// `NaN`, never zero. Longer paths and non-unit terminal lengths retain
+    /// the same wire tag for compatibility but remain solver-required.
     PerpendicularOrientationsInParallelComponent {
         horizontal_edge: EdgeId,
         vertical_edge: EdgeId,
         parallel_constraint_count: u16,
     },
+    /// Two distinct fixed-angle terminal edges are joined through one distinct
+    /// middle edge by exactly two `Parallel` records. The terminal edges each
+    /// have one bit-exact unit `FixedLength`, and their common validated
+    /// `FixedAngle` is bit-exactly 90 degrees. The canonical cause contains
+    /// exactly those five records.
+    ///
+    /// Unit terminal hypotenuses make each normalized parallel denominator the
+    /// middle edge's pinned `libm::hypot` result, so the overflow scale escape
+    /// available to the legacy general component rule is unavailable. A
+    /// normal middle hypot confines both unit terminals to the same unoriented
+    /// line within explicit binary64 error bounds. A subnormal middle hypot
+    /// instead forces both rounded cross numerators to exact zero; the uniform
+    /// minimum-subnormal lattice then confines their angle to at most 60
+    /// degrees or at least 120 degrees. In both cases the production
+    /// `atan2(abs(cross), dot)` result is disjoint from the exact-zero
+    /// enclosure of the frozen 90-degree residual.
+    ///
+    /// Non-unit terminals, other angles, direct or longer paths, and any cause
+    /// shape other than this exact five-ID core retain this wire tag for
+    /// compatibility but remain solver-required.
     NonParallelFixedAngleInParallelComponent {
         vertex: VertexId,
         first_edge: EdgeId,
         second_edge: EdgeId,
         parallel_constraint_count: u16,
     },
-    /// Two edges have one parallel record, exact unit fixed lengths, and a
-    /// fixed-angle residual that rejects every zero-cross class.  Unit
-    /// lengths make the solver's normalized parallel denominator exactly one,
-    /// so the parallel residual directly binds the raw cross used by the
-    /// fixed-angle residual.  Other length scales remain solver-required.
+    /// Two edges have one parallel record and a fixed-angle residual that
+    /// rejects the normalized-cross classes admitted by the accompanying
+    /// fixed-length proof.
+    ///
+    /// The exact 45-degree three-record form needs a bit-exact unit
+    /// `FixedLength` on either edge. Multiplication by that unit hypot leaves
+    /// the other finite hypot unchanged. A non-zero raw cross that nevertheless
+    /// divides to signed zero is then confined to a few minimum subnormals
+    /// relative to the dot product, disjoint from the frozen 45-degree
+    /// residual's exact-zero enclosure.
+    ///
+    /// The legacy four-record form retains bit-exact unit lengths on both
+    /// edges. Its normalized denominator is exactly one, so it remains sound
+    /// for every angle accepted by the frozen zero-cross rejection helper.
+    /// Other three-record angles and other length scales remain
+    /// solver-required.
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -2629,23 +2677,54 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
         }
     }
     for (pair, parallel_ids) in &parallels {
-        if let (Some(parallel_id), Some(angle_assignment)) = (
-            parallel_ids.first(),
-            fixed_angles_by_pair.get(pair).and_then(|assignments| {
-                assignments
-                    .iter()
-                    .find(|assignment| fixed_angle_rejects_zero_cross_binary64_v1(assignment.value))
-            }),
-        ) && let (Some(first_unit), Some(second_unit)) = (
-            fixed_lengths
-                .get(&pair.first)
-                .and_then(ScalarGroupSummary::consistent_assignment)
-                .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits()),
-            fixed_lengths
-                .get(&pair.second)
-                .and_then(ScalarGroupSummary::consistent_assignment)
-                .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits()),
-        ) {
+        let first_unit = fixed_lengths
+            .get(&pair.first)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+            .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits());
+        let second_unit = fixed_lengths
+            .get(&pair.second)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+            .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits());
+        let exact_forty_five = fixed_angles_by_pair.get(pair).and_then(|assignments| {
+            assignments
+                .iter()
+                .find(|assignment| assignment.value.to_bits() == 45.0_f64.to_bits())
+        });
+        let canonical_unit = [first_unit, second_unit]
+            .into_iter()
+            .flatten()
+            .min_by_key(|assignment| assignment.id.canonical_bytes());
+        if let (Some(parallel_id), Some(angle_assignment), Some(unit)) =
+            (parallel_ids.first(), exact_forty_five, canonical_unit)
+        {
+            // With one pinned unit hypot, the normalized parallel denominator
+            // is exactly the other finite hypot. If a non-zero raw cross still
+            // divides to signed zero, binary64 product/add error bounds force
+            // the corresponding dot to dominate it by more than the frozen
+            // 45-degree exact-zero enclosure permits. Exact raw zero reaches
+            // only the separately rejected zero/pi atan2 branches.
+            push_conflict(
+                &mut conflicts,
+                DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
+                    first_edge: edge_ids[&pair.first],
+                    second_edge: edge_ids[&pair.second],
+                },
+                [*parallel_id, angle_assignment.id, unit.id],
+            );
+        }
+        let legacy_angle = exact_forty_five
+            .is_none()
+            .then(|| {
+                fixed_angles_by_pair.get(pair).and_then(|assignments| {
+                    assignments.iter().find(|assignment| {
+                        fixed_angle_rejects_zero_cross_binary64_v1(assignment.value)
+                    })
+                })
+            })
+            .flatten();
+        if let (Some(parallel_id), Some(angle_assignment), Some(first_unit), Some(second_unit)) =
+            (parallel_ids.first(), legacy_angle, first_unit, second_unit)
+        {
             // The solver computes `cross / (hypot(first) * hypot(second))`.
             // These two exact unit-length residuals make that denominator
             // bit-exactly 1.0, so a zero parallel residual proves the raw
@@ -3021,7 +3100,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
         }
     }
 
-    quarantine_unproven_direct_conflicts_v1(&mut conflicts, &mut unchecked);
+    quarantine_unproven_direct_conflicts_v1(&mut conflicts, &mut unchecked, &set.constraints);
 
     if conflicts.is_empty() {
         match general_equal_length_graph_conflict_v1(&equal_lengths, &fixed_lengths, &edge_ids) {
@@ -3076,6 +3155,64 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
     }
 
     if conflicts.is_empty() {
+        match unit_two_hop_parallel_conflict_v1(
+            &parallels,
+            &horizontal,
+            &vertical,
+            &fixed_lengths,
+            &edge_ids,
+            zero_closure_observer,
+        ) {
+            Ok(Some(candidate)) if is_proven_direct_conflict_v1(&candidate, &set.constraints) => {
+                conflicts.push(candidate);
+            }
+            Ok(Some(candidate)) => {
+                debug_assert!(
+                    false,
+                    "unit two-hop scanner produced a cause shape outside its proof allowlist"
+                );
+                unchecked.extend(candidate.constraint_ids);
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                return ConstraintPreflightV1::Unknown {
+                    reason,
+                    unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+                };
+            }
+        }
+    }
+
+    if conflicts.is_empty() {
+        match unit_terminal_two_hop_parallel_angle_conflict_v1(
+            &parallels,
+            &fixed_angles,
+            &fixed_lengths,
+            &vertex_ids,
+            &edge_ids,
+            zero_closure_observer,
+        ) {
+            Ok(Some(candidate)) if is_proven_direct_conflict_v1(&candidate, &set.constraints) => {
+                conflicts.push(candidate);
+            }
+            Ok(Some(candidate)) => {
+                debug_assert!(
+                    false,
+                    "unit-terminal angle scanner produced a cause shape outside its proof allowlist"
+                );
+                unchecked.extend(candidate.constraint_ids);
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                return ConstraintPreflightV1::Unknown {
+                    reason,
+                    unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+                };
+            }
+        }
+    }
+
+    if conflicts.is_empty() {
         match general_parallel_graph_conflict_v1(
             &parallels,
             &horizontal,
@@ -3085,7 +3222,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             &edge_ids,
         ) {
             Ok(Some(candidate)) => {
-                debug_assert!(!is_proven_direct_conflict_v1(&candidate));
+                debug_assert!(!is_proven_direct_conflict_v1(&candidate, &set.constraints));
                 #[cfg(test)]
                 record_quarantined_direct_conflict(&candidate);
                 unchecked.extend(candidate.constraint_ids);
@@ -3688,6 +3825,455 @@ fn charge_general_equal_work_v1(work: &mut u64, max_work: u64, amount: u64) -> R
     (*work <= max_work).then_some(()).ok_or(())
 }
 
+#[derive(Clone, Copy)]
+struct UnitTwoHopParallelFirstLegV1 {
+    horizontal_edge: CanonicalId,
+    horizontal_id: ConstraintId,
+    parallel_id: ConstraintId,
+}
+
+/// Finds only the sound two-hop, unit-terminal subset of the legacy general
+/// parallel-component candidate.
+///
+/// Write the three edge vectors as `(x, 0)`, `(a, b)`, and `(0, v)`.
+/// Deterministic `hypot(0, v) - 1 == 0` forces `|v| == 1` bit-exactly. The
+/// second normalized cross is therefore `(+/-a) / hypot(a, b)`. If its rounded
+/// binary64 result is zero, either `a` is zero or its exponent is so far below
+/// the magnitude that pinned libm 0.2.16 takes the `ex - ey > 64` branch and
+/// returns `|b| + |a|`, which rounds bit-exactly to `|b|`. The first normalized
+/// cross then has numerator `fl(x * b)` and denominator
+/// `fl(|x| * |b|)`: equal magnitudes by the same multiplication. A finite
+/// nonzero product yields signed one; underflow yields `0 / 0 == NaN`; and
+/// overflow yields `inf / inf == NaN`. None compare equal to zero.
+///
+/// The deterministic hypot wrapper rejects non-finite vector differences.
+/// Signed zeros only change signs in the cases above. Non-unit scales and a
+/// third parallel hop can exploit independent underflow/overflow and are
+/// deliberately left to the unchanged quarantined graph detector.
+fn unit_two_hop_parallel_conflict_v1(
+    parallels: &BTreeMap<EdgePairKey, Vec<ConstraintId>>,
+    horizontal: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
+    vertical: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    edge_ids: &BTreeMap<CanonicalId, EdgeId>,
+    observer: &mut impl bounded_zero_closure::Observer,
+) -> Result<Option<DirectConstraintConflictV1>, GeometricConstraintUnknownReasonV1> {
+    #[cfg(test)]
+    let max_work = UNIT_TWO_HOP_PARALLEL_TEST_WORK_LIMIT
+        .with(|limit| limit.get().unwrap_or(MAX_UNIT_TWO_HOP_PARALLEL_WORK_V1));
+    #[cfg(not(test))]
+    let max_work = MAX_UNIT_TWO_HOP_PARALLEL_WORK_V1;
+    #[cfg(test)]
+    let max_storage = UNIT_TWO_HOP_PARALLEL_TEST_STORAGE_LIMIT.with(|limit| {
+        limit
+            .get()
+            .unwrap_or(MAX_UNIT_TWO_HOP_PARALLEL_STORAGE_UNITS_V1)
+    });
+    #[cfg(not(test))]
+    let max_storage = MAX_UNIT_TWO_HOP_PARALLEL_STORAGE_UNITS_V1;
+    #[cfg(test)]
+    {
+        UNIT_TWO_HOP_PARALLEL_TEST_WORK_OBSERVED.with(|observed| observed.set(0));
+        UNIT_TWO_HOP_PARALLEL_TEST_STORAGE_OBSERVED.with(|observed| observed.set(0));
+    }
+
+    if let Some(reason) =
+        preflight_observer_stop_reason(observer, bounded_zero_closure::Phase::ProofSearch, 0)
+    {
+        return Err(reason);
+    }
+
+    let mut work = 0_u64;
+    let mut storage = 0_usize;
+    let mut first_legs: BTreeMap<CanonicalId, Vec<UnitTwoHopParallelFirstLegV1>> = BTreeMap::new();
+    for (pair, parallel_ids) in parallels {
+        charge_unit_two_hop_parallel_work_v1(&mut work, max_work, 1, observer)?;
+        let Some(parallel_id) = parallel_ids
+            .iter()
+            .min_by_key(|id| id.canonical_bytes())
+            .copied()
+        else {
+            continue;
+        };
+        for (horizontal_edge, middle_edge) in [(pair.first, pair.second), (pair.second, pair.first)]
+        {
+            let Some(horizontal_id) = horizontal
+                .get(&horizontal_edge)
+                .and_then(|ids| ids.iter().min_by_key(|id| id.canonical_bytes()))
+                .copied()
+            else {
+                continue;
+            };
+            reserve_unit_two_hop_parallel_storage_v1(&mut storage, max_storage, 1)?;
+            first_legs
+                .entry(middle_edge)
+                .or_default()
+                .push(UnitTwoHopParallelFirstLegV1 {
+                    horizontal_edge,
+                    horizontal_id,
+                    parallel_id,
+                });
+        }
+    }
+
+    let mut best: Option<DirectConstraintConflictV1> = None;
+    for (pair, second_parallel_ids) in parallels {
+        charge_unit_two_hop_parallel_work_v1(&mut work, max_work, 1, observer)?;
+        let Some(second_parallel_id) = second_parallel_ids
+            .iter()
+            .min_by_key(|id| id.canonical_bytes())
+            .copied()
+        else {
+            continue;
+        };
+        for (middle_edge, vertical_edge) in [(pair.first, pair.second), (pair.second, pair.first)] {
+            let Some(vertical_id) = vertical
+                .get(&vertical_edge)
+                .and_then(|ids| ids.iter().min_by_key(|id| id.canonical_bytes()))
+                .copied()
+            else {
+                continue;
+            };
+            let Some(unit_length) = fixed_lengths
+                .get(&vertical_edge)
+                .and_then(ScalarGroupSummary::consistent_assignment)
+                .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits())
+            else {
+                continue;
+            };
+            for first_leg in first_legs.get(&middle_edge).into_iter().flatten() {
+                charge_unit_two_hop_parallel_work_v1(&mut work, max_work, 1, observer)?;
+                if first_leg.horizontal_edge == vertical_edge
+                    || first_leg.parallel_id == second_parallel_id
+                {
+                    continue;
+                }
+                let mut constraint_ids = vec![
+                    first_leg.horizontal_id,
+                    first_leg.parallel_id,
+                    second_parallel_id,
+                    vertical_id,
+                    unit_length.id,
+                ];
+                canonicalize_constraint_ids(&mut constraint_ids);
+                if constraint_ids.len() != 5 {
+                    continue;
+                }
+                let candidate = DirectConstraintConflictV1 {
+                    conflict:
+                        DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
+                            horizontal_edge: edge_ids[&first_leg.horizontal_edge],
+                            vertical_edge: edge_ids[&vertical_edge],
+                            parallel_constraint_count: 2,
+                        },
+                    constraint_ids,
+                };
+                if best.as_ref().is_none_or(|current| {
+                    conflict_sort_key(&candidate.conflict)
+                        .cmp(&conflict_sort_key(&current.conflict))
+                        .then_with(|| {
+                            canonical_id_slice_cmp(
+                                &candidate.constraint_ids,
+                                &current.constraint_ids,
+                            )
+                        })
+                        .is_lt()
+                }) {
+                    best = Some(candidate);
+                }
+            }
+        }
+    }
+
+    if let Some(reason) =
+        preflight_observer_stop_reason(observer, bounded_zero_closure::Phase::ProofSearch, work)
+    {
+        return Err(reason);
+    }
+    Ok(best)
+}
+
+fn charge_unit_two_hop_parallel_work_v1(
+    work: &mut u64,
+    max_work: u64,
+    amount: u64,
+    observer: &mut impl bounded_zero_closure::Observer,
+) -> Result<(), GeometricConstraintUnknownReasonV1> {
+    let previous = *work;
+    *work = work
+        .checked_add(amount)
+        .ok_or(GeometricConstraintUnknownReasonV1::WorkLimitExceeded)?;
+    #[cfg(test)]
+    UNIT_TWO_HOP_PARALLEL_TEST_WORK_OBSERVED.with(|observed| observed.set(*work));
+    if *work > max_work {
+        return Err(GeometricConstraintUnknownReasonV1::WorkLimitExceeded);
+    }
+    if previous / 128 != *work / 128
+        && let Some(reason) = preflight_observer_stop_reason(
+            observer,
+            bounded_zero_closure::Phase::ProofSearch,
+            *work,
+        )
+    {
+        return Err(reason);
+    }
+    Ok(())
+}
+
+fn reserve_unit_two_hop_parallel_storage_v1(
+    storage: &mut usize,
+    maximum: usize,
+    amount: usize,
+) -> Result<(), GeometricConstraintUnknownReasonV1> {
+    *storage = storage
+        .checked_add(amount)
+        .ok_or(GeometricConstraintUnknownReasonV1::StorageLimitExceeded)?;
+    #[cfg(test)]
+    UNIT_TWO_HOP_PARALLEL_TEST_STORAGE_OBSERVED.with(|observed| observed.set(*storage));
+    (*storage <= maximum)
+        .then_some(())
+        .ok_or(GeometricConstraintUnknownReasonV1::StorageLimitExceeded)
+}
+
+/// Finds only the exact five-record terminal-unit subset of the legacy
+/// fixed-angle parallel-component candidate.
+///
+/// Write the fixed-angle terminal vectors as `a` and `b`, the distinct middle
+/// vector as `m`, and let `u = 2^-53`. Exact zero unit-length residuals force
+/// both pinned terminal hypotenuses to the binary64 value `1.0`. Consequently
+/// each production parallel denominator is exactly `hypot(m)`: multiplication
+/// by the other `1.0` operand is exact even when the middle hypot is
+/// subnormal. A zero or non-finite middle hypot cannot make either division
+/// residual zero.
+///
+/// For a normal middle hypot `h`, the zero-secondary-input branch is exact and
+/// the exponent-gap branch has relative error below `2 * u`. Every remaining
+/// pinned libm 0.2.16 scaling branch keeps the inputs to Dekker `sq` in
+/// biased-exponent range 573 through 1533. The square high/low pairs are exact
+/// there: `x * SPLIT` and every square stay finite, while the smallest possible
+/// nonzero low square is `2^-1004` and remains normal. The low-to-high sum and
+/// correctly rounded software square root therefore give the conservative
+/// relative hypot bound `2^-40`. Replaying the two rounded products,
+/// subtraction, and zero-producing division then bounds each real
+/// terminal/middle determinant by `14 * u * h`. A product overflow or other
+/// non-finite numerator cannot compare equal to zero after division by the
+/// finite `h`. Both terminal vectors consequently have a production dot
+/// bounded away from zero and lie on the same or opposite branch of one
+/// unoriented line.
+///
+/// If `h` is subnormal, the pinned absolute hypot bound
+/// `abs(h - |m|) < 2^-40 * |m| + 2^-1075` confines each middle component below
+/// `(2^52 + 4096) * 2^-1074`. Write those components on the global
+/// minimum-subnormal lattice. Any nonzero rounded cross numerator has
+/// magnitude at least one lattice unit, and division by subnormal `h` cannot
+/// round that quotient to zero. Both numerators are thus exact zero. Each
+/// terminal product is below `(2^52 + 8193) * 2^-1074`, still less than twice
+/// the minimum normal, where rounding is a uniform lattice nearest-integer
+/// map. Each terminal determinant coefficient is at most one; integer middle
+/// radii at least two give raw dot magnitude above `1/2 - 2^-39`, while the
+/// only smaller radii are the separately bounded axis and diagonal cases.
+/// After the explicitly bounded endpoint product/add roundings,
+/// `abs(dot) > 0.49`, `abs(cross) < 1.01`, and every finite atan reduction
+/// argument is below three. All pinned atan branches then return below 1.3
+/// radians for positive dot or above `PI - 1.3` for negative dot, disjoint
+/// from the frozen 90-degree zero enclosure
+/// `0x3ff921fb54442d15..=0x3ff921fb54442d1b`, which lies strictly between 1.5
+/// and 1.6 radians.
+///
+/// The scanner deliberately does not reuse a general shortest path. It emits
+/// only two distinct unordered parallel pairs `{a, m}` and `{m, b}`, the
+/// bit-exact 90-degree angle, and bit-exact unit lengths on both terminals.
+/// The independent shape verifier below replays that exact five-ID grammar
+/// before the candidate is admitted as a direct proof.
+fn unit_terminal_two_hop_parallel_angle_conflict_v1(
+    parallels: &BTreeMap<EdgePairKey, Vec<ConstraintId>>,
+    fixed_angles: &BTreeMap<AngleKey, Vec<ScalarAssignment>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    vertex_ids: &BTreeMap<CanonicalId, VertexId>,
+    edge_ids: &BTreeMap<CanonicalId, EdgeId>,
+    observer: &mut impl bounded_zero_closure::Observer,
+) -> Result<Option<DirectConstraintConflictV1>, GeometricConstraintUnknownReasonV1> {
+    #[cfg(test)]
+    let max_work = UNIT_TERMINAL_ANGLE_PARALLEL_TEST_WORK_LIMIT.with(|limit| {
+        limit
+            .get()
+            .unwrap_or(MAX_UNIT_TERMINAL_ANGLE_PARALLEL_WORK_V1)
+    });
+    #[cfg(not(test))]
+    let max_work = MAX_UNIT_TERMINAL_ANGLE_PARALLEL_WORK_V1;
+    #[cfg(test)]
+    let max_storage = UNIT_TERMINAL_ANGLE_PARALLEL_TEST_STORAGE_LIMIT.with(|limit| {
+        limit
+            .get()
+            .unwrap_or(MAX_UNIT_TERMINAL_ANGLE_PARALLEL_STORAGE_UNITS_V1)
+    });
+    #[cfg(not(test))]
+    let max_storage = MAX_UNIT_TERMINAL_ANGLE_PARALLEL_STORAGE_UNITS_V1;
+    #[cfg(test)]
+    {
+        UNIT_TERMINAL_ANGLE_PARALLEL_TEST_WORK_OBSERVED.with(|observed| observed.set(0));
+        UNIT_TERMINAL_ANGLE_PARALLEL_TEST_STORAGE_OBSERVED.with(|observed| observed.set(0));
+    }
+
+    if let Some(reason) =
+        preflight_observer_stop_reason(observer, bounded_zero_closure::Phase::ProofSearch, 0)
+    {
+        return Err(reason);
+    }
+
+    let mut work = 0_u64;
+    let mut storage = 0_usize;
+    let mut graph: BTreeMap<CanonicalId, BTreeMap<CanonicalId, ConstraintId>> = BTreeMap::new();
+    for (pair, ids) in parallels {
+        charge_unit_terminal_angle_parallel_work_v1(&mut work, max_work, 1, observer)?;
+        if pair.first == pair.second {
+            continue;
+        }
+        let Some(id) = ids.iter().min_by_key(|id| id.canonical_bytes()).copied() else {
+            continue;
+        };
+        reserve_unit_terminal_angle_parallel_storage_v1(&mut storage, max_storage, 2)?;
+        graph.entry(pair.first).or_default().insert(pair.second, id);
+        graph.entry(pair.second).or_default().insert(pair.first, id);
+    }
+
+    let mut best: Option<DirectConstraintConflictV1> = None;
+    for (key, assignments) in fixed_angles {
+        charge_unit_terminal_angle_parallel_work_v1(&mut work, max_work, 1, observer)?;
+        charge_unit_terminal_angle_parallel_work_v1(
+            &mut work,
+            max_work,
+            u64::try_from(assignments.len())
+                .map_err(|_| GeometricConstraintUnknownReasonV1::WorkLimitExceeded)?,
+            observer,
+        )?;
+        let Some(angle) = assignments
+            .iter()
+            .filter(|assignment| assignment.value.to_bits() == 90.0_f64.to_bits())
+            .min_by_key(|assignment| assignment.id.canonical_bytes())
+        else {
+            continue;
+        };
+        let first_edge = key.edges.first;
+        let second_edge = key.edges.second;
+        if first_edge == second_edge {
+            continue;
+        }
+        let Some(first_unit) = fixed_lengths
+            .get(&first_edge)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+            .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits())
+        else {
+            continue;
+        };
+        let Some(second_unit) = fixed_lengths
+            .get(&second_edge)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+            .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits())
+        else {
+            continue;
+        };
+
+        for (middle_edge, first_parallel_id) in graph.get(&first_edge).into_iter().flatten() {
+            charge_unit_terminal_angle_parallel_work_v1(&mut work, max_work, 1, observer)?;
+            if *middle_edge == first_edge || *middle_edge == second_edge {
+                continue;
+            }
+            let Some(second_parallel_id) = graph
+                .get(&second_edge)
+                .and_then(|neighbors| neighbors.get(middle_edge))
+                .copied()
+            else {
+                continue;
+            };
+            if *first_parallel_id == second_parallel_id {
+                continue;
+            }
+
+            let mut constraint_ids = vec![
+                *first_parallel_id,
+                second_parallel_id,
+                angle.id,
+                first_unit.id,
+                second_unit.id,
+            ];
+            canonicalize_constraint_ids(&mut constraint_ids);
+            if constraint_ids.len() != 5 {
+                continue;
+            }
+            let candidate = DirectConstraintConflictV1 {
+                conflict:
+                    DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent {
+                        vertex: vertex_ids[&key.vertex],
+                        first_edge: edge_ids[&first_edge],
+                        second_edge: edge_ids[&second_edge],
+                        parallel_constraint_count: 2,
+                    },
+                constraint_ids,
+            };
+            if best.as_ref().is_none_or(|current| {
+                conflict_sort_key(&candidate.conflict)
+                    .cmp(&conflict_sort_key(&current.conflict))
+                    .then_with(|| {
+                        canonical_id_slice_cmp(&candidate.constraint_ids, &current.constraint_ids)
+                    })
+                    .is_lt()
+            }) {
+                best = Some(candidate);
+            }
+        }
+    }
+
+    if let Some(reason) =
+        preflight_observer_stop_reason(observer, bounded_zero_closure::Phase::ProofSearch, work)
+    {
+        return Err(reason);
+    }
+    Ok(best)
+}
+
+fn charge_unit_terminal_angle_parallel_work_v1(
+    work: &mut u64,
+    maximum: u64,
+    amount: u64,
+    observer: &mut impl bounded_zero_closure::Observer,
+) -> Result<(), GeometricConstraintUnknownReasonV1> {
+    let previous = *work;
+    *work = work
+        .checked_add(amount)
+        .ok_or(GeometricConstraintUnknownReasonV1::WorkLimitExceeded)?;
+    #[cfg(test)]
+    UNIT_TERMINAL_ANGLE_PARALLEL_TEST_WORK_OBSERVED.with(|observed| observed.set(*work));
+    if *work > maximum {
+        return Err(GeometricConstraintUnknownReasonV1::WorkLimitExceeded);
+    }
+    if previous / 128 != *work / 128
+        && let Some(reason) = preflight_observer_stop_reason(
+            observer,
+            bounded_zero_closure::Phase::ProofSearch,
+            *work,
+        )
+    {
+        return Err(reason);
+    }
+    Ok(())
+}
+
+fn reserve_unit_terminal_angle_parallel_storage_v1(
+    storage: &mut usize,
+    maximum: usize,
+    amount: usize,
+) -> Result<(), GeometricConstraintUnknownReasonV1> {
+    *storage = storage
+        .checked_add(amount)
+        .ok_or(GeometricConstraintUnknownReasonV1::StorageLimitExceeded)?;
+    #[cfg(test)]
+    UNIT_TERMINAL_ANGLE_PARALLEL_TEST_STORAGE_OBSERVED.with(|observed| observed.set(*storage));
+    (*storage <= maximum)
+        .then_some(())
+        .ok_or(GeometricConstraintUnknownReasonV1::StorageLimitExceeded)
+}
+
 fn general_parallel_graph_conflict_v1(
     parallels: &BTreeMap<EdgePairKey, Vec<ConstraintId>>,
     horizontal: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
@@ -4076,6 +4662,80 @@ fn charge_general_parallel_work_v1(work: &mut u64, max_work: u64, amount: u64) -
 
 #[cfg(test)]
 std::thread_local! {
+    static UNIT_TWO_HOP_PARALLEL_TEST_WORK_LIMIT: std::cell::Cell<Option<u64>> = const {
+        std::cell::Cell::new(None)
+    };
+    static UNIT_TWO_HOP_PARALLEL_TEST_WORK_OBSERVED: std::cell::Cell<u64> = const {
+        std::cell::Cell::new(0)
+    };
+    static UNIT_TWO_HOP_PARALLEL_TEST_STORAGE_LIMIT: std::cell::Cell<Option<usize>> = const {
+        std::cell::Cell::new(None)
+    };
+    static UNIT_TWO_HOP_PARALLEL_TEST_STORAGE_OBSERVED: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static UNIT_TERMINAL_ANGLE_PARALLEL_TEST_WORK_LIMIT: std::cell::Cell<Option<u64>> = const {
+        std::cell::Cell::new(None)
+    };
+    static UNIT_TERMINAL_ANGLE_PARALLEL_TEST_WORK_OBSERVED: std::cell::Cell<u64> = const {
+        std::cell::Cell::new(0)
+    };
+    static UNIT_TERMINAL_ANGLE_PARALLEL_TEST_STORAGE_LIMIT: std::cell::Cell<Option<usize>> = const {
+        std::cell::Cell::new(None)
+    };
+    static UNIT_TERMINAL_ANGLE_PARALLEL_TEST_STORAGE_OBSERVED: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn replace_unit_terminal_angle_parallel_test_limits_v1(
+    limits: (Option<u64>, Option<usize>),
+) -> (Option<u64>, Option<usize>) {
+    let previous_work =
+        UNIT_TERMINAL_ANGLE_PARALLEL_TEST_WORK_LIMIT.with(|slot| slot.replace(limits.0));
+    let previous_storage =
+        UNIT_TERMINAL_ANGLE_PARALLEL_TEST_STORAGE_LIMIT.with(|slot| slot.replace(limits.1));
+    (previous_work, previous_storage)
+}
+
+#[cfg(test)]
+pub(crate) fn unit_terminal_angle_parallel_test_observed_v1() -> (u64, usize) {
+    (
+        UNIT_TERMINAL_ANGLE_PARALLEL_TEST_WORK_OBSERVED.with(std::cell::Cell::get),
+        UNIT_TERMINAL_ANGLE_PARALLEL_TEST_STORAGE_OBSERVED.with(std::cell::Cell::get),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn charge_unit_terminal_angle_parallel_work_for_test_v1(
+    work: &mut u64,
+    maximum: u64,
+    amount: u64,
+) -> Result<(), GeometricConstraintUnknownReasonV1> {
+    charge_unit_terminal_angle_parallel_work_v1(
+        work,
+        maximum,
+        amount,
+        &mut bounded_zero_closure::NoopObserver,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn reserve_unit_terminal_angle_parallel_storage_for_test_v1(
+    storage: &mut usize,
+    maximum: usize,
+    amount: usize,
+) -> Result<(), GeometricConstraintUnknownReasonV1> {
+    reserve_unit_terminal_angle_parallel_storage_v1(storage, maximum, amount)
+}
+
+#[cfg(test)]
+std::thread_local! {
     static GENERAL_PARALLEL_TEST_WORK_LIMIT: std::cell::Cell<Option<u64>> = const {
         std::cell::Cell::new(None)
     };
@@ -4190,7 +4850,29 @@ fn push_conflict(
     });
 }
 
-fn is_proven_direct_conflict_v1(candidate: &DirectConstraintConflictV1) -> bool {
+fn is_proven_direct_conflict_v1(
+    candidate: &DirectConstraintConflictV1,
+    records: &[GeometricConstraintRecordV1],
+) -> bool {
+    if matches!(
+        &candidate.conflict,
+        DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle { .. }
+    ) {
+        return is_proven_exact_forty_five_single_unit_parallel_angle_shape_v1(candidate, records)
+            || is_proven_legacy_two_unit_parallel_angle_shape_v1(candidate, records);
+    }
+    if matches!(
+        &candidate.conflict,
+        DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent { .. }
+    ) {
+        return is_proven_unit_two_hop_parallel_shape_v1(candidate, records);
+    }
+    if matches!(
+        &candidate.conflict,
+        DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent { .. }
+    ) {
+        return is_proven_unit_terminal_two_hop_parallel_angle_shape_v1(candidate, records);
+    }
     if matches!(
         &candidate.conflict,
         DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius { .. }
@@ -4221,7 +4903,6 @@ fn is_proven_direct_conflict_v1(candidate: &DirectConstraintConflictV1) -> bool 
             | DirectConstraintConflictKindV1::
                 InconsistentLengthRatioGraphBetweenFixedLengths { .. }
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
-            | DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
             | DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle { .. }
             | DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle { .. }
@@ -4233,12 +4914,422 @@ fn is_proven_direct_conflict_v1(candidate: &DirectConstraintConflictV1) -> bool 
     )
 }
 
+/// Independently replays the exact three-record grammar admitted by the
+/// single-unit 45-degree parallel/angle proof.
+///
+/// Full preparation has already proved that every referenced edge exists and
+/// that the fixed-angle vertex is common to both edges. This verifier does not
+/// trust candidate construction for record roles, scalar bits, canonical
+/// ordering, or the reported edge pair.
+fn is_proven_exact_forty_five_single_unit_parallel_angle_shape_v1(
+    candidate: &DirectConstraintConflictV1,
+    records: &[GeometricConstraintRecordV1],
+) -> bool {
+    let DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
+        first_edge: reported_first,
+        second_edge: reported_second,
+    } = &candidate.conflict
+    else {
+        return false;
+    };
+    let reported_pair = EdgePairKey::unordered(*reported_first, *reported_second);
+    if reported_first.canonical_bytes() != reported_pair.first
+        || reported_second.canonical_bytes() != reported_pair.second
+        || reported_pair.first == reported_pair.second
+        || candidate.constraint_ids.len() != 3
+        || !candidate
+            .constraint_ids
+            .windows(2)
+            .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+    {
+        return false;
+    }
+
+    let cause_ids = candidate
+        .constraint_ids
+        .iter()
+        .map(ConstraintId::canonical_bytes)
+        .collect::<BTreeSet<_>>();
+    if cause_ids.len() != 3 {
+        return false;
+    }
+    let selected = records
+        .iter()
+        .filter(|record| cause_ids.contains(&record.id.canonical_bytes()))
+        .collect::<Vec<_>>();
+    if selected.len() != 3 {
+        return false;
+    }
+
+    let mut saw_parallel = false;
+    let mut saw_angle = false;
+    let mut saw_unit = false;
+    for record in selected {
+        match &record.constraint {
+            GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            } if !saw_parallel
+                && EdgePairKey::unordered(*first_edge, *second_edge) == reported_pair =>
+            {
+                saw_parallel = true;
+            }
+            GeometricConstraintKindV1::FixedAngle {
+                first_edge,
+                second_edge,
+                angle_degrees,
+                ..
+            } if !saw_angle
+                && angle_degrees.to_bits() == 45.0_f64.to_bits()
+                && EdgePairKey::unordered(*first_edge, *second_edge) == reported_pair =>
+            {
+                saw_angle = true;
+            }
+            GeometricConstraintKindV1::FixedLength { edge, length_mm }
+                if !saw_unit
+                    && length_mm.to_bits() == 1.0_f64.to_bits()
+                    && [reported_pair.first, reported_pair.second]
+                        .contains(&edge.canonical_bytes()) =>
+            {
+                saw_unit = true;
+            }
+            _ => return false,
+        }
+    }
+    saw_parallel && saw_angle && saw_unit
+}
+
+#[cfg(test)]
+pub(crate) fn is_proven_exact_forty_five_single_unit_parallel_angle_shape_for_test_v1(
+    first_edge: EdgeId,
+    second_edge: EdgeId,
+    constraint_ids: Vec<ConstraintId>,
+    records: &[GeometricConstraintRecordV1],
+) -> bool {
+    is_proven_exact_forty_five_single_unit_parallel_angle_shape_v1(
+        &DirectConstraintConflictV1 {
+            conflict: DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
+                first_edge,
+                second_edge,
+            },
+            constraint_ids,
+        },
+        records,
+    )
+}
+
+/// Revalidates the legacy four-record form retained for non-45-degree angles.
+fn is_proven_legacy_two_unit_parallel_angle_shape_v1(
+    candidate: &DirectConstraintConflictV1,
+    records: &[GeometricConstraintRecordV1],
+) -> bool {
+    let DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
+        first_edge: reported_first,
+        second_edge: reported_second,
+    } = &candidate.conflict
+    else {
+        return false;
+    };
+    let reported_pair = EdgePairKey::unordered(*reported_first, *reported_second);
+    if reported_first.canonical_bytes() != reported_pair.first
+        || reported_second.canonical_bytes() != reported_pair.second
+        || reported_pair.first == reported_pair.second
+        || candidate.constraint_ids.len() != 4
+        || !candidate
+            .constraint_ids
+            .windows(2)
+            .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+    {
+        return false;
+    }
+
+    let cause_ids = candidate
+        .constraint_ids
+        .iter()
+        .map(ConstraintId::canonical_bytes)
+        .collect::<BTreeSet<_>>();
+    if cause_ids.len() != 4 {
+        return false;
+    }
+    let selected = records
+        .iter()
+        .filter(|record| cause_ids.contains(&record.id.canonical_bytes()))
+        .collect::<Vec<_>>();
+    if selected.len() != 4 {
+        return false;
+    }
+
+    let mut saw_parallel = false;
+    let mut saw_angle = false;
+    let mut fixed_edges = Vec::new();
+    for record in selected {
+        match &record.constraint {
+            GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            } if !saw_parallel
+                && EdgePairKey::unordered(*first_edge, *second_edge) == reported_pair =>
+            {
+                saw_parallel = true;
+            }
+            GeometricConstraintKindV1::FixedAngle {
+                first_edge,
+                second_edge,
+                angle_degrees,
+                ..
+            } if !saw_angle
+                && angle_degrees.to_bits() != 45.0_f64.to_bits()
+                && fixed_angle_rejects_zero_cross_binary64_v1(*angle_degrees)
+                && EdgePairKey::unordered(*first_edge, *second_edge) == reported_pair =>
+            {
+                saw_angle = true;
+            }
+            GeometricConstraintKindV1::FixedLength { edge, length_mm }
+                if fixed_edges.len() < 2 && length_mm.to_bits() == 1.0_f64.to_bits() =>
+            {
+                fixed_edges.push(edge.canonical_bytes());
+            }
+            _ => return false,
+        }
+    }
+    fixed_edges.sort_unstable();
+    saw_parallel && saw_angle && fixed_edges == [reported_pair.first, reported_pair.second]
+}
+
+fn is_proven_unit_two_hop_parallel_shape_v1(
+    candidate: &DirectConstraintConflictV1,
+    records: &[GeometricConstraintRecordV1],
+) -> bool {
+    let DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
+        horizontal_edge: reported_horizontal,
+        vertical_edge: reported_vertical,
+        parallel_constraint_count,
+    } = &candidate.conflict
+    else {
+        return false;
+    };
+    if *parallel_constraint_count != 2
+        || candidate.constraint_ids.len() != 5
+        || !candidate
+            .constraint_ids
+            .windows(2)
+            .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+    {
+        return false;
+    }
+
+    let cause_ids = candidate
+        .constraint_ids
+        .iter()
+        .map(ConstraintId::canonical_bytes)
+        .collect::<BTreeSet<_>>();
+    if cause_ids.len() != 5 {
+        return false;
+    }
+    let selected = records
+        .iter()
+        .filter(|record| cause_ids.contains(&record.id.canonical_bytes()))
+        .collect::<Vec<_>>();
+    if selected.len() != 5 {
+        return false;
+    }
+
+    let mut horizontal = None;
+    let mut vertical = None;
+    let mut fixed = None;
+    let mut parallel_pairs = Vec::new();
+    for record in selected {
+        match &record.constraint {
+            GeometricConstraintKindV1::Horizontal { edge } if horizontal.is_none() => {
+                horizontal = Some(*edge);
+            }
+            GeometricConstraintKindV1::Vertical { edge } if vertical.is_none() => {
+                vertical = Some(*edge);
+            }
+            GeometricConstraintKindV1::FixedLength { edge, length_mm }
+                if fixed.is_none() && length_mm.to_bits() == 1.0_f64.to_bits() =>
+            {
+                fixed = Some(*edge);
+            }
+            GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            } if parallel_pairs.len() < 2 => {
+                parallel_pairs.push(EdgePairKey::unordered(*first_edge, *second_edge));
+            }
+            _ => return false,
+        }
+    }
+    let (Some(horizontal), Some(vertical), Some(fixed)) = (horizontal, vertical, fixed) else {
+        return false;
+    };
+    if horizontal != *reported_horizontal
+        || vertical != *reported_vertical
+        || fixed != vertical
+        || horizontal == vertical
+        || parallel_pairs.len() != 2
+    {
+        return false;
+    }
+
+    let horizontal_key = horizontal.canonical_bytes();
+    let vertical_key = vertical.canonical_bytes();
+    let mut all_edges = BTreeSet::new();
+    for pair in &parallel_pairs {
+        all_edges.extend([pair.first, pair.second]);
+    }
+    if all_edges.len() != 3
+        || !all_edges.contains(&horizontal_key)
+        || !all_edges.contains(&vertical_key)
+    {
+        return false;
+    }
+    let Some(middle) = all_edges
+        .into_iter()
+        .find(|edge| *edge != horizontal_key && *edge != vertical_key)
+    else {
+        return false;
+    };
+    let first = EdgePairKey {
+        first: horizontal_key.min(middle),
+        second: horizontal_key.max(middle),
+    };
+    let second = EdgePairKey {
+        first: middle.min(vertical_key),
+        second: middle.max(vertical_key),
+    };
+    parallel_pairs.contains(&first) && parallel_pairs.contains(&second)
+}
+
+/// Revalidates the complete grammar needed by the terminal-unit
+/// fixed-angle/parallel proof.
+///
+/// Candidate construction and proof admission are intentionally independent:
+/// a legacy general graph candidate carrying the same wire tag has only its
+/// angle and path records, so it cannot pass this exact five-record parse.
+fn is_proven_unit_terminal_two_hop_parallel_angle_shape_v1(
+    candidate: &DirectConstraintConflictV1,
+    records: &[GeometricConstraintRecordV1],
+) -> bool {
+    let DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent {
+        vertex: reported_vertex,
+        first_edge: reported_first,
+        second_edge: reported_second,
+        parallel_constraint_count,
+    } = &candidate.conflict
+    else {
+        return false;
+    };
+    let first_key = reported_first.canonical_bytes();
+    let second_key = reported_second.canonical_bytes();
+    if *parallel_constraint_count != 2
+        || candidate.constraint_ids.len() != 5
+        || first_key >= second_key
+        || !candidate
+            .constraint_ids
+            .windows(2)
+            .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+    {
+        return false;
+    }
+
+    let cause_ids = candidate
+        .constraint_ids
+        .iter()
+        .map(ConstraintId::canonical_bytes)
+        .collect::<BTreeSet<_>>();
+    if cause_ids.len() != 5 {
+        return false;
+    }
+    let selected = records
+        .iter()
+        .filter(|record| cause_ids.contains(&record.id.canonical_bytes()))
+        .collect::<Vec<_>>();
+    if selected.len() != 5 {
+        return false;
+    }
+
+    let reported_pair = EdgePairKey {
+        first: first_key,
+        second: second_key,
+    };
+    let mut saw_angle = false;
+    let mut fixed_edges = Vec::new();
+    let mut parallel_pairs = Vec::new();
+    for record in selected {
+        match &record.constraint {
+            GeometricConstraintKindV1::FixedAngle {
+                vertex,
+                first_edge,
+                second_edge,
+                angle_degrees,
+            } if !saw_angle
+                && *vertex == *reported_vertex
+                && angle_degrees.to_bits() == 90.0_f64.to_bits()
+                && EdgePairKey::unordered(*first_edge, *second_edge) == reported_pair =>
+            {
+                // Full preparation has already validated that this vertex is
+                // common to the two named edges. The verifier still binds the
+                // exact record roles and scalar bits to the reported payload.
+                saw_angle = true;
+            }
+            GeometricConstraintKindV1::FixedLength { edge, length_mm }
+                if fixed_edges.len() < 2 && length_mm.to_bits() == 1.0_f64.to_bits() =>
+            {
+                fixed_edges.push(edge.canonical_bytes());
+            }
+            GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            } if parallel_pairs.len() < 2 => {
+                parallel_pairs.push(EdgePairKey::unordered(*first_edge, *second_edge));
+            }
+            _ => return false,
+        }
+    }
+    if !saw_angle || fixed_edges.len() != 2 || parallel_pairs.len() != 2 {
+        return false;
+    }
+    fixed_edges.sort_unstable();
+    if fixed_edges != [first_key, second_key] {
+        return false;
+    }
+
+    let parallel_pairs = parallel_pairs.into_iter().collect::<BTreeSet<_>>();
+    if parallel_pairs.len() != 2 {
+        return false;
+    }
+    let all_edges = parallel_pairs
+        .iter()
+        .flat_map(|pair| [pair.first, pair.second])
+        .collect::<BTreeSet<_>>();
+    if all_edges.len() != 3 || !all_edges.contains(&first_key) || !all_edges.contains(&second_key) {
+        return false;
+    }
+    let Some(middle) = all_edges
+        .into_iter()
+        .find(|edge| *edge != first_key && *edge != second_key)
+    else {
+        return false;
+    };
+    let first_parallel = EdgePairKey {
+        first: first_key.min(middle),
+        second: first_key.max(middle),
+    };
+    let second_parallel = EdgePairKey {
+        first: middle.min(second_key),
+        second: middle.max(second_key),
+    };
+    parallel_pairs == BTreeSet::from([first_parallel, second_parallel])
+}
+
 fn quarantine_unproven_direct_conflicts_v1(
     conflicts: &mut Vec<DirectConstraintConflictV1>,
     unchecked: &mut Vec<ConstraintId>,
+    records: &[GeometricConstraintRecordV1],
 ) {
     conflicts.retain(|candidate| {
-        if is_proven_direct_conflict_v1(candidate) {
+        if is_proven_direct_conflict_v1(candidate, records) {
             true
         } else {
             #[cfg(test)]
@@ -4927,6 +6018,10 @@ mod perpendicular_angle_tests;
 #[cfg(test)]
 #[path = "constraints_unit_parallel_angle_tests.rs"]
 mod unit_parallel_angle_tests;
+
+#[cfg(test)]
+#[path = "constraints_unit_two_hop_parallel_tests.rs"]
+mod unit_two_hop_parallel_tests;
 
 #[cfg(test)]
 #[path = "constraints_unit_quarter_turn_tests.rs"]

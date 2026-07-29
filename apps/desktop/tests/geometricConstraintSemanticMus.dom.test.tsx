@@ -23,6 +23,12 @@ import { localeFixture } from './localeTestFixture'
 const uuid = (index: number) =>
   `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
 const CORE = Object.freeze([uuid(1), uuid(2)])
+const UNIT_TWO_HOP_CORE = Object.freeze(
+  Array.from({ length: 5 }, (_, index) => uuid(index + 1)),
+)
+const UNIT_PARALLEL_FIXED_ANGLE_CORE = Object.freeze(
+  Array.from({ length: 3 }, (_, index) => uuid(index + 1)),
+)
 const DIRECT: GeometricConstraintPreflightResult = {
   status: 'direct_conflict',
   conflicts: [{
@@ -51,6 +57,10 @@ const CERTIFIED_WIRE = {
   pair_constraint_algebraic_witness_count: 1,
   length_constraint_constructive_witness_count: 0,
   zero_length_closure_constructive_witness_count: 0,
+  anchored_mirror_residual_only_witness_count: 0,
+  unit_parallel_fixed_angle_residual_only_witness_count: 0,
+  unit_terminal_two_hop_parallel_angle_residual_only_witness_count: 0,
+  unit_two_hop_parallel_residual_only_witness_count: 0,
   authorizes_project_mutation: false,
   replayable_across_runtimes: true,
 }
@@ -76,6 +86,117 @@ function parsedCertified(
 
 const CERTIFIED = parsedCertified({})
 
+const UNIT_TWO_HOP_CERTIFIED = (() => {
+  const wire = {
+    ...CERTIFIED_WIRE,
+    constraint_ids: UNIT_TWO_HOP_CORE,
+    constraint_count: 5,
+    deletion_witness_checks: 5,
+    pair_constraint_constructive_witness_count: 0,
+    pair_constraint_algebraic_witness_count: 0,
+    unit_two_hop_parallel_residual_only_witness_count: 5,
+  }
+  const raw = {
+    ...BINDING,
+    result: {
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'perpendicular_orientations_in_parallel_component',
+          horizontal_edge: uuid(20),
+          vertical_edge: uuid(21),
+          parallel_constraint_count: 2,
+        },
+        constraint_ids: UNIT_TWO_HOP_CORE,
+      }],
+      bounded_direct_mus: provenDirect(UNIT_TWO_HOP_CORE),
+    },
+    semantic_mus: wire,
+  }
+  const normalized = normalizeGeometricConstraintPreflightResponse(
+    raw,
+    BINDING,
+  )
+  if (normalized?.semantic_mus?.status !== 'certified') {
+    throw new Error('expected parsed unit-terminal two-hop semantic MUS')
+  }
+  return normalized.semantic_mus
+})()
+
+const UNIT_TERMINAL_TWO_HOP_ANGLE_CERTIFIED = (() => {
+  const wire = {
+    ...CERTIFIED_WIRE,
+    constraint_ids: UNIT_TWO_HOP_CORE,
+    constraint_count: 5,
+    deletion_witness_checks: 5,
+    pair_constraint_constructive_witness_count: 0,
+    pair_constraint_algebraic_witness_count: 0,
+    unit_terminal_two_hop_parallel_angle_residual_only_witness_count: 5,
+  }
+  const raw = {
+    ...BINDING,
+    result: {
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'non_parallel_fixed_angle_in_parallel_component',
+          vertex: uuid(20),
+          first_edge: uuid(21),
+          second_edge: uuid(22),
+          parallel_constraint_count: 2,
+        },
+        constraint_ids: UNIT_TWO_HOP_CORE,
+      }],
+      bounded_direct_mus: provenDirect(UNIT_TWO_HOP_CORE),
+    },
+    semantic_mus: wire,
+  }
+  const normalized = normalizeGeometricConstraintPreflightResponse(
+    raw,
+    BINDING,
+  )
+  if (normalized?.semantic_mus?.status !== 'certified') {
+    throw new Error('expected parsed unit-terminal two-hop angle semantic MUS')
+  }
+  return normalized.semantic_mus
+})()
+
+const UNIT_PARALLEL_FIXED_ANGLE_CERTIFIED = (() => {
+  const wire = {
+    ...CERTIFIED_WIRE,
+    constraint_ids: UNIT_PARALLEL_FIXED_ANGLE_CORE,
+    constraint_count: 3,
+    deletion_witness_checks: 3,
+    pair_constraint_constructive_witness_count: 0,
+    pair_constraint_algebraic_witness_count: 0,
+    unit_parallel_fixed_angle_residual_only_witness_count: 3,
+  }
+  const raw = {
+    ...BINDING,
+    result: {
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'parallel_with_fixed_non_parallel_angle',
+          first_edge: uuid(20),
+          second_edge: uuid(21),
+        },
+        constraint_ids: UNIT_PARALLEL_FIXED_ANGLE_CORE,
+      }],
+      bounded_direct_mus: provenDirect(UNIT_PARALLEL_FIXED_ANGLE_CORE),
+    },
+    semantic_mus: wire,
+  }
+  const normalized = normalizeGeometricConstraintPreflightResponse(
+    raw,
+    BINDING,
+  )
+  if (normalized?.semantic_mus?.status !== 'certified') {
+    throw new Error('expected parsed unit parallel-fixed-angle semantic MUS')
+  }
+  return normalized.semantic_mus
+})()
+
 afterEach(cleanup)
 
 describe('geometric-constraint semantic MUS status', () => {
@@ -94,6 +215,12 @@ describe('geometric-constraint semantic MUS status', () => {
     expect(region.textContent).toContain('0 bounded length-only constructive')
     expect(region.textContent).toContain(
       '0 bounded zero-length-closure constructive',
+    )
+    expect(region.textContent).toContain(
+      '0 anchored-mirror residual-only',
+    )
+    expect(region.textContent).toContain(
+      '0 unit two-hop parallel residual witnesses',
     )
     expect(region.textContent).toContain(
       'Re-certifiable under the frozen deterministic model',
@@ -133,6 +260,7 @@ describe('geometric-constraint semantic MUS status', () => {
     expect(region.textContent).toContain('二制約代数縮退1件')
     expect(region.textContent).toContain('有界長さ制約構成0件')
     expect(region.textContent).toContain('ゼロ長閉包構成0件')
+    expect(region.textContent).toContain('単位長2段平行・残差証人0件')
   })
 
   it('shows a bounded length-only witness count without inflating its total', () => {
@@ -164,6 +292,105 @@ describe('geometric-constraint semantic MUS status', () => {
     expect(region.textContent).toContain('削除証人2件')
     expect(region.textContent).toContain('ゼロ長閉包構成2件')
     expect(region.textContent).not.toContain('ゼロ長閉包構成3件')
+  })
+
+  it('shows the anchored-mirror residual-only method without inflating the total', () => {
+    renderPanel(parsedCertified({
+      pair_constraint_constructive_witness_count: 0,
+      pair_constraint_algebraic_witness_count: 0,
+      anchored_mirror_residual_only_witness_count: 2,
+    }), 'en')
+
+    const region = screen.getByRole('region', {
+      name: 'Deterministic-binary64 semantic minimal-core certification',
+    })
+    expect(region.textContent).toContain('2 deletion witnesses')
+    expect(region.textContent).toContain('2 anchored-mirror residual-only')
+    expect(region.textContent).not.toContain('3 anchored-mirror residual-only')
+  })
+
+  it('shows all five unit-terminal two-hop residual witnesses in English and Japanese', () => {
+    const { rerender } = renderPanel(UNIT_TWO_HOP_CERTIFIED, 'en')
+    let region = screen.getByRole('region', {
+      name: 'Deterministic-binary64 semantic minimal-core certification',
+    })
+    expect(region.textContent).toContain('5 deletion witnesses')
+    expect(region.textContent).toContain(
+      '5 unit two-hop parallel residual witnesses',
+    )
+    expect(region.textContent).not.toContain(
+      '6 unit two-hop parallel residual witnesses',
+    )
+
+    rerender(panel(UNIT_TWO_HOP_CERTIFIED, 'ja'))
+    region = screen.getByRole('region', {
+      name: '決定論的binary64意味論的最小コア認証',
+    })
+    expect(region.textContent).toContain('削除証人5件')
+    expect(region.textContent).toContain('単位長2段平行・残差証人5件')
+    expect(region.textContent).not.toContain('単位長2段平行・残差証人6件')
+  })
+
+  it('shows all five unit-terminal two-hop angle witnesses without a placeholder', () => {
+    const { rerender } = renderPanel(
+      UNIT_TERMINAL_TWO_HOP_ANGLE_CERTIFIED,
+      'en',
+    )
+    let region = screen.getByRole('region', {
+      name: 'Deterministic-binary64 semantic minimal-core certification',
+    })
+    expect(region.textContent).toContain('5 deletion witnesses')
+    expect(region.textContent).toContain(
+      '5 unit-terminal two-hop parallel-angle residual witnesses',
+    )
+    expect(region.textContent).not.toContain(
+      '6 unit-terminal two-hop parallel-angle residual witnesses',
+    )
+    expect(region.textContent).not.toContain(
+      '{unitTerminalTwoHopParallelAngleResidual}',
+    )
+
+    rerender(panel(UNIT_TERMINAL_TWO_HOP_ANGLE_CERTIFIED, 'ja'))
+    region = screen.getByRole('region', {
+      name: '決定論的binary64意味論的最小コア認証',
+    })
+    expect(region.textContent).toContain('削除証人5件')
+    expect(region.textContent).toContain('単位終端2段平行・直角残差証人5件')
+    expect(region.textContent).not.toContain('単位終端2段平行・直角残差証人6件')
+    expect(region.textContent).not.toContain(
+      '{unitTerminalTwoHopParallelAngleResidual}',
+    )
+  })
+
+  it('shows all three unit parallel-fixed-angle witnesses without a placeholder', () => {
+    const { rerender } = renderPanel(
+      UNIT_PARALLEL_FIXED_ANGLE_CERTIFIED,
+      'en',
+    )
+    let region = screen.getByRole('region', {
+      name: 'Deterministic-binary64 semantic minimal-core certification',
+    })
+    expect(region.textContent).toContain('3 deletion witnesses')
+    expect(region.textContent).toContain(
+      '3 unit parallel-fixed-angle residual witnesses',
+    )
+    expect(region.textContent).not.toContain(
+      '4 unit parallel-fixed-angle residual witnesses',
+    )
+    expect(region.textContent).not.toContain(
+      '{unitParallelFixedAngleResidual}',
+    )
+
+    rerender(panel(UNIT_PARALLEL_FIXED_ANGLE_CERTIFIED, 'ja'))
+    region = screen.getByRole('region', {
+      name: '決定論的binary64意味論的最小コア認証',
+    })
+    expect(region.textContent).toContain('削除証人3件')
+    expect(region.textContent).toContain('単位長・平行・固定角残差証人3件')
+    expect(region.textContent).not.toContain('単位長・平行・固定角残差証人4件')
+    expect(region.textContent).not.toContain(
+      '{unitParallelFixedAngleResidual}',
+    )
   })
 
   it('fails closed instead of overstating forged in-process witness counts', () => {

@@ -16,10 +16,16 @@ use crate::{
     constraint_exactification::MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1,
     constraint_exactification::MAX_PAIR_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1,
     constraint_exactification::MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1,
+    constraint_exactification::MAX_UNIT_PARALLEL_FIXED_ANGLE_RESIDUAL_ONLY_OVERLAY_VERTICES_V1,
+    constraint_exactification::MAX_UNIT_TERMINAL_TWO_HOP_PARALLEL_ANGLE_RESIDUAL_ONLY_OVERLAY_VERTICES_V1,
+    constraint_exactification::MAX_UNIT_TWO_HOP_PARALLEL_RESIDUAL_ONLY_OVERLAY_VERTICES_V1,
     constraint_exactification::construct_length_constraint_residual_exact_assignment_v1,
     constraint_exactification::construct_pair_constraint_algebraic_exact_assignment_v1,
     constraint_exactification::construct_pair_constraint_exact_assignment_v1,
     constraint_exactification::construct_single_constraint_exact_assignment_v1,
+    constraint_exactification::construct_unit_parallel_fixed_angle_residual_exact_deletion_assignment_v1,
+    constraint_exactification::construct_unit_terminal_two_hop_parallel_angle_residual_exact_deletion_assignment_v1,
+    constraint_exactification::construct_unit_two_hop_parallel_residual_exact_deletion_assignment_v1,
     constraint_exactification::construct_zero_length_closure_residual_exact_assignment_v1,
     constraint_exactification::zero_length_closure_constructive_candidate_bound_v1,
     constraint_solver::certify_binary64_residual_only_constraint_overlay_v1,
@@ -27,7 +33,7 @@ use crate::{
 };
 
 pub const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1: &str =
-    "geometric_constraint_deterministic_binary64_semantic_mus_v2";
+    "geometric_constraint_deterministic_binary64_semantic_mus_v4";
 pub const MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS_V1: usize =
     MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1;
 pub const MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK_V1: usize = 20_000_000;
@@ -158,6 +164,9 @@ pub struct CurrentRuntimeSemanticMusV1 {
     length_constraint_constructive_witness_count: usize,
     zero_length_closure_constructive_witness_count: usize,
     anchored_mirror_residual_only_witness_count: usize,
+    unit_parallel_fixed_angle_residual_only_witness_count: usize,
+    unit_terminal_two_hop_parallel_angle_residual_only_witness_count: usize,
+    unit_two_hop_parallel_residual_only_witness_count: usize,
 }
 
 impl CurrentRuntimeSemanticMusV1 {
@@ -229,6 +238,21 @@ impl CurrentRuntimeSemanticMusV1 {
     #[must_use]
     pub const fn anchored_mirror_residual_only_witness_count(&self) -> usize {
         self.anchored_mirror_residual_only_witness_count
+    }
+
+    #[must_use]
+    pub const fn unit_parallel_fixed_angle_residual_only_witness_count(&self) -> usize {
+        self.unit_parallel_fixed_angle_residual_only_witness_count
+    }
+
+    #[must_use]
+    pub const fn unit_terminal_two_hop_parallel_angle_residual_only_witness_count(&self) -> usize {
+        self.unit_terminal_two_hop_parallel_angle_residual_only_witness_count
+    }
+
+    #[must_use]
+    pub const fn unit_two_hop_parallel_residual_only_witness_count(&self) -> usize {
+        self.unit_two_hop_parallel_residual_only_witness_count
     }
 
     #[must_use]
@@ -367,7 +391,14 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
     let mut length_constraint_constructive_witness_count = 0;
     let mut zero_length_closure_constructive_witness_count = 0;
     let mut anchored_mirror_residual_only_witness_count = 0;
+    let mut unit_parallel_fixed_angle_residual_only_witness_count = 0;
+    let mut unit_terminal_two_hop_parallel_angle_residual_only_witness_count = 0;
+    let mut unit_two_hop_parallel_residual_only_witness_count = 0;
     let anchored_mirror_shape = is_anchored_mirror_core_shape(&core);
+    let unit_parallel_fixed_angle_shape = is_unit_parallel_fixed_angle_core_shape(&core);
+    let unit_terminal_two_hop_parallel_angle_shape =
+        is_unit_terminal_two_hop_parallel_angle_core_shape(&core);
+    let unit_two_hop_parallel_shape = is_unit_two_hop_parallel_core_shape(&core);
     for removed in &constraint_ids {
         progress.deletion_witness_checks += 1;
         if let Some(reason) = checkpoint(observer, progress) {
@@ -375,6 +406,148 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
         }
 
         let deletion_constraint_count = core.len().saturating_sub(1);
+        if unit_parallel_fixed_angle_shape {
+            let Some(parallel_angle_work) =
+                unit_parallel_fixed_angle_residual_only_phase_work(set, deletion_constraint_count)
+            else {
+                return unknown(
+                    BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                    progress,
+                    &constraint_ids,
+                );
+            };
+            if !charge_witness_work(
+                &mut progress,
+                parallel_angle_work,
+                limits.max_deletion_witness_work,
+            ) {
+                return unknown(
+                    BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                    progress,
+                    &constraint_ids,
+                );
+            }
+            if let Some(reason) = checkpoint(observer, progress) {
+                return unknown(reason, progress, &constraint_ids);
+            }
+            let document = deletion_document(&core, *removed);
+            let parallel_angle_is_exact =
+                construct_unit_parallel_fixed_angle_residual_exact_deletion_assignment_v1(
+                    set.source_pattern(),
+                    &core,
+                    *removed,
+                    &document,
+                )
+                .is_some();
+            if let Some(reason) = checkpoint(observer, progress) {
+                return unknown(reason, progress, &constraint_ids);
+            }
+            if parallel_angle_is_exact {
+                unit_parallel_fixed_angle_residual_only_witness_count += 1;
+                progress.certified_deletion_witnesses += 1;
+                continue;
+            }
+            return unknown(
+                BoundedSemanticMusUnknownReasonV1::DeletionWitnessUnavailable,
+                progress,
+                &constraint_ids,
+            );
+        }
+
+        if unit_two_hop_parallel_shape {
+            let Some(parallel_work) =
+                unit_two_hop_parallel_residual_only_phase_work(set, deletion_constraint_count)
+            else {
+                return unknown(
+                    BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                    progress,
+                    &constraint_ids,
+                );
+            };
+            if !charge_witness_work(
+                &mut progress,
+                parallel_work,
+                limits.max_deletion_witness_work,
+            ) {
+                return unknown(
+                    BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                    progress,
+                    &constraint_ids,
+                );
+            }
+            if let Some(reason) = checkpoint(observer, progress) {
+                return unknown(reason, progress, &constraint_ids);
+            }
+            let document = deletion_document(&core, *removed);
+            let parallel_is_exact =
+                construct_unit_two_hop_parallel_residual_exact_deletion_assignment_v1(
+                    set.source_pattern(),
+                    &core,
+                    *removed,
+                    &document,
+                )
+                .is_some();
+            if let Some(reason) = checkpoint(observer, progress) {
+                return unknown(reason, progress, &constraint_ids);
+            }
+            if parallel_is_exact {
+                unit_two_hop_parallel_residual_only_witness_count += 1;
+                progress.certified_deletion_witnesses += 1;
+                continue;
+            }
+        }
+
+        if unit_terminal_two_hop_parallel_angle_shape {
+            let Some(parallel_angle_work) =
+                unit_terminal_two_hop_parallel_angle_residual_only_phase_work(
+                    set,
+                    deletion_constraint_count,
+                )
+            else {
+                return unknown(
+                    BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                    progress,
+                    &constraint_ids,
+                );
+            };
+            if !charge_witness_work(
+                &mut progress,
+                parallel_angle_work,
+                limits.max_deletion_witness_work,
+            ) {
+                return unknown(
+                    BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                    progress,
+                    &constraint_ids,
+                );
+            }
+            if let Some(reason) = checkpoint(observer, progress) {
+                return unknown(reason, progress, &constraint_ids);
+            }
+            let document = deletion_document(&core, *removed);
+            let parallel_angle_is_exact =
+                construct_unit_terminal_two_hop_parallel_angle_residual_exact_deletion_assignment_v1(
+                    set.source_pattern(),
+                    &core,
+                    *removed,
+                    &document,
+                )
+                .is_some();
+            if let Some(reason) = checkpoint(observer, progress) {
+                return unknown(reason, progress, &constraint_ids);
+            }
+            if parallel_angle_is_exact {
+                unit_terminal_two_hop_parallel_angle_residual_only_witness_count += 1;
+                progress.certified_deletion_witnesses += 1;
+                continue;
+            }
+            return unknown(
+                BoundedSemanticMusUnknownReasonV1::DeletionWitnessUnavailable,
+                progress,
+                &constraint_ids,
+            );
+        }
+
         if anchored_mirror_shape {
             let Some(mirror_work) =
                 anchored_mirror_residual_only_phase_work(set, deletion_constraint_count)
@@ -684,7 +857,10 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
             + pair_constraint_algebraic_witness_count
             + length_constraint_constructive_witness_count
             + zero_length_closure_constructive_witness_count
-            + anchored_mirror_residual_only_witness_count,
+            + anchored_mirror_residual_only_witness_count
+            + unit_parallel_fixed_angle_residual_only_witness_count
+            + unit_terminal_two_hop_parallel_angle_residual_only_witness_count
+            + unit_two_hop_parallel_residual_only_witness_count,
         constraint_ids.len(),
     );
     BoundedCurrentRuntimeSemanticMusV1::Certified(CurrentRuntimeSemanticMusV1 {
@@ -700,7 +876,93 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
         length_constraint_constructive_witness_count,
         zero_length_closure_constructive_witness_count,
         anchored_mirror_residual_only_witness_count,
+        unit_parallel_fixed_angle_residual_only_witness_count,
+        unit_terminal_two_hop_parallel_angle_residual_only_witness_count,
+        unit_two_hop_parallel_residual_only_witness_count,
     })
+}
+
+fn is_unit_parallel_fixed_angle_core_shape(core: &[GeometricConstraintRecordV1]) -> bool {
+    if core.len() != 3 {
+        return false;
+    }
+    let mut fixed_unit_count = 0;
+    let mut fixed_angle_count = 0;
+    let mut parallel_count = 0;
+    for record in core {
+        match &record.constraint {
+            GeometricConstraintKindV1::FixedLength { length_mm, .. }
+                if length_mm.to_bits() == 1.0_f64.to_bits() =>
+            {
+                fixed_unit_count += 1;
+            }
+            GeometricConstraintKindV1::FixedAngle { angle_degrees, .. }
+                if angle_degrees.to_bits() == 45.0_f64.to_bits() =>
+            {
+                fixed_angle_count += 1;
+            }
+            GeometricConstraintKindV1::Parallel { .. } => parallel_count += 1,
+            _ => return false,
+        }
+    }
+    (fixed_unit_count, fixed_angle_count, parallel_count) == (1, 1, 1)
+}
+
+fn is_unit_terminal_two_hop_parallel_angle_core_shape(
+    core: &[GeometricConstraintRecordV1],
+) -> bool {
+    if core.len() != 5 {
+        return false;
+    }
+    let mut fixed_unit_count = 0;
+    let mut fixed_right_angle_count = 0;
+    let mut parallel_count = 0;
+    for record in core {
+        match &record.constraint {
+            GeometricConstraintKindV1::FixedLength { length_mm, .. }
+                if length_mm.to_bits() == 1.0_f64.to_bits() =>
+            {
+                fixed_unit_count += 1;
+            }
+            GeometricConstraintKindV1::FixedAngle { angle_degrees, .. }
+                if angle_degrees.to_bits() == 90.0_f64.to_bits() =>
+            {
+                fixed_right_angle_count += 1;
+            }
+            GeometricConstraintKindV1::Parallel { .. } => parallel_count += 1,
+            _ => return false,
+        }
+    }
+    (fixed_unit_count, fixed_right_angle_count, parallel_count) == (2, 1, 2)
+}
+
+fn is_unit_two_hop_parallel_core_shape(core: &[GeometricConstraintRecordV1]) -> bool {
+    if core.len() != 5 {
+        return false;
+    }
+    let mut fixed_unit_count = 0;
+    let mut horizontal_count = 0;
+    let mut vertical_count = 0;
+    let mut parallel_count = 0;
+    for record in core {
+        match &record.constraint {
+            GeometricConstraintKindV1::FixedLength { length_mm, .. }
+                if length_mm.to_bits() == 1.0_f64.to_bits() =>
+            {
+                fixed_unit_count += 1;
+            }
+            GeometricConstraintKindV1::Horizontal { .. } => horizontal_count += 1,
+            GeometricConstraintKindV1::Vertical { .. } => vertical_count += 1,
+            GeometricConstraintKindV1::Parallel { .. } => parallel_count += 1,
+            _ => return false,
+        }
+    }
+    (
+        fixed_unit_count,
+        horizontal_count,
+        vertical_count,
+        parallel_count,
+    ) == (1, 1, 1, 2)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1068,6 +1330,111 @@ fn anchored_mirror_residual_only_work(
     ])
 }
 
+fn unit_parallel_fixed_angle_residual_only_phase_work(
+    set: &GeometricConstraintSetV1<'_>,
+    constraint_count: usize,
+) -> Option<usize> {
+    unit_parallel_fixed_angle_residual_only_work(
+        set.source_pattern().vertices.len(),
+        set.source_pattern().edges.len(),
+        constraint_count,
+    )
+}
+
+fn unit_parallel_fixed_angle_residual_only_work(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    if vertex_count > MAX_UNIT_PARALLEL_FIXED_ANGLE_RESIDUAL_ONLY_OVERLAY_VERTICES_V1 {
+        return None;
+    }
+    let classification_and_overlay_work = checked_sum([
+        checked_mul(
+            checked_sum([vertex_count, edge_count, constraint_count, 1])?,
+            128,
+        )?,
+        checked_mul(vertex_count.checked_add(1)?, 64)?,
+        checked_mul(sort_work(constraint_count)?, 16)?,
+    ])?;
+    checked_sum([
+        deletion_document_build_work(constraint_count)?,
+        classification_and_overlay_work,
+        prepare_and_preflight_work(vertex_count, edge_count, constraint_count)?,
+        residual_certificate_work(vertex_count, edge_count, constraint_count)?,
+    ])
+}
+
+fn unit_terminal_two_hop_parallel_angle_residual_only_phase_work(
+    set: &GeometricConstraintSetV1<'_>,
+    constraint_count: usize,
+) -> Option<usize> {
+    unit_terminal_two_hop_parallel_angle_residual_only_work(
+        set.source_pattern().vertices.len(),
+        set.source_pattern().edges.len(),
+        constraint_count,
+    )
+}
+
+fn unit_terminal_two_hop_parallel_angle_residual_only_work(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    if vertex_count > MAX_UNIT_TERMINAL_TWO_HOP_PARALLEL_ANGLE_RESIDUAL_ONLY_OVERLAY_VERTICES_V1 {
+        return None;
+    }
+    let classification_and_overlay_work = checked_sum([
+        checked_mul(
+            checked_sum([vertex_count, edge_count, constraint_count, 1])?,
+            128,
+        )?,
+        checked_mul(vertex_count.checked_add(1)?, 64)?,
+        checked_mul(sort_work(constraint_count)?, 16)?,
+    ])?;
+    checked_sum([
+        deletion_document_build_work(constraint_count)?,
+        classification_and_overlay_work,
+        prepare_and_preflight_work(vertex_count, edge_count, constraint_count)?,
+        residual_certificate_work(vertex_count, edge_count, constraint_count)?,
+    ])
+}
+
+fn unit_two_hop_parallel_residual_only_phase_work(
+    set: &GeometricConstraintSetV1<'_>,
+    constraint_count: usize,
+) -> Option<usize> {
+    unit_two_hop_parallel_residual_only_work(
+        set.source_pattern().vertices.len(),
+        set.source_pattern().edges.len(),
+        constraint_count,
+    )
+}
+
+fn unit_two_hop_parallel_residual_only_work(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    if vertex_count > MAX_UNIT_TWO_HOP_PARALLEL_RESIDUAL_ONLY_OVERLAY_VERTICES_V1 {
+        return None;
+    }
+    let classification_and_overlay_work = checked_sum([
+        checked_mul(
+            checked_sum([vertex_count, edge_count, constraint_count, 1])?,
+            128,
+        )?,
+        checked_mul(vertex_count.checked_add(1)?, 64)?,
+        checked_mul(sort_work(constraint_count)?, 16)?,
+    ])?;
+    checked_sum([
+        deletion_document_build_work(constraint_count)?,
+        classification_and_overlay_work,
+        prepare_and_preflight_work(vertex_count, edge_count, constraint_count)?,
+        residual_certificate_work(vertex_count, edge_count, constraint_count)?,
+    ])
+}
+
 fn length_constraint_constructive_phase_work(
     set: &GeometricConstraintSetV1<'_>,
     constraint_count: usize,
@@ -1358,6 +1725,37 @@ pub(crate) fn anchored_mirror_residual_only_phase_work_for_test(
     constraint_count: usize,
 ) -> Option<usize> {
     anchored_mirror_residual_only_work(vertex_count, edge_count, constraint_count)
+}
+
+#[cfg(test)]
+pub(crate) fn unit_parallel_fixed_angle_residual_only_phase_work_for_test(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    unit_parallel_fixed_angle_residual_only_work(vertex_count, edge_count, constraint_count)
+}
+
+#[cfg(test)]
+pub(crate) fn unit_two_hop_parallel_residual_only_phase_work_for_test(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    unit_two_hop_parallel_residual_only_work(vertex_count, edge_count, constraint_count)
+}
+
+#[cfg(test)]
+pub(crate) fn unit_terminal_two_hop_parallel_angle_residual_only_phase_work_for_test(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    unit_terminal_two_hop_parallel_angle_residual_only_work(
+        vertex_count,
+        edge_count,
+        constraint_count,
+    )
 }
 
 fn charge_witness_work(

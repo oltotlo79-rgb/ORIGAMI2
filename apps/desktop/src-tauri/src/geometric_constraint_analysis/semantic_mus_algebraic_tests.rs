@@ -68,6 +68,10 @@ fn algebraic_pair_witness_is_a_distinct_strict_wire_counter() {
             pair_constraint_algebraic_witness_count: 1,
             length_constraint_constructive_witness_count: 0,
             zero_length_closure_constructive_witness_count: 0,
+            anchored_mirror_residual_only_witness_count: 0,
+            unit_parallel_fixed_angle_residual_only_witness_count: 0,
+            unit_terminal_two_hop_parallel_angle_residual_only_witness_count: 0,
+            unit_two_hop_parallel_residual_only_witness_count: 0,
             authorizes_project_mutation: false,
             replayable_across_runtimes,
             ..
@@ -80,7 +84,7 @@ fn algebraic_pair_witness_is_a_distinct_strict_wire_counter() {
     let object = encoded
         .as_object()
         .expect("semantic certificate must be an object");
-    assert_eq!(object.len(), 17);
+    assert_eq!(object.len(), 21);
     assert_eq!(
         object["transcendental_model_id"],
         ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
@@ -96,6 +100,10 @@ fn algebraic_pair_witness_is_a_distinct_strict_wire_counter() {
             "pair_constraint_algebraic_witness_count",
             "length_constraint_constructive_witness_count",
             "zero_length_closure_constructive_witness_count",
+            "anchored_mirror_residual_only_witness_count",
+            "unit_parallel_fixed_angle_residual_only_witness_count",
+            "unit_terminal_two_hop_parallel_angle_residual_only_witness_count",
+            "unit_two_hop_parallel_residual_only_witness_count",
         ]
         .into_iter()
         .map(|key| object[key].as_u64().expect("strict witness counter"))

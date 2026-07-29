@@ -817,6 +817,177 @@ fn multi_face_pose_is_blocking_until_every_pair_has_native_evidence() {
 }
 
 #[test]
+fn zero_thickness_quadrilateral_shared_hinge_uses_the_finite_boundary_edge_proof() {
+    let fixture = fixture(true);
+    let model = model(&fixture);
+    let hinge = fixture.hinge.expect("fixture hinge");
+    assert!(model.face_ids().iter().all(|face| {
+        model
+            .face_boundary(*face)
+            .is_some_and(|boundary| boundary.vertices().len() == 4)
+    }));
+
+    for root in model.face_ids().iter().copied() {
+        let angles = CanonicalHingeAngles::new(vec![
+            HingeAngle::new(hinge, 37.0).expect("valid quadrilateral hinge angle"),
+        ])
+        .expect("canonical quadrilateral angle");
+        let pose = model
+            .solve(Some(root), &angles)
+            .expect("folded quadrilateral pose");
+        let snapshot = diagnose_static_collision_geometry(
+            &model,
+            &pose,
+            0.0,
+            StaticCollisionLimits::default(),
+        )
+        .expect("complete quadrilateral shared-hinge diagnostic");
+        assert_eq!(snapshot.expected_unordered_face_pairs(), 1);
+        assert_eq!(snapshot.pairs().len(), 1);
+        let pair = snapshot.pairs()[0];
+        assert_eq!(pair.topology(), TopologyRelation::SharedHingeEdge);
+        assert_eq!(
+            pair.evidence(),
+            IntersectionEvidenceV2::SharedFeatureContact
+        );
+        assert_eq!(
+            pair.policy_decision(),
+            TopologyContactDecision::RequiresHingeModel
+        );
+        assert_eq!(pair.disposition(), StaticCollisionPairDisposition::Allowed);
+        assert!(pair.shared_hinge_boundary_contact_proven());
+        assert!(!pair.shared_hinge_solid_classified());
+        assert_eq!(snapshot.allowed_pairs(), 1);
+        assert_eq!(snapshot.penetrating_pairs(), 0);
+        assert_eq!(snapshot.indeterminate_pairs(), 0);
+        let flat_angles = CanonicalHingeAngles::new(vec![
+            HingeAngle::new(hinge, 180.0).expect("valid flat-stack hinge angle"),
+        ])
+        .expect("canonical flat-stack angle");
+        let flat_pose = model
+            .solve(Some(root), &flat_angles)
+            .expect("flat-stacked quadrilateral pose");
+        let flat_snapshot = diagnose_static_collision_geometry(
+            &model,
+            &flat_pose,
+            0.0,
+            StaticCollisionLimits::default(),
+        )
+        .expect("complete flat-stack quadrilateral diagnostic");
+        assert_eq!(flat_snapshot.pairs().len(), 1);
+        let flat_pair = flat_snapshot.pairs()[0];
+        assert_eq!(
+            flat_pair.evidence(),
+            IntersectionEvidenceV2::SharedFeatureFlatStack
+        );
+        assert_eq!(
+            flat_pair.disposition(),
+            StaticCollisionPairDisposition::Indeterminate
+        );
+        assert!(!flat_pair.shared_hinge_boundary_contact_proven());
+    }
+}
+
+#[test]
+fn three_quadrilateral_stationary_flat_stack_is_root_and_source_order_invariant() {
+    let coordinates = [
+        (0.0, 0.0),
+        (100.0, 0.0),
+        (300.0, 0.0),
+        (400.0, 0.0),
+        (400.0, 400.0),
+        (300.0, 400.0),
+        (100.0, 400.0),
+        (0.0, 400.0),
+    ];
+    for reverse_source_collections in [false, true] {
+        for reverse_hinge_endpoints in [false, true] {
+            let folds = if reverse_hinge_endpoints {
+                [(6, 1, EdgeKind::Mountain), (5, 2, EdgeKind::Mountain)]
+            } else {
+                [(1, 6, EdgeKind::Mountain), (2, 5, EdgeKind::Mountain)]
+            };
+            let fixture = two_hinge_fixture(13, &coordinates, &folds, reverse_source_collections);
+            assert!(fixture.model.face_ids().iter().all(|face| {
+                fixture
+                    .model
+                    .face_boundary(*face)
+                    .is_some_and(|boundary| boundary.vertices().len() == 4)
+            }));
+            let angles = CanonicalHingeAngles::new(vec![
+                HingeAngle::new(fixture.hinges[0], 180.0)
+                    .expect("valid stationary flat-stack angle"),
+                HingeAngle::new(fixture.hinges[1], 37.0).expect("valid moving crease angle"),
+            ])
+            .expect("canonical three-face angles");
+            let incident_pair = |hinge_id| {
+                let hinge = fixture
+                    .model
+                    .hinges()
+                    .iter()
+                    .find(|hinge| hinge.edge() == hinge_id)
+                    .expect("fixture hinge");
+                let mut pair = [hinge.left_face(), hinge.right_face()];
+                pair.sort_unstable_by_key(FaceId::canonical_bytes);
+                pair
+            };
+            let stationary_pair = incident_pair(fixture.hinges[0]);
+            let moving_pair = incident_pair(fixture.hinges[1]);
+
+            for root in fixture.model.face_ids().iter().copied() {
+                let pose = fixture
+                    .model
+                    .solve(Some(root), &angles)
+                    .expect("three-face root-permuted pose");
+                let snapshot = diagnose_static_collision_geometry(
+                    &fixture.model,
+                    &pose,
+                    0.0,
+                    StaticCollisionLimits::default(),
+                )
+                .expect("complete three-face collision diagnostic");
+                assert_eq!(snapshot.expected_unordered_face_pairs(), 3);
+                assert_eq!(snapshot.pairs().len(), 3);
+                assert_eq!(snapshot.penetrating_pairs(), 0);
+                assert_eq!(snapshot.indeterminate_pairs(), 1);
+
+                let stationary = snapshot
+                    .pairs()
+                    .iter()
+                    .find(|pair| [pair.first_face(), pair.second_face()] == stationary_pair)
+                    .expect("stationary shared-hinge pair");
+                assert_eq!(stationary.topology(), TopologyRelation::SharedHingeEdge);
+                assert_eq!(
+                    stationary.evidence(),
+                    IntersectionEvidenceV2::SharedFeatureFlatStack
+                );
+                assert_eq!(
+                    stationary.disposition(),
+                    StaticCollisionPairDisposition::Indeterminate
+                );
+                assert!(!stationary.shared_hinge_boundary_contact_proven());
+
+                let moving = snapshot
+                    .pairs()
+                    .iter()
+                    .find(|pair| [pair.first_face(), pair.second_face()] == moving_pair)
+                    .expect("moving shared-hinge pair");
+                assert_eq!(moving.topology(), TopologyRelation::SharedHingeEdge);
+                assert_eq!(
+                    moving.evidence(),
+                    IntersectionEvidenceV2::SharedFeatureContact
+                );
+                assert_eq!(
+                    moving.disposition(),
+                    StaticCollisionPairDisposition::Allowed
+                );
+                assert!(moving.shared_hinge_boundary_contact_proven());
+            }
+        }
+    }
+}
+
+#[test]
 fn public_entry_reports_midpoint_transversal_matrix_without_collection_or_root_bias() {
     for reverse_source_collections in [false, true] {
         let fixture = midpoint_mountain_400mm_fixture(reverse_source_collections);

@@ -36,10 +36,12 @@ use crate::{
 mod initial_sample_layer_admission;
 mod multi_hinge_union;
 mod pair_proof_cache;
-use initial_sample_layer_admission::initial_sample_layer_admission_matches_snapshot_v1;
 pub use initial_sample_layer_admission::{
     NativeStackedFoldInitialSampleLayerAdmissionV1, StackedFoldInitialLayerOrderSourceV1,
     prepare_stacked_fold_initial_sample_layer_admission_v1,
+};
+use initial_sample_layer_admission::{
+    SampledLayerAdmissionSnapshotV1, sampled_layer_admission_matches_snapshot_v1,
 };
 pub use multi_hinge_union::{
     MAX_MULTI_HINGE_UNION_GEOMETRY_HINGES_V2, MAX_MULTI_HINGE_UNION_HINGES_V2,
@@ -3027,11 +3029,17 @@ pub fn diagnose_collective_hinge_path_v1(
 }
 
 /// Diagnoses a collective path while admitting one independently ordered,
-/// exact flat-stack initial sample.
+/// exact flat-stack initial sample and only its stationary direct-hinge pairs
+/// at later sampled poses.
 ///
 /// The admission is exact-instance-bound to `model` and `initial_pose`.
-/// Samples after index zero use the unchanged general path policy, and the
-/// resulting diagnostic can never report a continuous certificate.
+/// A later sampled hold is admitted only when the complete static scan reports
+/// the same authenticated canonical pair as `SharedFeatureFlatStack`, its
+/// direct hinge is outside `moving_hinges`, and that hinge remains bit-exact
+/// 180 degrees in both the initial and sampled poses. Every other blocking
+/// observation remains blocking in this admission-scoped diagnostic; ordinary
+/// analytic topology bypasses cannot substitute for a rejected callback.
+/// The resulting diagnostic can never report a continuous certificate.
 pub fn diagnose_collective_hinge_path_with_initial_sample_layer_admission_v1<T>(
     model: &MaterialTreeKinematicsModel,
     initial_pose: &MaterialTreePose,
@@ -3046,15 +3054,23 @@ pub fn diagnose_collective_hinge_path_with_initial_sample_layer_admission_v1<T>(
     }
     let (source_absolute, target_absolute) =
         collective_path_absolute_angles_v1(initial_pose, moving_hinges, requested_angle_degrees)?;
-    let matches_initial_snapshot = |snapshot: &StaticCollisionDiagnosticSnapshot| {
-        initial_sample_layer_admission_matches_snapshot_v1(
-            admission,
-            model,
-            initial_pose,
-            paper_thickness_mm,
-            snapshot,
-        )
-    };
+    let matches_sample_snapshot =
+        |sample_index: usize,
+         sample_pose: &MaterialTreePose,
+         snapshot: &StaticCollisionDiagnosticSnapshot| {
+            sampled_layer_admission_matches_snapshot_v1(
+                admission,
+                SampledLayerAdmissionSnapshotV1 {
+                    model,
+                    initial_pose,
+                    moving_hinges,
+                    sample_index,
+                    sample_pose,
+                    paper_thickness_mm,
+                    snapshot,
+                },
+            )
+        };
     diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
         model,
         initial_pose,
@@ -3063,7 +3079,7 @@ pub fn diagnose_collective_hinge_path_with_initial_sample_layer_admission_v1<T>(
         paper_thickness_mm,
         limits,
         None,
-        Some(&matches_initial_snapshot),
+        Some(&matches_sample_snapshot),
     )
 }
 
@@ -3143,6 +3159,9 @@ fn diagnose_collective_hinge_path_from_pose_with_optional_cache_v1(
     )
 }
 
+type SampledLayerSnapshotAdmissionMatcherV1<'a> =
+    dyn Fn(usize, &MaterialTreePose, &StaticCollisionDiagnosticSnapshot) -> bool + 'a;
+
 #[allow(clippy::too_many_arguments)]
 fn diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
     model: &MaterialTreeKinematicsModel,
@@ -3152,9 +3171,7 @@ fn diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
     paper_thickness_mm: f64,
     limits: StackedFoldPathDiagnosticLimitsV1,
     pair_cache: Option<&PositiveEndpointPairCacheUseV1<'_>>,
-    initial_sample_layer_snapshot_matches: Option<
-        &dyn Fn(&StaticCollisionDiagnosticSnapshot) -> bool,
-    >,
+    sampled_layer_snapshot_matches: Option<&SampledLayerSnapshotAdmissionMatcherV1<'_>>,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
     if initial_pose.hinge_angles() != source_absolute
         || source_absolute.len() != target_absolute.len()
@@ -3196,7 +3213,7 @@ fn diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
         paper_thickness_mm,
         limits,
         pair_cache,
-        initial_sample_layer_snapshot_matches,
+        sampled_layer_snapshot_matches,
     )
 }
 
@@ -3210,9 +3227,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
     paper_thickness_mm: f64,
     limits: StackedFoldPathDiagnosticLimitsV1,
     pair_cache: Option<&PositiveEndpointPairCacheUseV1<'_>>,
-    initial_sample_layer_snapshot_matches: Option<
-        &dyn Fn(&StaticCollisionDiagnosticSnapshot) -> bool,
-    >,
+    sampled_layer_snapshot_matches: Option<&SampledLayerSnapshotAdmissionMatcherV1<'_>>,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
     if limits.sample_intervals == 0 || limits.sample_intervals > MAX_STACKED_FOLD_PATH_SAMPLES_V1 {
         return Err(StackedFoldPathDiagnosticErrorV1::InvalidLimits);
@@ -3281,7 +3296,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
             .is_some_and(|maximum| path_excursion_degrees <= maximum);
     let mut all_positive_thickness_outer_shells = positive_thickness;
 
-    let has_initial_sample_layer_admission = initial_sample_layer_snapshot_matches.is_some();
+    let has_sampled_layer_admission = sampled_layer_snapshot_matches.is_some();
     let mut sampled_nonblocking_pose_count = 0;
     let mut first_sampled_blocking_angle_degrees = None;
     let mut positive_endpoint_memo_pair_entries = 0;
@@ -3494,23 +3509,21 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                     pair.shared_hinge_boundary_contact_proven()
                 }
             });
-        let initial_layer_order_admitted = if index == 0 {
-            match initial_sample_layer_snapshot_matches {
-                Some(matches) if matches(&snapshot) => true,
-                Some(_) => {
-                    return Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable);
-                }
-                None => false,
+        let sampled_layer_order_admitted = match sampled_layer_snapshot_matches {
+            Some(matches) if matches(index, &pose, &snapshot) => true,
+            Some(_) if index == 0 => {
+                return Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable);
             }
-        } else {
-            false
+            Some(_) | None => false,
         };
+        let ordinary_analytic_blocking_bypass = !has_sampled_layer_admission
+            && ((zero_thickness && analytic_single_hinge_topology)
+                || (zero_thickness && analytic_collinear_tree_topology)
+                || (zero_thickness && interval_two_hinge_chain_topology)
+                || narrow_shared_hinge_classified);
         if snapshot.has_prominent_blocking_hold()
-            && !initial_layer_order_admitted
-            && !(zero_thickness && analytic_single_hinge_topology)
-            && !(zero_thickness && analytic_collinear_tree_topology)
-            && !(zero_thickness && interval_two_hinge_chain_topology)
-            && !narrow_shared_hinge_classified
+            && !sampled_layer_order_admitted
+            && !ordinary_analytic_blocking_bypass
         {
             first_sampled_blocking_angle_degrees.get_or_insert(angle);
         } else {
@@ -3523,24 +3536,24 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
         first_sampled_blocking_angle_degrees,
         requested_angle_degrees,
         analytic_single_hinge_clearance: analytic_single_hinge_topology
-            && !has_initial_sample_layer_admission
+            && !has_sampled_layer_admission
             && (!positive_thickness || requested_angle_degrees <= 90.0)
             && (zero_thickness || all_positive_thickness_outer_shells)
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         analytic_collinear_tree_clearance: analytic_collinear_tree_topology
-            && !has_initial_sample_layer_admission
+            && !has_sampled_layer_admission
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         analytic_positive_two_hinge_clearance: positive_two_hinge_topology
-            && !has_initial_sample_layer_admission
+            && !has_sampled_layer_admission
             && positive_tree_max_angle_degrees_v1(model.hinges().len())
                 .is_some_and(|maximum| path_excursion_degrees <= maximum)
             && all_positive_thickness_outer_shells
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         interval_two_hinge_chain_clearance: interval_two_hinge_chain_topology
-            && !has_initial_sample_layer_admission
+            && !has_sampled_layer_admission
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         interval_tree_hinge_count: if interval_two_hinge_chain_topology {
@@ -10942,6 +10955,177 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn sampled_layer_callback_rejection_cannot_fall_through_analytic_bypasses() {
+        let model = one_hinge_model();
+        let edge = model.hinges()[0].edge();
+        let source = CanonicalHingeAngles::new(vec![HingeAngle::new(edge, 0.0).unwrap()]).unwrap();
+        let initial = model
+            .solve(Some(model.face_ids()[0]), &source)
+            .expect("initial single-hinge pose");
+        let target =
+            CanonicalHingeAngles::new(vec![HingeAngle::new(edge, 180.0).unwrap()]).unwrap();
+        let initial_sample_only =
+            |index: usize, _: &MaterialTreePose, _: &StaticCollisionDiagnosticSnapshot| index == 0;
+        let limits = StackedFoldPathDiagnosticLimitsV1::default();
+        let diagnostic = diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
+            &model,
+            &initial,
+            initial.hinge_angles(),
+            target.as_slice(),
+            0.0,
+            limits,
+            None,
+            Some(&initial_sample_only),
+        )
+        .expect("sampled-layer diagnostic");
+
+        assert_eq!(
+            diagnostic
+                .first_sampled_blocking_angle_degrees()
+                .map(f64::to_bits),
+            Some(180.0_f64.to_bits())
+        );
+        assert_eq!(
+            diagnostic.sampled_nonblocking_pose_count(),
+            diagnostic.sampled_pose_count() - 1
+        );
+        assert!(!diagnostic.continuous_clearance_certified());
+        assert_eq!(diagnostic.continuous_certificate_model_id(), None);
+    }
+
+    #[test]
+    fn nondirect_initial_only_flat_pair_blocks_the_first_positive_sample() {
+        // `SharedFeatureFlatStack` currently implies one direct hinge in every
+        // valid material Tree, so a production geometry with no direct hinge
+        // cannot be constructed. Exercise that defensive initial-only branch
+        // without forging geometry: retain one real exact flat-pair identity,
+        // then remove only its direct-hinge observation at the pure admission
+        // decision boundary. This protects future broader static evidence.
+        let model = two_hinge_triangle_model();
+        let stationary = &model.hinges()[0];
+        let moving = model.hinges()[1].edge();
+        let source = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| {
+                    HingeAngle::new(
+                        hinge.edge(),
+                        if hinge.edge() == stationary.edge() {
+                            180.0
+                        } else {
+                            0.0
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .expect("valid defensive source angles"),
+        )
+        .expect("canonical defensive source angles");
+        let initial = model
+            .solve(Some(model.face_ids()[0]), &source)
+            .expect("defensive initial Tree pose");
+        let target = CanonicalHingeAngles::new(
+            source
+                .as_slice()
+                .iter()
+                .map(|angle| {
+                    HingeAngle::new(
+                        angle.edge(),
+                        if angle.edge() == moving {
+                            37.0
+                        } else {
+                            angle.angle_degrees()
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .expect("valid defensive target angles"),
+        )
+        .expect("canonical defensive target angles");
+        let mut pair = (stationary.left_face(), stationary.right_face());
+        if pair.0.canonical_bytes() > pair.1.canonical_bytes() {
+            pair = (pair.1, pair.0);
+        }
+        let initial_only = initial_sample_layer_admission::classify_initial_layer_pair_admission_v1(
+            pair,
+            true,
+            crate::StaticCollisionPairDisposition::Indeterminate,
+            crate::IntersectionEvidenceV2::SharedFeatureFlatStack,
+            None,
+            None,
+        );
+        assert_eq!(initial_only.pair, pair);
+        assert_eq!(
+            initial_only.kind,
+            initial_sample_layer_admission::InitialLayerPairAdmissionKindV1::InitialOnlyFlatStack
+        );
+
+        let positive_missing_direct_seen = std::cell::Cell::new(false);
+        let initial_only_matcher =
+            |index: usize, _: &MaterialTreePose, snapshot: &StaticCollisionDiagnosticSnapshot| {
+                let observed = snapshot
+                    .pairs()
+                    .iter()
+                    .find(|candidate| {
+                        let mut candidate_pair = (candidate.first_face(), candidate.second_face());
+                        if candidate_pair.0.canonical_bytes() > candidate_pair.1.canonical_bytes() {
+                            candidate_pair = (candidate_pair.1, candidate_pair.0);
+                        }
+                        candidate_pair == pair
+                    })
+                    .expect("stationary exact flat pair identity");
+                assert_eq!(
+                    observed.evidence(),
+                    crate::IntersectionEvidenceV2::SharedFeatureFlatStack
+                );
+                assert_eq!(
+                    observed.disposition(),
+                    crate::StaticCollisionPairDisposition::Indeterminate
+                );
+                if index == 0 {
+                    return initial_only.kind
+                    == initial_sample_layer_admission::InitialLayerPairAdmissionKindV1::InitialOnlyFlatStack;
+                }
+                let rejection =
+                initial_sample_layer_admission::diagnose_nondirect_positive_flat_stack_for_test_v1(
+                    pair,
+                )
+                .expect_err("positive nondirect flat pair must not be admitted");
+                assert_eq!(rejection.pair, pair);
+                assert_eq!(
+                rejection.reason,
+                initial_sample_layer_admission::PersistentFlatStackSampleRejectionReasonV1::MissingDirectSharedHinge
+            );
+                positive_missing_direct_seen.set(true);
+                false
+            };
+        let limits = StackedFoldPathDiagnosticLimitsV1::default();
+        let diagnostic = diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
+            &model,
+            &initial,
+            initial.hinge_angles(),
+            target.as_slice(),
+            0.0,
+            limits,
+            None,
+            Some(&initial_only_matcher),
+        )
+        .expect("defensive initial-only path diagnostic");
+
+        assert!(positive_missing_direct_seen.get());
+        assert_eq!(
+            diagnostic
+                .first_sampled_blocking_angle_degrees()
+                .map(f64::to_bits),
+            Some((37.0 / limits.sample_intervals as f64).to_bits())
+        );
+        assert_eq!(diagnostic.sampled_nonblocking_pose_count(), 1);
+        assert!(!diagnostic.continuous_clearance_certified());
+        assert_eq!(diagnostic.continuous_certificate_model_id(), None);
     }
 
     #[test]

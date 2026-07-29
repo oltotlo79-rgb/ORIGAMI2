@@ -31,7 +31,7 @@
 //! `cos²(theta/2) = 0` would otherwise make the cleared radial inequality
 //! vacuously true for every point.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashSet};
 
 use num_bigint::BigInt;
 use num_rational::BigRational;
@@ -986,14 +986,14 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
         meter,
     )?;
     let length_squared = exact_dot(&axis, &axis, meter)?;
-    let left_axially_bounded = all_triangle_vertices_within_axis(
+    let left_axially_bounded = all_face_vertices_within_axis(
         left_face,
         &exact_hinge.world_endpoints[0],
         &axis,
         &length_squared,
         meter,
     )?;
-    let right_axially_bounded = all_triangle_vertices_within_axis(
+    let right_axially_bounded = all_face_vertices_within_axis(
         right_face,
         &exact_hinge.world_endpoints[0],
         &axis,
@@ -1474,7 +1474,7 @@ fn exact_local_y(
     })
 }
 
-fn all_triangle_vertices_within_axis(
+fn all_face_vertices_within_axis(
     face: &ExactFacePose,
     start: &ExactPoint3,
     axis: &ExactVector3,
@@ -1494,14 +1494,27 @@ fn all_triangle_vertices_within_axis(
 }
 
 /// Exact zero-thickness proof that one authenticated material-tree hinge is
-/// the complete intersection line of its two triangular incident faces.
+/// the complete intersection line of its two incident face planes.
 ///
 /// `prepare_rational_cayley_tree_pose_v1` first reconstructs one watertight
-/// pose: both incident faces reuse the exact hinge vertices. For a
-/// non-parallel pair of non-degenerate triangle planes, their complete plane
-/// intersection is therefore that hinge line. Because the hinge is a full
-/// boundary edge of both triangles, their surface intersection is exactly the
-/// finite shared edge and cannot extend into either relative interior.
+/// pose: both incident faces reuse the exact hinge vertices. For non-parallel
+/// co-oriented local-`+Y` planes, their complete plane intersection is
+/// therefore that hinge line. Both polygons must authenticate the hinge as a
+/// cyclic boundary edge. For the generalized non-triangular case, every
+/// boundary vertex must additionally project inside the closed finite hinge
+/// span. Their surface intersection is then exactly the finite shared edge
+/// and cannot extend into either relative interior. The established triangle
+/// theorem needs no projection restriction because a non-degenerate triangle
+/// meets the line of one of its complete boundary edges only on that edge.
+///
+/// Coplanar admission is generalized only to strictly convex polygons. Each
+/// face must have unique boundary points, nonzero cyclic edges, one strict
+/// cyclic turn sign relative to its exact face normal, and every non-hinge
+/// vertex strictly on one common side of the hinge line. The two exact side
+/// directions then prove either a positive-area neighborhood on their common
+/// side or boundary-only contact in opposite closed half-planes. Concave,
+/// collinear, repeated-point, and otherwise degenerate polygons remain
+/// deliberately unresolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ZeroThicknessSharedHingeBoundaryDiagnosticSummaryV1 {
     boundary_contact_proven_pairs: Vec<(FaceId, FaceId)>,
@@ -1645,19 +1658,19 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
             .iter()
             .find(|face| face.face == hinge.child)
             .ok_or(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose)?;
-        if first.boundary.len() != 3 || second.boundary.len() != 3 {
-            continue;
-        }
         if hinge.endpoint_vertices[0] == hinge.endpoint_vertices[1]
             || canonical_point_eq(&hinge.world_endpoints[0], &hinge.world_endpoints[1])
-            || !exact_face_contains_hinge_endpoints(first, hinge)
-            || !exact_face_contains_hinge_endpoints(second, hinge)
         {
             return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
         }
-        let first_normal = exact_triangle_normal(first, &mut meter)
+        if !exact_face_contains_hinge_boundary_edge(first, hinge)
+            || !exact_face_contains_hinge_boundary_edge(second, hinge)
+        {
+            continue;
+        }
+        let first_normal = exact_local_y(&first.transform, &mut meter)
             .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
-        let second_normal = exact_triangle_normal(second, &mut meter)
+        let second_normal = exact_local_y(&second.transform, &mut meter)
             .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
         if exact_vector_is_zero(&first_normal) || exact_vector_is_zero(&second_normal) {
             return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
@@ -1668,7 +1681,12 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
             &mut meter,
         )
         .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
-        if exact_vector_is_zero(&hinge_direction)
+        if exact_vector_is_zero(&hinge_direction) {
+            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        }
+        let hinge_length_squared = exact_dot(&hinge_direction, &hinge_direction, &mut meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        if hinge_length_squared.is_zero()
             || !exact_dot(&first_normal, &hinge_direction, &mut meter)
                 .map_err(map_zero_thickness_shared_hinge_boundary_error)?
                 .is_zero()
@@ -1678,46 +1696,69 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
         {
             return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
         }
+        let both_triangles = first.boundary.len() == 3 && second.boundary.len() == 3;
         let plane_intersection = exact_cross_vector(&first_normal, &second_normal, &mut meter)
             .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
         if !exact_vector_is_zero(&plane_intersection) {
-            boundary_contact_proven_pairs.push((pair[0], pair[1]));
+            let finite_intersection_proven = if both_triangles {
+                true
+            } else {
+                all_face_vertices_within_axis(
+                    first,
+                    &hinge.world_endpoints[0],
+                    &hinge_direction,
+                    &hinge_length_squared,
+                    &mut meter,
+                )
+                .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+                    && all_face_vertices_within_axis(
+                        second,
+                        &hinge.world_endpoints[0],
+                        &hinge_direction,
+                        &hinge_length_squared,
+                        &mut meter,
+                    )
+                    .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+            };
+            if finite_intersection_proven {
+                boundary_contact_proven_pairs.push((pair[0], pair[1]));
+            }
             continue;
         }
-
-        // Both non-degenerate triangles contain the same exact hinge line.
-        // In their now-proven common plane, the sign of the dot product
-        // between the two hinge-to-opposite-vertex side normals decides the
-        // complete coplanar case. Opposite sides intersect only on the shared
-        // boundary edge; the same side has a positive-area overlap in an open
-        // strip immediately adjacent to that edge.
-        let first_opposite = exact_triangle_opposite_hinge_vertex(first, hinge)?;
-        let second_opposite = exact_triangle_opposite_hinge_vertex(second, hinge)?;
-        let first_side = exact_cross_vector(
+        // Both strictly convex polygons contain the same complete hinge
+        // boundary edge in their common plane. Unique points, nonzero cyclic
+        // edges, strict same-sign turns, and one strict side for every
+        // non-hinge vertex prove that each complete polygon lies in one
+        // closed half-plane and has interior immediately next to the edge.
+        // The triangle theorem is the three-vertex instance of this helper.
+        let Some(first_side) = exact_strictly_convex_hinge_side(
+            first,
+            hinge,
+            &first_normal,
             &hinge_direction,
-            &exact_between(&hinge.world_endpoints[0], first_opposite, &mut meter)
-                .map_err(map_zero_thickness_shared_hinge_boundary_error)?,
             &mut meter,
         )
-        .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
-        let second_side = exact_cross_vector(
+        .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+        else {
+            continue;
+        };
+        let Some(second_side) = exact_strictly_convex_hinge_side(
+            second,
+            hinge,
+            &second_normal,
             &hinge_direction,
-            &exact_between(&hinge.world_endpoints[0], second_opposite, &mut meter)
-                .map_err(map_zero_thickness_shared_hinge_boundary_error)?,
             &mut meter,
         )
-        .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
-        if exact_vector_is_zero(&first_side) || exact_vector_is_zero(&second_side) {
-            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
-        }
+        .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+        else {
+            continue;
+        };
         let side_relation = exact_dot(&first_side, &second_side, &mut meter)
             .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
         if side_relation.is_positive() {
             area_overlap_proven_pairs.push((pair[0], pair[1]));
         } else if side_relation.is_negative() {
             boundary_contact_proven_pairs.push((pair[0], pair[1]));
-        } else {
-            return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
         }
     }
     let sort_pairs = |pairs: &mut Vec<(FaceId, FaceId)>| {
@@ -1752,45 +1793,120 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
     })
 }
 
-fn exact_face_contains_hinge_endpoints(
+fn exact_face_contains_hinge_boundary_edge(
     face: &ExactFacePose,
     hinge: &super::ExactHingePose,
 ) -> bool {
-    hinge
+    if face.boundary.len() < 3
+        || hinge.endpoint_vertices[0] == hinge.endpoint_vertices[1]
+        || canonical_point_eq(&hinge.world_endpoints[0], &hinge.world_endpoints[1])
+    {
+        return false;
+    }
+    let mut endpoint_indexes = [None; 2];
+    for (endpoint_index, (vertex, endpoint)) in hinge
         .endpoint_vertices
         .iter()
         .zip(&hinge.world_endpoints)
-        .all(|(vertex, endpoint)| {
-            face.boundary.iter().any(|(candidate, point)| {
-                candidate == vertex && canonical_point_eq(point, endpoint)
-            })
-        })
-}
-
-fn exact_triangle_normal(
-    face: &ExactFacePose,
-    meter: &mut WorkMeter<'_>,
-) -> Result<ExactVector3, CayleyError> {
-    let first = exact_between(&face.boundary[0].1, &face.boundary[1].1, meter)?;
-    let second = exact_between(&face.boundary[0].1, &face.boundary[2].1, meter)?;
-    exact_cross_vector(&first, &second, meter)
-}
-
-fn exact_triangle_opposite_hinge_vertex<'a>(
-    face: &'a ExactFacePose,
-    hinge: &super::ExactHingePose,
-) -> Result<&'a ExactPoint3, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
-    let mut opposite = face.boundary.iter().filter(|(vertex, _)| {
-        *vertex != hinge.endpoint_vertices[0] && *vertex != hinge.endpoint_vertices[1]
-    });
-    let point = &opposite
-        .next()
-        .ok_or(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose)?
-        .1;
-    if opposite.next().is_some() {
-        return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
+        .enumerate()
+    {
+        let mut matches = face
+            .boundary
+            .iter()
+            .enumerate()
+            .filter(|(_, (candidate, _))| candidate == vertex);
+        let Some((index, (_, point))) = matches.next() else {
+            return false;
+        };
+        if matches.next().is_some() || !canonical_point_eq(point, endpoint) {
+            return false;
+        }
+        endpoint_indexes[endpoint_index] = Some(index);
     }
-    Ok(point)
+    let [Some(first), Some(second)] = endpoint_indexes else {
+        return false;
+    };
+    (first + 1) % face.boundary.len() == second || (second + 1) % face.boundary.len() == first
+}
+
+fn exact_strictly_convex_hinge_side(
+    face: &ExactFacePose,
+    hinge: &ExactHingePose,
+    face_normal: &ExactVector3,
+    hinge_direction: &ExactVector3,
+    meter: &mut WorkMeter<'_>,
+) -> Result<Option<ExactVector3>, CayleyError> {
+    if !exact_face_contains_hinge_boundary_edge(face, hinge)
+        || exact_vector_is_zero(face_normal)
+        || exact_vector_is_zero(hinge_direction)
+    {
+        return Ok(None);
+    }
+    // The exact pose issuer already bounds the total boundary registry. Keep
+    // this theorem's additional uniqueness check linear and fallible rather
+    // than introducing an unmetered quadratic scan or an infallible
+    // allocation proportional to caller-controlled face cardinality.
+    let mut unique_boundary_points: HashSet<&[BigRational; 3]> = HashSet::new();
+    unique_boundary_points
+        .try_reserve(face.boundary.len())
+        .map_err(|_| CayleyError::ResourceLimitExceeded {
+            stage: STAGE,
+            resource: "strictly_convex_boundary_points",
+        })?;
+    if !face
+        .boundary
+        .iter()
+        .all(|(_, point)| unique_boundary_points.insert(&point.coordinates))
+    {
+        return Ok(None);
+    }
+
+    let mut turn_sign = None;
+    for index in 0..face.boundary.len() {
+        let current = &face.boundary[index].1;
+        let next = &face.boundary[(index + 1) % face.boundary.len()].1;
+        let after_next = &face.boundary[(index + 2) % face.boundary.len()].1;
+        let edge = exact_between(current, next, meter)?;
+        let next_edge = exact_between(next, after_next, meter)?;
+        if exact_vector_is_zero(&edge) || exact_vector_is_zero(&next_edge) {
+            return Ok(None);
+        }
+        let turn = exact_cross_vector(&edge, &next_edge, meter)?;
+        let signed_turn = exact_dot(&turn, face_normal, meter)?;
+        let current_sign = if signed_turn.is_positive() {
+            Ordering::Greater
+        } else if signed_turn.is_negative() {
+            Ordering::Less
+        } else {
+            return Ok(None);
+        };
+        if turn_sign.is_some_and(|established| established != current_sign) {
+            return Ok(None);
+        }
+        turn_sign = Some(current_sign);
+    }
+
+    let mut representative: Option<ExactVector3> = None;
+    for (vertex, point) in &face.boundary {
+        if hinge.endpoint_vertices.contains(vertex) {
+            continue;
+        }
+        let offset = exact_between(&hinge.world_endpoints[0], point, meter)?;
+        let side = exact_cross_vector(hinge_direction, &offset, meter)?;
+        if exact_vector_is_zero(&side) || exact_dot(&side, face_normal, meter)?.is_zero() {
+            return Ok(None);
+        }
+        if let Some(established) = &representative {
+            let collinearity = exact_cross_vector(established, &side, meter)?;
+            let direction = exact_dot(established, &side, meter)?;
+            if !exact_vector_is_zero(&collinearity) || !direction.is_positive() {
+                return Ok(None);
+            }
+        } else {
+            representative = Some(side);
+        }
+    }
+    Ok(representative)
 }
 
 const fn map_zero_thickness_shared_hinge_boundary_error(
@@ -3441,21 +3557,15 @@ mod tests {
         let above_end = face(200, 2);
         let below_start = face(-100, 3);
         assert!(
-            all_triangle_vertices_within_axis(&bounded, &start, &axis, &length_squared, &mut meter)
+            all_face_vertices_within_axis(&bounded, &start, &axis, &length_squared, &mut meter)
                 .unwrap()
         );
         assert!(
-            !all_triangle_vertices_within_axis(
-                &above_end,
-                &start,
-                &axis,
-                &length_squared,
-                &mut meter
-            )
-            .unwrap()
+            !all_face_vertices_within_axis(&above_end, &start, &axis, &length_squared, &mut meter)
+                .unwrap()
         );
         assert!(
-            !all_triangle_vertices_within_axis(
+            !all_face_vertices_within_axis(
                 &below_start,
                 &start,
                 &axis,
@@ -3465,9 +3575,9 @@ mod tests {
             .unwrap()
         );
         assert!(
-            all_triangle_vertices_within_axis(&bounded, &start, &axis, &length_squared, &mut meter)
+            all_face_vertices_within_axis(&bounded, &start, &axis, &length_squared, &mut meter)
                 .unwrap()
-                || all_triangle_vertices_within_axis(
+                || all_face_vertices_within_axis(
                     &above_end,
                     &start,
                     &axis,
@@ -3477,7 +3587,7 @@ mod tests {
                 .unwrap()
         );
         assert!(
-            !all_triangle_vertices_within_axis(
+            !all_face_vertices_within_axis(
                 &below_start,
                 &start,
                 &axis,
@@ -3485,7 +3595,7 @@ mod tests {
                 &mut meter
             )
             .unwrap()
-                && !all_triangle_vertices_within_axis(
+                && !all_face_vertices_within_axis(
                     &above_end,
                     &start,
                     &axis,
@@ -3513,6 +3623,302 @@ mod tests {
         )
         .unwrap();
         assert_eq!(prerequisite_kind(&analysis), ResultKind::Unresolved);
+    }
+
+    #[test]
+    fn polygon_hinge_boundary_preconditions_fail_closed_on_each_geometric_gap() {
+        let limits = prerequisite_exact_hard_limits();
+        let mut meter = WorkMeter::new(&limits);
+        let start = point(integer(0), integer(0), integer(0));
+        let end = point(integer(0), integer(0), integer(10));
+        let face_id = |suffix: u64| {
+            serde_json::from_str(&format!("\"00000000-0000-4000-a101-{suffix:012x}\""))
+                .expect("fixed polygon face id")
+        };
+        let identity = ExactRigidTransform {
+            rotation: super::super::identity_matrix(),
+            translation: vector(integer(0), integer(0), integer(0)),
+        };
+        let face = ExactFacePose {
+            face: face_id(1),
+            transform: identity.clone(),
+            boundary: vec![
+                (triangular_vertex_id(1), start.clone()),
+                (triangular_vertex_id(2), end.clone()),
+                (
+                    triangular_vertex_id(3),
+                    point(integer(5), integer(0), integer(10)),
+                ),
+                (
+                    triangular_vertex_id(4),
+                    point(integer(5), integer(0), integer(0)),
+                ),
+            ],
+        };
+        let hinge = ExactHingePose {
+            edge: triangular_edge_id(1000),
+            parent: face.face,
+            child: face_id(2),
+            rotation_sign: 1,
+            angle_magnitude_bits: 37.0_f64.to_bits(),
+            certificate: super::super::ExactAngleCertificate::Exact {
+                target_degrees: integer(37),
+            },
+            endpoint_vertices: [triangular_vertex_id(1), triangular_vertex_id(2)],
+            world_endpoints: [start.clone(), end.clone()],
+        };
+        assert!(exact_face_contains_hinge_boundary_edge(&face, &hinge));
+        let axis = exact_between(&start, &end, &mut meter).expect("nonzero finite axis");
+        let length_squared =
+            exact_dot(&axis, &axis, &mut meter).expect("finite axis length squared");
+        assert!(
+            all_face_vertices_within_axis(&face, &start, &axis, &length_squared, &mut meter,)
+                .expect("closed finite span test")
+        );
+
+        let mut nonadjacent = hinge.clone();
+        nonadjacent.endpoint_vertices[1] = triangular_vertex_id(3);
+        nonadjacent.world_endpoints[1] = face.boundary[2].1.clone();
+        assert!(!exact_face_contains_hinge_boundary_edge(
+            &face,
+            &nonadjacent
+        ));
+
+        let mut mismatched_endpoint = hinge.clone();
+        mismatched_endpoint.world_endpoints[1].coordinates[0] = integer(1);
+        assert!(!exact_face_contains_hinge_boundary_edge(
+            &face,
+            &mismatched_endpoint
+        ));
+
+        let mut duplicate_endpoint = face.clone();
+        duplicate_endpoint.boundary[3].0 = hinge.endpoint_vertices[0];
+        assert!(!exact_face_contains_hinge_boundary_edge(
+            &duplicate_endpoint,
+            &hinge
+        ));
+
+        let mut outside_span = face.clone();
+        outside_span.boundary[2].1.coordinates[2] = integer(11);
+        assert!(
+            !all_face_vertices_within_axis(
+                &outside_span,
+                &start,
+                &axis,
+                &length_squared,
+                &mut meter,
+            )
+            .expect("outside-span polygon test")
+        );
+
+        let first_normal =
+            exact_local_y(&identity, &mut meter).expect("first exact local +Y normal");
+        let parallel_normal =
+            exact_local_y(&identity, &mut meter).expect("parallel exact local +Y normal");
+        assert!(exact_vector_is_zero(
+            &exact_cross_vector(&first_normal, &parallel_normal, &mut meter)
+                .expect("parallel plane cross")
+        ));
+        let quarter_turn = ExactRigidTransform {
+            rotation: [
+                [integer(0), integer(-1), integer(0)],
+                [integer(1), integer(0), integer(0)],
+                [integer(0), integer(0), integer(1)],
+            ],
+            translation: vector(integer(0), integer(0), integer(0)),
+        };
+        let nonparallel_normal =
+            exact_local_y(&quarter_turn, &mut meter).expect("nonparallel exact local +Y normal");
+        assert!(!exact_vector_is_zero(
+            &exact_cross_vector(&first_normal, &nonparallel_normal, &mut meter)
+                .expect("nonparallel plane cross")
+        ));
+    }
+
+    #[test]
+    fn strictly_convex_coplanar_hinge_side_is_exact_symmetric_and_fail_closed() {
+        let limits = prerequisite_exact_hard_limits();
+        let mut meter = WorkMeter::new(&limits);
+        let start = point(integer(0), integer(0), integer(0));
+        let end = point(integer(0), integer(0), integer(10));
+        let normal = local_y();
+        let axis = exact_between(&start, &end, &mut meter).expect("nonzero hinge axis");
+        let face_id = |suffix: u64| {
+            serde_json::from_str(&format!("\"00000000-0000-4000-a102-{suffix:012x}\""))
+                .expect("fixed convex face id")
+        };
+        let identity = ExactRigidTransform {
+            rotation: super::super::identity_matrix(),
+            translation: vector(integer(0), integer(0), integer(0)),
+        };
+        let make_face = |suffix: u64, coordinates: &[(u64, i64, i64)]| -> ExactFacePose {
+            ExactFacePose {
+                face: face_id(suffix),
+                transform: identity.clone(),
+                boundary: coordinates
+                    .iter()
+                    .map(|(vertex, x, z)| {
+                        (
+                            triangular_vertex_id(*vertex),
+                            point(integer(*x), integer(0), integer(*z)),
+                        )
+                    })
+                    .collect(),
+            }
+        };
+        let positive = make_face(1, &[(1, 0, 0), (2, 0, 10), (3, 5, 10), (4, 5, 0)]);
+        let positive_narrow = make_face(2, &[(1, 0, 0), (2, 0, 10), (5, 3, 10), (6, 3, 0)]);
+        let negative = make_face(3, &[(1, 0, 0), (2, 0, 10), (7, -5, 10), (8, -5, 0)]);
+        let triangle_positive = make_face(4, &[(1, 0, 0), (2, 0, 10), (9, 5, 5)]);
+        let triangle_negative = make_face(5, &[(1, 0, 0), (2, 0, 10), (10, -5, 5)]);
+        let hinge = ExactHingePose {
+            edge: triangular_edge_id(1001),
+            parent: positive.face,
+            child: positive_narrow.face,
+            rotation_sign: 1,
+            angle_magnitude_bits: 180.0_f64.to_bits(),
+            certificate: super::super::ExactAngleCertificate::Exact {
+                target_degrees: integer(180),
+            },
+            endpoint_vertices: [triangular_vertex_id(1), triangular_vertex_id(2)],
+            world_endpoints: [start.clone(), end.clone()],
+        };
+        let side = |face: &ExactFacePose,
+                    hinge: &ExactHingePose,
+                    axis: &ExactVector3,
+                    meter: &mut WorkMeter<'_>| {
+            exact_strictly_convex_hinge_side(face, hinge, &normal, axis, meter)
+                .expect("bounded exact side analysis")
+        };
+
+        let positive_side =
+            side(&positive, &hinge, &axis, &mut meter).expect("strict positive quadrilateral");
+        let positive_narrow_side = side(&positive_narrow, &hinge, &axis, &mut meter)
+            .expect("second strict positive quadrilateral");
+        let negative_side =
+            side(&negative, &hinge, &axis, &mut meter).expect("strict negative quadrilateral");
+        assert!(
+            exact_dot(&positive_side, &positive_narrow_side, &mut meter)
+                .expect("same-side relation")
+                .is_positive(),
+            "same-side quadrilaterals have a positive-area shared-edge neighborhood"
+        );
+        assert!(
+            exact_dot(&positive_side, &negative_side, &mut meter)
+                .expect("opposite-side relation")
+                .is_negative(),
+            "opposite-side quadrilaterals meet only on the shared boundary edge"
+        );
+        assert!(
+            exact_dot(&negative_side, &positive_side, &mut meter)
+                .expect("parent-child swapped opposite-side relation")
+                .is_negative()
+        );
+
+        let mut parent_child_swapped = hinge.clone();
+        std::mem::swap(
+            &mut parent_child_swapped.parent,
+            &mut parent_child_swapped.child,
+        );
+        let swapped_first = side(&positive_narrow, &parent_child_swapped, &axis, &mut meter)
+            .expect("parent-child swapped first side");
+        let swapped_second = side(&positive, &parent_child_swapped, &axis, &mut meter)
+            .expect("parent-child swapped second side");
+        assert!(
+            exact_dot(&swapped_first, &swapped_second, &mut meter)
+                .expect("parent-child swapped same-side relation")
+                .is_positive()
+        );
+
+        let triangle_positive_side =
+            side(&triangle_positive, &hinge, &axis, &mut meter).expect("legacy positive triangle");
+        let triangle_negative_side =
+            side(&triangle_negative, &hinge, &axis, &mut meter).expect("legacy negative triangle");
+        assert!(
+            exact_dot(&triangle_positive_side, &positive_side, &mut meter)
+                .expect("triangle same-side relation")
+                .is_positive()
+        );
+        assert!(
+            exact_dot(&triangle_positive_side, &triangle_negative_side, &mut meter)
+                .expect("triangle opposite-side relation")
+                .is_negative()
+        );
+
+        let mut reversed_hinge = hinge.clone();
+        reversed_hinge.endpoint_vertices.reverse();
+        reversed_hinge.world_endpoints.reverse();
+        let reversed_axis = exact_between(
+            &reversed_hinge.world_endpoints[0],
+            &reversed_hinge.world_endpoints[1],
+            &mut meter,
+        )
+        .expect("reversed nonzero axis");
+        let reversed_positive = side(&positive, &reversed_hinge, &reversed_axis, &mut meter)
+            .expect("endpoint-reversed positive side");
+        let reversed_negative = side(&negative, &reversed_hinge, &reversed_axis, &mut meter)
+            .expect("endpoint-reversed negative side");
+        assert!(
+            exact_dot(&reversed_positive, &reversed_negative, &mut meter)
+                .expect("endpoint-reversed relation")
+                .is_negative()
+        );
+
+        let mut cycle_reversed = positive.clone();
+        cycle_reversed.boundary.reverse();
+        let reversed_cycle_side = side(&cycle_reversed, &hinge, &axis, &mut meter)
+            .expect("cycle-reversed strict convex polygon");
+        assert!(
+            exact_dot(&reversed_cycle_side, &positive_narrow_side, &mut meter)
+                .expect("cycle-reversed relation")
+                .is_positive()
+        );
+
+        let mut repeated_point = positive.clone();
+        repeated_point.boundary[2].1 = repeated_point.boundary[0].1.clone();
+        assert!(side(&repeated_point, &hinge, &axis, &mut meter).is_none());
+
+        let zero_edge = make_face(
+            6,
+            &[(1, 0, 0), (2, 0, 10), (11, 5, 10), (12, 5, 10), (13, 5, 0)],
+        );
+        assert!(side(&zero_edge, &hinge, &axis, &mut meter).is_none());
+
+        let collinear_turn = make_face(
+            7,
+            &[(1, 0, 0), (2, 0, 10), (14, 5, 10), (15, 5, 5), (16, 5, 0)],
+        );
+        assert!(side(&collinear_turn, &hinge, &axis, &mut meter).is_none());
+
+        let concave = make_face(
+            8,
+            &[(1, 0, 0), (2, 0, 10), (17, 5, 10), (18, 2, 5), (19, 5, 0)],
+        );
+        assert!(side(&concave, &hinge, &axis, &mut meter).is_none());
+
+        let on_hinge_line = make_face(
+            9,
+            &[(1, 0, 0), (2, 0, 10), (20, 5, 10), (21, 5, 0), (22, 0, 5)],
+        );
+        assert!(side(&on_hinge_line, &hinge, &axis, &mut meter).is_none());
+
+        let mixed_sides = make_face(
+            10,
+            &[(1, 0, 0), (2, 0, 10), (23, 5, 10), (24, -5, 5), (25, 5, 0)],
+        );
+        assert!(side(&mixed_sides, &hinge, &axis, &mut meter).is_none());
+
+        let zero = vector(integer(0), integer(0), integer(0));
+        assert!(
+            exact_strictly_convex_hinge_side(&positive, &hinge, &zero, &axis, &mut meter)
+                .expect("zero-normal fail-closed analysis")
+                .is_none()
+        );
+        assert!(
+            exact_strictly_convex_hinge_side(&positive, &hinge, &normal, &zero, &mut meter)
+                .expect("zero-axis fail-closed analysis")
+                .is_none()
+        );
     }
 
     #[test]
@@ -3738,14 +4144,14 @@ mod tests {
         let axis = exact_between(&start, &end, &mut meter).unwrap();
         let length_squared = exact_dot(&axis, &axis, &mut meter).unwrap();
         assert!(
-            all_triangle_vertices_within_axis(&face, &start, &axis, &length_squared, &mut meter)
+            all_face_vertices_within_axis(&face, &start, &axis, &length_squared, &mut meter)
                 .unwrap()
         );
 
         let mut beyond_both_endpoints = face;
         beyond_both_endpoints.boundary[2].1 = point(integer(1), integer(0), integer(-3));
         assert!(
-            !all_triangle_vertices_within_axis(
+            !all_face_vertices_within_axis(
                 &beyond_both_endpoints,
                 &start,
                 &axis,

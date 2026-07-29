@@ -1,8 +1,10 @@
-//! Exact, source-bound authority for one flat initial path sample.
+//! Exact, source-bound authority for one flat initial path sample and its
+//! unchanged, directly hinged flat-stack pairs at later sampled poses.
 //!
 //! This module deliberately keeps the retained proof private. The parent path
-//! diagnostic can only ask whether one exact static snapshot has the same
-//! issuer, pose, thickness, and diagnostics as the prepared admission.
+//! diagnostic can only ask whether an exact static snapshot has the same
+//! issuer, pose, thickness, and pair-scoped evidence as the prepared
+//! admission.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -19,7 +21,7 @@ use crate::{
     NonFlatCellTransportErrorV1, NonFlatFacePairOrderStructuralV1,
     NonFlatFoldedFaceStructuralRefV1, NonFlatLayerOrderStructuralSourceV1,
     NonFlatOverlapCellStructuralRefV1, StaticCollisionDiagnosticSnapshot, StaticCollisionLimits,
-    StaticCollisionPairDisposition, diagnose_static_collision_geometry,
+    StaticCollisionPairDisposition, TopologyRelation, diagnose_static_collision_geometry,
     validate_non_flat_layer_order_structure_v1,
 };
 
@@ -169,14 +171,172 @@ struct InitialSampleLayerAdmissionProofV1 {
     pose: MaterialTreePose,
     paper_thickness_bits: u64,
     initial_static_snapshot: StaticCollisionDiagnosticSnapshot,
+    initial_flat_pairs: Vec<InitialFlatPairAdmissionV1>,
+    persistent_flat_hinges: Vec<PersistentFlatHingeAdmissionV1>,
 }
 
-/// Opaque, source-type-bound admission for the already authenticated initial
-/// sample of one bounded path diagnosis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InitialFlatPairAdmissionV1 {
+    first_face: FaceId,
+    second_face: FaceId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PersistentFlatHingeAdmissionV1 {
+    first_face: FaceId,
+    second_face: FaceId,
+    hinge: EdgeId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum InitialLayerPairAdmissionKindV1 {
+    UnorderedNonblocking,
+    InitialOnlyFlatStack,
+    PersistentFlatStack { hinge: EdgeId },
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct InitialLayerPairAdmissionDecisionV1 {
+    pub(super) pair: (FaceId, FaceId),
+    pub(super) kind: InitialLayerPairAdmissionKindV1,
+}
+
+pub(super) fn classify_initial_layer_pair_admission_v1(
+    pair: (FaceId, FaceId),
+    layer_ordered: bool,
+    disposition: StaticCollisionPairDisposition,
+    evidence: IntersectionEvidenceV2,
+    direct_hinge: Option<EdgeId>,
+    initial_hinge_angle_bits: Option<u64>,
+) -> InitialLayerPairAdmissionDecisionV1 {
+    let pair = initial_layer_canonical_pair_v1(pair.0, pair.1);
+    let kind = if disposition == StaticCollisionPairDisposition::Indeterminate {
+        if evidence != IntersectionEvidenceV2::SharedFeatureFlatStack || !layer_ordered {
+            InitialLayerPairAdmissionKindV1::Rejected
+        } else if let Some(hinge) = direct_hinge
+            && initial_hinge_angle_bits == Some(180.0_f64.to_bits())
+        {
+            InitialLayerPairAdmissionKindV1::PersistentFlatStack { hinge }
+        } else {
+            InitialLayerPairAdmissionKindV1::InitialOnlyFlatStack
+        }
+    } else if layer_ordered {
+        InitialLayerPairAdmissionKindV1::Rejected
+    } else {
+        InitialLayerPairAdmissionKindV1::UnorderedNonblocking
+    };
+    InitialLayerPairAdmissionDecisionV1 { pair, kind }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PersistentFlatStackSampleRejectionReasonV1 {
+    IncompletePairScan,
+    PenetrationPresent,
+    AuthorityPairMissing,
+    MissingDirectSharedHinge,
+    HingeMoves,
+    InitialHingeNotFlat,
+    CurrentHingeNotFlat,
+    TopologyMismatch,
+    EvidenceMismatch,
+    DispositionMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PersistentFlatStackSampleRejectionV1 {
+    pub(super) pair: (FaceId, FaceId),
+    pub(super) reason: PersistentFlatStackSampleRejectionReasonV1,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PersistentFlatStackSampleObservationV1 {
+    pair: (FaceId, FaceId),
+    complete_pair_scan: bool,
+    penetration_free: bool,
+    authority_pair_authenticated: bool,
+    direct_shared_hinge_authenticated: bool,
+    hinge_is_stationary: bool,
+    initial_hinge_angle_bits: Option<u64>,
+    current_hinge_angle_bits: Option<u64>,
+    topology: TopologyRelation,
+    evidence: IntersectionEvidenceV2,
+    disposition: StaticCollisionPairDisposition,
+}
+
+#[cfg(test)]
+fn persistent_flat_stack_sample_observation_is_admissible_v1(
+    observation: PersistentFlatStackSampleObservationV1,
+) -> bool {
+    diagnose_persistent_flat_stack_sample_observation_v1(observation).is_ok()
+}
+
+fn diagnose_persistent_flat_stack_sample_observation_v1(
+    observation: PersistentFlatStackSampleObservationV1,
+) -> Result<(), PersistentFlatStackSampleRejectionV1> {
+    let reason = if !observation.complete_pair_scan {
+        Some(PersistentFlatStackSampleRejectionReasonV1::IncompletePairScan)
+    } else if !observation.penetration_free {
+        Some(PersistentFlatStackSampleRejectionReasonV1::PenetrationPresent)
+    } else if !observation.authority_pair_authenticated {
+        Some(PersistentFlatStackSampleRejectionReasonV1::AuthorityPairMissing)
+    } else if !observation.direct_shared_hinge_authenticated {
+        Some(PersistentFlatStackSampleRejectionReasonV1::MissingDirectSharedHinge)
+    } else if !observation.hinge_is_stationary {
+        Some(PersistentFlatStackSampleRejectionReasonV1::HingeMoves)
+    } else if observation.initial_hinge_angle_bits != Some(180.0_f64.to_bits()) {
+        Some(PersistentFlatStackSampleRejectionReasonV1::InitialHingeNotFlat)
+    } else if observation.current_hinge_angle_bits != Some(180.0_f64.to_bits()) {
+        Some(PersistentFlatStackSampleRejectionReasonV1::CurrentHingeNotFlat)
+    } else if observation.topology != TopologyRelation::SharedHingeEdge {
+        Some(PersistentFlatStackSampleRejectionReasonV1::TopologyMismatch)
+    } else if observation.evidence != IntersectionEvidenceV2::SharedFeatureFlatStack {
+        Some(PersistentFlatStackSampleRejectionReasonV1::EvidenceMismatch)
+    } else if observation.disposition != StaticCollisionPairDisposition::Indeterminate {
+        Some(PersistentFlatStackSampleRejectionReasonV1::DispositionMismatch)
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => Err(PersistentFlatStackSampleRejectionV1 {
+            pair: initial_layer_canonical_pair_v1(observation.pair.0, observation.pair.1),
+            reason,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Defensive test seam for an initial-only pair class that current valid Tree
+/// geometry cannot emit: `SharedFeatureFlatStack` requires shared-hinge
+/// topology, and a valid Tree gives that pair one direct hinge. Keeping this
+/// decision explicit prevents a future broader static classifier from
+/// accidentally turning source order into positive-sample authority.
+#[cfg(test)]
+pub(super) fn diagnose_nondirect_positive_flat_stack_for_test_v1(
+    pair: (FaceId, FaceId),
+) -> Result<(), PersistentFlatStackSampleRejectionV1> {
+    diagnose_persistent_flat_stack_sample_observation_v1(PersistentFlatStackSampleObservationV1 {
+        pair,
+        complete_pair_scan: true,
+        penetration_free: true,
+        authority_pair_authenticated: true,
+        direct_shared_hinge_authenticated: false,
+        hinge_is_stationary: true,
+        initial_hinge_angle_bits: Some(180.0_f64.to_bits()),
+        current_hinge_angle_bits: Some(180.0_f64.to_bits()),
+        topology: TopologyRelation::SharedHingeEdge,
+        evidence: IntersectionEvidenceV2::SharedFeatureFlatStack,
+        disposition: StaticCollisionPairDisposition::Indeterminate,
+    })
+}
+
+/// Opaque, source-type-bound admission for the authenticated initial sample
+/// and stationary, bit-exact-flat direct hinges of one bounded diagnosis.
 ///
 /// The admission never certifies an open path interval and cannot authorize a
-/// project mutation. It permits only the exact initial static snapshot retained
-/// inside this value to use an independently prepared layer order.
+/// project mutation. At positive samples it permits only canonical pairs from
+/// the retained initial authority whose direct hinge is outside the moving set
+/// and remains bit-exact 180 degrees.
 pub struct NativeStackedFoldInitialSampleLayerAdmissionV1<T> {
     proof: Arc<InitialSampleLayerAdmissionProofV1>,
     source_type: PhantomData<fn() -> T>,
@@ -216,6 +376,148 @@ pub(super) fn initial_sample_layer_admission_matches_snapshot_v1<T>(
         && admission.proof.pose.same_instance(initial_pose)
         && admission.proof.paper_thickness_bits == paper_thickness_mm.to_bits()
         && admission.proof.initial_static_snapshot == *snapshot
+}
+
+/// Revalidates the exact initial snapshot, then admits at later sampled poses
+/// only the same source-authenticated flat-stack pairs whose direct shared
+/// hinge remains bit-exact flat and is not one of the moving hinges.
+///
+/// This is sampled diagnostic admission only. It does not prove any open path
+/// interval and cannot issue a continuous-motion or mutation certificate.
+pub(super) struct SampledLayerAdmissionSnapshotV1<'a> {
+    pub(super) model: &'a MaterialTreeKinematicsModel,
+    pub(super) initial_pose: &'a MaterialTreePose,
+    pub(super) moving_hinges: &'a [EdgeId],
+    pub(super) sample_index: usize,
+    pub(super) sample_pose: &'a MaterialTreePose,
+    pub(super) paper_thickness_mm: f64,
+    pub(super) snapshot: &'a StaticCollisionDiagnosticSnapshot,
+}
+
+pub(super) fn sampled_layer_admission_matches_snapshot_v1<T>(
+    admission: &NativeStackedFoldInitialSampleLayerAdmissionV1<T>,
+    input: SampledLayerAdmissionSnapshotV1<'_>,
+) -> bool {
+    let SampledLayerAdmissionSnapshotV1 {
+        model,
+        initial_pose,
+        moving_hinges,
+        sample_index,
+        sample_pose,
+        paper_thickness_mm,
+        snapshot,
+    } = input;
+    if admission.proof.model != *model
+        || !admission.proof.pose.same_instance(initial_pose)
+        || admission.proof.paper_thickness_bits != paper_thickness_mm.to_bits()
+        || paper_thickness_mm.to_bits() != 0.0_f64.to_bits()
+        || !model.owns_pose(initial_pose)
+        || !model.owns_pose(sample_pose)
+        || sample_pose.fixed_face() != initial_pose.fixed_face()
+    {
+        return false;
+    }
+    if sample_index == 0 {
+        return sample_pose.hinge_angles() == initial_pose.hinge_angles()
+            && initial_sample_layer_admission_matches_snapshot_v1(
+                admission,
+                model,
+                initial_pose,
+                paper_thickness_mm,
+                snapshot,
+            );
+    }
+
+    let Some(expected_pairs) = model
+        .face_ids()
+        .len()
+        .checked_sub(1)
+        .and_then(|prior| model.face_ids().len().checked_mul(prior))
+        .and_then(|ordered| ordered.checked_div(2))
+    else {
+        return false;
+    };
+    let complete_pair_scan = snapshot.face_count() == model.face_ids().len()
+        && snapshot.expected_unordered_face_pairs() == expected_pairs
+        && snapshot.pairs().len() == expected_pairs
+        && snapshot.candidate_excluded_pairs() == 0;
+    let penetration_free = snapshot.penetrating_pairs() == 0;
+    if !complete_pair_scan || !penetration_free {
+        return false;
+    }
+
+    snapshot.pairs().iter().all(|pair| {
+        if pair.disposition() != StaticCollisionPairDisposition::Indeterminate {
+            return pair.disposition() != StaticCollisionPairDisposition::Penetrating;
+        }
+        let (first_face, second_face) =
+            initial_layer_canonical_pair_v1(pair.first_face(), pair.second_face());
+        let key = (first_face.canonical_bytes(), second_face.canonical_bytes());
+        let authenticated = admission
+            .proof
+            .initial_flat_pairs
+            .binary_search_by_key(&key, |entry| {
+                (
+                    entry.first_face.canonical_bytes(),
+                    entry.second_face.canonical_bytes(),
+                )
+            })
+            .ok()
+            .and_then(|index| admission.proof.initial_flat_pairs.get(index));
+        let authenticated_hinge = admission
+            .proof
+            .persistent_flat_hinges
+            .binary_search_by_key(&key, |entry| {
+                (
+                    entry.first_face.canonical_bytes(),
+                    entry.second_face.canonical_bytes(),
+                )
+            })
+            .ok()
+            .and_then(|index| admission.proof.persistent_flat_hinges.get(index))
+            .map(|entry| entry.hinge);
+        let direct_hinge = direct_shared_hinge_v1(model, first_face, second_face);
+        let observation = PersistentFlatStackSampleObservationV1 {
+            pair: (first_face, second_face),
+            complete_pair_scan,
+            penetration_free,
+            authority_pair_authenticated: authenticated.is_some(),
+            direct_shared_hinge_authenticated: authenticated_hinge
+                .zip(direct_hinge)
+                .is_some_and(|(authenticated, direct)| authenticated == direct),
+            hinge_is_stationary: authenticated_hinge
+                .is_some_and(|hinge| !moving_hinges.contains(&hinge)),
+            initial_hinge_angle_bits: authenticated_hinge
+                .and_then(|hinge| hinge_angle_bits_v1(initial_pose, hinge)),
+            current_hinge_angle_bits: authenticated_hinge
+                .and_then(|hinge| hinge_angle_bits_v1(sample_pose, hinge)),
+            topology: pair.topology(),
+            evidence: pair.evidence(),
+            disposition: pair.disposition(),
+        };
+        let decision = diagnose_persistent_flat_stack_sample_observation_v1(observation);
+        decision.is_ok()
+    })
+}
+
+fn direct_shared_hinge_v1(
+    model: &MaterialTreeKinematicsModel,
+    first_face: FaceId,
+    second_face: FaceId,
+) -> Option<EdgeId> {
+    let mut matches = model.hinges().iter().filter(|hinge| {
+        (hinge.left_face() == first_face && hinge.right_face() == second_face)
+            || (hinge.left_face() == second_face && hinge.right_face() == first_face)
+    });
+    let hinge = matches.next()?.edge();
+    matches.next().is_none().then_some(hinge)
+}
+
+fn hinge_angle_bits_v1(pose: &MaterialTreePose, hinge: EdgeId) -> Option<u64> {
+    pose.hinge_angles()
+        .iter()
+        .find(|angle| angle.edge() == hinge)
+        .map(|angle| angle.angle_degrees().to_bits())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -669,6 +971,10 @@ where
     }
     let mut diagnosed_pairs = HashSet::<(FaceId, FaceId)>::new();
     initial_layer_resource_limit_v1(diagnosed_pairs.try_reserve(expected_pairs))?;
+    let mut initial_flat_pairs = Vec::new();
+    initial_layer_resource_limit_v1(initial_flat_pairs.try_reserve_exact(ordered_pairs.len()))?;
+    let mut persistent_flat_hinges = Vec::new();
+    initial_layer_resource_limit_v1(persistent_flat_hinges.try_reserve_exact(ordered_pairs.len()))?;
     for pair in initial_static_snapshot.pairs() {
         if pair.first_face() == pair.second_face()
             || !face_index.contains_key(&pair.first_face())
@@ -681,17 +987,67 @@ where
             return initial_layer_unavailable_v1();
         }
         let layer_ordered = ordered_pairs.contains(&canonical);
-        if pair.disposition() == StaticCollisionPairDisposition::Indeterminate {
-            if pair.evidence() != IntersectionEvidenceV2::SharedFeatureFlatStack || !layer_ordered {
+        let direct_hinge = direct_shared_hinge_v1(model, canonical.0, canonical.1);
+        let decision = classify_initial_layer_pair_admission_v1(
+            canonical,
+            layer_ordered,
+            pair.disposition(),
+            pair.evidence(),
+            direct_hinge,
+            direct_hinge.and_then(|hinge| hinge_angle_bits_v1(initial_pose, hinge)),
+        );
+        match decision.kind {
+            InitialLayerPairAdmissionKindV1::PersistentFlatStack { hinge } => {
+                initial_flat_pairs.push(InitialFlatPairAdmissionV1 {
+                    first_face: decision.pair.0,
+                    second_face: decision.pair.1,
+                });
+                persistent_flat_hinges.push(PersistentFlatHingeAdmissionV1 {
+                    first_face: decision.pair.0,
+                    second_face: decision.pair.1,
+                    hinge,
+                });
+            }
+            InitialLayerPairAdmissionKindV1::InitialOnlyFlatStack => {
+                initial_flat_pairs.push(InitialFlatPairAdmissionV1 {
+                    first_face: decision.pair.0,
+                    second_face: decision.pair.1,
+                });
+            }
+            InitialLayerPairAdmissionKindV1::Rejected => {
                 return initial_layer_unavailable_v1();
             }
-        } else if layer_ordered {
-            return initial_layer_unavailable_v1();
+            InitialLayerPairAdmissionKindV1::UnorderedNonblocking => {}
         }
     }
     if diagnosed_pairs.len() != expected_pairs
         || ordered_pairs.len() != initial_static_snapshot.indeterminate_pairs()
+        || initial_flat_pairs.len() != ordered_pairs.len()
     {
+        return initial_layer_unavailable_v1();
+    }
+    initial_flat_pairs.sort_unstable_by_key(|entry| {
+        (
+            entry.first_face.canonical_bytes(),
+            entry.second_face.canonical_bytes(),
+        )
+    });
+    if initial_flat_pairs.windows(2).any(|entries| {
+        entries[0].first_face == entries[1].first_face
+            && entries[0].second_face == entries[1].second_face
+    }) {
+        return initial_layer_unavailable_v1();
+    }
+    persistent_flat_hinges.sort_unstable_by_key(|entry| {
+        (
+            entry.first_face.canonical_bytes(),
+            entry.second_face.canonical_bytes(),
+        )
+    });
+    if persistent_flat_hinges.windows(2).any(|entries| {
+        entries[0].first_face == entries[1].first_face
+            && entries[0].second_face == entries[1].second_face
+    }) {
         return initial_layer_unavailable_v1();
     }
 
@@ -701,6 +1057,8 @@ where
             pose: initial_pose.clone(),
             paper_thickness_bits: paper_thickness_mm.to_bits(),
             initial_static_snapshot,
+            initial_flat_pairs,
+            persistent_flat_hinges,
         }),
         source_type: PhantomData,
     })
@@ -843,6 +1201,113 @@ mod tests {
             max_integer_bits: max_integer_bytes.saturating_mul(BITS_PER_BYTE_V1),
             max_integer_bytes,
         }
+    }
+
+    fn valid_positive_sample_observation_v1(
+        pair: (FaceId, FaceId),
+    ) -> PersistentFlatStackSampleObservationV1 {
+        PersistentFlatStackSampleObservationV1 {
+            pair,
+            complete_pair_scan: true,
+            penetration_free: true,
+            authority_pair_authenticated: true,
+            direct_shared_hinge_authenticated: true,
+            hinge_is_stationary: true,
+            initial_hinge_angle_bits: Some(180.0_f64.to_bits()),
+            current_hinge_angle_bits: Some(180.0_f64.to_bits()),
+            topology: TopologyRelation::SharedHingeEdge,
+            evidence: IntersectionEvidenceV2::SharedFeatureFlatStack,
+            disposition: StaticCollisionPairDisposition::Indeterminate,
+        }
+    }
+
+    #[test]
+    fn positive_sample_persistent_flat_stack_rejects_each_failed_strict_condition() {
+        let valid = valid_positive_sample_observation_v1((FaceId::new(), FaceId::new()));
+        assert!(persistent_flat_stack_sample_observation_is_admissible_v1(
+            valid
+        ));
+        let invalid = [
+            PersistentFlatStackSampleObservationV1 {
+                complete_pair_scan: false,
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                penetration_free: false,
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                authority_pair_authenticated: false,
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                direct_shared_hinge_authenticated: false,
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                hinge_is_stationary: false,
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                initial_hinge_angle_bits: Some(180.0_f64.to_bits() - 1),
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                current_hinge_angle_bits: Some(180.0_f64.to_bits() - 1),
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                topology: TopologyRelation::SharedVertex,
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                evidence: IntersectionEvidenceV2::Indeterminate,
+                ..valid
+            },
+            PersistentFlatStackSampleObservationV1 {
+                disposition: StaticCollisionPairDisposition::Penetrating,
+                ..valid
+            },
+        ];
+        for observation in invalid {
+            assert!(
+                !persistent_flat_stack_sample_observation_is_admissible_v1(observation),
+                "every strict positive-sample condition is independently mandatory: \
+                 {observation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nondirect_source_ordered_flat_pair_is_initial_only_and_reports_positive_reason() {
+        // A current valid Tree cannot produce this static row: shared-hinge
+        // flat-stack evidence also supplies one direct Tree hinge. This pure
+        // boundary regression deliberately preserves the defensive behavior
+        // if a future static classifier broadens that evidence class.
+        let first = FaceId::new();
+        let second = FaceId::new();
+        let expected_pair = initial_layer_canonical_pair_v1(first, second);
+        let initial = classify_initial_layer_pair_admission_v1(
+            (second, first),
+            true,
+            StaticCollisionPairDisposition::Indeterminate,
+            IntersectionEvidenceV2::SharedFeatureFlatStack,
+            None,
+            None,
+        );
+        assert_eq!(initial.pair, expected_pair);
+        assert_eq!(
+            initial.kind,
+            InitialLayerPairAdmissionKindV1::InitialOnlyFlatStack
+        );
+
+        let rejection =
+            diagnose_nondirect_positive_flat_stack_for_test_v1((second, first)).unwrap_err();
+        assert_eq!(rejection.pair, expected_pair);
+        assert_eq!(
+            rejection.reason,
+            PersistentFlatStackSampleRejectionReasonV1::MissingDirectSharedHinge
+        );
     }
 
     #[test]

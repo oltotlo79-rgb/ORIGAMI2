@@ -85,9 +85,13 @@ pub use dyadic_pose_graph::{
     generate_bounded_dyadic_pose_graph_at_levels_v1, generate_bounded_dyadic_pose_graph_v1,
 };
 pub use graph::{
-    CandidateFaceTransform, CanonicalCycleBasisV1, CanonicalEdgeBlockLimitsV1,
-    CanonicalMaterialEdgeBlockDecompositionV1, CanonicalMaterialEdgeBlockV1,
-    ClosedMaterialHingeGraphPose, CycleBasisLimitsV1, DyadicIntervalClosureErrorV1,
+    COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_MODEL_ID_V1, CandidateFaceTransform, CanonicalCycleBasisV1,
+    CanonicalEdgeBlockLimitsV1, CanonicalMaterialEdgeBlockDecompositionV1,
+    CanonicalMaterialEdgeBlockV1, ClosedMaterialHingeGraphPose, CommonArticulationHingeAngleBitsV1,
+    CommonArticulationPoseAuthorityV1, CommonArticulationPoseBlockRestrictionRefV1,
+    CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1, CommonArticulationPoseLimitsV1,
+    CommonArticulationPoseStopV1, CycleBasisLimitsV1, DyadicIntervalClosureErrorV1,
     DyadicIntervalClosureLimitsV1, DyadicMaterialHingeIntervalClosureCertificateV1,
     EXACT_COMMON_EFFECTIVE_GENERATOR_SIGN_MODEL_ID_V1,
     EXACT_COMMON_SPLIT_PAIR_EFFECTIVE_GENERATOR_SIGN_MODEL_ID_V1, EffectiveGeneratorSignV1,
@@ -99,7 +103,9 @@ pub use graph::{
     MaterialFaceTransformIntervalRegistryV1, MaterialHingeClosureCertificate,
     MaterialHingeClosureResidual, MaterialHingeGraphAudit,
     MaterialHingeIntervalClosureCertificateV1, SimultaneousCycleBasisClosureCertificateV1,
-    enumerate_even_single_vertex_opposite_pairs_v1, prove_exact_common_effective_generator_sign_v1,
+    enumerate_even_single_vertex_opposite_pairs_v1, prove_common_articulation_pose_authority_v1,
+    prove_common_articulation_pose_authority_with_checkpoint_v1,
+    prove_exact_common_effective_generator_sign_v1,
     prove_exact_common_split_pair_effective_generator_sign_v1,
     theta_opposite_pair_cycle_closure_premises_v1,
 };

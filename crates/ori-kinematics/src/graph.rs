@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     CanonicalCycleScheduleV1, CanonicalHingeAngles, CycleScheduleLimitsV1,
     IntervalRigidTransformV1, KinematicsError, MaterialHingeGraphGeometry, OutwardIntervalV1,
-    Point3, RigidTransform, TreeHinge, TreeKinematicsLimits,
+    Point3, RigidTransform, TreeHinge, TreeKinematicsLimits, tree::MaterialHingeGraphInstanceV1,
 };
 
 mod block_cut_cardinal_rotation_group;
@@ -20,12 +20,21 @@ mod block_cut_generalized_dihedral;
 mod block_cut_orthogonal_half_turn;
 mod bridge_motion;
 mod coaxial_profile_lattice;
+mod common_articulation_pose;
 mod dense_grid;
 mod exact_common_effective_generator_sign;
 mod exact_common_split_pair_effective_generator_sign;
 mod exact_cut_carrier;
 mod exact_generator_word;
 
+pub use common_articulation_pose::{
+    COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_MODEL_ID_V1, CommonArticulationHingeAngleBitsV1,
+    CommonArticulationPoseAuthorityV1, CommonArticulationPoseBlockRestrictionRefV1,
+    CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1, CommonArticulationPoseLimitsV1,
+    CommonArticulationPoseStopV1, prove_common_articulation_pose_authority_v1,
+    prove_common_articulation_pose_authority_with_checkpoint_v1,
+};
 pub use exact_common_effective_generator_sign::{
     EXACT_COMMON_EFFECTIVE_GENERATOR_SIGN_MODEL_ID_V1, EffectiveGeneratorSignV1,
     ExactCommonEffectiveGeneratorSignErrorV1, ExactCommonEffectiveGeneratorSignLimitsV1,
@@ -94,11 +103,23 @@ impl CanonicalMaterialEdgeBlockV1 {
 /// articulation faces; all other faces and every hinge are disjoint.
 #[derive(Debug, Clone)]
 pub struct CanonicalMaterialEdgeBlockDecompositionV1 {
+    issuer_geometry: MaterialHingeGraphInstanceV1,
+    limits: CanonicalEdgeBlockLimitsV1,
     blocks: Vec<CanonicalMaterialEdgeBlockV1>,
     articulation_faces: Vec<FaceId>,
 }
 
 impl CanonicalMaterialEdgeBlockDecompositionV1 {
+    #[must_use]
+    pub fn is_for_geometry(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+        self.issuer_geometry.matches(geometry)
+    }
+
+    #[must_use]
+    pub const fn limits(&self) -> CanonicalEdgeBlockLimitsV1 {
+        self.limits
+    }
+
     #[must_use]
     pub fn blocks(&self) -> &[CanonicalMaterialEdgeBlockV1] {
         &self.blocks
@@ -418,6 +439,7 @@ impl CandidateFaceTransform {
 /// authority.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosedMaterialHingeGraphPose {
+    issuer_geometry: MaterialHingeGraphInstanceV1,
     instance: std::sync::Arc<()>,
     fixed_face: FaceId,
     angles: CanonicalHingeAngles,
@@ -426,6 +448,11 @@ pub struct ClosedMaterialHingeGraphPose {
 }
 
 impl ClosedMaterialHingeGraphPose {
+    #[must_use]
+    pub fn is_for_geometry(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+        self.issuer_geometry.matches(geometry)
+    }
+
     #[must_use]
     pub const fn fixed_face(&self) -> FaceId {
         self.fixed_face
@@ -1150,6 +1177,7 @@ impl MaterialHingeGraphGeometry {
             tolerance,
         )?;
         Ok(ClosedMaterialHingeGraphPose {
+            issuer_geometry: self.instance_anchor_v1(),
             instance: std::sync::Arc::new(()),
             fixed_face,
             angles: angles.clone(),
@@ -1827,6 +1855,8 @@ impl MaterialHingeGraphGeometry {
             })
             .collect::<Result<Vec<_>, KinematicsError>>()?;
         Ok(CanonicalMaterialEdgeBlockDecompositionV1 {
+            issuer_geometry: self.instance_anchor_v1(),
+            limits,
             blocks,
             articulation_faces,
         })

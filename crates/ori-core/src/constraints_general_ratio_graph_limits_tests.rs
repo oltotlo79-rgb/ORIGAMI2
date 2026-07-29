@@ -16,6 +16,52 @@ use crate::{
 };
 
 #[test]
+fn logical_work_formulas_have_exact_one_short_and_overflow_boundaries() {
+    fn assert_exact_and_one_short(actual: Option<u64>, exact: u64) {
+        assert_eq!(actual, Some(exact));
+        assert!(actual.is_some_and(|work| work <= exact));
+        assert!(actual.is_some_and(|work| work > exact - 1));
+    }
+
+    assert_eq!(
+        directed_ratio_closure::logical_sort_work_v1(0, u64::MAX),
+        Some(0)
+    );
+    assert_exact_and_one_short(directed_ratio_closure::logical_sort_work_v1(8, 2), 80);
+    assert_eq!(
+        directed_ratio_closure::logical_sort_work_v1(u64::MAX, u64::MAX),
+        None
+    );
+
+    assert_exact_and_one_short(directed_ratio_closure::logical_extended_path_work_v1(7), 15);
+    assert_eq!(
+        directed_ratio_closure::logical_extended_path_work_v1(u64::MAX),
+        None
+    );
+
+    assert_exact_and_one_short(directed_ratio_closure::logical_transition_work_v1(7), 28);
+    assert_eq!(
+        directed_ratio_closure::logical_transition_work_v1(u64::MAX),
+        None
+    );
+
+    assert_exact_and_one_short(directed_ratio_closure::logical_candidate_work_v1(4), 32);
+    assert_eq!(
+        directed_ratio_closure::logical_candidate_work_v1(u64::MAX),
+        None
+    );
+
+    assert_exact_and_one_short(
+        directed_ratio_closure::logical_cross_existing_work_v1(7),
+        17,
+    );
+    assert_eq!(
+        directed_ratio_closure::logical_cross_existing_work_v1(u64::MAX),
+        None
+    );
+}
+
+#[test]
 fn bounded_oracle_handles_four_eight_sixteen_and_seventeen_records() {
     for count in [4, 8, 16, 17] {
         let fixture = Fixture::new();
@@ -176,6 +222,40 @@ fn cross_root_input(ratio_count: usize) -> RatioInput {
     (ratios, fixed_lengths, edge_ids)
 }
 
+fn dense_ratio_input(node_count: usize) -> RatioInput {
+    assert!(node_count >= 3);
+    let edges = (0..node_count).map(|_| EdgeId::new()).collect::<Vec<_>>();
+    let nodes = edges
+        .iter()
+        .map(EdgeId::canonical_bytes)
+        .collect::<Vec<_>>();
+    let edge_ids = nodes
+        .iter()
+        .copied()
+        .zip(edges.iter().copied())
+        .collect::<BTreeMap<_, _>>();
+    let mut ratios = BTreeMap::new();
+    for denominator in 0..node_count {
+        for numerator in denominator + 1..node_count {
+            ratios.insert(
+                (nodes[numerator], nodes[denominator]),
+                vec![ScalarAssignment {
+                    id: ConstraintId::new(),
+                    value: 1.0,
+                }],
+            );
+        }
+    }
+    let fixed_lengths = BTreeMap::from([(
+        nodes[0],
+        ScalarGroupSummary::new(ScalarAssignment {
+            id: ConstraintId::new(),
+            value: 1.0,
+        }),
+    )]);
+    (ratios, fixed_lengths, edge_ids)
+}
+
 fn direct_with(
     input: &RatioInput,
     limits: Limits,
@@ -187,9 +267,43 @@ fn direct_with(
 }
 
 #[test]
+fn dense_graph_work_count_is_deterministic_and_has_an_exact_budget_boundary() {
+    let input = dense_ratio_input(10);
+    let (expected, stats) = direct_with(&input, Limits::default(), &mut NoopObserver);
+    assert!(matches!(expected, Outcome::NoProof));
+    assert!(stats.completed_work <= directed_ratio_closure::MAX_DIRECTED_RATIO_CLOSURE_WORK_V1);
+    for _ in 0..3 {
+        assert_eq!(
+            direct_with(&input, Limits::default(), &mut NoopObserver),
+            (expected.clone(), stats)
+        );
+    }
+    let exact = Limits {
+        max_work: stats.completed_work,
+        max_storage_units: stats.peak_storage_units,
+    };
+    assert_eq!(direct_with(&input, exact, &mut NoopObserver).0, expected);
+    assert!(matches!(
+        direct_with(
+            &input,
+            Limits {
+                max_work: exact.max_work - 1,
+                ..exact
+            },
+            &mut NoopObserver,
+        )
+        .0,
+        Outcome::Unknown {
+            reason: UnknownReason::WorkLimitExceeded,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn witness_and_exact_work_storage_boundaries_are_fail_closed() {
     let at_cap = ratio_input(255);
-    let (at_cap_outcome, _) = direct_with(&at_cap, Limits::default(), &mut NoopObserver);
+    let (at_cap_outcome, at_cap_stats) = direct_with(&at_cap, Limits::default(), &mut NoopObserver);
     assert!(matches!(
         at_cap_outcome,
         Outcome::Proven(ref conflict)
@@ -203,6 +317,9 @@ fn witness_and_exact_work_storage_boundaries_are_fail_closed() {
                         }
                 )
     ));
+    assert!(
+        at_cap_stats.completed_work <= directed_ratio_closure::MAX_DIRECTED_RATIO_CLOSURE_WORK_V1
+    );
     let over_cap = ratio_input(256);
     assert!(matches!(
         direct_with(&over_cap, Limits::default(), &mut NoopObserver).0,
@@ -252,7 +369,7 @@ fn witness_and_exact_work_storage_boundaries_are_fail_closed() {
 #[test]
 fn cross_root_witness_and_exact_resource_boundaries_are_fail_closed() {
     let at_cap = cross_root_input(MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2);
-    let (at_cap_outcome, _) = direct_with(&at_cap, Limits::default(), &mut NoopObserver);
+    let (at_cap_outcome, at_cap_stats) = direct_with(&at_cap, Limits::default(), &mut NoopObserver);
     assert!(matches!(
         at_cap_outcome,
         Outcome::Proven(ref conflict)
@@ -266,6 +383,9 @@ fn cross_root_witness_and_exact_resource_boundaries_are_fail_closed() {
                         }
                 )
     ));
+    assert!(
+        at_cap_stats.completed_work <= directed_ratio_closure::MAX_DIRECTED_RATIO_CLOSURE_WORK_V1
+    );
     let over_cap = cross_root_input(MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 1);
     assert!(matches!(
         direct_with(&over_cap, Limits::default(), &mut NoopObserver).0,

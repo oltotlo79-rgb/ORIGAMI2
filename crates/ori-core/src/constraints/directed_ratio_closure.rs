@@ -15,6 +15,34 @@ const OBSERVER_WORK_INTERVAL_V1: u64 = 128;
 const MAX_FORCED_PATH_RATIO_IDS_V1: usize = MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2;
 const MAX_NONNEGATIVE_FINITE_BITS_V1: u64 = f64::MAX.to_bits();
 
+pub(super) fn logical_sort_work_v1(item_count: u64, key_width: u64) -> Option<u64> {
+    if item_count == 0 {
+        return Some(0);
+    }
+    let bit_length = u64::from(u64::BITS - item_count.leading_zeros());
+    item_count
+        .checked_mul(bit_length.checked_add(1)?)
+        .and_then(|work| work.checked_mul(key_width))
+}
+
+pub(super) fn logical_extended_path_work_v1(parent_length: u64) -> Option<u64> {
+    parent_length.checked_mul(2)?.checked_add(1)
+}
+
+pub(super) fn logical_transition_work_v1(proposal_count: u64) -> Option<u64> {
+    proposal_count.checked_mul(4)
+}
+
+pub(super) fn logical_candidate_work_v1(candidate_length: u64) -> Option<u64> {
+    logical_sort_work_v1(candidate_length, 1)?
+        .checked_add(candidate_length.checked_mul(3)?)?
+        .checked_add(4)
+}
+
+pub(super) fn logical_cross_existing_work_v1(existing_count: u64) -> Option<u64> {
+    existing_count.checked_mul(2)?.checked_add(3)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Limits {
     pub max_work: u64,
@@ -121,34 +149,41 @@ impl<O: Observer> Budget<'_, O> {
     }
 
     fn work(&mut self, phase: Phase, amount: u64) -> Result<(), UnknownReason> {
-        self.completed_work = self
+        let completed_work = self
             .completed_work
             .checked_add(amount)
             .ok_or(UnknownReason::WorkLimitExceeded)?;
-        if self.completed_work > self.limits.max_work {
+        if completed_work > self.limits.max_work {
             return Err(UnknownReason::WorkLimitExceeded);
         }
-        if self.completed_work >= self.next_checkpoint {
-            while self.next_checkpoint <= self.completed_work {
-                self.next_checkpoint = self
-                    .next_checkpoint
+        let checkpoint_due = completed_work >= self.next_checkpoint;
+        let mut next_checkpoint = self.next_checkpoint;
+        if checkpoint_due {
+            while next_checkpoint <= completed_work {
+                next_checkpoint = next_checkpoint
                     .checked_add(OBSERVER_WORK_INTERVAL_V1)
                     .ok_or(UnknownReason::WorkLimitExceeded)?;
             }
+        }
+        self.completed_work = completed_work;
+        self.next_checkpoint = next_checkpoint;
+        if checkpoint_due {
             self.checkpoint(phase)?;
         }
         Ok(())
     }
 
     fn reserve(&mut self, amount: usize) -> Result<(), UnknownReason> {
-        self.storage_units = self
+        let storage_units = self
             .storage_units
             .checked_add(amount)
             .ok_or(UnknownReason::StorageLimitExceeded)?;
-        self.peak_storage_units = self.peak_storage_units.max(self.storage_units);
-        (self.storage_units <= self.limits.max_storage_units)
-            .then_some(())
-            .ok_or(UnknownReason::StorageLimitExceeded)
+        if storage_units > self.limits.max_storage_units {
+            return Err(UnknownReason::StorageLimitExceeded);
+        }
+        self.storage_units = storage_units;
+        self.peak_storage_units = self.peak_storage_units.max(storage_units);
+        Ok(())
     }
 
     fn restore_storage(&mut self, amount: usize) {
@@ -160,6 +195,25 @@ impl<O: Observer> Budget<'_, O> {
         debug_assert!(amount <= self.storage_units);
         self.storage_units -= amount;
     }
+}
+
+fn work_from_usize(
+    budget: &mut Budget<'_, impl Observer>,
+    phase: Phase,
+    amount: usize,
+) -> Result<(), UnknownReason> {
+    budget.work(
+        phase,
+        u64::try_from(amount).map_err(|_| UnknownReason::WorkLimitExceeded)?,
+    )
+}
+
+fn formula_work(
+    budget: &mut Budget<'_, impl Observer>,
+    phase: Phase,
+    amount: Option<u64>,
+) -> Result<(), UnknownReason> {
+    budget.work(phase, amount.ok_or(UnknownReason::WorkLimitExceeded)?)
 }
 
 pub(super) fn conflict(
@@ -229,21 +283,23 @@ pub(super) fn conflict_with_limits_and_observer(
         if !assignment.value.is_finite() || assignment.value <= 0.0 {
             continue;
         }
-        if !graph.contains_key(denominator)
-            && let Err(reason) = budget.reserve(1)
-        {
+        // Three membership queries, three entry operations, and the two
+        // mutable lookups are charged before any graph mutation.
+        if let Err(reason) = budget.work(Phase::GraphBuild, 8) {
+            return unknown(reason, &budget);
+        }
+        let denominator_is_new = !graph.contains_key(denominator);
+        let numerator_is_new = numerator != denominator && !graph.contains_key(numerator);
+        let reverse_numerator_is_new = !reverse_graph.contains_key(numerator);
+        let new_storage = usize::from(denominator_is_new)
+            + usize::from(numerator_is_new)
+            + usize::from(reverse_numerator_is_new)
+            + 2;
+        if let Err(reason) = budget.reserve(new_storage) {
             return unknown(reason, &budget);
         }
         graph.entry(*denominator).or_default();
-        if !graph.contains_key(numerator)
-            && let Err(reason) = budget.reserve(1)
-        {
-            return unknown(reason, &budget);
-        }
         graph.entry(*numerator).or_default();
-        if let Err(reason) = budget.reserve(1) {
-            return unknown(reason, &budget);
-        }
         graph
             .get_mut(denominator)
             .expect("inserted denominator")
@@ -252,15 +308,7 @@ pub(super) fn conflict_with_limits_and_observer(
                 constraint_id: assignment.id,
                 ratio: assignment.value,
             });
-        if !reverse_graph.contains_key(numerator)
-            && let Err(reason) = budget.reserve(1)
-        {
-            return unknown(reason, &budget);
-        }
         reverse_graph.entry(*numerator).or_default();
-        if let Err(reason) = budget.reserve(1) {
-            return unknown(reason, &budget);
-        }
         reverse_graph
             .get_mut(numerator)
             .expect("inserted numerator")
@@ -271,10 +319,43 @@ pub(super) fn conflict_with_limits_and_observer(
             });
     }
     for arcs in graph.values_mut() {
+        if let Err(reason) = budget.work(Phase::GraphBuild, 1) {
+            return unknown(reason, &budget);
+        }
+        if let Err(reason) = formula_work(
+            &mut budget,
+            Phase::GraphBuild,
+            u64::try_from(arcs.len())
+                .ok()
+                .and_then(|length| logical_sort_work_v1(length, 2)),
+        ) {
+            return unknown(reason, &budget);
+        }
         arcs.sort_unstable_by_key(|arc| (arc.numerator, arc.constraint_id.canonical_bytes()));
     }
     for arcs in reverse_graph.values_mut() {
+        if let Err(reason) = budget.work(Phase::GraphBuild, 1) {
+            return unknown(reason, &budget);
+        }
+        if let Err(reason) = formula_work(
+            &mut budget,
+            Phase::GraphBuild,
+            u64::try_from(arcs.len())
+                .ok()
+                .and_then(|length| logical_sort_work_v1(length, 2)),
+        ) {
+            return unknown(reason, &budget);
+        }
         arcs.sort_unstable_by_key(|arc| (arc.denominator, arc.constraint_id.canonical_bytes()));
+    }
+    let Some(root_scan_work) = u64::try_from(fixed_lengths.len())
+        .ok()
+        .and_then(|length| length.checked_mul(2))
+    else {
+        return unknown(UnknownReason::WorkLimitExceeded, &budget);
+    };
+    if let Err(reason) = budget.work(Phase::GraphBuild, root_scan_work) {
+        return unknown(reason, &budget);
     }
     let mut roots = fixed_lengths
         .iter()
@@ -287,12 +368,27 @@ pub(super) fn conflict_with_limits_and_observer(
     if let Err(reason) = budget.reserve(roots.len()) {
         return unknown(reason, &budget);
     }
+    if let Err(reason) = formula_work(
+        &mut budget,
+        Phase::GraphBuild,
+        u64::try_from(roots.len())
+            .ok()
+            .and_then(|length| logical_sort_work_v1(length, 2)),
+    ) {
+        return unknown(reason, &budget);
+    }
     roots.sort_unstable_by_key(|(edge, fixed)| (fixed.id.canonical_bytes(), *edge));
     let base_storage = budget.storage_units;
 
     let mut best = None;
     for &(fixed_edge, fixed) in &roots {
+        if let Err(reason) = budget.work(Phase::ProofSearch, 1) {
+            return unknown(reason, &budget);
+        }
         if let Err(reason) = budget.checkpoint(Phase::ProofSearch) {
+            return unknown(reason, &budget);
+        }
+        if let Err(reason) = budget.work(Phase::ProofSearch, 2) {
             return unknown(reason, &budget);
         }
         // One unit owns the forced-map entry and one owns its frontier key.
@@ -309,17 +405,45 @@ pub(super) fn conflict_with_limits_and_observer(
         let mut frontier = vec![fixed_edge];
 
         while !frontier.is_empty() {
+            let Some(frontier_scan_work) = u64::try_from(frontier.len())
+                .ok()
+                .and_then(|length| length.checked_mul(2))
+            else {
+                return unknown(UnknownReason::WorkLimitExceeded, &budget);
+            };
+            if let Err(reason) = budget.work(Phase::ProofSearch, frontier_scan_work) {
+                return unknown(reason, &budget);
+            }
+            let key_width = frontier
+                .iter()
+                .map(|edge| forced[edge].ratio_ids.len() + 1)
+                .max()
+                .unwrap_or(1);
+            if let Err(reason) = formula_work(
+                &mut budget,
+                Phase::ProofSearch,
+                u64::try_from(frontier.len()).ok().and_then(|length| {
+                    u64::try_from(key_width)
+                        .ok()
+                        .and_then(|width| logical_sort_work_v1(length, width))
+                }),
+            ) {
+                return unknown(reason, &budget);
+            }
             frontier.sort_unstable_by(|left, right| {
                 canonical_id_slice_cmp(&forced[left].ratio_ids, &forced[right].ratio_ids)
                     .then_with(|| left.cmp(right))
             });
             let mut proposals = BTreeMap::<CanonicalId, ForcedValue>::new();
             for denominator in &frontier {
+                if let Err(reason) = budget.work(Phase::ProofSearch, 3) {
+                    return unknown(reason, &budget);
+                }
                 let Some(parent) = forced.get(denominator) else {
                     return unknown(UnknownReason::StorageLimitExceeded, &budget);
                 };
                 for arc in graph.get(denominator).into_iter().flatten() {
-                    if let Err(reason) = budget.work(Phase::ProofSearch, 1) {
+                    if let Err(reason) = budget.work(Phase::ProofSearch, 3) {
                         return unknown(reason, &budget);
                     }
                     if let Some(existing) = forced.get(&arc.numerator) {
@@ -385,6 +509,9 @@ pub(super) fn conflict_with_limits_and_observer(
                             };
                             if derived.is_finite() {
                                 let old_path_units = existing.ratio_ids.len();
+                                if let Err(reason) = budget.work(Phase::ProofSearch, 1) {
+                                    return unknown(reason, &budget);
+                                }
                                 proposals.insert(
                                     arc.numerator,
                                     ForcedValue {
@@ -417,6 +544,9 @@ pub(super) fn conflict_with_limits_and_observer(
                     if let Err(reason) = budget.reserve(2) {
                         return unknown(reason, &budget);
                     }
+                    if let Err(reason) = budget.work(Phase::ProofSearch, 1) {
+                        return unknown(reason, &budget);
+                    }
                     proposals.insert(
                         arc.numerator,
                         ForcedValue {
@@ -425,6 +555,15 @@ pub(super) fn conflict_with_limits_and_observer(
                         },
                     );
                 }
+            }
+            if let Err(reason) = formula_work(
+                &mut budget,
+                Phase::ProofSearch,
+                u64::try_from(proposals.len())
+                    .ok()
+                    .and_then(logical_transition_work_v1),
+            ) {
+                return unknown(reason, &budget);
             }
             budget.release(frontier.len());
             let mut next_frontier = Vec::new();
@@ -444,6 +583,9 @@ pub(super) fn conflict_with_limits_and_observer(
 
     let mut root_domains = BTreeMap::<(CanonicalId, CanonicalId), RootForcedDomain>::new();
     for &(fixed_edge, fixed) in &roots {
+        if let Err(reason) = budget.work(Phase::ProofSearch, 1) {
+            return unknown(reason, &budget);
+        }
         if let Err(reason) = budget.checkpoint(Phase::ProofSearch) {
             return unknown(reason, &budget);
         }
@@ -459,10 +601,19 @@ pub(super) fn conflict_with_limits_and_observer(
             Err(reason) => return unknown(reason, &budget),
         };
         for (target, domain) in domains {
+            let existing_count = root_domains
+                .range((target, [0; 16])..=(target, [u8::MAX; 16]))
+                .count();
+            if let Err(reason) = formula_work(
+                &mut budget,
+                Phase::ProofSearch,
+                u64::try_from(existing_count)
+                    .ok()
+                    .and_then(logical_cross_existing_work_v1),
+            ) {
+                return unknown(reason, &budget);
+            }
             for (_, existing) in root_domains.range((target, [0; 16])..=(target, [u8::MAX; 16])) {
-                if let Err(reason) = budget.work(Phase::ProofSearch, 1) {
-                    return unknown(reason, &budget);
-                }
                 if domains_are_disjoint(&existing.domain, domain.lower_bits, domain.upper_bits)
                     && let Err(reason) = consider_cross_root_candidate(
                         &mut best,
@@ -499,6 +650,12 @@ pub(super) fn conflict_with_limits_and_observer(
             .map_or(0, |candidate: &Candidate| candidate.storage_units);
     budget.restore_storage(retained_storage);
 
+    let publication_map_work = best.as_ref().map_or(0, |candidate| {
+        1 + u64::from(candidate.second_fixed_edge.is_some())
+    });
+    if let Err(reason) = budget.work(Phase::Complete, publication_map_work) {
+        return unknown(reason, &budget);
+    }
     if let Err(reason) = budget.checkpoint(Phase::Complete) {
         return unknown(reason, &budget);
     }
@@ -536,6 +693,7 @@ fn search_bidirectional_domain_cycles(
     best: &mut Option<Candidate>,
     budget: &mut Budget<'_, impl Observer>,
 ) -> Result<BTreeMap<CanonicalId, ForcedDomain>, UnknownReason> {
+    work_from_usize(budget, Phase::ProofSearch, 2)?;
     // One unit owns the domain-map entry and one owns its frontier key.
     budget.reserve(2)?;
     let fixed_bits = fixed.value.to_bits();
@@ -550,17 +708,37 @@ fn search_bidirectional_domain_cycles(
     let mut frontier = vec![fixed_edge];
 
     while !frontier.is_empty() {
+        let frontier_scan_work = frontier
+            .len()
+            .checked_mul(2)
+            .ok_or(UnknownReason::WorkLimitExceeded)?;
+        work_from_usize(budget, Phase::ProofSearch, frontier_scan_work)?;
+        let key_width = frontier
+            .iter()
+            .map(|edge| domains[edge].ratio_ids.len() + 1)
+            .max()
+            .unwrap_or(1);
+        formula_work(
+            budget,
+            Phase::ProofSearch,
+            u64::try_from(frontier.len()).ok().and_then(|length| {
+                u64::try_from(key_width)
+                    .ok()
+                    .and_then(|width| logical_sort_work_v1(length, width))
+            }),
+        )?;
         frontier.sort_unstable_by(|left, right| {
             canonical_id_slice_cmp(&domains[left].ratio_ids, &domains[right].ratio_ids)
                 .then_with(|| left.cmp(right))
         });
         let mut proposals = BTreeMap::<CanonicalId, ForcedDomain>::new();
         for source in &frontier {
+            budget.work(Phase::ProofSearch, 4)?;
             let Some(parent) = domains.get(source) else {
                 return Err(UnknownReason::StorageLimitExceeded);
             };
             for arc in graph.get(source).into_iter().flatten() {
-                budget.work(Phase::ProofSearch, 1)?;
+                budget.work(Phase::ProofSearch, 3)?;
                 let Some((lower_bits, upper_bits)) = forward_domain(parent, arc.ratio, budget)?
                 else {
                     // An empty image would itself be a sound contradiction, but
@@ -584,7 +762,7 @@ fn search_bidirectional_domain_cycles(
                 )?;
             }
             for arc in reverse_graph.get(source).into_iter().flatten() {
-                budget.work(Phase::ProofSearch, 1)?;
+                budget.work(Phase::ProofSearch, 3)?;
                 let Some((lower_bits, upper_bits)) = backward_domain(parent, arc.ratio, budget)?
                 else {
                     // See the forward empty-image note above. Most
@@ -608,6 +786,13 @@ fn search_bidirectional_domain_cycles(
                 )?;
             }
         }
+        formula_work(
+            budget,
+            Phase::ProofSearch,
+            u64::try_from(proposals.len())
+                .ok()
+                .and_then(logical_transition_work_v1),
+        )?;
         budget.release(frontier.len());
         let mut next_frontier = Vec::new();
         next_frontier
@@ -670,6 +855,7 @@ fn visit_domain_step(
         let replace = domain_path_precedes(&ratio_ids, lower_bits, upper_bits, existing);
         if replace {
             let old_path_units = existing.ratio_ids.len();
+            budget.work(Phase::ProofSearch, 1)?;
             proposals.insert(
                 target,
                 ForcedDomain {
@@ -688,6 +874,7 @@ fn visit_domain_step(
     let ratio_ids = extended_path(&parent.ratio_ids, closing_id, budget)?;
     // The path is already charged; these own the proposal-map key and its
     // eventual frontier key.
+    budget.work(Phase::ProofSearch, 1)?;
     budget.reserve(2)?;
     proposals.insert(
         target,
@@ -839,6 +1026,13 @@ fn consider_candidate(
         .checked_add(closing_parent_path.len())
         .and_then(|length| length.checked_add(2))
         .ok_or(UnknownReason::StorageLimitExceeded)?;
+    formula_work(
+        budget,
+        Phase::ProofSearch,
+        u64::try_from(capacity)
+            .ok()
+            .and_then(logical_candidate_work_v1),
+    )?;
     budget.reserve(capacity)?;
     let mut ids = Vec::new();
     ids.try_reserve_exact(capacity)
@@ -846,12 +1040,6 @@ fn consider_candidate(
     ids.extend_from_slice(existing_path);
     ids.extend_from_slice(closing_parent_path);
     ids.extend([closing_id, fixed_id]);
-    let sort_factor = usize::BITS - ids.len().leading_zeros();
-    let work = u64::try_from(ids.len())
-        .ok()
-        .and_then(|length| length.checked_mul(u64::from(sort_factor) + 1))
-        .ok_or(UnknownReason::WorkLimitExceeded)?;
-    budget.work(Phase::ProofSearch, work)?;
     canonicalize_constraint_ids(&mut ids);
     let admissible = ids
         .len()
@@ -891,6 +1079,13 @@ fn consider_cross_root_candidate(
         .checked_add(ratio_ids.len())
         .and_then(|length| length.checked_add(2))
         .ok_or(UnknownReason::StorageLimitExceeded)?;
+    formula_work(
+        budget,
+        Phase::ProofSearch,
+        u64::try_from(capacity)
+            .ok()
+            .and_then(logical_candidate_work_v1),
+    )?;
     budget.reserve(capacity)?;
     let mut ids = Vec::new();
     ids.try_reserve_exact(capacity)
@@ -898,12 +1093,6 @@ fn consider_cross_root_candidate(
     ids.extend_from_slice(&existing.domain.ratio_ids);
     ids.extend_from_slice(ratio_ids);
     ids.extend([existing.fixed_id, fixed.id]);
-    let sort_factor = usize::BITS - ids.len().leading_zeros();
-    let work = u64::try_from(ids.len())
-        .ok()
-        .and_then(|length| length.checked_mul(u64::from(sort_factor) + 1))
-        .ok_or(UnknownReason::WorkLimitExceeded)?;
-    budget.work(Phase::ProofSearch, work)?;
     canonicalize_constraint_ids(&mut ids);
     let admissible = ids.len().checked_sub(2).is_some_and(|ratio_count| {
         (2..=MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2).contains(&ratio_count)
@@ -953,6 +1142,7 @@ fn cross_root_candidate_has_only_finite_forward_replays(
 ) -> Result<bool, UnknownReason> {
     for (root, fixed_value) in roots {
         let storage_before = budget.storage_units;
+        budget.work(Phase::ProofSearch, 2)?;
         // One unit owns the replay map entry and one owns its frontier key.
         budget.reserve(2)?;
         let mut frontier = Vec::new();
@@ -961,13 +1151,15 @@ fn cross_root_candidate_has_only_finite_forward_replays(
             .map_err(|_| UnknownReason::StorageLimitExceeded)?;
         frontier.push(root);
         let mut forced = BTreeMap::from([(root, fixed_value)]);
-        while let Some(source) = frontier.pop() {
+        while !frontier.is_empty() {
+            budget.work(Phase::ProofSearch, 3)?;
+            let source = frontier.pop().expect("non-empty replay frontier");
             budget.release(1);
             let Some(parent) = forced.get(&source).copied() else {
                 return Err(UnknownReason::StorageLimitExceeded);
             };
             for arc in graph.get(&source).into_iter().flatten() {
-                budget.work(Phase::ProofSearch, 1)?;
+                budget.work(Phase::ProofSearch, 2)?;
                 if candidate_ids
                     .binary_search_by_key(
                         &arc.constraint_id.canonical_bytes(),
@@ -977,12 +1169,14 @@ fn cross_root_candidate_has_only_finite_forward_replays(
                 {
                     continue;
                 }
+                budget.work(Phase::ProofSearch, 2)?;
                 let derived = length_ratio_scaled_denominator_binary64_v1(arc.ratio, parent);
                 if !derived.is_finite() {
                     budget.restore_storage(storage_before);
                     return Ok(false);
                 }
                 if let Some(existing) = forced.get(&arc.numerator) {
+                    budget.work(Phase::ProofSearch, 1)?;
                     if existing.to_bits() != derived.to_bits() {
                         // Replaying a candidate subgraph with two finite values
                         // at one node would require retaining both paths to
@@ -993,6 +1187,7 @@ fn cross_root_candidate_has_only_finite_forward_replays(
                     }
                     continue;
                 }
+                budget.work(Phase::ProofSearch, 2)?;
                 budget.reserve(2)?;
                 frontier
                     .try_reserve(1)
@@ -1035,6 +1230,13 @@ fn extended_path(
     closing_id: ConstraintId,
     budget: &mut Budget<'_, impl Observer>,
 ) -> Result<Vec<ConstraintId>, UnknownReason> {
+    formula_work(
+        budget,
+        Phase::ProofSearch,
+        u64::try_from(parent.len())
+            .ok()
+            .and_then(logical_extended_path_work_v1),
+    )?;
     let length = parent
         .len()
         .checked_add(1)
@@ -1057,6 +1259,28 @@ fn unknown(reason: UnknownReason, budget: &Budget<'_, impl Observer>) -> (Outcom
 mod inverse_domain_tests {
     use super::super::bounded_zero_closure::NoopObserver;
     use super::*;
+
+    #[test]
+    fn work_limit_failure_does_not_partially_commit_budget_state() {
+        let mut observer = NoopObserver;
+        let mut budget = Budget {
+            observer: &mut observer,
+            limits: Limits {
+                max_work: 10,
+                max_storage_units: 0,
+            },
+            completed_work: 9,
+            next_checkpoint: 10,
+            storage_units: 0,
+            peak_storage_units: 0,
+        };
+        assert_eq!(
+            budget.work(Phase::ProofSearch, 2),
+            Err(UnknownReason::WorkLimitExceeded)
+        );
+        assert_eq!(budget.completed_work, 9);
+        assert_eq!(budget.next_checkpoint, 10);
+    }
 
     fn inverse(ratio: f64, lower: f64, upper: f64) -> Option<(u64, u64)> {
         let mut observer = NoopObserver;

@@ -222,7 +222,8 @@
         "2a33b9aaa592266990e75da0f36707d175fef7fa",
         "7bfeba0c40ac4e084263f79bb9457b70eb4fdc09",
         "27b26585cc33618061d4c3c51987c96eeead8982",
-        "b5ca7e2c4ac0bba124a96e5c04922f34153fcddd"
+        "b5ca7e2c4ac0bba124a96e5c04922f34153fcddd",
+        "0fa0203e11a726cb66332143d7ac8c656de380ea"
       ],
       "evidence": [
         {
@@ -237,7 +238,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/constraints.rs",
+          "path": "crates/ori-core/src/constraints/tests.rs",
           "selector": "fn horizontal_and_vertical_require_an_exact_noncollapse_witness()"
         },
         {
@@ -247,23 +248,13 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/constraints.rs",
+          "path": "crates/ori-core/src/constraints/tests.rs",
           "selector": "fn fixed_lengths_and_ratio_share_the_solver_binary64_residual()"
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/constraint_solver.rs",
-          "selector": "fn incompatible_fixed_lengths_and_ratio_are_rejected_before_numerical_tolerance()"
-        },
-        {
-          "kind": "test",
-          "path": "crates/ori-core/src/constraints.rs",
+          "path": "crates/ori-core/src/constraints/tests.rs",
           "selector": "fn different_ratios_need_a_fixed_denominator_and_incompatible_binary64_products()"
-        },
-        {
-          "kind": "test",
-          "path": "crates/ori-core/src/constraint_solver.rs",
-          "selector": "fn different_ratios_with_fixed_denominator_can_share_an_underflowed_zero_numerator()"
         },
         {
           "kind": "production-symbol",
@@ -272,12 +263,12 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/constraints.rs",
+          "path": "crates/ori-core/src/constraints/tests.rs",
           "selector": "fn bounded_zero_length_closure_crosses_equal_length_and_ratio_without_solver_assumptions()"
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/constraints.rs",
+          "path": "crates/ori-core/src/constraints/tests.rs",
           "selector": "fn bounded_zero_length_closure_core_is_canonical_and_cardinality_smallest_for_the_oracle()"
         },
         {
@@ -287,12 +278,12 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/constraints.rs",
+          "path": "crates/ori-core/src/constraints/tests.rs",
           "selector": "fn bounded_zero_length_closure_uses_each_binary64_proven_provider_terminal()"
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/constraints.rs",
+          "path": "crates/ori-core/src/constraints/tests.rs",
           "selector": "fn bounded_zero_length_closure_resource_and_observer_stops_are_fail_closed()"
         },
         {
@@ -373,7 +364,17 @@
         {
           "kind": "test",
           "path": "crates/ori-core/src/constraint_semantic_mus_tests/direct_family_inventory.rs",
-          "selector": "fn public_semantic_pipeline_hard_inventory_is_seventeen_of_seventeen()"
+          "selector": "fn public_semantic_pipeline_hard_inventory_is_nineteen_of_nineteen()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_semantic_mus.rs",
+          "selector": "fn construct_anchored_mirror_residual_only_deletion_witness("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/mirror_phase.rs",
+          "selector": "fn raw_operand_reversal_at_two_to_the_fifty_third_remains_satisfiable_and_unknown()"
         },
         {
           "kind": "production-symbol",
@@ -387,10 +388,10 @@
         }
       ],
       "limitations": [
-        "only seventeen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the frozen binary64 proof residuals; the six retained legacy variants fail closed to Unknown"
+        "only nineteen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants have complete deletion-by-deletion semantic satisfiability witnesses; the four retained families fail closed to Unknown at the semantic MUS boundary"
       ],
       "missingAcceptance": [
-        "complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the seventeen recognized direct proof families"
+        "complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the nineteen recognized semantic proof families"
       ]
     },
     {
@@ -512,7 +513,8 @@
       "id": "HIS-002",
       "status": "実装済み",
       "commits": [
-        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
+        "5388d43ef979b4b46bfb4b91c0b6ded3dceefed2"
       ],
       "evidence": [
         {
@@ -527,7 +529,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-formats/src/ori2.rs",
+          "path": "crates/ori-formats/src/ori2/tests.rs",
           "selector": "fn custom_history_limit_round_trips_in_an_authenticated_third_entry()"
         }
       ],
@@ -903,7 +905,8 @@
       "id": "IO-001",
       "status": "実装済み",
       "commits": [
-        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
+        "5388d43ef979b4b46bfb4b91c0b6ded3dceefed2"
       ],
       "evidence": [
         {
@@ -918,7 +921,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-formats/src/ori2.rs",
+          "path": "crates/ori-formats/src/ori2/tests.rs",
           "selector": "fn ori2_round_trip_preserves_project()"
         }
       ],
@@ -929,7 +932,8 @@
       "id": "IO-002",
       "status": "実装済み",
       "commits": [
-        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
+        "5388d43ef979b4b46bfb4b91c0b6ded3dceefed2"
       ],
       "evidence": [
         {
@@ -944,7 +948,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-formats/src/ori2.rs",
+          "path": "crates/ori-formats/src/ori2/tests.rs",
           "selector": "fn custom_history_limit_round_trips_in_an_authenticated_third_entry()"
         }
       ],
@@ -1990,7 +1994,8 @@
       "status": "部分実装",
       "commits": [
         "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
-        "26461c5428d8c98d6d5688ebda695b359cb1ea5a"
+        "26461c5428d8c98d6d5688ebda695b359cb1ea5a",
+        "6edb66662f4d0033d470660c5a0e3b5d6c8a4be5"
       ],
       "evidence": [
         {
@@ -2005,7 +2010,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-collision/src/continuous_path.rs",
+          "path": "crates/ori-collision/src/continuous_path/tests.rs",
           "selector": "fn continuous_layer_transport_binds_every_dyadic_transition_and_fails_closed()"
         },
         {

@@ -1,10 +1,14 @@
 # MUST要件 実装状況
 
-更新日: 2026-07-28
+更新日: 2026-07-29
 
 現在の行単位集計は **実装済み85 / 部分実装2 / 未着手0**。
 
 全体加重完成度はこのMUST行集計とは別指標で、`docs/progress.md`の正本発効規則に従う。反映headのCI条件成立前は79.32%（表示79.3%）、成立後は81.96%（表示82.0%）である。以下の日付付き完成度・集計は各checkpoint時点の履歴で、現在値を上書きしない。
+
+以下の2026-07-28以前の項目に残る「現行」「現在の正本」という表現は各checkpoint当時の記録であり、semantic MUS範囲は直後の2026-07-29現行訂正が上書きする。
+
+2026-07-29 EDT-009現行訂正: rawの鏡映sourceを水平・垂直connectorで対称軸始点へ固定し、source-target間へconsistentな正有限`FixedLength`を持つ4-ID `MirrorSymmetryWithPointOnAxisAndFixedSeparation`を、削除ごとの独立SAT証人を伴うsemantic MUSへ昇格した。永続化用のunordered正規化とは別にproduction residualのraw operand順を保持し、4件すべての削除文書を完全finite residual-only overlayで再認証する。raw source/targetの逆転が`2^53`境界で別のbinary64結果を持つ反例、最小subnormal・`f64::MAX`、保存順、4/8/16/17制約、256/257頂点、work exact/one-short、cancel/deadlineのentry・midpoint・prepublicationをfail-closed回帰へ固定した。hard semantic inventoryは23 wire-compatible variant中19 familyとなり、残る4 familyはsemantic MUS境界で`Unknown`を維持する。任意入力の完全SAT/UNSAT決定、認識外の完全な矛盾原因探索、一般MUS探索は未完成なので、EDT-009は部分実装、MUST集計85 / 2 / 0、全体81.96%（表示82.0%）を維持する。本項がsemantic MUS範囲の現在の正本である。
 
 2026-07-28 EDT-009現行訂正: 凍結binary64演算の外向きzero-residual包囲が分離する`DifferentFixedAngles`に加え、凍結sin/cosがbit-exactな90・180・270度のcardinal matrixを返す同一center/source/target役割の異なる2回転と、center-sourceまたはcenter-targetの正有限固定半径から成る`DifferentRotationalSymmetryAnglesWithFixedRadius`をsound familyへ追加した。23 wire-compatible variantのうちsound familyは17、`Unknown`へfail-closedするlegacy familyは6である。hard inventoryで認識済み17 familyを再認証し、全ての最小coreが各1件削除後の独立SAT証人を伴うsemantic MUSであることを確認した。回転familyでは、固定長削除時の2回転collapseを、通常のcrease-pattern assignmentとは分離したsource-pattern検証済みの完全residual-only overlayで再certificateする。片方の回転削除時は、geometry-validなcardinal回転＋固定半径のexact orbitをcenter-source・center-target、最小subnormalから`f64::MAX`まで再certificateする。ただし任意入力の完全SAT/UNSAT決定、認識外の完全な矛盾原因探索、一般MUS探索は未完成なので、EDT-009は部分実装、MUST集計85 / 2 / 0、全体81.96%（表示82.0%）を維持する。本項がvariant数・sound family数・semantic MUS範囲の現在の正本である。
 

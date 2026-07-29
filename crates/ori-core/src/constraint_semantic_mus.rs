@@ -1,6 +1,7 @@
 use ori_domain::{
-    ConstraintId, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
-    GeometricConstraintRecordV1,
+    ConstraintId, CreasePattern, Edge, EdgeId, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+    GeometricConstraintDocumentV1, GeometricConstraintKindV1, GeometricConstraintRecordV1, Point2,
+    VertexId,
 };
 use ori_numeric::{
     DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1, deterministic_transcendental_model_supported_v1,
@@ -21,6 +22,7 @@ use crate::{
     constraint_exactification::construct_single_constraint_exact_assignment_v1,
     constraint_exactification::construct_zero_length_closure_residual_exact_assignment_v1,
     constraint_exactification::zero_length_closure_constructive_candidate_bound_v1,
+    constraint_solver::certify_binary64_residual_only_constraint_overlay_v1,
     exactify_axis_aligned_constraint_preview_v1, find_bounded_direct_mus_with_observer_v1,
 };
 
@@ -29,6 +31,7 @@ pub const GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1: &str =
 pub const MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS_V1: usize =
     MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1;
 pub const MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK_V1: usize = 20_000_000;
+pub(crate) const MAX_ANCHORED_MIRROR_RESIDUAL_ONLY_OVERLAY_VERTICES_V1: usize = 256;
 
 const GENERAL_GRAPH_PREFLIGHT_LOGICAL_WORK_CEILING_V1: usize = 80_000;
 const ZERO_CLOSURE_WORK_PER_PATTERN_EDGE_V1: usize = 4;
@@ -154,6 +157,7 @@ pub struct CurrentRuntimeSemanticMusV1 {
     pair_constraint_algebraic_witness_count: usize,
     length_constraint_constructive_witness_count: usize,
     zero_length_closure_constructive_witness_count: usize,
+    anchored_mirror_residual_only_witness_count: usize,
 }
 
 impl CurrentRuntimeSemanticMusV1 {
@@ -220,6 +224,11 @@ impl CurrentRuntimeSemanticMusV1 {
     #[must_use]
     pub const fn zero_length_closure_constructive_witness_count(&self) -> usize {
         self.zero_length_closure_constructive_witness_count
+    }
+
+    #[must_use]
+    pub const fn anchored_mirror_residual_only_witness_count(&self) -> usize {
+        self.anchored_mirror_residual_only_witness_count
     }
 
     #[must_use]
@@ -337,14 +346,14 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
     }
     let mut core = Vec::with_capacity(constraint_ids.len());
     for id in &constraint_ids {
-        let Some(record) = set.constraints().iter().find(|record| record.id == *id) else {
+        let Some(record) = set.residual_role_preserving_record(*id) else {
             return unknown(
                 BoundedSemanticMusUnknownReasonV1::DeletionWitnessUnavailable,
                 progress,
                 &constraint_ids,
             );
         };
-        core.push(record.clone());
+        core.push(record);
     }
     if let Some(reason) = checkpoint(observer, progress) {
         return unknown(reason, progress, &constraint_ids);
@@ -357,6 +366,8 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
     let mut pair_constraint_algebraic_witness_count = 0;
     let mut length_constraint_constructive_witness_count = 0;
     let mut zero_length_closure_constructive_witness_count = 0;
+    let mut anchored_mirror_residual_only_witness_count = 0;
+    let anchored_mirror_shape = is_anchored_mirror_core_shape(&core);
     for removed in &constraint_ids {
         progress.deletion_witness_checks += 1;
         if let Some(reason) = checkpoint(observer, progress) {
@@ -364,6 +375,43 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
         }
 
         let deletion_constraint_count = core.len().saturating_sub(1);
+        if anchored_mirror_shape {
+            let Some(mirror_work) =
+                anchored_mirror_residual_only_phase_work(set, deletion_constraint_count)
+            else {
+                return unknown(
+                    BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                    progress,
+                    &constraint_ids,
+                );
+            };
+            if !charge_witness_work(&mut progress, mirror_work, limits.max_deletion_witness_work) {
+                return unknown(
+                    BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                    progress,
+                    &constraint_ids,
+                );
+            }
+            if let Some(reason) = checkpoint(observer, progress) {
+                return unknown(reason, progress, &constraint_ids);
+            }
+            let document = deletion_document(&core, *removed);
+            let mirror_is_exact = construct_anchored_mirror_residual_only_deletion_witness(
+                set.source_pattern(),
+                &core,
+                *removed,
+                &document,
+            );
+            if let Some(reason) = checkpoint(observer, progress) {
+                return unknown(reason, progress, &constraint_ids);
+            }
+            if mirror_is_exact {
+                anchored_mirror_residual_only_witness_count += 1;
+                progress.certified_deletion_witnesses += 1;
+                continue;
+            }
+        }
+
         let Some(current_work) = current_certificate_phase_work(set, deletion_constraint_count)
         else {
             return unknown(
@@ -635,7 +683,8 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
             + pair_constraint_constructive_witness_count
             + pair_constraint_algebraic_witness_count
             + length_constraint_constructive_witness_count
-            + zero_length_closure_constructive_witness_count,
+            + zero_length_closure_constructive_witness_count
+            + anchored_mirror_residual_only_witness_count,
         constraint_ids.len(),
     );
     BoundedCurrentRuntimeSemanticMusV1::Certified(CurrentRuntimeSemanticMusV1 {
@@ -650,7 +699,175 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
         pair_constraint_algebraic_witness_count,
         length_constraint_constructive_witness_count,
         zero_length_closure_constructive_witness_count,
+        anchored_mirror_residual_only_witness_count,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AnchoredMirrorCoreV1 {
+    mirror_id: ConstraintId,
+    fixed_length_id: ConstraintId,
+    horizontal_id: ConstraintId,
+    vertical_id: ConstraintId,
+    raw_source: VertexId,
+    raw_target: VertexId,
+    axis_end: VertexId,
+    separation_length: f64,
+}
+
+fn is_anchored_mirror_core_shape(core: &[GeometricConstraintRecordV1]) -> bool {
+    if core.len() != 4 {
+        return false;
+    }
+    let mut mirror_count = 0;
+    let mut fixed_length_count = 0;
+    let mut horizontal_count = 0;
+    let mut vertical_count = 0;
+    for record in core {
+        match &record.constraint {
+            GeometricConstraintKindV1::MirrorSymmetry { .. } => mirror_count += 1,
+            GeometricConstraintKindV1::FixedLength { .. } => fixed_length_count += 1,
+            GeometricConstraintKindV1::Horizontal { .. } => horizontal_count += 1,
+            GeometricConstraintKindV1::Vertical { .. } => vertical_count += 1,
+            _ => return false,
+        }
+    }
+    (
+        mirror_count,
+        fixed_length_count,
+        horizontal_count,
+        vertical_count,
+    ) == (1, 1, 1, 1)
+}
+
+fn anchored_mirror_core(
+    pattern: &CreasePattern,
+    core: &[GeometricConstraintRecordV1],
+) -> Option<AnchoredMirrorCoreV1> {
+    if !is_anchored_mirror_core_shape(core) {
+        return None;
+    }
+    let mut mirror = None;
+    let mut fixed_length = None;
+    let mut horizontal = None;
+    let mut vertical = None;
+    for record in core {
+        match &record.constraint {
+            GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex,
+                second_vertex,
+                axis_edge,
+            } => mirror = Some((record.id, *first_vertex, *second_vertex, *axis_edge)),
+            GeometricConstraintKindV1::FixedLength { edge, length_mm } => {
+                fixed_length = Some((record.id, *edge, *length_mm));
+            }
+            GeometricConstraintKindV1::Horizontal { edge } => {
+                horizontal = Some((record.id, *edge));
+            }
+            GeometricConstraintKindV1::Vertical { edge } => {
+                vertical = Some((record.id, *edge));
+            }
+            _ => return None,
+        }
+    }
+    let (mirror_id, raw_source, raw_target, axis_edge_id) = mirror?;
+    let (fixed_length_id, separation_edge_id, separation_length) = fixed_length?;
+    let (horizontal_id, horizontal_edge_id) = horizontal?;
+    let (vertical_id, vertical_edge_id) = vertical?;
+    if horizontal_edge_id != vertical_edge_id
+        || !separation_length.is_finite()
+        || separation_length <= 0.0
+    {
+        return None;
+    }
+    let axis_edge = find_pattern_edge(pattern, axis_edge_id)?;
+    let connector_edge = find_pattern_edge(pattern, horizontal_edge_id)?;
+    let separation_edge = find_pattern_edge(pattern, separation_edge_id)?;
+    if !edge_has_endpoints(connector_edge, axis_edge.start, raw_source)
+        || !edge_has_endpoints(separation_edge, raw_source, raw_target)
+    {
+        return None;
+    }
+    Some(AnchoredMirrorCoreV1 {
+        mirror_id,
+        fixed_length_id,
+        horizontal_id,
+        vertical_id,
+        raw_source,
+        raw_target,
+        axis_end: axis_edge.end,
+        separation_length,
+    })
+}
+
+fn construct_anchored_mirror_residual_only_deletion_witness(
+    pattern: &CreasePattern,
+    core: &[GeometricConstraintRecordV1],
+    removed: ConstraintId,
+    document: &GeometricConstraintDocumentV1,
+) -> bool {
+    if pattern.vertices.len() > MAX_ANCHORED_MIRROR_RESIDUAL_ONLY_OVERLAY_VERTICES_V1 {
+        return false;
+    }
+    let Some(context) = anchored_mirror_core(pattern, core) else {
+        return false;
+    };
+    let zero = Point2::new(0.0, 0.0);
+    let mut axis_end = zero;
+    let mut source = zero;
+    let mut target = zero;
+    if removed == context.mirror_id {
+        target = Point2::new(context.separation_length, 0.0);
+    } else if removed == context.fixed_length_id {
+        axis_end = Point2::new(1.0, 0.0);
+    } else if removed == context.horizontal_id {
+        let half = context.separation_length * 0.5;
+        if half == 0.0 || !half.is_finite() {
+            return false;
+        }
+        axis_end = Point2::new(1.0, 0.0);
+        source = Point2::new(0.0, half);
+        target = Point2::new(0.0, -half);
+    } else if removed == context.vertical_id {
+        let half = context.separation_length * 0.5;
+        if half == 0.0 || !half.is_finite() {
+            return false;
+        }
+        axis_end = Point2::new(0.0, 1.0);
+        source = Point2::new(half, 0.0);
+        target = Point2::new(-half, 0.0);
+    } else {
+        return false;
+    }
+
+    let mut overlay = Vec::new();
+    if overlay.try_reserve_exact(pattern.vertices.len()).is_err() {
+        return false;
+    }
+    for vertex in &pattern.vertices {
+        let point = if vertex.id == context.axis_end {
+            axis_end
+        } else if vertex.id == context.raw_source {
+            source
+        } else if vertex.id == context.raw_target {
+            target
+        } else {
+            zero
+        };
+        overlay.push((vertex.id, point));
+    }
+    certify_binary64_residual_only_constraint_overlay_v1(pattern, document, &overlay)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+fn find_pattern_edge(pattern: &CreasePattern, id: EdgeId) -> Option<&Edge> {
+    pattern.edges.iter().find(|edge| edge.id == id)
+}
+
+fn edge_has_endpoints(edge: &Edge, first: VertexId, second: VertexId) -> bool {
+    (edge.start == first && edge.end == second) || (edge.start == second && edge.end == first)
 }
 
 fn deletion_document(
@@ -817,6 +1034,37 @@ fn pair_constraint_algebraic_work(
         prepare_and_preflight_work(vertex_count, edge_count, constraint_count)?,
         template_work,
         checked_mul(MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1, candidate_work)?,
+    ])
+}
+
+fn anchored_mirror_residual_only_phase_work(
+    set: &GeometricConstraintSetV1<'_>,
+    constraint_count: usize,
+) -> Option<usize> {
+    anchored_mirror_residual_only_work(
+        set.source_pattern().vertices.len(),
+        set.source_pattern().edges.len(),
+        constraint_count,
+    )
+}
+
+fn anchored_mirror_residual_only_work(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    let classification_and_overlay_work = checked_sum([
+        checked_mul(
+            checked_sum([vertex_count, edge_count, constraint_count, 1])?,
+            128,
+        )?,
+        checked_mul(vertex_count.checked_add(1)?, 64)?,
+    ])?;
+    checked_sum([
+        deletion_document_build_work(constraint_count)?,
+        classification_and_overlay_work,
+        prepare_and_preflight_work(vertex_count, edge_count, constraint_count)?,
+        residual_certificate_work(vertex_count, edge_count, constraint_count)?,
     ])
 }
 
@@ -1101,6 +1349,15 @@ pub(crate) fn zero_length_closure_phase_work_for_test(
         document.constraints.len(),
         zero_length_closure_constructive_candidate_bound_v1(document),
     )
+}
+
+#[cfg(test)]
+pub(crate) fn anchored_mirror_residual_only_phase_work_for_test(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    anchored_mirror_residual_only_work(vertex_count, edge_count, constraint_count)
 }
 
 fn charge_witness_work(

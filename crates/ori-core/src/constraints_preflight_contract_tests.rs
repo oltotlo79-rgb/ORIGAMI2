@@ -220,6 +220,7 @@ fn bounded_direct_oracle_returns_cardinality_smallest_proof_core_at_four_eight_s
             let candidate = GeometricConstraintSetV1 {
                 source_pattern: &fixture.pattern,
                 constraints: subset,
+                raw_mirror_roles: prepared.raw_mirror_roles.clone(),
                 max_preflight_checks: prepared.max_preflight_checks,
             };
             assert!(!matches!(

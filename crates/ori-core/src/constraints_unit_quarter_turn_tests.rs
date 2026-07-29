@@ -189,6 +189,7 @@ fn unit_quarter_turn_slice_preserves_resource_cancel_and_deadline_unknown_bounda
     let limited = GeometricConstraintSetV1 {
         source_pattern: &fixture.pattern,
         constraints: prepared.constraints.clone(),
+        raw_mirror_roles: prepared.raw_mirror_roles.clone(),
         max_preflight_checks: 3,
     };
     assert!(matches!(

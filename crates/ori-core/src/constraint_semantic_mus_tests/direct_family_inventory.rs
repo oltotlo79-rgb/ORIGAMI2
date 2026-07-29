@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::length_phase;
+use super::mirror_phase::anchored_mirror_inventory_fixture;
 use super::pair_phase;
 use super::singleton_phase::different_fixed_lengths_fixture;
 use super::zero_closure_phase::{Provider, zero_closure_fixture};
@@ -18,6 +19,7 @@ enum InventoryFamily {
     PerpendicularOrientationsWithFixedNonRightAngle,
     DifferentRotationalSymmetryAnglesWithFixedRadius,
     NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
+    MirrorSymmetryWithPointOnAxisAndFixedSeparation,
     HorizontalAndVertical,
     DifferentLengthRatios,
     EqualLengthWithNonUnitRatioAndFixedLength,
@@ -199,6 +201,10 @@ fn inventory() -> Vec<(InventoryFamily, SemanticFixture)> {
             InventoryFamily::NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
             noncomplementary_inverse_cardinal_rotations_with_fixed_radius_fixture(),
         ),
+        (
+            InventoryFamily::MirrorSymmetryWithPointOnAxisAndFixedSeparation,
+            anchored_mirror_inventory_fixture(),
+        ),
     ];
     result.extend(
         pair_phase::promoted_fixtures()
@@ -308,6 +314,12 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
                         ..
                     }
             ) | (
+                InventoryFamily::MirrorSymmetryWithPointOnAxisAndFixedSeparation,
+                DirectConstraintConflictKindV1::
+                    MirrorSymmetryWithPointOnAxisAndFixedSeparation {
+                        ..
+                    }
+            ) | (
                 InventoryFamily::HorizontalAndVertical,
                 DirectConstraintConflictKindV1::HorizontalAndVertical { .. }
             ) | (
@@ -344,14 +356,14 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
 }
 
 #[test]
-fn public_semantic_pipeline_hard_inventory_is_eighteen_of_eighteen() {
+fn public_semantic_pipeline_hard_inventory_is_nineteen_of_nineteen() {
     const STABLE_WIRE_FAMILY_COUNT_V1: usize = 23;
     let inventory = inventory();
-    assert_eq!(inventory.len(), 18);
+    assert_eq!(inventory.len(), 19);
     assert_eq!(
         STABLE_WIRE_FAMILY_COUNT_V1 - inventory.len(),
-        5,
-        "exactly five stable wire families remain fail-closed legacy diagnostics",
+        4,
+        "exactly four stable wire families remain outside the public semantic inventory",
     );
     assert_eq!(
         inventory
@@ -359,7 +371,7 @@ fn public_semantic_pipeline_hard_inventory_is_eighteen_of_eighteen() {
             .map(|(family, _)| *family)
             .collect::<BTreeSet<_>>()
             .len(),
-        18,
+        19,
         "every supported direct family must have one distinct inventory row",
     );
 
@@ -400,7 +412,8 @@ fn public_semantic_pipeline_hard_inventory_is_eighteen_of_eighteen() {
                 + certificate.pair_constraint_constructive_witness_count()
                 + certificate.pair_constraint_algebraic_witness_count()
                 + certificate.length_constraint_constructive_witness_count()
-                + certificate.zero_length_closure_constructive_witness_count(),
+                + certificate.zero_length_closure_constructive_witness_count()
+                + certificate.anchored_mirror_residual_only_witness_count(),
             fixture.records.len(),
             "method counters must total exactly once for {family:?}",
         );
@@ -425,6 +438,14 @@ fn public_semantic_pipeline_hard_inventory_is_eighteen_of_eighteen() {
                 1,
                 "the two-rotation collapse must remain isolated in the complete \
                  residual-only algebraic overlay path",
+            );
+        }
+        if family == InventoryFamily::MirrorSymmetryWithPointOnAxisAndFixedSeparation {
+            assert_eq!(fixture.records.len(), 4);
+            assert_eq!(
+                certificate.anchored_mirror_residual_only_witness_count(),
+                4,
+                "all four raw-source anchored cause deletions need dedicated overlays",
             );
         }
     }

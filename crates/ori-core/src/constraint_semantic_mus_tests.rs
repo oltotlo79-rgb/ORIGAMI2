@@ -526,5 +526,8 @@ mod zero_closure_phase;
 #[path = "constraint_semantic_mus_tests/zero_closure_phase_limits.rs"]
 mod zero_closure_phase_limits;
 
+#[path = "constraint_semantic_mus_tests/mirror_phase.rs"]
+mod mirror_phase;
+
 #[path = "constraint_semantic_mus_tests/direct_family_inventory.rs"]
 mod direct_family_inventory;

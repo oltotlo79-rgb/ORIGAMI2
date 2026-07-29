@@ -5,6 +5,7 @@ use crate::{ConstraintPreflightV1, DirectConstraintConflictKindV1};
 pub(super) enum Family {
     RatioCycle,
     GeneralRatioGraph,
+    CrossRootRatioGraph,
     EqualComponent,
 }
 
@@ -94,6 +95,31 @@ pub(super) fn target_fixtures() -> Vec<(Family, SemanticFixture)> {
         ],
     };
 
+    let (cross_root_pattern, cross_root_edges) = matching_pattern(3);
+    let cross_root = SemanticFixture {
+        pattern: cross_root_pattern,
+        records: vec![
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: cross_root_edges[0],
+                length_mm: 1.0,
+            }),
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: cross_root_edges[1],
+                length_mm: 1.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: cross_root_edges[2],
+                denominator_edge: cross_root_edges[0],
+                ratio: 2.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: cross_root_edges[2],
+                denominator_edge: cross_root_edges[1],
+                ratio: 3.0,
+            }),
+        ],
+    };
+
     let (equal_pattern, equal_edges) = matching_pattern(3);
     let equal = SemanticFixture {
         pattern: equal_pattern,
@@ -119,6 +145,7 @@ pub(super) fn target_fixtures() -> Vec<(Family, SemanticFixture)> {
     vec![
         (Family::RatioCycle, cycle),
         (Family::GeneralRatioGraph, graph),
+        (Family::CrossRootRatioGraph, cross_root),
         (Family::EqualComponent, equal),
     ]
 }
@@ -136,6 +163,12 @@ fn has_family(preflight: &ConstraintPreflightV1, family: Family) -> bool {
             ) | (
                 Family::GeneralRatioGraph,
                 DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength { .. }
+            ) | (
+                Family::CrossRootRatioGraph,
+                DirectConstraintConflictKindV1::
+                    InconsistentLengthRatioGraphBetweenFixedLengths {
+                        ..
+                    }
             ) | (
                 Family::EqualComponent,
                 DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
@@ -187,9 +220,9 @@ fn reverse_domain_fixture() -> SemanticFixture {
 }
 
 #[test]
-fn bounded_length_language_promotes_exactly_the_three_target_families() {
+fn bounded_length_language_promotes_exactly_the_four_target_families() {
     let fixtures = target_fixtures();
-    assert_eq!(fixtures.len(), 3);
+    assert_eq!(fixtures.len(), 4);
     for (family, fixture) in fixtures {
         let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
         assert!(has_family(&prepared.preflight(), family));

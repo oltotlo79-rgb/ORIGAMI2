@@ -19,6 +19,7 @@ enum InventoryFamily {
     PerpendicularOrientationsWithFixedNonRightAngle,
     DifferentRotationalSymmetryAnglesWithFixedRadius,
     NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
+    RotationalSymmetryWithCollinearRadius,
     MirrorSymmetryWithPointOnAxisAndFixedSeparation,
     HorizontalAndVertical,
     DifferentLengthRatios,
@@ -26,6 +27,7 @@ enum InventoryFamily {
     NonReciprocalLengthRatiosWithFixedLength,
     NonUnitLengthRatioCycleWithFixedLength,
     InconsistentLengthRatioGraphWithFixedLength,
+    InconsistentLengthRatioGraphBetweenFixedLengths,
     DifferentFixedLengthsInEqualLengthComponent,
     PositiveFixedLengthInBoundedZeroLengthClosure,
     ZeroLengthClosureReachesNondegenerateProvider,
@@ -183,6 +185,49 @@ fn noncomplementary_inverse_cardinal_rotations_with_fixed_radius_fixture() -> Se
     }
 }
 
+fn quarter_turn_with_directed_collinear_radius_fixture(angle_degrees: f64) -> SemanticFixture {
+    let center = VertexId::new();
+    let source = VertexId::new();
+    let target = VertexId::new();
+    let radius = EdgeId::new();
+    SemanticFixture {
+        pattern: CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: center,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: source,
+                    position: Point2::new(1.0, 0.0),
+                },
+                Vertex {
+                    id: target,
+                    position: Point2::new(2.0, 1.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: radius,
+                start: center,
+                end: source,
+                kind: EdgeKind::Auxiliary,
+            }],
+        },
+        records: vec![
+            record(GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex: center,
+                source_vertex: source,
+                target_vertex: target,
+                angle_degrees,
+            }),
+            record(GeometricConstraintKindV1::PointOnLine {
+                vertex: target,
+                line_edge: radius,
+            }),
+        ],
+    }
+}
+
 fn inventory() -> Vec<(InventoryFamily, SemanticFixture)> {
     let mut result = vec![
         (
@@ -200,6 +245,10 @@ fn inventory() -> Vec<(InventoryFamily, SemanticFixture)> {
         (
             InventoryFamily::NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
             noncomplementary_inverse_cardinal_rotations_with_fixed_radius_fixture(),
+        ),
+        (
+            InventoryFamily::RotationalSymmetryWithCollinearRadius,
+            quarter_turn_with_directed_collinear_radius_fixture(90.0),
         ),
         (
             InventoryFamily::MirrorSymmetryWithPointOnAxisAndFixedSeparation,
@@ -252,6 +301,9 @@ fn inventory() -> Vec<(InventoryFamily, SemanticFixture)> {
                     length_phase::Family::GeneralRatioGraph => {
                         InventoryFamily::InconsistentLengthRatioGraphWithFixedLength
                     }
+                    length_phase::Family::CrossRootRatioGraph => {
+                        InventoryFamily::InconsistentLengthRatioGraphBetweenFixedLengths
+                    }
                     length_phase::Family::EqualComponent => {
                         InventoryFamily::DifferentFixedLengthsInEqualLengthComponent
                     }
@@ -270,6 +322,240 @@ fn inventory() -> Vec<(InventoryFamily, SemanticFixture)> {
         ),
     ]);
     result
+}
+
+struct RotationStopAtCheckpoint {
+    calls: usize,
+    stop_at: usize,
+    control: BoundedSemanticMusObserverControlV1,
+}
+
+impl BoundedSemanticMusObserverV1 for RotationStopAtCheckpoint {
+    fn checkpoint(
+        &mut self,
+        _progress: BoundedSemanticMusProgressV1,
+    ) -> BoundedSemanticMusObserverControlV1 {
+        self.calls += 1;
+        if self.calls == self.stop_at {
+            self.control
+        } else {
+            BoundedSemanticMusObserverControlV1::Continue
+        }
+    }
+}
+
+#[test]
+fn directed_collinear_quarter_turn_semantic_mus_has_two_independent_singleton_witnesses() {
+    for angle_degrees in [90.0, 270.0] {
+        let fixture = quarter_turn_with_directed_collinear_radius_fixture(angle_degrees);
+        for retained in &fixture.records {
+            assert!(
+                crate::construct_single_constraint_exact_assignment_v1(
+                    &fixture.pattern,
+                    &document([retained.clone()]),
+                )
+                .is_some(),
+                "deleting either direct-conflict record must leave a constructively exact singleton",
+            );
+        }
+        let forward = prepared(&fixture.pattern, fixture.records.iter().cloned());
+        let certificate = certified(certify_bounded_current_runtime_semantic_mus_v1(&forward));
+        assert_eq!(
+            certificate.constraint_ids(),
+            sorted_ids(fixture.records.iter().cloned())
+        );
+        assert_eq!(certificate.deletion_witness_checks(), 2);
+        assert_eq!(
+            certificate.single_constraint_constructive_witness_count(),
+            2
+        );
+
+        let mut reversed_pattern = fixture.pattern.clone();
+        reversed_pattern.vertices.reverse();
+        reversed_pattern.edges.reverse();
+        let reversed = prepared(&reversed_pattern, fixture.records.iter().rev().cloned());
+        assert_eq!(
+            certify_bounded_current_runtime_semantic_mus_v1(&reversed),
+            BoundedCurrentRuntimeSemanticMusV1::Certified(certificate),
+        );
+    }
+}
+
+#[test]
+fn collinear_rotation_nonquarter_and_rounded_values_stay_unknown_while_overflow_is_rejected() {
+    for angle_degrees in [
+        180.0,
+        45.0,
+        90.0_f64.next_down(),
+        90.0_f64.next_up(),
+        270.0_f64.next_down(),
+        270.0_f64.next_up(),
+        f64::from_bits(1),
+    ] {
+        let fixture = quarter_turn_with_directed_collinear_radius_fixture(angle_degrees);
+        let prepared_set = prepared(&fixture.pattern, fixture.records.iter().cloned());
+        assert!(matches!(
+            prepared_set.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: crate::GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                ..
+            }
+        ));
+        assert!(matches!(
+            certify_bounded_current_runtime_semantic_mus_v1(&prepared_set),
+            BoundedCurrentRuntimeSemanticMusV1::Unknown {
+                reason: BoundedSemanticMusUnknownReasonV1::DirectOracleIncomplete,
+                ..
+            }
+        ));
+    }
+    let overflow = quarter_turn_with_directed_collinear_radius_fixture(f64::MAX);
+    assert!(matches!(
+        prepare_geometric_constraints_v1(
+            &overflow.pattern,
+            &document(overflow.records),
+            GeometricConstraintLimitsV1::default(),
+        ),
+        Err(crate::GeometricConstraintErrorV1::RotationAngleOutOfRange { .. })
+    ));
+
+    let mut reversed = quarter_turn_with_directed_collinear_radius_fixture(90.0);
+    let radius = &mut reversed.pattern.edges[0];
+    (radius.start, radius.end) = (radius.end, radius.start);
+    let prepared_set = prepared(&reversed.pattern, reversed.records.iter().cloned());
+    assert!(matches!(
+        certify_bounded_current_runtime_semantic_mus_v1(&prepared_set),
+        BoundedCurrentRuntimeSemanticMusV1::Unknown {
+            reason: BoundedSemanticMusUnknownReasonV1::DirectOracleIncomplete,
+            ..
+        }
+    ));
+
+    let mut wrong_edge = quarter_turn_with_directed_collinear_radius_fixture(90.0);
+    let unrelated = VertexId::new();
+    wrong_edge.pattern.vertices.push(Vertex {
+        id: unrelated,
+        position: Point2::new(2.0, 0.0),
+    });
+    let wrong_line = EdgeId::new();
+    let center = wrong_edge.pattern.edges[0].start;
+    wrong_edge.pattern.edges.push(Edge {
+        id: wrong_line,
+        start: center,
+        end: unrelated,
+        kind: EdgeKind::Auxiliary,
+    });
+    let GeometricConstraintKindV1::PointOnLine { line_edge, .. } =
+        &mut wrong_edge.records[1].constraint
+    else {
+        unreachable!()
+    };
+    *line_edge = wrong_line;
+    let prepared_set = prepared(&wrong_edge.pattern, wrong_edge.records.iter().cloned());
+    assert!(matches!(
+        certify_bounded_current_runtime_semantic_mus_v1(&prepared_set),
+        BoundedCurrentRuntimeSemanticMusV1::Unknown {
+            reason: BoundedSemanticMusUnknownReasonV1::DirectOracleIncomplete,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn directed_collinear_quarter_turn_semantic_limits_and_stops_fail_closed() {
+    let fixture = quarter_turn_with_directed_collinear_radius_fixture(90.0);
+    let prepared_set = prepared(&fixture.pattern, fixture.records.iter().cloned());
+    let baseline = certified(certify_bounded_current_runtime_semantic_mus_v1(
+        &prepared_set,
+    ));
+
+    let mut exact_observer = NoopBoundedSemanticMusObserverV1;
+    assert!(matches!(
+        certify_bounded_current_runtime_semantic_mus_with_observer_v1(
+            &prepared_set,
+            BoundedSemanticMusLimitsV1 {
+                max_deletion_witness_checks: 2,
+                max_deletion_witness_work: baseline.deletion_witness_work(),
+            },
+            &mut exact_observer,
+        ),
+        BoundedCurrentRuntimeSemanticMusV1::Certified(_)
+    ));
+    let mut one_short_count = NoopBoundedSemanticMusObserverV1;
+    assert!(matches!(
+        certify_bounded_current_runtime_semantic_mus_with_observer_v1(
+            &prepared_set,
+            BoundedSemanticMusLimitsV1 {
+                max_deletion_witness_checks: 1,
+                max_deletion_witness_work: baseline.deletion_witness_work(),
+            },
+            &mut one_short_count,
+        ),
+        BoundedCurrentRuntimeSemanticMusV1::Unknown {
+            reason: BoundedSemanticMusUnknownReasonV1::DeletionWitnessLimitExceeded,
+            ..
+        }
+    ));
+    let mut one_short_work = NoopBoundedSemanticMusObserverV1;
+    assert!(matches!(
+        certify_bounded_current_runtime_semantic_mus_with_observer_v1(
+            &prepared_set,
+            BoundedSemanticMusLimitsV1 {
+                max_deletion_witness_checks: 2,
+                max_deletion_witness_work: baseline.deletion_witness_work() - 1,
+            },
+            &mut one_short_work,
+        ),
+        BoundedCurrentRuntimeSemanticMusV1::Unknown {
+            reason: BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+            ..
+        }
+    ));
+
+    let mut counter = RotationStopAtCheckpoint {
+        calls: 0,
+        stop_at: usize::MAX,
+        control: BoundedSemanticMusObserverControlV1::Cancelled,
+    };
+    assert!(matches!(
+        certify_bounded_current_runtime_semantic_mus_with_observer_v1(
+            &prepared_set,
+            BoundedSemanticMusLimitsV1::default(),
+            &mut counter,
+        ),
+        BoundedCurrentRuntimeSemanticMusV1::Certified(_)
+    ));
+    assert!(counter.calls > 4);
+    for stop_at in [1, counter.calls / 2, counter.calls] {
+        for (control, reason) in [
+            (
+                BoundedSemanticMusObserverControlV1::Cancelled,
+                BoundedSemanticMusUnknownReasonV1::Cancelled,
+            ),
+            (
+                BoundedSemanticMusObserverControlV1::DeadlineReached,
+                BoundedSemanticMusUnknownReasonV1::DeadlineReached,
+            ),
+        ] {
+            let mut observer = RotationStopAtCheckpoint {
+                calls: 0,
+                stop_at,
+                control,
+            };
+            assert!(matches!(
+                certify_bounded_current_runtime_semantic_mus_with_observer_v1(
+                    &prepared_set,
+                    BoundedSemanticMusLimitsV1::default(),
+                    &mut observer,
+                ),
+                BoundedCurrentRuntimeSemanticMusV1::Unknown {
+                    reason: actual,
+                    ..
+                } if actual == reason
+            ));
+            assert_eq!(observer.calls, stop_at);
+        }
+    }
 }
 
 fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFamily) -> bool {
@@ -314,6 +600,9 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
                         ..
                     }
             ) | (
+                InventoryFamily::RotationalSymmetryWithCollinearRadius,
+                DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius { .. }
+            ) | (
                 InventoryFamily::MirrorSymmetryWithPointOnAxisAndFixedSeparation,
                 DirectConstraintConflictKindV1::
                     MirrorSymmetryWithPointOnAxisAndFixedSeparation {
@@ -338,6 +627,12 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
                 InventoryFamily::InconsistentLengthRatioGraphWithFixedLength,
                 DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength { .. }
             ) | (
+                InventoryFamily::InconsistentLengthRatioGraphBetweenFixedLengths,
+                DirectConstraintConflictKindV1::
+                    InconsistentLengthRatioGraphBetweenFixedLengths {
+                        ..
+                    }
+            ) | (
                 InventoryFamily::DifferentFixedLengthsInEqualLengthComponent,
                 DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             ) | (
@@ -356,14 +651,14 @@ fn preflight_has_family(preflight: &ConstraintPreflightV1, family: InventoryFami
 }
 
 #[test]
-fn public_semantic_pipeline_hard_inventory_is_nineteen_of_nineteen() {
-    const STABLE_WIRE_FAMILY_COUNT_V1: usize = 23;
+fn public_semantic_pipeline_hard_inventory_is_twenty_one_of_twenty_one() {
+    const STABLE_WIRE_FAMILY_COUNT_V1: usize = 24;
     let inventory = inventory();
-    assert_eq!(inventory.len(), 19);
+    assert_eq!(inventory.len(), 21);
     assert_eq!(
         STABLE_WIRE_FAMILY_COUNT_V1 - inventory.len(),
-        4,
-        "exactly four stable wire families remain outside the public semantic inventory",
+        3,
+        "exactly three stable wire families remain outside the public semantic inventory",
     );
     assert_eq!(
         inventory
@@ -371,14 +666,14 @@ fn public_semantic_pipeline_hard_inventory_is_nineteen_of_nineteen() {
             .map(|(family, _)| *family)
             .collect::<BTreeSet<_>>()
             .len(),
-        19,
+        21,
         "every supported direct family must have one distinct inventory row",
     );
 
     for (family, fixture) in inventory {
-        let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
+        let prepared_set = prepared(&fixture.pattern, fixture.records.iter().cloned());
         assert!(
-            preflight_has_family(&prepared.preflight(), family),
+            preflight_has_family(&prepared_set.preflight(), family),
             "missing direct family {family:?}",
         );
         let mutation_document = GeometricConstraintDocumentV1 {
@@ -394,7 +689,9 @@ fn public_semantic_pipeline_hard_inventory_is_nineteen_of_nineteen() {
             Err(crate::ConstraintSolveErrorV1::NonConvergent),
             "direct conflict {family:?} must fail closed at the mutation boundary",
         );
-        let certificate = certified(certify_bounded_current_runtime_semantic_mus_v1(&prepared));
+        let certificate = certified(certify_bounded_current_runtime_semantic_mus_v1(
+            &prepared_set,
+        ));
         assert_eq!(
             certificate.constraint_ids(),
             sorted_ids(fixture.records.iter().cloned()),
@@ -438,6 +735,14 @@ fn public_semantic_pipeline_hard_inventory_is_nineteen_of_nineteen() {
                 1,
                 "the two-rotation collapse must remain isolated in the complete \
                  residual-only algebraic overlay path",
+            );
+        }
+        if family == InventoryFamily::RotationalSymmetryWithCollinearRadius {
+            assert_eq!(fixture.records.len(), 2);
+            assert_eq!(
+                certificate.single_constraint_constructive_witness_count(),
+                2,
+                "deleting either exact record must independently construct a SAT witness",
             );
         }
         if family == InventoryFamily::MirrorSymmetryWithPointOnAxisAndFixedSeparation {

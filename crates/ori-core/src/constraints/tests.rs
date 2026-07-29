@@ -352,7 +352,6 @@ fn only_collinear_rotation_conflict(
 ) -> Option<DirectConstraintConflictV1> {
     let prepared = prepare(fixture, raw).expect("collinear-rotation fixture prepares");
     let preflight = prepared.preflight();
-    assert_solver_required(&preflight);
     let mut found = collinear_rotation_conflicts(&preflight);
     (found.len() == 1).then(|| found.remove(0))
 }
@@ -373,13 +372,20 @@ fn collinear_rotation_witness_records(
 }
 
 #[test]
-fn non_half_turn_rotation_conflicts_when_either_radius_is_the_exact_line() {
+fn exact_quarter_turn_conflicts_only_for_directed_center_source_radius() {
     for source_is_line_point in [true, false] {
         let fixture = Fixture::new();
         let records = collinear_rotation_witness_records(&fixture, source_is_line_point, 90.0);
         let raw = document(records.clone());
-        let conflict = only_collinear_rotation_conflict(&fixture, &raw)
-            .expect("a normalized collinear radius excludes every non-half-turn rotation");
+        let conflict = only_collinear_rotation_conflict(&fixture, &raw);
+        if source_is_line_point {
+            assert!(
+                conflict.is_none(),
+                "source-on-center-target is outside the directed theorem"
+            );
+            continue;
+        }
+        let conflict = conflict.expect("target on directed center-source radius conflicts");
         let (source_vertex, target_vertex) = if source_is_line_point {
             (fixture.vertices[2], fixture.vertices[5])
         } else {
@@ -400,7 +406,10 @@ fn non_half_turn_rotation_conflicts_when_either_radius_is_the_exact_line() {
         );
 
         let prepared = prepare(&fixture, &raw).expect("the exact witness prepares");
-        assert_bounded_direct_oracle_unknown(&prepared);
+        assert!(matches!(
+            find_bounded_direct_mus_v1(&prepared),
+            BoundedDirectMusV1::ProvenUnsatisfiable { .. }
+        ));
     }
 }
 
@@ -435,7 +444,7 @@ fn collinear_rotation_conflict_requires_non_half_turn_and_exact_roles_and_edge()
     }
 
     let irrelevant_fixed_group = document([
-        record(rotation(&fixture, 1, 2, 5, 90.0)),
+        record(rotation(&fixture, 1, 5, 2, 90.0)),
         record(GeometricConstraintKindV1::PointOnLine {
             vertex: fixture.vertices[2],
             line_edge: fixture.edges[5],
@@ -461,7 +470,7 @@ fn collinear_rotation_conflict_requires_non_half_turn_and_exact_roles_and_edge()
 }
 
 #[test]
-fn collinear_rotation_uses_constraints_not_initial_coordinates_and_admits_exact_extremes() {
+fn collinear_rotation_uses_constraints_not_initial_coordinates_and_rejects_rounded_angles() {
     let fixture = Fixture::new();
     let initially_collinear = document([
         record(rotation(&fixture, 0, 1, 3, 90.0)),
@@ -487,10 +496,10 @@ fn collinear_rotation_uses_constraints_not_initial_coordinates_and_admits_exact_
         180.0_f64.next_up(),
         360.0_f64.next_down(),
     ] {
-        let raw = document(collinear_rotation_witness_records(&fixture, true, angle));
+        let raw = document(collinear_rotation_witness_records(&fixture, false, angle));
         assert!(
-            only_collinear_rotation_conflict(&fixture, &raw).is_some(),
-            "every exact non-half-turn binary64 angle remains a real contradiction"
+            only_collinear_rotation_conflict(&fixture, &raw).is_none(),
+            "non-cardinal and boundary-rounded angles remain solver-required"
         );
     }
 }
@@ -498,8 +507,8 @@ fn collinear_rotation_uses_constraints_not_initial_coordinates_and_admits_exact_
 #[test]
 fn collinear_rotation_candidate_core_is_canonical_irredundant_and_order_independent() {
     let fixture = Fixture::new();
-    let first_rotation = record(rotation(&fixture, 1, 2, 5, 90.0));
-    let second_rotation = record(rotation(&fixture, 1, 2, 5, 90.0));
+    let first_rotation = record(rotation(&fixture, 1, 5, 2, 90.0));
+    let second_rotation = record(rotation(&fixture, 1, 5, 2, 90.0));
     let first_point = record(GeometricConstraintKindV1::PointOnLine {
         vertex: fixture.vertices[2],
         line_edge: fixture.edges[5],
@@ -547,7 +556,7 @@ fn collinear_rotation_candidate_core_is_canonical_irredundant_and_order_independ
         serde_json::to_value(reversed_preflight).unwrap()
     );
 
-    let minimal = collinear_rotation_witness_records(&fixture, true, 90.0);
+    let minimal = collinear_rotation_witness_records(&fixture, false, 90.0);
     for omitted in 0..minimal.len() {
         let subset = document(
             minimal
@@ -603,15 +612,15 @@ fn collinear_rotation_join_work_depends_on_unique_point_edge_buckets_not_rotatio
     );
     assert_eq!(
         collinear_rotation_conflicts(&preflight).len(),
-        roles.len(),
-        "all distinct role keys reuse the two prejoined buckets"
+        2,
+        "two distinct matching buckets each emit one canonical conflict; duplicate rotations do not multiply them"
     );
 }
 
 #[test]
-fn collinear_rotation_conflict_serializes_and_has_the_new_final_sort_rank() {
+fn collinear_rotation_conflict_keeps_its_wire_tag_and_stable_sort_rank() {
     let fixture = Fixture::new();
-    let raw = document(collinear_rotation_witness_records(&fixture, true, 90.0));
+    let raw = document(collinear_rotation_witness_records(&fixture, false, 90.0));
     let conflict = only_collinear_rotation_conflict(&fixture, &raw)
         .expect("collinear-rotation witness exists");
     let value = serde_json::to_value(&conflict).expect("serialize collinear rotation conflict");

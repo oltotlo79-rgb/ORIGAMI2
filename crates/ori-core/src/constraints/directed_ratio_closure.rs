@@ -79,8 +79,16 @@ struct ForcedDomain {
 
 struct Candidate {
     constraint_ids: Vec<ConstraintId>,
-    fixed_edge: CanonicalId,
+    first_fixed_edge: CanonicalId,
+    second_fixed_edge: Option<CanonicalId>,
     storage_units: usize,
+}
+
+struct RootForcedDomain {
+    fixed_edge: CanonicalId,
+    fixed_id: ConstraintId,
+    fixed_value: f64,
+    domain: ForcedDomain,
 }
 
 struct Budget<'a, O> {
@@ -176,12 +184,13 @@ pub(super) fn conflict(
 /// ordered non-negative finite binary64 bit domain for the complete interval
 /// whose production multiplication can land in the current numerator domain.
 /// Underflow plateaus, overflow, and rounding aliases therefore remain admitted.
-/// A cycle is contradictory only when two conservative domains are disjoint.
-/// Different fixed roots are never joined.
+/// A cycle or two distinct fixed roots are contradictory only when the
+/// conservative domains they force at the same exact edge are disjoint.
 ///
 /// Logical storage accounts for graph nodes and both arc orientations, the
-/// retained root list, exact values or conservative domains, frontier/proposal
-/// keys, the best witness, and every temporary path or witness-union buffer.
+/// retained root list and cross-root domain table, exact values or conservative
+/// domains, frontier/proposal keys, the best witness, and every temporary path
+/// or witness-union buffer.
 pub(super) fn conflict_with_limits_and_observer(
     ratios: &BTreeMap<(CanonicalId, CanonicalId), Vec<ScalarAssignment>>,
     fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
@@ -433,11 +442,12 @@ pub(super) fn conflict_with_limits_and_observer(
         budget.restore_storage(retained_storage);
     }
 
+    let mut root_domains = BTreeMap::<(CanonicalId, CanonicalId), RootForcedDomain>::new();
     for &(fixed_edge, fixed) in &roots {
         if let Err(reason) = budget.checkpoint(Phase::ProofSearch) {
             return unknown(reason, &budget);
         }
-        if let Err(reason) = search_bidirectional_domain_cycles(
+        let domains = match search_bidirectional_domain_cycles(
             fixed_edge,
             fixed,
             &graph,
@@ -445,27 +455,73 @@ pub(super) fn conflict_with_limits_and_observer(
             &mut best,
             &mut budget,
         ) {
-            return unknown(reason, &budget);
+            Ok(domains) => domains,
+            Err(reason) => return unknown(reason, &budget),
+        };
+        for (target, domain) in domains {
+            for (_, existing) in root_domains.range((target, [0; 16])..=(target, [u8::MAX; 16])) {
+                if let Err(reason) = budget.work(Phase::ProofSearch, 1) {
+                    return unknown(reason, &budget);
+                }
+                if domains_are_disjoint(&existing.domain, domain.lower_bits, domain.upper_bits)
+                    && let Err(reason) = consider_cross_root_candidate(
+                        &mut best,
+                        existing,
+                        fixed_edge,
+                        fixed,
+                        &domain.ratio_ids,
+                        &graph,
+                        &mut budget,
+                    )
+                {
+                    return unknown(reason, &budget);
+                }
+            }
+            let replaced = root_domains.insert(
+                (target, fixed.id.canonical_bytes()),
+                RootForcedDomain {
+                    fixed_edge,
+                    fixed_id: fixed.id,
+                    fixed_value: fixed.value,
+                    domain,
+                },
+            );
+            debug_assert!(
+                replaced.is_none(),
+                "one root has at most one retained domain per edge"
+            );
         }
-        let retained_storage = base_storage
-            + best
-                .as_ref()
-                .map_or(0, |candidate: &Candidate| candidate.storage_units);
-        budget.restore_storage(retained_storage);
     }
+    drop(root_domains);
+    let retained_storage = base_storage
+        + best
+            .as_ref()
+            .map_or(0, |candidate: &Candidate| candidate.storage_units);
+    budget.restore_storage(retained_storage);
 
     if let Err(reason) = budget.checkpoint(Phase::Complete) {
         return unknown(reason, &budget);
     }
     let stats = budget.stats();
     let outcome = best.map_or(Outcome::NoProof, |candidate: Candidate| {
-        let ratio_constraint_count = u16::try_from(candidate.constraint_ids.len() - 1)
-            .expect("a bounded witness count fits u16");
-        Outcome::Proven(DirectConstraintConflictV1 {
-            conflict: DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
-                fixed_edge: edge_ids[&candidate.fixed_edge],
+        let fixed_constraint_count = usize::from(candidate.second_fixed_edge.is_some()) + 1;
+        let ratio_constraint_count =
+            u16::try_from(candidate.constraint_ids.len() - fixed_constraint_count)
+                .expect("a bounded witness count fits u16");
+        let conflict = if let Some(second_fixed_edge) = candidate.second_fixed_edge {
+            DirectConstraintConflictKindV1::InconsistentLengthRatioGraphBetweenFixedLengths {
+                first_fixed_edge: edge_ids[&candidate.first_fixed_edge],
+                second_fixed_edge: edge_ids[&second_fixed_edge],
                 ratio_constraint_count,
-            },
+            }
+        } else {
+            DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
+                fixed_edge: edge_ids[&candidate.first_fixed_edge],
+                ratio_constraint_count,
+            }
+        };
+        Outcome::Proven(DirectConstraintConflictV1 {
+            conflict,
             constraint_ids: candidate.constraint_ids,
         })
     });
@@ -479,7 +535,7 @@ fn search_bidirectional_domain_cycles(
     reverse_graph: &BTreeMap<CanonicalId, Vec<ReverseArc>>,
     best: &mut Option<Candidate>,
     budget: &mut Budget<'_, impl Observer>,
-) -> Result<(), UnknownReason> {
+) -> Result<BTreeMap<CanonicalId, ForcedDomain>, UnknownReason> {
     // One unit owns the domain-map entry and one owns its frontier key.
     budget.reserve(2)?;
     let fixed_bits = fixed.value.to_bits();
@@ -561,7 +617,7 @@ fn search_bidirectional_domain_cycles(
         domains.extend(proposals);
         frontier = next_frontier;
     }
-    Ok(())
+    Ok(domains)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -801,19 +857,13 @@ fn consider_candidate(
         .len()
         .checked_sub(1)
         .is_some_and(|ratio_count| (3..MAX_DIRECT_CONFLICT_CAUSE_IDS_V1).contains(&ratio_count));
-    let replace = admissible
-        && best.as_ref().is_none_or(|current| {
-            ids.len() < current.constraint_ids.len()
-                || (ids.len() == current.constraint_ids.len()
-                    && canonical_id_slice_cmp(&ids, &current.constraint_ids)
-                        .then_with(|| fixed_edge.cmp(&current.fixed_edge))
-                        .is_lt())
-        });
+    let replace = admissible && candidate_precedes(&ids, fixed_edge, None, best.as_ref());
     if replace {
         let old_storage = best.as_ref().map_or(0, |candidate| candidate.storage_units);
         *best = Some(Candidate {
             constraint_ids: ids,
-            fixed_edge,
+            first_fixed_edge: fixed_edge,
+            second_fixed_edge: None,
             storage_units: capacity,
         });
         budget.release(old_storage);
@@ -821,6 +871,155 @@ fn consider_candidate(
         budget.restore_storage(storage_before);
     }
     Ok(())
+}
+
+fn consider_cross_root_candidate(
+    best: &mut Option<Candidate>,
+    existing: &RootForcedDomain,
+    fixed_edge: CanonicalId,
+    fixed: ScalarAssignment,
+    ratio_ids: &[ConstraintId],
+    graph: &BTreeMap<CanonicalId, Vec<Arc>>,
+    budget: &mut Budget<'_, impl Observer>,
+) -> Result<(), UnknownReason> {
+    debug_assert_ne!(existing.fixed_id, fixed.id);
+    let storage_before = budget.storage_units;
+    let capacity = existing
+        .domain
+        .ratio_ids
+        .len()
+        .checked_add(ratio_ids.len())
+        .and_then(|length| length.checked_add(2))
+        .ok_or(UnknownReason::StorageLimitExceeded)?;
+    budget.reserve(capacity)?;
+    let mut ids = Vec::new();
+    ids.try_reserve_exact(capacity)
+        .map_err(|_| UnknownReason::StorageLimitExceeded)?;
+    ids.extend_from_slice(&existing.domain.ratio_ids);
+    ids.extend_from_slice(ratio_ids);
+    ids.extend([existing.fixed_id, fixed.id]);
+    let sort_factor = usize::BITS - ids.len().leading_zeros();
+    let work = u64::try_from(ids.len())
+        .ok()
+        .and_then(|length| length.checked_mul(u64::from(sort_factor) + 1))
+        .ok_or(UnknownReason::WorkLimitExceeded)?;
+    budget.work(Phase::ProofSearch, work)?;
+    canonicalize_constraint_ids(&mut ids);
+    let admissible = ids.len().checked_sub(2).is_some_and(|ratio_count| {
+        (2..=MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2).contains(&ratio_count)
+    });
+    let (first_fixed_edge, second_fixed_edge) = if existing.fixed_edge <= fixed_edge {
+        (existing.fixed_edge, fixed_edge)
+    } else {
+        (fixed_edge, existing.fixed_edge)
+    };
+    let replace = admissible
+        && candidate_precedes(
+            &ids,
+            first_fixed_edge,
+            Some(second_fixed_edge),
+            best.as_ref(),
+        );
+    let finite_forward_replays = !replace
+        || cross_root_candidate_has_only_finite_forward_replays(
+            &ids,
+            [
+                (existing.fixed_edge, existing.fixed_value),
+                (fixed_edge, fixed.value),
+            ],
+            graph,
+            budget,
+        )?;
+    if replace && finite_forward_replays {
+        let old_storage = best.as_ref().map_or(0, |candidate| candidate.storage_units);
+        *best = Some(Candidate {
+            constraint_ids: ids,
+            first_fixed_edge,
+            second_fixed_edge: Some(second_fixed_edge),
+            storage_units: capacity,
+        });
+        budget.release(old_storage);
+    } else {
+        budget.restore_storage(storage_before);
+    }
+    Ok(())
+}
+
+fn cross_root_candidate_has_only_finite_forward_replays(
+    candidate_ids: &[ConstraintId],
+    roots: [(CanonicalId, f64); 2],
+    graph: &BTreeMap<CanonicalId, Vec<Arc>>,
+    budget: &mut Budget<'_, impl Observer>,
+) -> Result<bool, UnknownReason> {
+    for (root, fixed_value) in roots {
+        let storage_before = budget.storage_units;
+        // One unit owns the replay map entry and one owns its frontier key.
+        budget.reserve(2)?;
+        let mut frontier = Vec::new();
+        frontier
+            .try_reserve_exact(1)
+            .map_err(|_| UnknownReason::StorageLimitExceeded)?;
+        frontier.push(root);
+        let mut forced = BTreeMap::from([(root, fixed_value)]);
+        while let Some(source) = frontier.pop() {
+            budget.release(1);
+            let Some(parent) = forced.get(&source).copied() else {
+                return Err(UnknownReason::StorageLimitExceeded);
+            };
+            for arc in graph.get(&source).into_iter().flatten() {
+                budget.work(Phase::ProofSearch, 1)?;
+                if candidate_ids
+                    .binary_search_by_key(
+                        &arc.constraint_id.canonical_bytes(),
+                        ConstraintId::canonical_bytes,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+                let derived = length_ratio_scaled_denominator_binary64_v1(arc.ratio, parent);
+                if !derived.is_finite() {
+                    budget.restore_storage(storage_before);
+                    return Ok(false);
+                }
+                if let Some(existing) = forced.get(&arc.numerator) {
+                    if existing.to_bits() != derived.to_bits() {
+                        // Replaying a candidate subgraph with two finite values
+                        // at one node would require retaining both paths to
+                        // prove that neither later overflows. Withhold this
+                        // cross-root family instead of selecting one path.
+                        budget.restore_storage(storage_before);
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                budget.reserve(2)?;
+                frontier
+                    .try_reserve(1)
+                    .map_err(|_| UnknownReason::StorageLimitExceeded)?;
+                forced.insert(arc.numerator, derived);
+                frontier.push(arc.numerator);
+            }
+        }
+        budget.restore_storage(storage_before);
+    }
+    Ok(true)
+}
+
+fn candidate_precedes(
+    ids: &[ConstraintId],
+    first_fixed_edge: CanonicalId,
+    second_fixed_edge: Option<CanonicalId>,
+    current: Option<&Candidate>,
+) -> bool {
+    current.is_none_or(|current| {
+        ids.len() < current.constraint_ids.len()
+            || (ids.len() == current.constraint_ids.len()
+                && canonical_id_slice_cmp(ids, &current.constraint_ids)
+                    .then_with(|| first_fixed_edge.cmp(&current.first_fixed_edge))
+                    .then_with(|| second_fixed_edge.cmp(&current.second_fixed_edge))
+                    .is_lt())
+    })
 }
 
 fn insert_canonical_id(ids: &mut Vec<ConstraintId>, id: ConstraintId) {

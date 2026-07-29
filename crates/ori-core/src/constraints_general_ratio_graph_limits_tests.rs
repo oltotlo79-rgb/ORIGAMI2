@@ -134,6 +134,48 @@ fn reverse_domain_input() -> RatioInput {
     (ratios, fixed_lengths, edge_ids)
 }
 
+fn cross_root_input(ratio_count: usize) -> RatioInput {
+    assert!(ratio_count >= 2);
+    let edges = (0..=ratio_count).map(|_| EdgeId::new()).collect::<Vec<_>>();
+    let nodes = edges
+        .iter()
+        .map(EdgeId::canonical_bytes)
+        .collect::<Vec<_>>();
+    let edge_ids = nodes
+        .iter()
+        .copied()
+        .zip(edges.iter().copied())
+        .collect::<BTreeMap<_, _>>();
+    let ratios = (0..ratio_count)
+        .map(|index| {
+            (
+                (nodes[index + 1], nodes[index]),
+                vec![ScalarAssignment {
+                    id: ConstraintId::new(),
+                    value: 1.0,
+                }],
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let fixed_lengths = BTreeMap::from([
+        (
+            nodes[0],
+            ScalarGroupSummary::new(ScalarAssignment {
+                id: ConstraintId::new(),
+                value: 1.0,
+            }),
+        ),
+        (
+            nodes[ratio_count],
+            ScalarGroupSummary::new(ScalarAssignment {
+                id: ConstraintId::new(),
+                value: 2.0,
+            }),
+        ),
+    ]);
+    (ratios, fixed_lengths, edge_ids)
+}
+
 fn direct_with(
     input: &RatioInput,
     limits: Limits,
@@ -205,6 +247,109 @@ fn witness_and_exact_work_storage_boundaries_are_fail_closed() {
             ..
         }
     ));
+}
+
+#[test]
+fn cross_root_witness_and_exact_resource_boundaries_are_fail_closed() {
+    let at_cap = cross_root_input(MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2);
+    let (at_cap_outcome, _) = direct_with(&at_cap, Limits::default(), &mut NoopObserver);
+    assert!(matches!(
+        at_cap_outcome,
+        Outcome::Proven(ref conflict)
+            if conflict.constraint_ids().len() == MAX_DIRECT_CONFLICT_CAUSE_IDS_V1
+                && matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::
+                        InconsistentLengthRatioGraphBetweenFixedLengths {
+                            ratio_constraint_count: 254,
+                            ..
+                        }
+                )
+    ));
+    let over_cap = cross_root_input(MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 1);
+    assert!(matches!(
+        direct_with(&over_cap, Limits::default(), &mut NoopObserver).0,
+        Outcome::NoProof
+    ));
+
+    let input = cross_root_input(2);
+    let (expected, stats) = direct_with(&input, Limits::default(), &mut NoopObserver);
+    assert!(matches!(
+        expected,
+        Outcome::Proven(ref conflict)
+            if matches!(
+                conflict.conflict(),
+                DirectConstraintConflictKindV1::
+                    InconsistentLengthRatioGraphBetweenFixedLengths {
+                        ratio_constraint_count: 2,
+                        ..
+                    }
+            )
+    ));
+    let exact = Limits {
+        max_work: stats.completed_work,
+        max_storage_units: stats.peak_storage_units,
+    };
+    assert_eq!(direct_with(&input, exact, &mut NoopObserver).0, expected);
+    assert!(matches!(
+        direct_with(
+            &input,
+            Limits {
+                max_work: exact.max_work - 1,
+                ..exact
+            },
+            &mut NoopObserver,
+        )
+        .0,
+        Outcome::Unknown {
+            reason: UnknownReason::WorkLimitExceeded,
+            ..
+        }
+    ));
+    assert!(matches!(
+        direct_with(
+            &input,
+            Limits {
+                max_storage_units: exact.max_storage_units - 1,
+                ..exact
+            },
+            &mut NoopObserver,
+        )
+        .0,
+        Outcome::Unknown {
+            reason: UnknownReason::StorageLimitExceeded,
+            ..
+        }
+    ));
+
+    struct StopAt {
+        phase: Phase,
+        control: ObserverControl,
+    }
+    impl Observer for StopAt {
+        fn checkpoint(&mut self, checkpoint: Checkpoint) -> ObserverControl {
+            if checkpoint.phase == self.phase {
+                self.control
+            } else {
+                ObserverControl::Continue
+            }
+        }
+    }
+    for (control, reason) in [
+        (ObserverControl::Cancelled, UnknownReason::Cancelled),
+        (
+            ObserverControl::DeadlineReached,
+            UnknownReason::DeadlineReached,
+        ),
+    ] {
+        for phase in [Phase::GraphBuild, Phase::ProofSearch, Phase::Complete] {
+            let mut observer = StopAt { phase, control };
+            assert!(matches!(
+                direct_with(&input, Limits::default(), &mut observer).0,
+                Outcome::Unknown { reason: actual, .. } if actual == reason
+            ));
+        }
+    }
 }
 
 #[test]

@@ -188,24 +188,84 @@ fn every_four_cycle_root_and_both_directions_are_canonical_and_irredundant() {
     });
     let first_fixed = records[0].clone();
     records.push(second_fixed.clone());
-    let canonical_fixed = [first_fixed, second_fixed]
-        .into_iter()
-        .min_by_key(|item| item.id.canonical_bytes())
-        .unwrap();
-    let fixed_edge = match canonical_fixed.constraint {
-        GeometricConstraintKindV1::FixedLength { edge, .. } => edge,
-        _ => unreachable!(),
-    };
-    let expected_ids = sorted_ids(
-        [canonical_fixed.id]
+    let expected_ids = [
+        sorted_ids([
+            first_fixed.id,
+            second_fixed.id,
+            records[1].id,
+            records[2].id,
+        ]),
+        sorted_ids([
+            first_fixed.id,
+            second_fixed.id,
+            records[3].id,
+            records[4].id,
+        ]),
+    ]
+    .into_iter()
+    .min_by(|left, right| canonical_id_slice_cmp(left, right))
+    .unwrap();
+    let expected_id_set = expected_ids
+        .iter()
+        .map(ConstraintId::canonical_bytes)
+        .collect::<BTreeSet<_>>();
+    let core_records = records
+        .iter()
+        .filter(|record| expected_id_set.contains(&record.id.canonical_bytes()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let prepared = prepare(&fixture, core_records);
+    let conflict = match prepared.preflight() {
+        ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
             .into_iter()
-            .chain(records[1..5].iter().map(|item| item.id)),
-    );
-    assert_target(
-        &prepare(&fixture, records).preflight(),
-        fixed_edge,
-        &expected_ids,
-    );
+            .find(|conflict| {
+                matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::
+                        InconsistentLengthRatioGraphBetweenFixedLengths {
+                            ..
+                        }
+                )
+            })
+            .expect("the smaller cross-root MUS must own the classification"),
+        other => panic!("expected a cross-root direct conflict, got {other:?}"),
+    };
+    let fixed_edges = [fixture.edges[0], fixture.edges[2]];
+    let mut canonical_fixed_edges = fixed_edges;
+    canonical_fixed_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    assert!(matches!(
+        conflict.conflict(),
+        DirectConstraintConflictKindV1::InconsistentLengthRatioGraphBetweenFixedLengths {
+            first_fixed_edge,
+            second_fixed_edge,
+            ratio_constraint_count: 2,
+        } if [*first_fixed_edge, *second_fixed_edge] == canonical_fixed_edges
+    ));
+    assert_eq!(conflict.constraint_ids(), expected_ids);
+    assert!(matches!(
+        crate::certify_bounded_current_runtime_semantic_mus_v1(&prepared),
+        crate::BoundedCurrentRuntimeSemanticMusV1::Certified(ref certificate)
+            if certificate.constraint_ids() == expected_ids
+                && certificate.deletion_witness_checks() == 4
+                && certificate.length_constraint_constructive_witness_count() == 4
+    ));
+
+    let full_conflict = match prepare(&fixture, records).preflight() {
+        ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
+            .into_iter()
+            .find(|conflict| {
+                matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::
+                        InconsistentLengthRatioGraphBetweenFixedLengths {
+                            ..
+                        }
+                )
+            })
+            .expect("the full component must retain its smaller cross-root core"),
+        other => panic!("expected a cross-root direct conflict, got {other:?}"),
+    };
+    assert_eq!(full_conflict.constraint_ids(), expected_ids);
 }
 
 fn diamond(

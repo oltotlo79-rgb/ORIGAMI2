@@ -958,7 +958,6 @@ mod tests {
         DifferentRotationalSymmetryAnglesWithFixedRadius,
         NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
         MirrorSymmetryWithPointOnAxisAndFixedSeparation,
-        RotationalSymmetryWithCollinearRadius,
     }
 
     struct QuarantinedCounterexample {
@@ -1506,24 +1505,6 @@ mod tests {
                     },
                 ])
             }
-            QuarantinedDirectFamily::RotationalSymmetryWithCollinearRadius => {
-                let center = builder.vertex(Point2::new(0.0, 0.0));
-                let source = builder.vertex(Point2::new(minimum, 0.0));
-                let target = builder.vertex(Point2::new(minimum, 0.0));
-                let radius = builder.edge(center, source);
-                builder.finish([
-                    GeometricConstraintKindV1::RotationalSymmetry {
-                        center_vertex: center,
-                        source_vertex: source,
-                        target_vertex: target,
-                        angle_degrees: f64::from_bits(1),
-                    },
-                    GeometricConstraintKindV1::PointOnLine {
-                        vertex: target,
-                        line_edge: radius,
-                    },
-                ])
-            }
         }
     }
 
@@ -1601,11 +1582,6 @@ mod tests {
         mirror_axis_fixed_separation_is_solver_required,
         MirrorSymmetryWithPointOnAxisAndFixedSeparation
     );
-    quarantined_family_regression!(
-        collinear_rotation_radius_is_solver_required,
-        RotationalSymmetryWithCollinearRadius
-    );
-
     #[test]
     fn cardinal_rotation_proof_residual_subtracts_center_before_the_rotated_vector() {
         let huge = f64::from_bits(0x4630_0000_0000_0000);

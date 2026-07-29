@@ -444,6 +444,11 @@ pub enum DirectConstraintConflictKindV1 {
         second_edge: EdgeId,
         parallel_constraint_count: u16,
     },
+    /// Two edges have one parallel record, exact unit fixed lengths, and a
+    /// fixed-angle residual that rejects every zero-cross class.  Unit
+    /// lengths make the solver's normalized parallel denominator exactly one,
+    /// so the parallel residual directly binds the raw cross used by the
+    /// fixed-angle residual.  Other length scales remain solver-required.
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -503,7 +508,10 @@ pub enum DirectConstraintConflictKindV1 {
         fixed_radius_edge: EdgeId,
     },
     /// Legacy wire tag retained for compatibility. Independently rounded
-    /// mirror and point-on-line residuals can admit positive separation.
+    /// mirror and point-on-line residuals can admit positive separation. The
+    /// exact-unit horizontal-axis subset whose selected point is forced to the
+    /// axis start by an exact horizontal/vertical connector is proven
+    /// separately; the generic three-record form remains solver-required.
     MirrorSymmetryWithPointOnAxisAndFixedSeparation {
         first_vertex: VertexId,
         second_vertex: VertexId,
@@ -511,7 +519,9 @@ pub enum DirectConstraintConflictKindV1 {
         fixed_separation_edge: EdgeId,
     },
     /// Legacy wire tag retained for compatibility. A stored non-half-turn can
-    /// round to an implemented identity or half-turn residual.
+    /// round to an implemented identity or half-turn residual. The exact
+    /// quarter-turn, exact-unit horizontal-radius subset is proven separately;
+    /// the generic two-record form remains solver-required.
     RotationalSymmetryWithCollinearRadius {
         center_vertex: VertexId,
         source_vertex: VertexId,
@@ -1903,6 +1913,19 @@ impl RotationCardinalGroupSummary {
         Some([first.id, second.id])
     }
 
+    /// Returns the canonical exact 90 or 270-degree witness. These are the
+    /// only cardinal rotations that map a horizontal nonzero radius to a
+    /// vertical nonzero radius without a rounded coefficient.
+    fn quarter_turn_witness(&self) -> Option<ScalarAssignment> {
+        [
+            self.by_class[RotationCardinalClass::QuarterTurn.index()],
+            self.by_class[RotationCardinalClass::ThreeQuarterTurn.index()],
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|assignment| assignment.id.canonical_bytes())
+    }
+
     /// Chooses the canonical two-record witness whose exact cardinal
     /// composition is not identity.
     ///
@@ -2138,6 +2161,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
     let mut points_on_lines: BTreeMap<(CanonicalId, CanonicalId), Vec<ConstraintId>> =
         BTreeMap::new();
     let mut mirrors: BTreeMap<MirrorAxisKey, Vec<ConstraintId>> = BTreeMap::new();
+    let mut mirror_roles: BTreeMap<CanonicalId, [VertexId; 2]> = BTreeMap::new();
     let mut exact_nondegenerate_edge_uses: BTreeMap<CanonicalId, ConstraintId> = BTreeMap::new();
     let mut unchecked = Vec::new();
 
@@ -2305,6 +2329,10 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                     ))
                     .or_default()
                     .push(record.id);
+                mirror_roles.insert(
+                    record.id.canonical_bytes(),
+                    [*first_vertex, *second_vertex],
+                );
                 unchecked.push(record.id);
             }
             GeometricConstraintKindV1::AngleBisector {
@@ -2546,16 +2574,36 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             fixed_angles_by_pair.get(pair).and_then(|assignments| {
                 assignments
                     .iter()
-                    .find(|assignment| assignment.value != 0.0 && assignment.value != 180.0)
+                    .find(|assignment| fixed_angle_rejects_zero_cross_binary64_v1(assignment.value))
             }),
+        ) && let (Some(first_unit), Some(second_unit)) = (
+            fixed_lengths
+                .get(&pair.first)
+                .and_then(ScalarGroupSummary::consistent_assignment)
+                .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits()),
+            fixed_lengths
+                .get(&pair.second)
+                .and_then(ScalarGroupSummary::consistent_assignment)
+                .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits()),
         ) {
+            // The solver computes `cross / (hypot(first) * hypot(second))`.
+            // These two exact unit-length residuals make that denominator
+            // bit-exactly 1.0, so a zero parallel residual proves the raw
+            // cross used by FixedAngle is also exactly zero.  The frozen
+            // angle helper then rejects every reachable atan2(+0, dot)
+            // class; no stored-angle inequality is used as evidence.
             push_conflict(
                 &mut conflicts,
                 DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
                     first_edge: edge_ids[&pair.first],
                     second_edge: edge_ids[&pair.second],
                 },
-                [*parallel_id, angle_assignment.id],
+                [
+                    *parallel_id,
+                    angle_assignment.id,
+                    first_unit.id,
+                    second_unit.id,
+                ],
             );
         }
         let first_horizontal = horizontal.get(&pair.first);
@@ -2677,8 +2725,9 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             set.source_pattern,
             has_same_role_rotation_candidate
                 || has_inverse_role_rotation_candidate
-                || has_mirror_axis_candidate,
-            has_collinear_rotation_candidate,
+                || has_mirror_axis_candidate
+                || has_collinear_rotation_candidate,
+            has_collinear_rotation_candidate || has_mirror_axis_candidate,
         );
         if has_collinear_rotation_candidate {
             let point_line_witnesses =
@@ -2702,6 +2751,47 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                         line_edge,
                     },
                     [rotation.id, point_id],
+                );
+            }
+            for (key, summary) in &cardinal_rotations {
+                let Some(rotation) = summary.quarter_turn_witness() else {
+                    continue;
+                };
+                let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
+                let Some((point_id, line_edge)) = point_line_witnesses
+                    .get(&(
+                        target_vertex.canonical_bytes(),
+                        VertexPairKey::unordered(center_vertex, source_vertex),
+                    ))
+                    .copied()
+                else {
+                    continue;
+                };
+                let Some((fixed_radius_id, horizontal_radius_id)) =
+                    canonical_unit_horizontal_radius_witness(
+                        &pattern_edges.by_pair,
+                        &fixed_lengths,
+                        &horizontal,
+                        center_vertex,
+                        source_vertex,
+                    )
+                else {
+                    continue;
+                };
+                // The frozen 90/270-degree matrix contains only +/-1 and
+                // +0. An exact-unit horizontal source radius is therefore
+                // mapped to a vertical delta of exact magnitude one, while
+                // PointOnLine on that same horizontal radius forces the
+                // target's vertical delta to exact zero.
+                push_conflict(
+                    &mut conflicts,
+                    DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius {
+                        center_vertex,
+                        source_vertex,
+                        target_vertex,
+                        line_edge,
+                    },
+                    [rotation.id, point_id, fixed_radius_id, horizontal_radius_id],
                 );
             }
         }
@@ -2752,6 +2842,115 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                             fixed_separation_edge,
                         },
                     [mirror_id, point_id, fixed_id],
+                );
+
+                let Some(axis_unit) = fixed_lengths
+                    .get(&key.axis)
+                    .and_then(ScalarGroupSummary::consistent_assignment)
+                    .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits())
+                else {
+                    continue;
+                };
+                let Some(axis_horizontal_id) = horizontal
+                    .get(&key.axis)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .min_by_key(ConstraintId::canonical_bytes)
+                else {
+                    continue;
+                };
+                let Some((unit_separation_id, unit_separation_edge)) =
+                    canonical_unit_fixed_edge_witness(&pattern_edges.by_pair, &fixed_lengths, pair)
+                else {
+                    continue;
+                };
+                let Some(axis_start) = pattern_edges.axis_starts.get(&key.axis).copied() else {
+                    continue;
+                };
+                let mut exact_anchor_witness: Option<(
+                    ConstraintId,
+                    ConstraintId,
+                    ConstraintId,
+                    ConstraintId,
+                )> = None;
+                for candidate_mirror_id in mirror_ids {
+                    let [point_vertex, _] =
+                        mirror_roles[&candidate_mirror_id.canonical_bytes()];
+                    let Some(point_id) = points_on_lines
+                        .get(&(point_vertex.canonical_bytes(), key.axis))
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .min_by_key(ConstraintId::canonical_bytes)
+                    else {
+                        continue;
+                    };
+                    let Some((connector_horizontal_id, connector_vertical_id)) =
+                        canonical_horizontal_vertical_edge_witness(
+                            &pattern_edges.by_pair,
+                            &horizontal,
+                            &vertical,
+                            VertexPairKey::unordered(axis_start, point_vertex),
+                        )
+                    else {
+                        continue;
+                    };
+                    let candidate = (
+                        *candidate_mirror_id,
+                        point_id,
+                        connector_horizontal_id,
+                        connector_vertical_id,
+                    );
+                    if exact_anchor_witness.is_none_or(|current| {
+                        (
+                            candidate.0.canonical_bytes(),
+                            candidate.1.canonical_bytes(),
+                            candidate.2.canonical_bytes(),
+                            candidate.3.canonical_bytes(),
+                        ) < (
+                            current.0.canonical_bytes(),
+                            current.1.canonical_bytes(),
+                            current.2.canonical_bytes(),
+                            current.3.canonical_bytes(),
+                        )
+                    }) {
+                        exact_anchor_witness = Some(candidate);
+                    }
+                }
+                let Some((
+                    exact_mirror_id,
+                    exact_point_id,
+                    connector_horizontal_id,
+                    connector_vertical_id,
+                )) = exact_anchor_witness
+                else {
+                    continue;
+                };
+                // Horizontal and Vertical on the real connector force the
+                // selected point's two binary64 coordinate deltas from the
+                // axis start to zero. The exact-unit horizontal axis then has
+                // direction `( +/-1, +0 )`; the mirror projection is exactly
+                // zero and the reflected point is the axis start. A distinct
+                // endpoint therefore cannot satisfy an exact unit separation.
+                push_conflict(
+                    &mut conflicts,
+                    DirectConstraintConflictKindV1::
+                        MirrorSymmetryWithPointOnAxisAndFixedSeparation {
+                            first_vertex: vertex_ids[&key.first],
+                            second_vertex: vertex_ids[&key.second],
+                            axis_edge: edge_ids[&key.axis],
+                            fixed_separation_edge: unit_separation_edge,
+                        },
+                    [
+                        exact_mirror_id,
+                        exact_point_id,
+                        unit_separation_id,
+                        axis_unit.id,
+                        axis_horizontal_id,
+                        connector_horizontal_id,
+                        connector_vertical_id,
+                    ],
                 );
             }
         }
@@ -2898,7 +3097,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             &edge_ids,
         ) {
             Ok(Some(candidate)) => {
-                debug_assert!(!is_proven_direct_conflict_v1(&candidate.conflict));
+                debug_assert!(!is_proven_direct_conflict_v1(&candidate));
                 #[cfg(test)]
                 record_quarantined_direct_conflict(&candidate);
                 unchecked.extend(candidate.constraint_ids);
@@ -4003,9 +4202,27 @@ fn push_conflict(
     });
 }
 
-fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bool {
+fn is_proven_direct_conflict_v1(candidate: &DirectConstraintConflictV1) -> bool {
+    // The legacy collinear-rotation candidate has two records. Only the
+    // independently derived four-record exact quarter-turn/unit-horizontal
+    // witness is proven; arbitrary stored angles remain solver-required.
+    if matches!(
+        &candidate.conflict,
+        DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius { .. }
+    ) {
+        return candidate.constraint_ids.len() == 4;
+    }
+    if matches!(
+        &candidate.conflict,
+        DirectConstraintConflictKindV1::MirrorSymmetryWithPointOnAxisAndFixedSeparation { .. }
+    ) {
+        // The generic mirror candidate has three records. The seven-record
+        // subset additionally anchors the solver's directional first vertex
+        // to the real axis start with exact horizontal/vertical residuals.
+        return candidate.constraint_ids.len() == 7;
+    }
     matches!(
-        conflict,
+        &candidate.conflict,
         DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
             | DirectConstraintConflictKindV1::DifferentFixedAngles { .. }
             | DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
@@ -4017,6 +4234,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::NonUnitLengthRatioCycleWithFixedLength { .. }
             | DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength { .. }
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
+            | DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
             | DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle { .. }
             | DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle { .. }
@@ -4033,7 +4251,7 @@ fn quarantine_unproven_direct_conflicts_v1(
     unchecked: &mut Vec<ConstraintId>,
 ) {
     conflicts.retain(|candidate| {
-        if is_proven_direct_conflict_v1(&candidate.conflict) {
+        if is_proven_direct_conflict_v1(candidate) {
             true
         } else {
             #[cfg(test)]
@@ -4053,6 +4271,7 @@ fn quarantine_unproven_direct_conflicts_v1(
 struct PatternEdgeIndex {
     by_pair: BTreeMap<VertexPairKey, Vec<EdgeId>>,
     by_id: BTreeMap<CanonicalId, (EdgeId, VertexPairKey)>,
+    axis_starts: BTreeMap<CanonicalId, VertexId>,
 }
 
 fn pattern_edge_index(
@@ -4062,6 +4281,7 @@ fn pattern_edge_index(
 ) -> PatternEdgeIndex {
     let mut by_pair: BTreeMap<VertexPairKey, Vec<EdgeId>> = BTreeMap::new();
     let mut by_id = BTreeMap::new();
+    let mut axis_starts = BTreeMap::new();
     for edge in &pattern.edges {
         let pair = VertexPairKey::unordered(edge.start, edge.end);
         if needs_pair_index {
@@ -4069,9 +4289,14 @@ fn pattern_edge_index(
         }
         if needs_id_index {
             by_id.insert(edge.id.canonical_bytes(), (edge.id, pair));
+            axis_starts.insert(edge.id.canonical_bytes(), edge.start);
         }
     }
-    PatternEdgeIndex { by_pair, by_id }
+    PatternEdgeIndex {
+        by_pair,
+        by_id,
+        axis_starts,
+    }
 }
 
 /// Selects the canonical positive radius witness for one rotation triple.
@@ -4245,6 +4470,118 @@ fn canonical_positive_fixed_edge_witness(
             continue;
         }
         let candidate = (assignment.id, *edge);
+        if best.is_none_or(|current| {
+            (candidate.0.canonical_bytes(), candidate.1.canonical_bytes())
+                < (current.0.canonical_bytes(), current.1.canonical_bytes())
+        }) {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+/// Selects the canonical exact-unit fixed-length witness for exactly one
+/// unordered pattern-vertex pair.
+///
+/// The strict mirror proof needs its separation residual to force one full
+/// binary64 unit, not merely an arbitrary positive magnitude.
+fn canonical_unit_fixed_edge_witness(
+    edges_by_pair: &BTreeMap<VertexPairKey, Vec<EdgeId>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    pair: VertexPairKey,
+) -> Option<(ConstraintId, EdgeId)> {
+    let mut best: Option<(ConstraintId, EdgeId)> = None;
+    for edge in edges_by_pair.get(&pair).into_iter().flatten() {
+        let Some(assignment) = fixed_lengths
+            .get(&edge.canonical_bytes())
+            .and_then(ScalarGroupSummary::consistent_assignment)
+            .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits())
+        else {
+            continue;
+        };
+        let candidate = (assignment.id, *edge);
+        if best.is_none_or(|current| {
+            (candidate.0.canonical_bytes(), candidate.1.canonical_bytes())
+                < (current.0.canonical_bytes(), current.1.canonical_bytes())
+        }) {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+/// Selects one real connector edge whose horizontal and vertical residuals
+/// jointly force both endpoint coordinate deltas to binary64 zero.
+fn canonical_horizontal_vertical_edge_witness(
+    edges_by_pair: &BTreeMap<VertexPairKey, Vec<EdgeId>>,
+    horizontal: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
+    vertical: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
+    pair: VertexPairKey,
+) -> Option<(ConstraintId, ConstraintId)> {
+    let mut best: Option<(ConstraintId, ConstraintId)> = None;
+    for edge in edges_by_pair.get(&pair).into_iter().flatten() {
+        let Some(horizontal_id) = horizontal
+            .get(&edge.canonical_bytes())
+            .into_iter()
+            .flatten()
+            .copied()
+            .min_by_key(ConstraintId::canonical_bytes)
+        else {
+            continue;
+        };
+        let Some(vertical_id) = vertical
+            .get(&edge.canonical_bytes())
+            .into_iter()
+            .flatten()
+            .copied()
+            .min_by_key(ConstraintId::canonical_bytes)
+        else {
+            continue;
+        };
+        let candidate = (horizontal_id, vertical_id);
+        if best.is_none_or(|current| {
+            (candidate.0.canonical_bytes(), candidate.1.canonical_bytes())
+                < (current.0.canonical_bytes(), current.1.canonical_bytes())
+        }) {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+/// Selects the canonical exact-unit horizontal radius on one ordered
+/// center-source pair.
+///
+/// The quarter-turn direct proof needs both properties on the same real edge:
+/// a unit length makes normalization exact and Horizontal makes the source
+/// delta's vertical component exactly zero.
+fn canonical_unit_horizontal_radius_witness(
+    edges_by_pair: &BTreeMap<VertexPairKey, Vec<EdgeId>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    horizontal: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
+    center_vertex: VertexId,
+    source_vertex: VertexId,
+) -> Option<(ConstraintId, ConstraintId)> {
+    let mut best: Option<(ConstraintId, ConstraintId)> = None;
+    let pair = VertexPairKey::unordered(center_vertex, source_vertex);
+    for edge in edges_by_pair.get(&pair).into_iter().flatten() {
+        let Some(fixed) = fixed_lengths
+            .get(&edge.canonical_bytes())
+            .and_then(ScalarGroupSummary::consistent_assignment)
+            .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits())
+        else {
+            continue;
+        };
+        let Some(horizontal_id) = horizontal
+            .get(&edge.canonical_bytes())
+            .into_iter()
+            .flatten()
+            .copied()
+            .min_by_key(ConstraintId::canonical_bytes)
+        else {
+            continue;
+        };
+        let candidate = (fixed.id, horizontal_id);
         if best.is_none_or(|current| {
             (candidate.0.canonical_bytes(), candidate.1.canonical_bytes())
                 < (current.0.canonical_bytes(), current.1.canonical_bytes())
@@ -4674,6 +5011,18 @@ mod perpendicular_angle_limits_tests;
 #[cfg(test)]
 #[path = "constraints_perpendicular_angle_tests.rs"]
 mod perpendicular_angle_tests;
+
+#[cfg(test)]
+#[path = "constraints_unit_parallel_angle_tests.rs"]
+mod unit_parallel_angle_tests;
+
+#[cfg(test)]
+#[path = "constraints_unit_quarter_turn_tests.rs"]
+mod unit_quarter_turn_tests;
+
+#[cfg(test)]
+#[path = "constraints_anchored_unit_mirror_tests.rs"]
+mod anchored_unit_mirror_tests;
 
 #[cfg(test)]
 #[path = "constraints_preflight_contract_tests.rs"]
@@ -7385,11 +7734,7 @@ mod tests {
                 DirectConstraintConflictKindV1::DifferentFixedAngles { .. }
             ) && same_ids(conflict.constraint_ids(), &[angle_a.id, angle_b.id])
         }));
-        assert!(
-            conflicts
-                .iter()
-                .all(|conflict| is_proven_direct_conflict_v1(conflict.conflict()))
-        );
+        assert!(conflicts.iter().all(is_proven_direct_conflict_v1));
     }
 
     #[test]
@@ -7769,11 +8114,7 @@ mod tests {
             conflict.conflict(),
             DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
         )));
-        assert!(
-            conflicts
-                .iter()
-                .all(|conflict| is_proven_direct_conflict_v1(conflict.conflict()))
-        );
+        assert!(conflicts.iter().all(is_proven_direct_conflict_v1));
     }
 
     #[test]

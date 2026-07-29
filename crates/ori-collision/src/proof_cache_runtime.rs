@@ -136,9 +136,10 @@ pub struct ProofCacheEditInvalidationOutcomeV1 {
     pub differential_retention_possible: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProofCacheEditEpochTicketV1 {
     epoch: u64,
+    inner: Arc<Mutex<ProofCacheRuntimeStateV1>>,
+    armed: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -159,12 +160,15 @@ pub struct PersistentPairProofCacheRuntimeV1 {
     inner: Arc<Mutex<ProofCacheRuntimeStateV1>>,
 }
 
-/// Opaque one-shot rollback image for one desktop-owned atomic pose adoption.
+/// Opaque rollback image for one desktop-owned atomic pose adoption.
 ///
 /// The fields and runtime identity are private, and the value is neither
-/// clonable nor serializable. Restoration succeeds only on the originating
-/// runtime and before more than the single expected pose-authority epoch
-/// transition has occurred.
+/// clonable nor serializable. A successful rollback consumes its state.
+///
+/// The rollback operation belongs to this image, not to an arbitrary runtime:
+/// it restores the retained state into its retained origin mutex exactly once.
+/// It deliberately bypasses ordinary epoch/binding staleness policy because
+/// this is the desktop transaction's already-authenticated recovery image.
 pub struct ProofCacheRuntimeRollbackSnapshotV1 {
     inner: Arc<Mutex<ProofCacheRuntimeStateV1>>,
     state: Option<ProofCacheRuntimeStateV1>,
@@ -189,6 +193,46 @@ impl Clone for ProofCacheRuntimeStateV1 {
             cache: self.cache.clone_for_runtime_rollback_v1(),
             progress: self.progress,
         }
+    }
+}
+
+impl ProofCacheEditEpochTicketV1 {
+    fn belongs_to_v1(&self, runtime: &PersistentPairProofCacheRuntimeV1) -> bool {
+        Arc::ptr_eq(&self.inner, &runtime.inner)
+    }
+
+    fn disarm_v1(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProofCacheEditEpochTicketV1 {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // A completion unwind must not strand the runtime behind a permanent
+        // invalidation barrier. Recover poison only by replacing all
+        // in-progress cache state with one fail-closed, internally consistent
+        // image for this exact epoch.
+        let (mut state, recovered_poison) = match self.inner.lock() {
+            Ok(state) => (state, false),
+            Err(poisoned) => (poisoned.into_inner(), true),
+        };
+        if state.epoch != self.epoch {
+            return;
+        }
+        state.cache.clear_v1();
+        state.pending_impact = None;
+        state.impact_preparation_in_progress = false;
+        state.progress = ProofCacheProgressV1 {
+            epoch: state.epoch,
+            ..ProofCacheProgressV1::default()
+        };
+        if recovered_poison {
+            self.inner.clear_poison();
+        }
+        self.armed = false;
     }
 }
 
@@ -218,25 +262,47 @@ impl PersistentPairProofCacheRuntimeV1 {
             state: Some(state),
         })
     }
+}
 
-    pub fn restore_rollback_snapshot_v1(
-        &self,
-        mut snapshot: ProofCacheRuntimeRollbackSnapshotV1,
-    ) -> Result<(), ProofCacheRuntimeErrorV1> {
-        if !Arc::ptr_eq(&self.inner, &snapshot.inner) {
-            return Err(ProofCacheRuntimeErrorV1::InvalidBinding);
-        }
-        let before = snapshot
+impl ProofCacheRuntimeRollbackSnapshotV1 {
+    /// Restores this exact image into its private originating runtime.
+    ///
+    /// This is rollback-only and finite: the sole ordinary error is an
+    /// already-consumed image. Epoch and binding comparisons intentionally do
+    /// not participate, because they are normal-operation staleness checks
+    /// and cannot make an exact transaction recovery safer.
+    pub fn restore_origin_exact_for_rollback_v1(&mut self) -> Result<(), ProofCacheRuntimeErrorV1> {
+        let before = self
             .state
             .take()
             .ok_or(ProofCacheRuntimeErrorV1::InvalidBinding)?;
-        let allowed_advanced_epoch = before.epoch.checked_add(1);
-        let mut state = self.lock_v1()?;
-        if state.epoch != before.epoch && Some(state.epoch) != allowed_advanced_epoch {
-            return Err(ProofCacheRuntimeErrorV1::StaleProof);
-        }
+        // Rollback owns an exact runtime image and is the recovery path for a
+        // panic while the normal cache lock was held. Recovering poison here
+        // is safe because the captured state replaces the whole protected
+        // value before the lock is exposed again.
+        let (mut state, recovered_poison) = match self.inner.lock() {
+            Ok(state) => (state, false),
+            Err(poisoned) => {
+                let state = poisoned.into_inner();
+                (state, true)
+            }
+        };
         *state = before;
+        if recovered_poison {
+            self.inner.clear_poison();
+        }
         Ok(())
+    }
+}
+
+impl PersistentPairProofCacheRuntimeV1 {
+    #[cfg(test)]
+    pub(crate) fn poison_rollback_lock_for_test_v1(&self) {
+        let _state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        panic!("injected proof-cache rollback lock poison");
     }
 
     /// Captures the exact runtime epoch after the caller has acquired project
@@ -304,6 +370,7 @@ impl PersistentPairProofCacheRuntimeV1 {
             .collect::<Vec<_>>();
         Self::validate_model4_keys_v1(capture, issuer_context, &candidate_keys)?;
         let cold_proofs = candidates.len();
+        Self::validate_publication_progress_v1(cold_proofs, proven_pairs, total_pairs, cache_hits)?;
         let report = state.cache.publish_batch_v1(candidates, control)?;
         let persistent_cached_pairs = cache_hits
             .checked_add(report.admitted_entries)
@@ -355,6 +422,22 @@ impl PersistentPairProofCacheRuntimeV1 {
                         != ProofCacheCertificateModelV1::TwoHingePositiveThickness
                     || key.issuer_context != issuer_context
             })
+        {
+            Err(ProofCacheRuntimeErrorV1::InvalidBinding)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_publication_progress_v1(
+        cold_proofs: usize,
+        proven_pairs: usize,
+        total_pairs: usize,
+        cache_hits: usize,
+    ) -> Result<(), ProofCacheRuntimeErrorV1> {
+        if proven_pairs > total_pairs
+            || cache_hits > proven_pairs
+            || cold_proofs > proven_pairs - cache_hits
         {
             Err(ProofCacheRuntimeErrorV1::InvalidBinding)
         } else {

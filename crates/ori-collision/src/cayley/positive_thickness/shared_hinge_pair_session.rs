@@ -9,6 +9,13 @@ use super::projected_pair_authority::{
 };
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SharedHingePairDiagnosticSessionErrorV1 {
+    Diagnostic(SharedHingeSolidDiagnosticErrorV1),
+    Cancelled,
+    DeadlineExceeded,
+}
+
 #[derive(Debug)]
 pub(crate) struct SharedHingePairDiagnosticSessionV1<'pose> {
     bound: BoundMaterialTreePose<'pose>,
@@ -26,16 +33,41 @@ impl<'pose> SharedHingePairDiagnosticSessionV1<'pose> {
         target_edge: Option<EdgeId>,
     ) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingeSolidDiagnosticErrorV1>
     {
+        match self
+            .diagnose_with_control_v1(target_edge, &CooperativeOperationControlV1::unbounded())
+        {
+            Ok(summary) => Ok(summary),
+            Err(SharedHingePairDiagnosticSessionErrorV1::Diagnostic(error)) => Err(error),
+            Err(
+                SharedHingePairDiagnosticSessionErrorV1::Cancelled
+                | SharedHingePairDiagnosticSessionErrorV1::DeadlineExceeded,
+            ) => unreachable!("unbounded cooperative control cannot stop"),
+        }
+    }
+
+    pub(crate) fn diagnose_with_control_v1(
+        &self,
+        target_edge: Option<EdgeId>,
+        control: &CooperativeOperationControlV1<'_>,
+    ) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingePairDiagnosticSessionErrorV1>
+    {
+        shared_hinge_session_checkpoint_v1(control)?;
         let paper_thickness_mm = f64::from_bits(self.paper_thickness_bits);
         if !self.revalidates_for(self.bound, paper_thickness_mm) {
-            return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
+            return Err(SharedHingePairDiagnosticSessionErrorV1::Diagnostic(
+                SharedHingeSolidDiagnosticErrorV1::InconsistentPose,
+            ));
         }
-        diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1(
+        let diagnostic = diagnose_bound_shared_hinge_solid_from_exact_for_edge_with_control_v1(
             &self.exact,
             self.bound,
             paper_thickness_mm,
             target_edge,
+            control,
         )
+        .map_err(SharedHingePairDiagnosticSessionErrorV1::Diagnostic)?;
+        shared_hinge_session_checkpoint_v1(control)?;
+        Ok(diagnostic)
     }
 
     pub(crate) fn revalidates_for(
@@ -81,6 +113,17 @@ impl<'pose> SharedHingePairDiagnosticSessionV1<'pose> {
     pub(super) fn exact_for_test(&self) -> &RationalCayleyTreePose<'pose> {
         &self.exact
     }
+}
+
+fn shared_hinge_session_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), SharedHingePairDiagnosticSessionErrorV1> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => SharedHingePairDiagnosticSessionErrorV1::Cancelled,
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            SharedHingePairDiagnosticSessionErrorV1::DeadlineExceeded
+        }
+    })
 }
 
 pub(crate) fn prepare_shared_hinge_pair_diagnostic_session_v1<'pose>(

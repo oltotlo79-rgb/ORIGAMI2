@@ -178,6 +178,7 @@ fn canonical_sweep_matches_bruteforce_for_single_nonadjacent_pair() {
                 if expected { 0.1 } else { 10.0 },
                 8,
                 &mut metrics,
+                &CooperativeOperationControlV1::unbounded(),
             ),
             expected
         );

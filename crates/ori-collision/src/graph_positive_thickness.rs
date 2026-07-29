@@ -572,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_rank_four_graph_constant_path_is_exact_resource_bound_and_instance_bound() {
+    fn dense_rank_four_graph_sampling_does_not_replace_a_continuous_theorem() {
         let (pattern, paper) = three_by_three_dense_cycle_pattern();
         let topology = analyze_faces(FaceExtractionInput {
             identity_namespace: ProjectId::new(),
@@ -668,9 +668,10 @@ mod tests {
             paper.thickness_mm,
             1,
         );
-        assert!(diagnosis.continuous_certificate_model_id().is_some());
-        assert_eq!(diagnosis.pair_work(), 36);
-        assert_eq!(diagnosis.leaf_count(), 1);
+        assert!(
+            diagnosis.continuous_certificate_model_id().is_none(),
+            "static samples and closure alone must not mint positive-thickness continuous authority"
+        );
 
         let pose = geometry.solve_closed(&audit, fixed, &angles, 0.0).unwrap();
         assert!(matches!(
@@ -842,7 +843,10 @@ mod tests {
                 thickness,
                 32,
             );
-            assert!(continuous.continuous_certificate_model_id().is_some());
+            assert!(
+                continuous.continuous_certificate_model_id().is_none(),
+                "theta endpoint closure and static proof do not establish swept solid clearance"
+            );
             assert!(
                 crate::diagnose_scheduled_positive_thickness_cycle_path_v1(
                     &geometry,

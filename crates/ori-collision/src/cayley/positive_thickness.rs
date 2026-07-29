@@ -43,6 +43,8 @@ use ori_kinematics::{
 };
 use ori_topology::FoldAssignment;
 
+use crate::{CooperativeOperationControlV1, CooperativeOperationStopV1};
+
 use self::exact_prism::{ExactPrismIntersectionKind, ExactTriangularPrismInput};
 use super::{
     CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactHingePose, ExactPoint3,
@@ -100,7 +102,9 @@ use projected_pair_authority::{
     ProjectedPairAuthorityV1, prepare_projected_pair_authority_v1,
     revalidate_projected_pair_authority_v1,
 };
-pub(crate) use shared_hinge_pair_session::prepare_shared_hinge_pair_diagnostic_session_v1;
+pub(crate) use shared_hinge_pair_session::{
+    SharedHingePairDiagnosticSessionErrorV1, prepare_shared_hinge_pair_diagnostic_session_v1,
+};
 
 const STAGE: CayleyStage = CayleyStage::Containment;
 const SCALAR_INPUT_RATIONALS: usize = 13;
@@ -1493,6 +1497,132 @@ fn all_face_vertices_within_axis(
     Ok(all_inside)
 }
 
+fn all_face_vertices_within_axis_with_control_v1(
+    face: &ExactFacePose,
+    start: &ExactPoint3,
+    axis: &ExactVector3,
+    length_squared: &BigRational,
+    control: &CooperativeOperationControlV1<'_>,
+    meter: &mut WorkMeter<'_>,
+) -> Result<bool, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+    let zero = BigRational::zero();
+    let mut all_inside = true;
+    for (_, point) in &face.boundary {
+        zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+        let offset = exact_between(start, point, meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        let projection = exact_dot(&offset, axis, meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        let lower = meter
+            .compare_rational(&projection, &zero, STAGE)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        let upper = meter
+            .compare_rational(&projection, length_squared, STAGE)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        all_inside &= lower != Ordering::Less && upper != Ordering::Greater;
+    }
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+    Ok(all_inside)
+}
+
+/// Proves that two non-coplanar incident faces meet only at their finite,
+/// authenticated hinge edge. This is called only after their plane
+/// intersection has been proved nonzero and equal to the complete hinge line.
+#[cfg(test)]
+fn noncoplanar_shared_hinge_finite_intersection_proven(
+    first: &ExactFacePose,
+    second: &ExactFacePose,
+    hinge: &ExactHingePose,
+    first_normal: &ExactVector3,
+    second_normal: &ExactVector3,
+    hinge_direction: &ExactVector3,
+    hinge_length_squared: &BigRational,
+    meter: &mut WorkMeter<'_>,
+) -> Result<bool, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
+    noncoplanar_shared_hinge_finite_intersection_proven_with_control_v1(
+        first,
+        second,
+        hinge,
+        first_normal,
+        second_normal,
+        hinge_direction,
+        hinge_length_squared,
+        &CooperativeOperationControlV1::unbounded(),
+        meter,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the controlled exact theorem keeps both authenticated faces, their normals, the hinge geometry, operation control, and the shared arithmetic meter explicit"
+)]
+fn noncoplanar_shared_hinge_finite_intersection_proven_with_control_v1(
+    first: &ExactFacePose,
+    second: &ExactFacePose,
+    hinge: &ExactHingePose,
+    first_normal: &ExactVector3,
+    second_normal: &ExactVector3,
+    hinge_direction: &ExactVector3,
+    hinge_length_squared: &BigRational,
+    control: &CooperativeOperationControlV1<'_>,
+    meter: &mut WorkMeter<'_>,
+) -> Result<bool, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+    if first.boundary.len() == 3 && second.boundary.len() == 3 {
+        return Ok(true);
+    }
+    // The complete plane intersection is the hinge line. If either polygon is
+    // axially confined to the authenticated finite hinge span, every point in
+    // the two-surface intersection is confined there as well. Requiring both
+    // polygons to be confined is unnecessarily stronger and rejects a sound
+    // one-bounded/one-extended configuration.
+    if all_face_vertices_within_axis_with_control_v1(
+        first,
+        &hinge.world_endpoints[0],
+        hinge_direction,
+        hinge_length_squared,
+        control,
+        meter,
+    )? {
+        return Ok(true);
+    }
+    if all_face_vertices_within_axis_with_control_v1(
+        second,
+        &hinge.world_endpoints[0],
+        hinge_direction,
+        hinge_length_squared,
+        control,
+        meter,
+    )? {
+        return Ok(true);
+    }
+
+    // A strict convex polygon with the hinge as a boundary edge and every
+    // other vertex strictly on one side of the hinge line cannot meet that
+    // line anywhere except the finite edge. Applying this independently to
+    // both non-coplanar faces is therefore an alternative finite-intersection
+    // proof when their harmless flaps extend past hinge endpoints.
+    Ok(exact_strictly_convex_hinge_side_with_control_v1(
+        first,
+        hinge,
+        first_normal,
+        hinge_direction,
+        control,
+        meter,
+    )?
+    .is_some()
+        && exact_strictly_convex_hinge_side_with_control_v1(
+            second,
+            hinge,
+            second_normal,
+            hinge_direction,
+            control,
+            meter,
+        )?
+        .is_some())
+}
+
 /// Exact zero-thickness proof that one authenticated material-tree hinge is
 /// the complete intersection line of its two incident face planes.
 ///
@@ -1500,12 +1630,14 @@ fn all_face_vertices_within_axis(
 /// pose: both incident faces reuse the exact hinge vertices. For non-parallel
 /// co-oriented local-`+Y` planes, their complete plane intersection is
 /// therefore that hinge line. Both polygons must authenticate the hinge as a
-/// cyclic boundary edge. For the generalized non-triangular case, every
-/// boundary vertex must additionally project inside the closed finite hinge
-/// span. Their surface intersection is then exactly the finite shared edge
-/// and cannot extend into either relative interior. The established triangle
-/// theorem needs no projection restriction because a non-degenerate triangle
-/// meets the line of one of its complete boundary edges only on that edge.
+/// cyclic boundary edge. For the generalized non-triangular case, either one
+/// polygon's boundary vertices must all project inside the closed finite hinge
+/// span, or each polygon must pass the strict-convex one-sided hinge proof
+/// below. Either condition makes the surface intersection exactly the finite
+/// shared edge and prevents it from extending into either relative interior.
+/// The established triangle theorem needs neither extra condition because a
+/// non-degenerate triangle meets the line of one of its complete boundary
+/// edges only on that edge.
 ///
 /// Coplanar admission is generalized only to strictly convex polygons. Each
 /// face must have unique boundary points, nonzero cyclic edges, one strict
@@ -1567,15 +1699,19 @@ fn canonical_face_pair_is_present(
 pub(crate) enum ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1 {
     ResourceLimitExceeded,
     InconsistentPose,
+    Cancelled,
+    DeadlineExceeded,
 }
 
-pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
+pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_with_control_v1(
     bound: BoundMaterialTreePose<'_>,
     candidate_pairs: &[(FaceId, FaceId)],
+    control: &CooperativeOperationControlV1<'_>,
 ) -> Result<
     ZeroThicknessSharedHingeBoundaryDiagnosticSummaryV1,
     ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
 > {
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
     if candidate_pairs
         .iter()
         .any(|(first, second)| first.canonical_bytes() >= second.canonical_bytes())
@@ -1593,6 +1729,7 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
             area_overlap_proven_pairs: Vec::new(),
         });
     }
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
     let exact = match prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default()) {
         Ok(exact) => exact,
         Err(CayleyError::ResourceLimitExceeded { .. }) => {
@@ -1614,6 +1751,7 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
     {
         return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
     }
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
 
     let arithmetic_limits = CayleyLimits::default();
     let mut meter = WorkMeter::new(&arithmetic_limits);
@@ -1626,6 +1764,7 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
         .try_reserve_exact(candidate_pairs.len())
         .map_err(|_| ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::ResourceLimitExceeded)?;
     for hinge in &exact.hinges {
+        zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
         let mut pair = [hinge.parent, hinge.child];
         pair.sort_unstable_by_key(FaceId::canonical_bytes);
         if pair[0] == pair[1] {
@@ -1663,8 +1802,8 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
         {
             return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
         }
-        if !exact_face_contains_hinge_boundary_edge(first, hinge)
-            || !exact_face_contains_hinge_boundary_edge(second, hinge)
+        if !exact_face_contains_hinge_boundary_edge_with_control_v1(first, hinge, control)?
+            || !exact_face_contains_hinge_boundary_edge_with_control_v1(second, hinge, control)?
         {
             continue;
         }
@@ -1696,30 +1835,21 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
         {
             return Err(ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::InconsistentPose);
         }
-        let both_triangles = first.boundary.len() == 3 && second.boundary.len() == 3;
         let plane_intersection = exact_cross_vector(&first_normal, &second_normal, &mut meter)
             .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
         if !exact_vector_is_zero(&plane_intersection) {
-            let finite_intersection_proven = if both_triangles {
-                true
-            } else {
-                all_face_vertices_within_axis(
+            let finite_intersection_proven =
+                noncoplanar_shared_hinge_finite_intersection_proven_with_control_v1(
                     first,
-                    &hinge.world_endpoints[0],
+                    second,
+                    hinge,
+                    &first_normal,
+                    &second_normal,
                     &hinge_direction,
                     &hinge_length_squared,
+                    control,
                     &mut meter,
-                )
-                .map_err(map_zero_thickness_shared_hinge_boundary_error)?
-                    && all_face_vertices_within_axis(
-                        second,
-                        &hinge.world_endpoints[0],
-                        &hinge_direction,
-                        &hinge_length_squared,
-                        &mut meter,
-                    )
-                    .map_err(map_zero_thickness_shared_hinge_boundary_error)?
-            };
+                )?;
             if finite_intersection_proven {
                 boundary_contact_proven_pairs.push((pair[0], pair[1]));
             }
@@ -1731,25 +1861,25 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
         // non-hinge vertex prove that each complete polygon lies in one
         // closed half-plane and has interior immediately next to the edge.
         // The triangle theorem is the three-vertex instance of this helper.
-        let Some(first_side) = exact_strictly_convex_hinge_side(
+        let Some(first_side) = exact_strictly_convex_hinge_side_with_control_v1(
             first,
             hinge,
             &first_normal,
             &hinge_direction,
+            control,
             &mut meter,
-        )
-        .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+        )?
         else {
             continue;
         };
-        let Some(second_side) = exact_strictly_convex_hinge_side(
+        let Some(second_side) = exact_strictly_convex_hinge_side_with_control_v1(
             second,
             hinge,
             &second_normal,
             &hinge_direction,
+            control,
             &mut meter,
-        )
-        .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+        )?
         else {
             continue;
         };
@@ -1793,15 +1923,43 @@ pub(crate) fn diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
     })
 }
 
+fn zero_thickness_shared_hinge_boundary_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => {
+            ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::Cancelled
+        }
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::DeadlineExceeded
+        }
+    })
+}
+
+#[cfg(test)]
 fn exact_face_contains_hinge_boundary_edge(
     face: &ExactFacePose,
     hinge: &super::ExactHingePose,
 ) -> bool {
+    exact_face_contains_hinge_boundary_edge_with_control_v1(
+        face,
+        hinge,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+    .unwrap_or(false)
+}
+
+fn exact_face_contains_hinge_boundary_edge_with_control_v1(
+    face: &ExactFacePose,
+    hinge: &super::ExactHingePose,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<bool, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
     if face.boundary.len() < 3
         || hinge.endpoint_vertices[0] == hinge.endpoint_vertices[1]
         || canonical_point_eq(&hinge.world_endpoints[0], &hinge.world_endpoints[1])
     {
-        return false;
+        return Ok(false);
     }
     let mut endpoint_indexes = [None; 2];
     for (endpoint_index, (vertex, endpoint)) in hinge
@@ -1810,33 +1968,57 @@ fn exact_face_contains_hinge_boundary_edge(
         .zip(&hinge.world_endpoints)
         .enumerate()
     {
-        let mut matches = face
-            .boundary
-            .iter()
-            .enumerate()
-            .filter(|(_, (candidate, _))| candidate == vertex);
-        let Some((index, (_, point))) = matches.next() else {
-            return false;
-        };
-        if matches.next().is_some() || !canonical_point_eq(point, endpoint) {
-            return false;
+        let mut matched_index = None;
+        for (index, (candidate, point)) in face.boundary.iter().enumerate() {
+            zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+            if candidate != vertex {
+                continue;
+            }
+            if matched_index.is_some() || !canonical_point_eq(point, endpoint) {
+                return Ok(false);
+            }
+            matched_index = Some(index);
         }
+        let Some(index) = matched_index else {
+            return Ok(false);
+        };
         endpoint_indexes[endpoint_index] = Some(index);
     }
     let [Some(first), Some(second)] = endpoint_indexes else {
-        return false;
+        return Ok(false);
     };
-    (first + 1) % face.boundary.len() == second || (second + 1) % face.boundary.len() == first
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+    Ok((first + 1) % face.boundary.len() == second || (second + 1) % face.boundary.len() == first)
 }
 
+#[cfg(test)]
 fn exact_strictly_convex_hinge_side(
     face: &ExactFacePose,
     hinge: &ExactHingePose,
     face_normal: &ExactVector3,
     hinge_direction: &ExactVector3,
     meter: &mut WorkMeter<'_>,
-) -> Result<Option<ExactVector3>, CayleyError> {
-    if !exact_face_contains_hinge_boundary_edge(face, hinge)
+) -> Result<Option<ExactVector3>, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
+    exact_strictly_convex_hinge_side_with_control_v1(
+        face,
+        hinge,
+        face_normal,
+        hinge_direction,
+        &CooperativeOperationControlV1::unbounded(),
+        meter,
+    )
+}
+
+fn exact_strictly_convex_hinge_side_with_control_v1(
+    face: &ExactFacePose,
+    hinge: &ExactHingePose,
+    face_normal: &ExactVector3,
+    hinge_direction: &ExactVector3,
+    control: &CooperativeOperationControlV1<'_>,
+    meter: &mut WorkMeter<'_>,
+) -> Result<Option<ExactVector3>, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+    if !exact_face_contains_hinge_boundary_edge_with_control_v1(face, hinge, control)?
         || exact_vector_is_zero(face_normal)
         || exact_vector_is_zero(hinge_direction)
     {
@@ -1846,33 +2028,37 @@ fn exact_strictly_convex_hinge_side(
     // this theorem's additional uniqueness check linear and fallible rather
     // than introducing an unmetered quadratic scan or an infallible
     // allocation proportional to caller-controlled face cardinality.
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
     let mut unique_boundary_points: HashSet<&[BigRational; 3]> = HashSet::new();
     unique_boundary_points
         .try_reserve(face.boundary.len())
-        .map_err(|_| CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource: "strictly_convex_boundary_points",
-        })?;
-    if !face
-        .boundary
-        .iter()
-        .all(|(_, point)| unique_boundary_points.insert(&point.coordinates))
-    {
-        return Ok(None);
+        .map_err(|_| ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::ResourceLimitExceeded)?;
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+    for (_, point) in &face.boundary {
+        zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
+        if !unique_boundary_points.insert(&point.coordinates) {
+            return Ok(None);
+        }
     }
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
 
     let mut turn_sign = None;
     for index in 0..face.boundary.len() {
+        zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
         let current = &face.boundary[index].1;
         let next = &face.boundary[(index + 1) % face.boundary.len()].1;
         let after_next = &face.boundary[(index + 2) % face.boundary.len()].1;
-        let edge = exact_between(current, next, meter)?;
-        let next_edge = exact_between(next, after_next, meter)?;
+        let edge = exact_between(current, next, meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        let next_edge = exact_between(next, after_next, meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
         if exact_vector_is_zero(&edge) || exact_vector_is_zero(&next_edge) {
             return Ok(None);
         }
-        let turn = exact_cross_vector(&edge, &next_edge, meter)?;
-        let signed_turn = exact_dot(&turn, face_normal, meter)?;
+        let turn = exact_cross_vector(&edge, &next_edge, meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        let signed_turn = exact_dot(&turn, face_normal, meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
         let current_sign = if signed_turn.is_positive() {
             Ordering::Greater
         } else if signed_turn.is_negative() {
@@ -1885,20 +2071,30 @@ fn exact_strictly_convex_hinge_side(
         }
         turn_sign = Some(current_sign);
     }
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
 
     let mut representative: Option<ExactVector3> = None;
     for (vertex, point) in &face.boundary {
+        zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
         if hinge.endpoint_vertices.contains(vertex) {
             continue;
         }
-        let offset = exact_between(&hinge.world_endpoints[0], point, meter)?;
-        let side = exact_cross_vector(hinge_direction, &offset, meter)?;
-        if exact_vector_is_zero(&side) || exact_dot(&side, face_normal, meter)?.is_zero() {
+        let offset = exact_between(&hinge.world_endpoints[0], point, meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        let side = exact_cross_vector(hinge_direction, &offset, meter)
+            .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+        if exact_vector_is_zero(&side)
+            || exact_dot(&side, face_normal, meter)
+                .map_err(map_zero_thickness_shared_hinge_boundary_error)?
+                .is_zero()
+        {
             return Ok(None);
         }
         if let Some(established) = &representative {
-            let collinearity = exact_cross_vector(established, &side, meter)?;
-            let direction = exact_dot(established, &side, meter)?;
+            let collinearity = exact_cross_vector(established, &side, meter)
+                .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
+            let direction = exact_dot(established, &side, meter)
+                .map_err(map_zero_thickness_shared_hinge_boundary_error)?;
             if !exact_vector_is_zero(&collinearity) || !direction.is_positive() {
                 return Ok(None);
             }
@@ -1906,6 +2102,7 @@ fn exact_strictly_convex_hinge_side(
             representative = Some(side);
         }
     }
+    zero_thickness_shared_hinge_boundary_checkpoint_v1(control)?;
     Ok(representative)
 }
 
@@ -1946,6 +2143,8 @@ pub(crate) struct SharedHingeSolidDiagnosticSummaryV1 {
 pub(crate) enum SharedHingeSolidDiagnosticErrorV1 {
     ResourceLimitExceeded,
     InconsistentPose,
+    Cancelled,
+    DeadlineExceeded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2050,11 +2249,12 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
     session.diagnose(target_edge)
 }
 
-fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
+fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_with_control_v1<'pose>(
     exact: &RationalCayleyTreePose<'pose>,
     bound: BoundMaterialTreePose<'pose>,
     paper_thickness_mm: f64,
     target_edge: Option<EdgeId>,
+    control: &CooperativeOperationControlV1<'_>,
 ) -> Result<Option<SharedHingeSolidDiagnosticSummaryV1>, SharedHingeSolidDiagnosticErrorV1> {
     use direct_f_corridor::{
         DirectFFiniteHingeCorridorLimits, analyze_direct_f_finite_hinge_corridor_v1,
@@ -2077,6 +2277,7 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
         analyze_shared_hinge_native_exact_topology_margin_v1,
     };
 
+    shared_hinge_diagnostic_checkpoint_v1(control)?;
     if !positive_finite_binary64(paper_thickness_mm)
         || !exact.is_for(bound)
         || exact.faces.len() != bound.model().face_ids().len()
@@ -2132,6 +2333,7 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
             SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded
         },
     )?;
+    shared_hinge_diagnostic_checkpoint_v1(control)?;
     let prerequisite = match &prerequisite_analysis.result {
         SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) => Some(prerequisite),
         SingleTriangularHingePrerequisiteResult::LayerOffsetUnmodeled
@@ -2149,6 +2351,7 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
         })
         .transpose()
         .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    shared_hinge_diagnostic_checkpoint_v1(control)?;
     let ef = ef_analysis
         .as_ref()
         .and_then(|analysis| analysis.capability.as_ref());
@@ -2161,6 +2364,7 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
         ExactEFiniteHingeCorridorLimits::default(),
     )
     .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    shared_hinge_diagnostic_checkpoint_v1(control)?;
     let direct_f_analysis = analyze_direct_f_finite_hinge_corridor_v1(
         &prerequisite_analysis,
         ef,
@@ -2171,6 +2375,7 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
         DirectFFiniteHingeCorridorLimits::default(),
     )
     .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    shared_hinge_diagnostic_checkpoint_v1(control)?;
     let admission_analysis = analyze_shared_hinge_corridor_admission_v1(
         &prerequisite_analysis,
         ef,
@@ -2182,6 +2387,7 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
         SharedHingeCorridorAdmissionLimitsV1::default(),
     )
     .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    shared_hinge_diagnostic_checkpoint_v1(control)?;
     let margin_analysis = analyze_shared_hinge_native_exact_topology_margin_v1(
         &prerequisite_analysis,
         ef,
@@ -2191,6 +2397,7 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
         SharedHingeNativeExactTopologyMarginLimitsV1::default(),
     )
     .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    shared_hinge_diagnostic_checkpoint_v1(control)?;
     let classification = analyze_shared_hinge_solid_classification_v1(
         &prerequisite_analysis,
         ef,
@@ -2204,6 +2411,7 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
         SharedHingeSolidClassificationLimitsV1::default(),
     )
     .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    shared_hinge_diagnostic_checkpoint_v1(control)?;
 
     let contract = match &classification.result {
         SharedHingeSolidClassificationResultV1::Classified(record) => {
@@ -2300,6 +2508,17 @@ fn diagnose_bound_shared_hinge_solid_from_exact_for_edge_v1<'pose>(
     }))
 }
 
+fn shared_hinge_diagnostic_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), SharedHingeSolidDiagnosticErrorV1> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => SharedHingeSolidDiagnosticErrorV1::Cancelled,
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            SharedHingeSolidDiagnosticErrorV1::DeadlineExceeded
+        }
+    })
+}
+
 /// Opaque, issuer-bound positive-thickness boundary rails for the strictly
 /// two-triangle/one-hinge class admitted by the exact corridor classifier.
 ///
@@ -2382,6 +2601,10 @@ fn prepare_single_hinge_thickness_boundary_for_edge_v1(
                 }
                 SharedHingeSolidDiagnosticErrorV1::InconsistentPose => {
                     SingleHingeThicknessBoundaryErrorV1::InconsistentPose
+                }
+                SharedHingeSolidDiagnosticErrorV1::Cancelled
+                | SharedHingeSolidDiagnosticErrorV1::DeadlineExceeded => {
+                    unreachable!("unbounded cooperative control cannot stop")
                 }
             })?;
     if diagnostic.is_none_or(|summary| {
@@ -3626,6 +3849,378 @@ mod tests {
     }
 
     #[test]
+    fn controlled_zero_thickness_diagnostic_accepts_native_noncoplanar_two_quad_hinge() {
+        // A convex hexagon split across opposite boundary vertices yields two
+        // production-issued quadrilaterals. Relative to the finite horizontal
+        // hinge, the first arc is axially bounded while the second contains
+        // one vertex beyond the positive endpoint.
+        let model = unsupported_polygon_model(
+            &[
+                (0.0, 0.0),
+                (2.0, -3.0),
+                (8.0, -3.0),
+                (10.0, 0.0),
+                (11.0, 4.0),
+                (2.0, 4.0),
+            ],
+            &[(0, 3, EdgeKind::Mountain)],
+            131,
+        );
+        assert_eq!(model.face_ids().len(), 2);
+        assert_eq!(model.hinges().len(), 1);
+        let pose = uniform_pose(&model, 90.0);
+        let exact = triangular_exact_pose(&model, &pose);
+        assert!(
+            exact.faces.iter().all(|face| face.boundary.len() == 4),
+            "the native issuer must produce two quadrilateral faces"
+        );
+        drop(exact);
+
+        let mut pair = [model.face_ids()[0], model.face_ids()[1]];
+        pair.sort_unstable_by_key(FaceId::canonical_bytes);
+        let candidate_pairs = [(pair[0], pair[1])];
+        let summary = diagnose_bound_zero_thickness_shared_hinge_boundaries_with_control_v1(
+            model.bind_pose(&pose).expect("issuer-bound two-quad pose"),
+            &candidate_pairs,
+            &CooperativeOperationControlV1::unbounded(),
+        )
+        .expect("controlled native two-quad shared-hinge diagnosis");
+        assert!(summary.proves_boundary_contact_pair(pair[0], pair[1]));
+        assert!(!summary.proves_area_overlap_pair(pair[0], pair[1]));
+        assert_eq!(summary.classified_pairs(), 1);
+    }
+
+    #[test]
+    fn noncoplanar_strict_convex_pythagorean_quadrilaterals_admit_shared_feature_contact() {
+        let limits = prerequisite_exact_hard_limits();
+        let mut meter = WorkMeter::new(&limits);
+        let start = point(integer(0), integer(0), integer(0));
+        let end = point(integer(3), integer(0), integer(4));
+        let identity = ExactRigidTransform {
+            rotation: super::super::identity_matrix(),
+            translation: vector(integer(0), integer(0), integer(0)),
+        };
+        // Exact 90-degree rotation about the (3, 0, 4) / 5 hinge direction.
+        let quarter_turn = ExactRigidTransform {
+            rotation: [
+                [fraction(9, 25), fraction(-4, 5), fraction(12, 25)],
+                [fraction(4, 5), integer(0), fraction(-3, 5)],
+                [fraction(12, 25), fraction(3, 5), fraction(16, 25)],
+            ],
+            translation: vector(integer(0), integer(0), integer(0)),
+        };
+        let face_id = |suffix: u64| {
+            serde_json::from_str(&format!("\"00000000-0000-4000-a104-{suffix:012x}\""))
+                .expect("fixed Pythagorean-slope face id")
+        };
+        let make_face = |suffix: u64,
+                         transform: ExactRigidTransform,
+                         coordinates: Vec<ExactPoint3>| ExactFacePose {
+            face: face_id(suffix),
+            transform,
+            boundary: coordinates
+                .into_iter()
+                .enumerate()
+                .map(|(index, coordinate)| {
+                    let vertex = if index < 2 {
+                        triangular_vertex_id((index + 1) as u64)
+                    } else {
+                        triangular_vertex_id(suffix * 10 + index as u64)
+                    };
+                    (vertex, coordinate)
+                })
+                .collect(),
+        };
+        // In the first sheet, u = (3, 0, 4) is the hinge direction and
+        // p = (4, 0, -3) is its Pythagorean in-sheet perpendicular. The two
+        // far vertices deliberately project beyond opposite hinge endpoints.
+        let first = make_face(
+            1,
+            identity.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(14), integer(0), integer(2)),
+                point(integer(5), integer(0), integer(-10)),
+            ],
+        );
+        // Rotating p by the exact quarter turn gives (0, 5, 0).
+        let second = make_face(
+            2,
+            quarter_turn.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(6), integer(10), integer(8)),
+                point(integer(-3), integer(10), integer(-4)),
+            ],
+        );
+        let hinge = ExactHingePose {
+            edge: triangular_edge_id(1004),
+            parent: first.face,
+            child: second.face,
+            rotation_sign: 1,
+            angle_magnitude_bits: 90.0_f64.to_bits(),
+            certificate: super::super::ExactAngleCertificate::Exact {
+                target_degrees: integer(90),
+            },
+            endpoint_vertices: [triangular_vertex_id(1), triangular_vertex_id(2)],
+            world_endpoints: [start.clone(), end.clone()],
+        };
+        let axis = exact_between(&start, &end, &mut meter).expect("nonzero Pythagorean axis");
+        let length_squared = exact_dot(&axis, &axis, &mut meter).expect("finite axis length");
+        let first_normal =
+            exact_local_y(&identity, &mut meter).expect("first exact local +Y normal");
+        let second_normal =
+            exact_local_y(&quarter_turn, &mut meter).expect("second exact local +Y normal");
+        assert!(!exact_vector_is_zero(
+            &exact_cross_vector(&first_normal, &second_normal, &mut meter)
+                .expect("non-coplanar plane intersection"),
+        ));
+        let concave = make_face(
+            3,
+            identity.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(14), integer(0), integer(2)),
+                point(fraction(11, 2), integer(0), integer(-1)),
+                point(integer(5), integer(0), integer(-10)),
+            ],
+        );
+        let collinear = make_face(
+            4,
+            identity.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(14), integer(0), integer(2)),
+                point(integer(8), integer(0), integer(-6)),
+                point(integer(5), integer(0), integer(-10)),
+            ],
+        );
+        let axis_crossing = make_face(
+            5,
+            identity.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(14), integer(0), integer(2)),
+                point(integer(-4), integer(0), integer(3)),
+                point(integer(5), integer(0), integer(-10)),
+            ],
+        );
+        let bounded_first = make_face(
+            6,
+            identity.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(7), integer(0), integer(1)),
+                point(integer(4), integer(0), integer(-3)),
+            ],
+        );
+        let bounded_second = make_face(
+            7,
+            quarter_turn.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(3), integer(5), integer(4)),
+                point(integer(0), integer(5), integer(0)),
+            ],
+        );
+        let outside_concave_second = make_face(
+            8,
+            quarter_turn.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(6), integer(10), integer(8)),
+                point(fraction(3, 2), integer(2), integer(2)),
+                point(integer(-3), integer(10), integer(-4)),
+            ],
+        );
+        let triangle_first = make_face(
+            9,
+            identity.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(4), integer(0), integer(-3)),
+            ],
+        );
+        let triangle_second = make_face(
+            10,
+            quarter_turn.clone(),
+            vec![
+                start.clone(),
+                end.clone(),
+                point(integer(0), integer(5), integer(0)),
+            ],
+        );
+
+        assert!(
+            !all_face_vertices_within_axis(&first, &start, &axis, &length_squared, &mut meter)
+                .expect("first flap projects beyond finite hinge")
+        );
+        assert!(
+            !all_face_vertices_within_axis(&second, &start, &axis, &length_squared, &mut meter)
+                .expect("second flap projects beyond finite hinge")
+        );
+        assert!(
+            all_face_vertices_within_axis(
+                &bounded_first,
+                &start,
+                &axis,
+                &length_squared,
+                &mut meter
+            )
+            .expect("first bounded quadrilateral")
+        );
+        assert!(
+            all_face_vertices_within_axis(
+                &bounded_second,
+                &start,
+                &axis,
+                &length_squared,
+                &mut meter
+            )
+            .expect("second bounded quadrilateral")
+        );
+        assert!(
+            !all_face_vertices_within_axis(
+                &outside_concave_second,
+                &start,
+                &axis,
+                &length_squared,
+                &mut meter
+            )
+            .expect("extended concave quadrilateral")
+        );
+
+        let assert_all_orderings = |label: &str,
+                                    first_face: &ExactFacePose,
+                                    second_face: &ExactFacePose,
+                                    first_face_normal: &ExactVector3,
+                                    second_face_normal: &ExactVector3,
+                                    expected: bool| {
+            for swap_faces in [false, true] {
+                for swap_parent_child in [false, true] {
+                    for reverse_hinge in [false, true] {
+                        let variant_limits = prerequisite_exact_hard_limits();
+                        let mut variant_meter = WorkMeter::new(&variant_limits);
+                        let mut variant_hinge = hinge.clone();
+                        if swap_parent_child {
+                            std::mem::swap(&mut variant_hinge.parent, &mut variant_hinge.child);
+                        }
+                        if reverse_hinge {
+                            variant_hinge.endpoint_vertices.reverse();
+                            variant_hinge.world_endpoints.reverse();
+                        }
+                        let variant_axis = exact_between(
+                            &variant_hinge.world_endpoints[0],
+                            &variant_hinge.world_endpoints[1],
+                            &mut variant_meter,
+                        )
+                        .expect("variant nonzero hinge axis");
+                        let variant_length_squared =
+                            exact_dot(&variant_axis, &variant_axis, &mut variant_meter)
+                                .expect("variant finite hinge length");
+                        let (
+                            ordered_first,
+                            ordered_second,
+                            ordered_first_normal,
+                            ordered_second_normal,
+                        ) = if swap_faces {
+                            (
+                                second_face,
+                                first_face,
+                                second_face_normal,
+                                first_face_normal,
+                            )
+                        } else {
+                            (
+                                first_face,
+                                second_face,
+                                first_face_normal,
+                                second_face_normal,
+                            )
+                        };
+                        assert_eq!(
+                            noncoplanar_shared_hinge_finite_intersection_proven(
+                                ordered_first,
+                                ordered_second,
+                                &variant_hinge,
+                                ordered_first_normal,
+                                ordered_second_normal,
+                                &variant_axis,
+                                &variant_length_squared,
+                                &mut variant_meter,
+                            )
+                            .expect("symmetric non-coplanar finite-intersection proof"),
+                            expected,
+                            "{label}: face_swap={swap_faces}, parent_child_swap={swap_parent_child}, hinge_reverse={reverse_hinge}"
+                        );
+                    }
+                }
+            }
+        };
+
+        assert_all_orderings(
+            "strict-convex both-outside positive",
+            &first,
+            &second,
+            &first_normal,
+            &second_normal,
+            true,
+        );
+        // This is the direct regression for the sound OR: one face alone
+        // confines the complete plane intersection to the finite hinge. The
+        // extended face is deliberately concave, so the old AND followed by
+        // the two-sided strict-convex fallback could not admit it.
+        assert_all_orderings(
+            "one axially bounded face",
+            &bounded_first,
+            &outside_concave_second,
+            &first_normal,
+            &second_normal,
+            true,
+        );
+        assert_all_orderings(
+            "both axially bounded faces",
+            &bounded_first,
+            &bounded_second,
+            &first_normal,
+            &second_normal,
+            true,
+        );
+        assert_all_orderings(
+            "legacy triangle branch",
+            &triangle_first,
+            &triangle_second,
+            &first_normal,
+            &second_normal,
+            true,
+        );
+
+        for (name, first_candidate) in [
+            ("concave", concave),
+            ("collinear", collinear),
+            ("axis-crossing", axis_crossing),
+        ] {
+            assert_all_orderings(
+                name,
+                &first_candidate,
+                &second,
+                &first_normal,
+                &second_normal,
+                false,
+            );
+        }
+    }
+
+    #[test]
     fn polygon_hinge_boundary_preconditions_fail_closed_on_each_geometric_gap() {
         let limits = prerequisite_exact_hard_limits();
         let mut meter = WorkMeter::new(&limits);
@@ -3918,6 +4513,61 @@ mod tests {
             exact_strictly_convex_hinge_side(&positive, &hinge, &normal, &zero, &mut meter)
                 .expect("zero-axis fail-closed analysis")
                 .is_none()
+        );
+
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let cancelled_control = CooperativeOperationControlV1::new(
+            Some(&cancelled),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        let cancelled_limits = prerequisite_exact_hard_limits();
+        let mut cancelled_meter = WorkMeter::new(&cancelled_limits);
+        let cancelled_error = exact_strictly_convex_hinge_side_with_control_v1(
+            &positive,
+            &hinge,
+            &normal,
+            &axis,
+            &cancelled_control,
+            &mut cancelled_meter,
+        )
+        .expect_err("pre-cancelled strict-convex proof must stop");
+        assert_eq!(
+            cancelled_error,
+            ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::Cancelled
+        );
+
+        let deadline_control = CooperativeOperationControlV1::new(None, std::time::Instant::now());
+        let deadline_limits = prerequisite_exact_hard_limits();
+        let mut deadline_meter = WorkMeter::new(&deadline_limits);
+        let deadline_error = exact_strictly_convex_hinge_side_with_control_v1(
+            &positive,
+            &hinge,
+            &normal,
+            &axis,
+            &deadline_control,
+            &mut deadline_meter,
+        )
+        .expect_err("expired strict-convex proof must stop");
+        assert_eq!(
+            deadline_error,
+            ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::DeadlineExceeded
+        );
+
+        let mut resource_limits = prerequisite_exact_hard_limits();
+        resource_limits.max_interval_operations = 0;
+        let mut resource_meter = WorkMeter::new(&resource_limits);
+        let resource_error = exact_strictly_convex_hinge_side_with_control_v1(
+            &positive,
+            &hinge,
+            &normal,
+            &axis,
+            &CooperativeOperationControlV1::unbounded(),
+            &mut resource_meter,
+        )
+        .expect_err("strict-convex exact arithmetic must preserve resource exhaustion");
+        assert_eq!(
+            resource_error,
+            ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::ResourceLimitExceeded
         );
     }
 

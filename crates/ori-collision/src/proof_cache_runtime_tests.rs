@@ -389,3 +389,56 @@ fn pending_rebind_and_lookup_share_one_total_work_cap_exactly() {
         ))
     );
 }
+
+#[test]
+fn publication_rejects_impossible_progress_before_mutating_the_cache() {
+    let fixture = model4_fixture(0);
+    let invalid_progress = [(0, 1, 0, true), (2, 1, 0, true), (1, 1, 2, false)];
+
+    for (proven_pairs, total_pairs, cache_hits, include_candidate) in invalid_progress {
+        let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+        let capture = runtime
+            .capture_v1(binding_for_key(&fixture.key))
+            .expect("runtime capture");
+        let candidates = if include_candidate {
+            vec![fixture.candidate.clone()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            runtime.publish_two_hinge_positive_v1(
+                &capture,
+                fixture.key.issuer_context,
+                candidates,
+                proven_pairs,
+                total_pairs,
+                cache_hits,
+                &fixture.candidate.work,
+                operation_control(),
+            ),
+            Err(ProofCacheRuntimeErrorV1::InvalidBinding)
+        );
+        assert_eq!(
+            runtime.progress_v1().expect("unchanged progress"),
+            ProofCacheProgressV1 {
+                epoch: capture.epoch(),
+                ..ProofCacheProgressV1::default()
+            }
+        );
+
+        let (footprints, exact_poses) = current_snapshots(&fixture);
+        let lookup = runtime
+            .lookup_two_hinge_positive_v1(
+                &capture,
+                fixture.key.issuer_context,
+                footprints,
+                exact_poses,
+                std::slice::from_ref(&fixture.key),
+                &generous_work_limits(),
+                operation_control(),
+            )
+            .expect("invalid progress must leave a usable empty cache");
+        assert_eq!(lookup.hits().len(), 0);
+        assert_eq!(lookup.missing_entries(), 1);
+    }
+}

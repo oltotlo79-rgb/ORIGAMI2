@@ -1,6 +1,10 @@
 //! Edit barriers, aggregate invalidation, and exact capacity progress.
 
-use std::sync::{Arc, Barrier};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{Arc, Barrier, atomic::AtomicBool},
+    time::{Duration, Instant},
+};
 
 use ori_domain::{EdgeId, FaceId, VertexId};
 
@@ -13,7 +17,7 @@ fn one_shot_pose_transaction_rollback_restores_the_exact_cache_epoch() {
     let capture = publish_fixture_to_runtime(&runtime, &fixture);
     let before = runtime.progress_v1().expect("initial progress");
     assert_eq!(before.persistent_cached_pairs, 1);
-    let rollback = runtime
+    let mut rollback = runtime
         .capture_rollback_snapshot_v1()
         .expect("opaque rollback snapshot");
     runtime
@@ -23,8 +27,8 @@ fn one_shot_pose_transaction_rollback_restores_the_exact_cache_epoch() {
         runtime.progress_v1().expect("advanced progress").epoch,
         before.epoch.checked_add(1).expect("bounded test epoch")
     );
-    runtime
-        .restore_rollback_snapshot_v1(rollback)
+    rollback
+        .restore_origin_exact_for_rollback_v1()
         .expect("exact originating runtime rollback");
     assert_eq!(runtime.progress_v1().expect("restored progress"), before);
     let (footprints, exact_poses) = current_snapshots(&fixture);
@@ -41,6 +45,228 @@ fn one_shot_pose_transaction_rollback_restores_the_exact_cache_epoch() {
         .expect("restored proof-cache lookup");
     assert_eq!(lookup.hits().len(), 1);
     assert_eq!(lookup.missing_entries(), 0);
+}
+
+#[test]
+fn origin_bound_rollback_restores_after_epoch_advances_beyond_normal_staleness() {
+    let fixture = model4_fixture(0);
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    publish_fixture_to_runtime(&runtime, &fixture);
+    let before = runtime.progress_v1().expect("initial progress");
+    let mut rollback = runtime
+        .capture_rollback_snapshot_v1()
+        .expect("opaque rollback snapshot");
+    runtime
+        .advance_pose_authority_v1(fixture.key.revision)
+        .expect("one pose-authority transition");
+    runtime
+        .advance_pose_authority_v1(fixture.key.revision)
+        .expect("second pose-authority transition");
+    rollback
+        .restore_origin_exact_for_rollback_v1()
+        .expect("the origin image bypasses normal stale-epoch policy");
+    assert_eq!(runtime.progress_v1().expect("restored progress"), before);
+}
+
+#[test]
+fn rollback_recovers_a_poisoned_cache_mutex_by_replacing_the_exact_image() {
+    let fixture = model4_fixture(0);
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    publish_fixture_to_runtime(&runtime, &fixture);
+    let before = runtime.progress_v1().expect("initial progress");
+    let mut rollback = runtime
+        .capture_rollback_snapshot_v1()
+        .expect("opaque rollback snapshot");
+    runtime
+        .advance_pose_authority_v1(fixture.key.revision)
+        .expect("one pose-authority transition");
+
+    assert!(
+        catch_unwind(AssertUnwindSafe(
+            || runtime.poison_rollback_lock_for_test_v1()
+        ))
+        .is_err(),
+        "the injected panic must poison the normal cache lock"
+    );
+    rollback
+        .restore_origin_exact_for_rollback_v1()
+        .expect("rollback recovers poison before replacing state");
+    assert_eq!(runtime.progress_v1().expect("recovered progress"), before);
+}
+
+#[test]
+fn complete_edit_panic_raii_recovers_poison_and_clears_the_in_progress_epoch() {
+    let fixture = model4_fixture(0);
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    publish_fixture_to_runtime(&runtime, &fixture);
+    let ticket = runtime.begin_edit_epoch_v1().expect("edit epoch");
+    let epoch = runtime.progress_v1().expect("begun progress").epoch;
+    PersistentPairProofCacheRuntimeV1::panic_next_complete_edit_while_locked_for_test_v1();
+    let impact = disjoint_impact();
+
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            let _ = runtime.complete_edit_epoch_v1(
+                ticket,
+                SOURCE_REVISION,
+                TARGET_REVISION,
+                impact.vertices,
+                impact.edges,
+                impact.faces,
+                operation_control(),
+            );
+        }))
+        .is_err(),
+        "the deterministic fault must unwind while the runtime mutex is held"
+    );
+
+    assert_eq!(
+        runtime.progress_v1().expect("RAII recovered runtime"),
+        ProofCacheProgressV1 {
+            epoch,
+            ..ProofCacheProgressV1::default()
+        }
+    );
+    let capture = runtime
+        .capture_v1(binding_for_key(&fixture.key))
+        .expect("the invalidation barrier was cleared");
+    let (footprints, exact_poses) = current_snapshots(&fixture);
+    let lookup = runtime
+        .lookup_two_hinge_positive_v1(
+            &capture,
+            fixture.key.issuer_context,
+            footprints,
+            exact_poses,
+            std::slice::from_ref(&fixture.key),
+            &generous_work_limits(),
+            operation_control(),
+        )
+        .expect("fail-closed cache remains usable");
+    assert_eq!(lookup.hits().len(), 0);
+    assert_eq!(lookup.missing_entries(), 1);
+}
+
+#[test]
+fn complete_edit_preserves_typed_preparation_errors_and_fails_closed() {
+    let fixture = model4_fixture(0);
+
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    publish_fixture_to_runtime(&runtime, &fixture);
+    let cancelled = AtomicBool::new(true);
+    let impact = disjoint_impact();
+    assert_eq!(
+        runtime.begin_complete_edit_v1(
+            SOURCE_REVISION,
+            TARGET_REVISION,
+            impact.vertices,
+            impact.edges,
+            impact.faces,
+            ProofCacheOperationControlV1::new(
+                Some(&cancelled),
+                Instant::now() + Duration::from_secs(5),
+            ),
+        ),
+        Err(ProofCacheRuntimeErrorV1::Cache(
+            ProofCacheErrorV1::Cancelled
+        ))
+    );
+    assert_eq!(
+        runtime
+            .progress_v1()
+            .expect("cancelled preparation recovered")
+            .persistent_cached_pairs,
+        0
+    );
+
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    publish_fixture_to_runtime(&runtime, &fixture);
+    let impact = disjoint_impact();
+    assert_eq!(
+        runtime.begin_complete_edit_v1(
+            SOURCE_REVISION,
+            TARGET_REVISION,
+            impact.vertices,
+            impact.edges,
+            impact.faces,
+            ProofCacheOperationControlV1::new(None, Instant::now()),
+        ),
+        Err(ProofCacheRuntimeErrorV1::Cache(
+            ProofCacheErrorV1::DeadlineExceeded
+        ))
+    );
+    assert_eq!(
+        runtime
+            .progress_v1()
+            .expect("deadlined preparation recovered")
+            .persistent_cached_pairs,
+        0
+    );
+
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    publish_fixture_to_runtime(&runtime, &fixture);
+    let ticket = runtime.begin_edit_epoch_v1().expect("resource edit epoch");
+    assert_eq!(
+        runtime.complete_edit_epoch_with_upstream_work_v1(
+            ticket,
+            SOURCE_REVISION,
+            TARGET_REVISION,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            MAX_PROOF_CACHE_INVALIDATION_WORK_V1 + 1,
+            operation_control(),
+        ),
+        Err(ProofCacheRuntimeErrorV1::Cache(
+            ProofCacheErrorV1::ResourceLimitExceeded
+        ))
+    );
+    assert_eq!(
+        runtime
+            .progress_v1()
+            .expect("resource preparation recovered")
+            .persistent_cached_pairs,
+        0
+    );
+
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    publish_fixture_to_runtime(&runtime, &fixture);
+    let impact = disjoint_impact();
+    assert_eq!(
+        runtime.begin_complete_edit_v1(
+            SOURCE_REVISION,
+            SOURCE_REVISION,
+            impact.vertices,
+            impact.edges,
+            impact.faces,
+            operation_control(),
+        ),
+        Err(ProofCacheRuntimeErrorV1::Cache(
+            ProofCacheErrorV1::InvalidCandidate
+        ))
+    );
+    assert_eq!(
+        runtime
+            .progress_v1()
+            .expect("invalid preparation recovered")
+            .persistent_cached_pairs,
+        0
+    );
+}
+
+#[test]
+fn consumed_origin_rollback_image_fails_once_without_retryability() {
+    let runtime = runtime_with_work_limit(MAX_PROOF_CACHE_INVALIDATION_WORK_V1);
+    let mut rollback = runtime
+        .capture_rollback_snapshot_v1()
+        .expect("opaque rollback snapshot");
+    rollback
+        .restore_origin_exact_for_rollback_v1()
+        .expect("first origin restore");
+    assert_eq!(
+        rollback.restore_origin_exact_for_rollback_v1(),
+        Err(ProofCacheRuntimeErrorV1::InvalidBinding),
+        "a consumed rollback image is a finite invariant error"
+    );
 }
 
 #[test]

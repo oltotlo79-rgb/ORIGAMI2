@@ -1,6 +1,22 @@
 //! Epoch transitions and complete editor-impact aggregation.
 
 use super::*;
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static PANIC_NEXT_COMPLETE_EDIT_WHILE_LOCKED_V1: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+fn inject_complete_edit_panic_while_locked_for_test_v1() {
+    PANIC_NEXT_COMPLETE_EDIT_WHILE_LOCKED_V1.with(|fault| {
+        if fault.replace(false) {
+            panic!("injected complete-edit panic while the runtime lock is held");
+        }
+    });
+}
 
 impl PersistentPairProofCacheRuntimeV1 {
     /// Advances the epoch before semantic mutation, then prepares the trusted
@@ -39,7 +55,11 @@ impl PersistentPairProofCacheRuntimeV1 {
             epoch: state.epoch,
             ..ProofCacheProgressV1::default()
         };
-        Ok(ProofCacheEditEpochTicketV1 { epoch: state.epoch })
+        Ok(ProofCacheEditEpochTicketV1 {
+            epoch: state.epoch,
+            inner: Arc::clone(&self.inner),
+            armed: true,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -70,7 +90,7 @@ impl PersistentPairProofCacheRuntimeV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn complete_edit_epoch_with_upstream_work_v1(
         &self,
-        ticket: ProofCacheEditEpochTicketV1,
+        mut ticket: ProofCacheEditEpochTicketV1,
         source_revision: u64,
         target_revision: u64,
         mut vertices: Vec<VertexId>,
@@ -79,11 +99,16 @@ impl PersistentPairProofCacheRuntimeV1 {
         upstream_preparation_work: usize,
         control: ProofCacheOperationControlV1<'_>,
     ) -> Result<ProofCacheEditInvalidationOutcomeV1, ProofCacheRuntimeErrorV1> {
+        if !ticket.belongs_to_v1(self) {
+            return Err(ProofCacheRuntimeErrorV1::StaleProof);
+        }
         let prior_impact = {
             let state = self.lock_v1()?;
             if state.epoch != ticket.epoch || !state.impact_preparation_in_progress {
                 return Err(ProofCacheRuntimeErrorV1::StaleProof);
             }
+            #[cfg(test)]
+            inject_complete_edit_panic_while_locked_for_test_v1();
             state.pending_impact.clone()
         };
         let aggregate_source = prior_impact
@@ -97,7 +122,6 @@ impl PersistentPairProofCacheRuntimeV1 {
             let Some(combined_work) =
                 aggregate_upstream_preparation_work.checked_add(prior.upstream_preparation_work)
             else {
-                let _ = self.abandon_edit_epoch_v1(ticket);
                 return Err(ProofCacheRuntimeErrorV1::Cache(
                     ProofCacheErrorV1::ResourceLimitExceeded,
                 ));
@@ -107,7 +131,6 @@ impl PersistentPairProofCacheRuntimeV1 {
                 || edges.try_reserve(prior.edges.len()).is_err()
                 || faces.try_reserve(prior.faces.len()).is_err()
             {
-                let _ = self.abandon_edit_epoch_v1(ticket);
                 return Err(ProofCacheRuntimeErrorV1::Cache(
                     ProofCacheErrorV1::ResourceLimitExceeded,
                 ));
@@ -124,41 +147,41 @@ impl PersistentPairProofCacheRuntimeV1 {
             faces,
             aggregate_upstream_preparation_work,
             &control,
-        );
+        )
+        .map_err(ProofCacheRuntimeErrorV1::Cache)?;
         let mut state = self.lock_v1()?;
         if state.epoch != ticket.epoch || !state.impact_preparation_in_progress {
             return Err(ProofCacheRuntimeErrorV1::StaleProof);
         }
         state.impact_preparation_in_progress = false;
-        match prepared {
-            Ok(impact)
-                if state
-                    .binding
-                    .as_ref()
-                    .is_none_or(|binding| binding.revision == aggregate_source) =>
-            {
-                state.pending_impact = Some(impact);
-                Ok(ProofCacheEditInvalidationOutcomeV1 {
-                    epoch: state.epoch,
-                    differential_retention_possible: true,
-                })
-            }
-            Ok(_) | Err(_) => {
-                state.cache.clear_v1();
-                state.pending_impact = None;
-                Ok(ProofCacheEditInvalidationOutcomeV1 {
-                    epoch: state.epoch,
-                    differential_retention_possible: false,
-                })
-            }
-        }
+        let differential_retention_possible = if state
+            .binding
+            .as_ref()
+            .is_none_or(|binding| binding.revision == aggregate_source)
+        {
+            state.pending_impact = Some(prepared);
+            true
+        } else {
+            state.cache.clear_v1();
+            state.pending_impact = None;
+            false
+        };
+        let epoch = state.epoch;
+        ticket.disarm_v1();
+        Ok(ProofCacheEditInvalidationOutcomeV1 {
+            epoch,
+            differential_retention_possible,
+        })
     }
 
     /// Completes a failed/incomplete edit by explicitly emptying the cache.
     pub fn abandon_edit_epoch_v1(
         &self,
-        ticket: ProofCacheEditEpochTicketV1,
+        mut ticket: ProofCacheEditEpochTicketV1,
     ) -> Result<ProofCacheEditInvalidationOutcomeV1, ProofCacheRuntimeErrorV1> {
+        if !ticket.belongs_to_v1(self) {
+            return Err(ProofCacheRuntimeErrorV1::StaleProof);
+        }
         let mut state = self.lock_v1()?;
         if state.epoch != ticket.epoch {
             return Err(ProofCacheRuntimeErrorV1::StaleProof);
@@ -166,10 +189,26 @@ impl PersistentPairProofCacheRuntimeV1 {
         state.cache.clear_v1();
         state.pending_impact = None;
         state.impact_preparation_in_progress = false;
-        Ok(ProofCacheEditInvalidationOutcomeV1 {
+        state.progress = ProofCacheProgressV1 {
             epoch: state.epoch,
+            ..ProofCacheProgressV1::default()
+        };
+        let epoch = state.epoch;
+        ticket.disarm_v1();
+        Ok(ProofCacheEditInvalidationOutcomeV1 {
+            epoch,
             differential_retention_possible: false,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_next_complete_edit_while_locked_for_test_v1() {
+        PANIC_NEXT_COMPLETE_EDIT_WHILE_LOCKED_V1.with(|fault| {
+            assert!(
+                !fault.replace(true),
+                "one complete-edit panic fault may be armed"
+            );
+        });
     }
 
     /// Fail-closed invalidation for pose/project replacement or incomplete

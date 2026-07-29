@@ -3854,6 +3854,7 @@ mod positive_thickness;
 pub(crate) use containment::{
     ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
     scan_bound_pose_for_proven_transversal_penetration,
+    scan_bound_pose_for_proven_transversal_penetration_with_control_v1,
 };
 pub use positive_thickness::{
     MAX_COMPOSED_THICKNESS_HINGES_V1, NativeSingleHingeThicknessBoundaryV1,
@@ -3865,11 +3866,12 @@ pub use positive_thickness::{
 pub(crate) use positive_thickness::{
     MAX_POSITIVE_THICKNESS_PRISM_PARALLEL_WORKERS_V1, PositiveThicknessPrismPairDispositionV1,
     PositiveThicknessPrismParallelConfigV1, PositiveThicknessPrismScanErrorV1,
-    SharedHingeSolidDiagnosticDispositionV1, SharedHingeSolidDiagnosticErrorV1,
-    SharedHingeSolidDiagnosticSummaryV1, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
+    SharedHingePairDiagnosticSessionErrorV1, SharedHingeSolidDiagnosticDispositionV1,
+    SharedHingeSolidDiagnosticErrorV1, SharedHingeSolidDiagnosticSummaryV1,
+    ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
     diagnose_bound_positive_thickness_prism_pairs_parallel_v1,
     diagnose_bound_positive_thickness_prism_pairs_v1,
-    diagnose_bound_zero_thickness_shared_hinge_boundaries_v1,
+    diagnose_bound_zero_thickness_shared_hinge_boundaries_with_control_v1,
     positive_thickness_exact_pair_cache_work_limits_v1,
     prepare_positive_thickness_exact_endpoint_session_v2,
     prepare_positive_thickness_exact_pair_cache_session_v1,

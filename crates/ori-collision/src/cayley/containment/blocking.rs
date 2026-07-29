@@ -23,6 +23,8 @@ use num_traits::{One, Signed};
 use ori_domain::{FaceId, VertexId};
 use ori_kinematics::BoundMaterialTreePose;
 
+use crate::{CooperativeOperationControlV1, CooperativeOperationStopV1};
+
 use super::{
     super::{
         CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactRigidTransform,
@@ -183,6 +185,8 @@ enum AuthenticatedTriangleBlockingError {
     AuthorityMismatch,
     InconsistentPose,
     ResourceLimitExceeded { resource: &'static str },
+    Cancelled,
+    DeadlineExceeded,
     Exact(CayleyError),
 }
 
@@ -310,6 +314,8 @@ pub(crate) enum ProvenTransversalScanError {
     EvidenceUnavailable,
     ResourceLimitExceeded,
     InconsistentPose,
+    Cancelled,
+    DeadlineExceeded,
 }
 
 /// Caller budget shared by the public static scan and this private bridge.
@@ -388,6 +394,19 @@ pub(crate) fn scan_bound_pose_for_proven_transversal_penetration(
     bound: BoundMaterialTreePose<'_>,
     limits: ProvenTransversalScanLimits,
 ) -> Result<ProvenTransversalScanSummary, ProvenTransversalScanError> {
+    scan_bound_pose_for_proven_transversal_penetration_with_control_v1(
+        bound,
+        limits,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+pub(crate) fn scan_bound_pose_for_proven_transversal_penetration_with_control_v1(
+    bound: BoundMaterialTreePose<'_>,
+    limits: ProvenTransversalScanLimits,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<ProvenTransversalScanSummary, ProvenTransversalScanError> {
+    proven_transversal_checkpoint_v1(control)?;
     let limits = project_proven_transversal_scan_limits(limits)?;
     preflight_proven_transversal_shape(
         bound,
@@ -401,19 +420,24 @@ pub(crate) fn scan_bound_pose_for_proven_transversal_penetration(
         limits.shared.max_registry_authentication_work,
         limits.shared.max_total_boundary_relation_work,
     )?;
+    proven_transversal_checkpoint_v1(control)?;
     let exact =
         prepare_rational_cayley_tree_pose_v1(bound, limits.exact).map_err(map_cayley_scan_error)?;
+    proven_transversal_checkpoint_v1(control)?;
     let measured_limits = measured_limits_after_exact(limits.measured, &limits.shared, &exact)?;
     let measured = measure_binary64_affine_envelope(&exact, bound, measured_limits)
         .map_err(map_measured_scan_error)?;
-    let scan = scan_authenticated_triangle_pairs_blocking_only(
+    proven_transversal_checkpoint_v1(control)?;
+    let scan = scan_authenticated_triangle_pairs_blocking_only_with_control_v1(
         &exact,
         &measured,
         bound,
         0.0_f64,
         limits.blocking,
+        control,
     )
     .map_err(map_authenticated_scan_error)?;
+    proven_transversal_checkpoint_v1(control)?;
 
     let proven_transversal_pair_ids = scan
         .pairs
@@ -427,6 +451,28 @@ pub(crate) fn scan_bound_pose_for_proven_transversal_penetration(
         proven_transversal_pairs: proven_transversal_pair_ids.len(),
         first_proven_transversal_pair,
         proven_transversal_pair_ids,
+    })
+}
+
+fn proven_transversal_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), ProvenTransversalScanError> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => ProvenTransversalScanError::Cancelled,
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            ProvenTransversalScanError::DeadlineExceeded
+        }
+    })
+}
+
+fn authenticated_triangle_blocking_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), AuthenticatedTriangleBlockingError> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => AuthenticatedTriangleBlockingError::Cancelled,
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            AuthenticatedTriangleBlockingError::DeadlineExceeded
+        }
     })
 }
 
@@ -989,6 +1035,10 @@ fn map_authenticated_scan_error(
         AuthenticatedTriangleBlockingError::ResourceLimitExceeded { .. } => {
             ProvenTransversalScanError::ResourceLimitExceeded
         }
+        AuthenticatedTriangleBlockingError::Cancelled => ProvenTransversalScanError::Cancelled,
+        AuthenticatedTriangleBlockingError::DeadlineExceeded => {
+            ProvenTransversalScanError::DeadlineExceeded
+        }
         AuthenticatedTriangleBlockingError::Exact(error) => map_cayley_scan_error(error),
         AuthenticatedTriangleBlockingError::UnsupportedPaperThickness
         | AuthenticatedTriangleBlockingError::AuthorityMismatch
@@ -1173,6 +1223,7 @@ struct PreparedAuthenticatedTriangle {
     observed: ActualMillimetreTriangleEnvelope,
 }
 
+#[cfg(test)]
 fn scan_authenticated_triangle_pairs_blocking_only<'scan, 'exact, 'pose>(
     exact: &'scan RationalCayleyTreePose<'pose>,
     measured: &'scan MeasuredBinary64AffineEnvelope<'exact, 'pose>,
@@ -1183,6 +1234,28 @@ fn scan_authenticated_triangle_pairs_blocking_only<'scan, 'exact, 'pose>(
     AuthenticatedTriangleBlockingScan<'scan, 'exact, 'pose>,
     AuthenticatedTriangleBlockingError,
 > {
+    scan_authenticated_triangle_pairs_blocking_only_with_control_v1(
+        exact,
+        measured,
+        bound,
+        paper_thickness_mm,
+        limits,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+fn scan_authenticated_triangle_pairs_blocking_only_with_control_v1<'scan, 'exact, 'pose>(
+    exact: &'scan RationalCayleyTreePose<'pose>,
+    measured: &'scan MeasuredBinary64AffineEnvelope<'exact, 'pose>,
+    bound: BoundMaterialTreePose<'pose>,
+    paper_thickness_mm: f64,
+    limits: AuthenticatedTriangleBlockingLimits,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<
+    AuthenticatedTriangleBlockingScan<'scan, 'exact, 'pose>,
+    AuthenticatedTriangleBlockingError,
+> {
+    authenticated_triangle_blocking_checkpoint_v1(control)?;
     validate_authenticated_triangle_blocking_limits(&limits)?;
     if paper_thickness_mm.to_bits() != 0.0_f64.to_bits() {
         return Err(AuthenticatedTriangleBlockingError::UnsupportedPaperThickness);
@@ -1265,6 +1338,7 @@ fn scan_authenticated_triangle_pairs_blocking_only<'scan, 'exact, 'pose>(
     let mut boundary_occurrences = 0_usize;
     let mut triangular_faces = 0_usize;
     for (face, measured_face) in exact.faces.iter().zip(&measured.faces) {
+        authenticated_triangle_blocking_checkpoint_v1(control)?;
         if face.boundary.len() < 3 || measured_face.face != face.face {
             return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
         }
@@ -1349,12 +1423,13 @@ fn scan_authenticated_triangle_pairs_blocking_only<'scan, 'exact, 'pose>(
     )?;
     meter.merge_work(&measured.work.exact, CayleyStage::Containment)?;
 
-    let hinge_relations = authenticate_hinge_relations(exact, &limits, &mut work)?;
+    let hinge_relations = authenticate_hinge_relations(exact, &limits, &mut work, control)?;
     let mut triangles = Vec::new();
     triangles.try_reserve_exact(face_count).map_err(|_| {
         AuthenticatedTriangleBlockingError::ResourceLimitExceeded { resource: "faces" }
     })?;
     for (face, radius) in exact.faces.iter().zip(&measured.faces) {
+        authenticated_triangle_blocking_checkpoint_v1(control)?;
         triangles.push(if face.boundary.len() == 3 {
             Some(prepare_authenticated_triangle(
                 face, radius, bound, &mut meter,
@@ -1372,7 +1447,9 @@ fn scan_authenticated_triangle_pairs_blocking_only<'scan, 'exact, 'pose>(
     })?;
     let mut topology_vertex_checks = 0_usize;
     for first_index in 0..face_count {
+        authenticated_triangle_blocking_checkpoint_v1(control)?;
         for second_index in (first_index + 1)..face_count {
+            authenticated_triangle_blocking_checkpoint_v1(control)?;
             let first_face = &exact.faces[first_index];
             let second_face = &exact.faces[second_index];
             let decision = match (&triangles[first_index], &triangles[second_index]) {
@@ -1571,6 +1648,7 @@ fn authenticate_hinge_relations(
     exact: &RationalCayleyTreePose<'_>,
     limits: &AuthenticatedTriangleBlockingLimits,
     work: &mut AuthenticatedTriangleBlockingWork,
+    control: &CooperativeOperationControlV1<'_>,
 ) -> Result<HashMap<(FaceId, FaceId), [VertexId; 2]>, AuthenticatedTriangleBlockingError> {
     bridge_check_count(exact.hinges.len(), limits.max_hinges, "hinges")?;
     bridge_check_count(
@@ -1587,7 +1665,9 @@ fn authenticate_hinge_relations(
             },
         )?;
     for (face_index, face) in exact.faces.iter().enumerate() {
+        authenticated_triangle_blocking_checkpoint_v1(control)?;
         for (boundary_index, (vertex, _)) in face.boundary.iter().enumerate() {
+            authenticated_triangle_blocking_checkpoint_v1(control)?;
             bridge_increment(
                 &mut work.hinge_boundary_index_entries,
                 limits.max_hinge_boundary_index_entries,
@@ -1606,12 +1686,14 @@ fn authenticate_hinge_relations(
         AuthenticatedTriangleBlockingError::ResourceLimitExceeded { resource: "hinges" }
     })?;
     for hinge in &exact.hinges {
+        authenticated_triangle_blocking_checkpoint_v1(control)?;
         let key = canonical_face_pair(hinge.parent, hinge.child)
             .ok_or(AuthenticatedTriangleBlockingError::InconsistentPose)?;
         if hinge.endpoint_vertices[0] == hinge.endpoint_vertices[1] {
             return Err(AuthenticatedTriangleBlockingError::InconsistentPose);
         }
         for face_id in [hinge.parent, hinge.child] {
+            authenticated_triangle_blocking_checkpoint_v1(control)?;
             bridge_increment(
                 &mut work.hinge_face_lookups,
                 limits.max_hinge_face_lookups,
@@ -1624,6 +1706,7 @@ fn authenticate_hinge_relations(
                 })
                 .map_err(|_| AuthenticatedTriangleBlockingError::InconsistentPose)?;
             for (vertex, endpoint) in hinge.endpoint_vertices.iter().zip(&hinge.world_endpoints) {
+                authenticated_triangle_blocking_checkpoint_v1(control)?;
                 bridge_increment(
                     &mut work.hinge_vertex_lookups,
                     limits.max_hinge_vertex_lookups,

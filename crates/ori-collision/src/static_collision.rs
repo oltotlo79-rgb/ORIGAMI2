@@ -14,18 +14,21 @@ use ori_kinematics::{
 use thiserror::Error;
 
 use crate::{
-    IntersectionEvidenceV2, TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision, TopologyRelation,
+    CooperativeOperationControlV1, CooperativeOperationStopV1, IntersectionEvidenceV2,
+    TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision, TopologyRelation,
     cayley::{
         MAX_POSITIVE_THICKNESS_PRISM_PARALLEL_WORKERS_V1, PositiveThicknessPrismPairDispositionV1,
         PositiveThicknessPrismParallelConfigV1, PositiveThicknessPrismScanErrorV1,
         ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
-        SharedHingeSolidDiagnosticDispositionV1, SharedHingeSolidDiagnosticErrorV1,
-        SharedHingeSolidDiagnosticSummaryV1, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
+        SharedHingePairDiagnosticSessionErrorV1, SharedHingeSolidDiagnosticDispositionV1,
+        SharedHingeSolidDiagnosticErrorV1, SharedHingeSolidDiagnosticSummaryV1,
+        ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
         diagnose_bound_positive_thickness_prism_pairs_parallel_v1,
         diagnose_bound_positive_thickness_prism_pairs_v1,
-        diagnose_bound_zero_thickness_shared_hinge_boundaries_v1,
+        diagnose_bound_zero_thickness_shared_hinge_boundaries_with_control_v1,
         prepare_shared_hinge_pair_diagnostic_session_v1,
         scan_bound_pose_for_proven_transversal_penetration,
+        scan_bound_pose_for_proven_transversal_penetration_with_control_v1,
     },
     classify_runtime_topology_contact_v2,
     zero_thickness::{
@@ -191,6 +194,10 @@ impl Default for StaticCollisionLimits {
 /// as collision-free or as a geometry proof.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum StaticCollisionError {
+    #[error("static collision was cancelled")]
+    Cancelled,
+    #[error("static collision absolute deadline elapsed")]
+    DeadlineExceeded,
     #[error("the material pose was issued by a different kinematics model instance")]
     PoseIssuerMismatch,
     #[error("paper thickness must be finite and non-negative")]
@@ -516,7 +523,12 @@ pub(crate) fn prepare_positive_thickness_tree_endpoint_topology_memo_v1(
     let analysis =
         prepare_authenticated_zero_thickness_pose(pose, zero_thickness_geometry_limits(limits))
             .map_err(|error| map_zero_thickness_error(error, expected))?;
-    let (scan, pairs) = scan_authenticated_zero_thickness_pairs(&analysis, pose, expected)?;
+    let (scan, pairs) = scan_authenticated_zero_thickness_pairs(
+        &analysis,
+        pose,
+        expected,
+        &CooperativeOperationControlV1::unbounded(),
+    )?;
     validate_zero_thickness_diagnostic_scan(&scan, &analysis, expected)?;
     if pairs.len() != expected {
         return Err(StaticCollisionError::InconsistentMaterialPose);
@@ -1083,6 +1095,7 @@ fn prove_static_collision_geometry_with_parallel_config_v1(
             &prerequisite,
             pose,
             expected_unordered_face_pairs,
+            &CooperativeOperationControlV1::unbounded(),
         )?;
         validate_zero_thickness_diagnostic_scan(
             &prerequisite_scan,
@@ -1266,8 +1279,12 @@ fn prove_static_collision_geometry_with_parallel_config_v1(
     let analysis =
         prepare_authenticated_zero_thickness_pose(pose, zero_thickness_geometry_limits(limits))
             .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
-    let (scan, _) =
-        scan_authenticated_zero_thickness_pairs(&analysis, pose, expected_unordered_face_pairs)?;
+    let (scan, _) = scan_authenticated_zero_thickness_pairs(
+        &analysis,
+        pose,
+        expected_unordered_face_pairs,
+        &CooperativeOperationControlV1::unbounded(),
+    )?;
     if scan.enumerated_unordered_face_pairs != expected_unordered_face_pairs {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
@@ -1389,10 +1406,30 @@ pub fn diagnose_static_collision_geometry(
     paper_thickness_mm: f64,
     limits: StaticCollisionLimits,
 ) -> Result<StaticCollisionDiagnosticSnapshot, StaticCollisionError> {
+    diagnose_static_collision_geometry_with_control_v1(
+        model,
+        pose,
+        paper_thickness_mm,
+        limits,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+/// Controlled form of [`diagnose_static_collision_geometry`].  A stop is
+/// returned before a partially assembled snapshot can escape.
+pub fn diagnose_static_collision_geometry_with_control_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    limits: StaticCollisionLimits,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<StaticCollisionDiagnosticSnapshot, StaticCollisionError> {
+    static_collision_checkpoint_v1(control)?;
     let validated = validate_static_collision_input(model, pose, paper_thickness_mm, limits)?;
     let face_count = validated.face_count;
     let expected_unordered_face_pairs = validated.expected_unordered_face_pairs;
     if expected_unordered_face_pairs == 0 {
+        static_collision_checkpoint_v1(control)?;
         return Ok(StaticCollisionDiagnosticSnapshot {
             face_count,
             expected_unordered_face_pairs,
@@ -1409,8 +1446,12 @@ pub fn diagnose_static_collision_geometry(
     let analysis =
         prepare_authenticated_zero_thickness_pose(pose, zero_thickness_geometry_limits(limits))
             .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
-    let (scan, authenticated_pairs) =
-        scan_authenticated_zero_thickness_pairs(&analysis, pose, expected_unordered_face_pairs)?;
+    let (scan, authenticated_pairs) = scan_authenticated_zero_thickness_pairs(
+        &analysis,
+        pose,
+        expected_unordered_face_pairs,
+        control,
+    )?;
     validate_zero_thickness_diagnostic_scan(&scan, &analysis, expected_unordered_face_pairs)?;
 
     let is_positive_zero = paper_thickness_mm.to_bits() == 0.0_f64.to_bits();
@@ -1427,10 +1468,14 @@ pub fn diagnose_static_collision_geometry(
 
     let transversal = transversal_limits
         .map(|transversal_limits| {
-            scan_bound_pose_for_proven_transversal_penetration(validated.bound, transversal_limits)
-                .map_err(|error| {
-                    map_proven_transversal_scan_error(error, expected_unordered_face_pairs)
-                })
+            scan_bound_pose_for_proven_transversal_penetration_with_control_v1(
+                validated.bound,
+                transversal_limits,
+                control,
+            )
+            .map_err(|error| {
+                map_proven_transversal_scan_error(error, expected_unordered_face_pairs)
+            })
         })
         .transpose()?;
     if let Some(transversal) = transversal.as_ref() {
@@ -1439,6 +1484,7 @@ pub fn diagnose_static_collision_geometry(
     let mut shared_hinge_boundary_candidates = Vec::new();
     if is_positive_zero {
         for pair in &authenticated_pairs {
+            static_collision_checkpoint_v1(control)?;
             let strict_transversal_dual_gate_proven = transversal
                 .as_ref()
                 .is_some_and(|scan| scan.proves_pair(pair.first_face, pair.second_face));
@@ -1472,9 +1518,10 @@ pub fn diagnose_static_collision_geometry(
     }
     let shared_hinge_boundary = (!shared_hinge_boundary_candidates.is_empty())
         .then(|| {
-            diagnose_bound_zero_thickness_shared_hinge_boundaries_v1(
+            diagnose_bound_zero_thickness_shared_hinge_boundaries_with_control_v1(
                 validated.bound,
                 &shared_hinge_boundary_candidates,
+                control,
             )
             .map_err(map_zero_thickness_shared_hinge_boundary_diagnostic_error)
         })
@@ -1511,6 +1558,7 @@ pub fn diagnose_static_collision_geometry(
             .try_reserve_exact(registry.hinges.len())
             .map_err(|_| StaticCollisionError::ResourceLimitExceeded)?;
         for hinge in &registry.hinges {
+            static_collision_checkpoint_v1(control)?;
             let target_edge = if registry.hinges.len() == 1 {
                 // Preserve the established two-face/one-hinge target-selection
                 // semantics while retaining the one-exact parent session.
@@ -1519,8 +1567,8 @@ pub fn diagnose_static_collision_geometry(
                 Some(hinge.edge())
             };
             let summary = session
-                .diagnose(target_edge)
-                .map_err(map_shared_hinge_solid_diagnostic_error)?;
+                .diagnose_with_control_v1(target_edge, control)
+                .map_err(map_shared_hinge_pair_session_error)?;
             if let Some(summary) = summary {
                 if canonical_face_pair(summary.first_face, summary.second_face)
                     != canonical_face_pair(hinge.left_face(), hinge.right_face())
@@ -1544,6 +1592,7 @@ pub fn diagnose_static_collision_geometry(
         .try_reserve(shared_hinge_solids.len())
         .map_err(|_| StaticCollisionError::ResourceLimitExceeded)?;
     for pair in authenticated_pairs {
+        static_collision_checkpoint_v1(control)?;
         let strict_transversal_dual_gate_proven = transversal
             .as_ref()
             .is_some_and(|scan| scan.proves_pair(pair.first_face, pair.second_face));
@@ -1673,7 +1722,17 @@ pub fn diagnose_static_collision_geometry(
     if shared_hinge_solids.len() != shared_hinge_solids_consumed.len() {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
+    static_collision_checkpoint_v1(control)?;
     build_static_collision_diagnostic_snapshot(face_count, expected_unordered_face_pairs, pairs)
+}
+
+fn static_collision_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), StaticCollisionError> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => StaticCollisionError::Cancelled,
+        CooperativeOperationStopV1::DeadlineExceeded => StaticCollisionError::DeadlineExceeded,
+    })
 }
 
 /// Produces the static diagnostic while admitting only flat-stack pairs that
@@ -1773,6 +1832,10 @@ const fn map_shared_hinge_solid_diagnostic_error(
     error: SharedHingeSolidDiagnosticErrorV1,
 ) -> StaticCollisionError {
     match error {
+        SharedHingeSolidDiagnosticErrorV1::Cancelled => StaticCollisionError::Cancelled,
+        SharedHingeSolidDiagnosticErrorV1::DeadlineExceeded => {
+            StaticCollisionError::DeadlineExceeded
+        }
         SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded => {
             StaticCollisionError::ResourceLimitExceeded
         }
@@ -1782,10 +1845,30 @@ const fn map_shared_hinge_solid_diagnostic_error(
     }
 }
 
+const fn map_shared_hinge_pair_session_error(
+    error: SharedHingePairDiagnosticSessionErrorV1,
+) -> StaticCollisionError {
+    match error {
+        SharedHingePairDiagnosticSessionErrorV1::Diagnostic(error) => {
+            map_shared_hinge_solid_diagnostic_error(error)
+        }
+        SharedHingePairDiagnosticSessionErrorV1::Cancelled => StaticCollisionError::Cancelled,
+        SharedHingePairDiagnosticSessionErrorV1::DeadlineExceeded => {
+            StaticCollisionError::DeadlineExceeded
+        }
+    }
+}
+
 const fn map_zero_thickness_shared_hinge_boundary_diagnostic_error(
     error: ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
 ) -> StaticCollisionError {
     match error {
+        ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::Cancelled => {
+            StaticCollisionError::Cancelled
+        }
+        ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::DeadlineExceeded => {
+            StaticCollisionError::DeadlineExceeded
+        }
         ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1::ResourceLimitExceeded => {
             StaticCollisionError::ResourceLimitExceeded
         }
@@ -2100,6 +2183,7 @@ fn scan_authenticated_zero_thickness_pairs(
     analysis: &AuthenticatedZeroThicknessPose<'_>,
     pose: &MaterialTreePose,
     expected_unordered_face_pairs: usize,
+    control: &CooperativeOperationControlV1<'_>,
 ) -> Result<
     (
         ZeroThicknessDiagnosticScan,
@@ -2122,10 +2206,12 @@ fn scan_authenticated_zero_thickness_pairs(
     diagnostics
         .try_reserve_exact(expected_unordered_face_pairs)
         .map_err(|_| StaticCollisionError::ResourceLimitExceeded)?;
+    static_collision_checkpoint_v1(control)?;
     let scan = scan_zero_thickness_pair_records(
         pose.face_ids(),
         expected_unordered_face_pairs,
         |first_face_index, second_face_index| {
+            static_collision_checkpoint_v1(control)?;
             let dispatch = analysis
                 .dispatch_pair(first_face_index, second_face_index)
                 .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
@@ -2305,6 +2391,8 @@ fn map_proven_transversal_scan_error(
     expected_unordered_face_pairs: usize,
 ) -> StaticCollisionError {
     match error {
+        ProvenTransversalScanError::Cancelled => StaticCollisionError::Cancelled,
+        ProvenTransversalScanError::DeadlineExceeded => StaticCollisionError::DeadlineExceeded,
         ProvenTransversalScanError::EvidenceUnavailable => {
             StaticCollisionError::PairEvidenceUnavailable {
                 expected_unordered_face_pairs,
@@ -2390,9 +2478,27 @@ mod tests {
         finish_proven_transversal_scan, legacy_dispatch_proves_zero_thickness_penetration,
         legacy_pair_proves_shared_flat_stack, map_proven_transversal_scan_error,
         remaining_proven_transversal_scan_limits, scan_zero_thickness_pair_records,
-        valid_paper_thickness, validate_pair_diagnostic_capacity,
+        static_collision_checkpoint_v1, valid_paper_thickness, validate_pair_diagnostic_capacity,
     };
     use crate::{IntersectionEvidenceV2, TopologyContactDecision};
+
+    #[test]
+    fn controlled_static_checkpoint_stops_before_snapshot_publication() {
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let control = crate::CooperativeOperationControlV1::new(
+            Some(&cancelled),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            static_collision_checkpoint_v1(&control),
+            Err(StaticCollisionError::Cancelled)
+        );
+        let deadline = crate::CooperativeOperationControlV1::new(None, std::time::Instant::now());
+        assert_eq!(
+            static_collision_checkpoint_v1(&deadline),
+            Err(StaticCollisionError::DeadlineExceeded)
+        );
+    }
 
     fn canonical_face_ids(count: usize) -> Vec<FaceId> {
         let mut faces = (0..count).map(|_| FaceId::new()).collect::<Vec<_>>();

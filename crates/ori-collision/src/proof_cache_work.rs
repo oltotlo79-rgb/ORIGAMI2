@@ -1,7 +1,7 @@
 //! Resource limits, cancellation and pair-local logical work accounting.
 
 use std::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+    sync::atomic::{AtomicBool, AtomicU64},
     time::Instant,
 };
 
@@ -12,6 +12,7 @@ use super::{
     MAX_PROOF_CACHE_STORAGE_BYTES_V1, PROOF_CACHE_ADDITIVE_WORK_COUNTERS_V1,
     PROOF_CACHE_MAXIMUM_WORK_COUNTERS_V1,
 };
+use crate::{CooperativeOperationControlV1, CooperativeOperationStopV1};
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ProofCacheErrorV1 {
@@ -58,18 +59,14 @@ impl ProofCacheLimitsV1 {
 
 #[derive(Clone, Copy)]
 pub struct ProofCacheOperationControlV1<'a> {
-    cancellation: Option<&'a AtomicBool>,
-    generation_cancellation: Option<(&'a AtomicU64, u64)>,
-    absolute_deadline: Instant,
+    control: CooperativeOperationControlV1<'a>,
 }
 
 impl<'a> ProofCacheOperationControlV1<'a> {
     #[must_use]
     pub const fn new(cancellation: Option<&'a AtomicBool>, absolute_deadline: Instant) -> Self {
         Self {
-            cancellation,
-            generation_cancellation: None,
-            absolute_deadline,
+            control: CooperativeOperationControlV1::new(cancellation, absolute_deadline),
         }
     }
 
@@ -88,28 +85,20 @@ impl<'a> ProofCacheOperationControlV1<'a> {
         absolute_deadline: Instant,
     ) -> Self {
         Self {
-            cancellation,
-            generation_cancellation: Some((generation, expected_generation)),
-            absolute_deadline,
+            control: CooperativeOperationControlV1::new_with_generation(
+                cancellation,
+                generation,
+                expected_generation,
+                absolute_deadline,
+            ),
         }
     }
 
     pub(super) fn checkpoint(&self) -> Result<(), ProofCacheErrorV1> {
-        if self
-            .cancellation
-            .is_some_and(|signal| signal.load(AtomicOrdering::Acquire))
-            || self
-                .generation_cancellation
-                .is_some_and(|(generation, expected_generation)| {
-                    generation.load(AtomicOrdering::Acquire) != expected_generation
-                })
-        {
-            Err(ProofCacheErrorV1::Cancelled)
-        } else if Instant::now() >= self.absolute_deadline {
-            Err(ProofCacheErrorV1::DeadlineExceeded)
-        } else {
-            Ok(())
-        }
+        self.control.checkpoint().map_err(|stop| match stop {
+            CooperativeOperationStopV1::Cancelled => ProofCacheErrorV1::Cancelled,
+            CooperativeOperationStopV1::DeadlineExceeded => ProofCacheErrorV1::DeadlineExceeded,
+        })
     }
 
     /// Cooperative checkpoint for trusted production-side preparation that

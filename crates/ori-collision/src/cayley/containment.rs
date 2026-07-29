@@ -1012,6 +1012,7 @@ mod blocking;
 pub(crate) use blocking::{
     ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
     scan_bound_pose_for_proven_transversal_penetration,
+    scan_bound_pose_for_proven_transversal_penetration_with_control_v1,
 };
 
 #[cfg(test)]

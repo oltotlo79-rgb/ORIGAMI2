@@ -565,6 +565,7 @@ pub fn certify_general_multi_face_cell_transport_v1(
         || input.tolerance < 0.0
         || !input.positive_continuous.is_for(
             input.geometry,
+            input.audit,
             input.closure.fixed_face(),
             input.schedule,
             input.closure,

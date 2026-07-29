@@ -117,6 +117,28 @@ fn uniform_tree_pose(
 }
 
 #[test]
+fn controlled_static_diagnostic_cancellation_publishes_no_partial_snapshot() {
+    let model = triangle_fan_model(2, 9_199);
+    let pose = uniform_tree_pose(&model, 0.0, model.face_ids()[0]);
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let control = crate::CooperativeOperationControlV1::new(
+        Some(&cancelled),
+        std::time::Instant::now() + std::time::Duration::from_secs(1),
+    );
+
+    assert_eq!(
+        diagnose_static_collision_geometry_with_control_v1(
+            &model,
+            &pose,
+            0.0,
+            StaticCollisionLimits::default(),
+            &control,
+        ),
+        Err(StaticCollisionError::Cancelled)
+    );
+}
+
+#[test]
 fn four_eight_and_sixteen_face_proofs_cover_every_root_and_edge_with_one_session() {
     for (case, face_count, thickness) in [(0_u64, 4_usize, 0.1_f64), (1, 8, 1.0), (2, 16, 3.0)] {
         let model = triangle_fan_model(face_count, 9_200 + case);

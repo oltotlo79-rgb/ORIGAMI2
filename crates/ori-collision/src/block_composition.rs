@@ -180,6 +180,7 @@ pub struct MultiBlockClosureInputV1<'a> {
 
 struct OwnedMultiBlockV1 {
     geometry: MaterialHingeGraphGeometry,
+    audit: MaterialHingeGraphAudit,
     schedule: CanonicalCycleScheduleV1,
     closure: DyadicMaterialHingeIntervalClosureCertificateV1,
     edges: Vec<EdgeId>,
@@ -410,6 +411,7 @@ impl MultiBlockPositiveLayerAuthorityV1 {
             let fixed_face = block.closure.fixed_face();
             if !self.positive[index].is_for(
                 &block.geometry,
+                &block.audit,
                 fixed_face,
                 &block.schedule,
                 &block.closure,
@@ -443,6 +445,7 @@ pub struct BlockwiseClosureAuthorityV1 {
     binding: [u8; 32],
     blocks: [(
         MaterialHingeGraphGeometry,
+        MaterialHingeGraphAudit,
         CanonicalCycleScheduleV1,
         DyadicMaterialHingeIntervalClosureCertificateV1,
     ); 2],
@@ -470,7 +473,7 @@ impl BlockwiseClosureAuthorityV1 {
                 let refs = self
                     .blocks
                     .each_ref()
-                    .map(|(geometry, schedule, closure)| (geometry, schedule, closure));
+                    .map(|(geometry, _, schedule, closure)| (geometry, schedule, closure));
                 blockwise_binding_v1(&refs, articulation, thickness, issuer_context) == self.binding
             }
     }
@@ -535,7 +538,7 @@ impl BlockwisePositiveLayerAuthorityV1 {
     #[must_use]
     pub fn target_angles_match_v1(&self, actual: &[(EdgeId, f64)]) -> bool {
         let mut expected = Vec::new();
-        for (_, schedule, _) in &self.parent.blocks {
+        for (_, _, schedule, _) in &self.parent.blocks {
             let Some(endpoint) = schedule.evaluate(1.0) else {
                 return false;
             };
@@ -576,9 +579,15 @@ impl BlockwisePositiveLayerAuthorityV1 {
             return false;
         }
         for (index, source) in sources.into_iter().enumerate() {
-            let (geometry, schedule, closure) = &self.parent.blocks[index];
-            if !self.positive[index].is_for(geometry, articulation, schedule, closure, thickness)
-                || !self.layer[index].is_for(geometry, source, schedule, closure, thickness)
+            let (geometry, audit, schedule, closure) = &self.parent.blocks[index];
+            if !self.positive[index].is_for(
+                geometry,
+                audit,
+                articulation,
+                schedule,
+                closure,
+                thickness,
+            ) || !self.layer[index].is_for(geometry, source, schedule, closure, thickness)
             {
                 return false;
             }
@@ -633,10 +642,10 @@ pub fn issue_blockwise_positive_layer_authority_v1(
         return None;
     }
     for (index, input) in inputs.iter().enumerate() {
-        let (geometry, schedule, closure) = &parent.blocks[index];
+        let (geometry, audit, schedule, closure) = &parent.blocks[index];
         if !input
             .positive
-            .is_for(geometry, articulation, schedule, closure, thickness)
+            .is_for(geometry, audit, articulation, schedule, closure, thickness)
             || !input
                 .layer
                 .is_for(geometry, input.source, schedule, closure, thickness)
@@ -751,6 +760,7 @@ pub fn issue_blockwise_closure_authority_v1(
     let blocks = inputs.map(|input| {
         (
             input.geometry.clone(),
+            input.audit.clone(),
             input.schedule.clone(),
             input.closure.clone(),
         )
@@ -864,6 +874,7 @@ pub fn issue_multi_block_closure_authority_v1(
         }
         blocks.push(OwnedMultiBlockV1 {
             geometry: input.geometry.clone(),
+            audit: input.audit.clone(),
             schedule: input.schedule.clone(),
             closure: input.closure.clone(),
             edges,
@@ -949,6 +960,7 @@ pub fn issue_multi_block_positive_layer_authority_v1(
             || faces != block.faces
             || !input.positive.is_for(
                 input.geometry,
+                &block.audit,
                 fixed_face,
                 &block.schedule,
                 &block.closure,
@@ -1197,6 +1209,7 @@ impl BlockComposedPathAuthorityV1 {
     pub fn revalidates_v1(
         &self,
         geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
         source: &LayerOrderSnapshot,
         fixed_face: FaceId,
         schedule: &CanonicalCycleScheduleV1,
@@ -1206,7 +1219,7 @@ impl BlockComposedPathAuthorityV1 {
         articulation_layer_fingerprint: [u8; 32],
     ) -> bool {
         self.positive
-            .is_for(geometry, fixed_face, schedule, closure, thickness)
+            .is_for(geometry, audit, fixed_face, schedule, closure, thickness)
             && self
                 .layer
                 .is_for(geometry, source, schedule, closure, thickness)
@@ -1267,6 +1280,7 @@ fn block_binding_v1(
 /// project-mutation authority.
 pub fn issue_block_composed_path_authority_v1(
     geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
     source: &LayerOrderSnapshot,
     fixed_face: FaceId,
     schedule: &CanonicalCycleScheduleV1,
@@ -1282,7 +1296,7 @@ pub fn issue_block_composed_path_authority_v1(
         || blocks.len() > BLOCK_COMPOSITION_LIMIT_V1
         || articulation_pose_fingerprint == [0; 32]
         || articulation_layer_fingerprint == [0; 32]
-        || !positive.is_for(geometry, fixed_face, schedule, closure, thickness)
+        || !positive.is_for(geometry, audit, fixed_face, schedule, closure, thickness)
         || !layer.is_for(geometry, source, schedule, closure, thickness)
     {
         return None;
@@ -1658,7 +1672,7 @@ mod tests {
                                     denominator: 1,
                                 },
                                 RationalCoefficientV1 {
-                                    numerator: i64::from(moves),
+                                    numerator: 0,
                                     denominator: 1,
                                 },
                             ],
@@ -2010,7 +2024,7 @@ mod tests {
                                     denominator: 1,
                                 },
                                 RationalCoefficientV1 {
-                                    numerator: i64::from(moves),
+                                    numerator: 0,
                                     denominator: 1,
                                 },
                             ],

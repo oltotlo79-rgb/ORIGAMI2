@@ -87,6 +87,7 @@ pub fn diagnose_collective_hinge_path_with_pair_cache_v1<'a>(
         paper_thickness_mm,
         limits,
         Some(&cache),
+        &crate::CooperativeOperationControlV1::unbounded(),
     )
 }
 
@@ -348,6 +349,7 @@ const fn map_pair_cache_evidence_error_v1(
 ) -> StackedFoldPathDiagnosticErrorV1 {
     match error {
         ProofCacheErrorV1::Cancelled => StackedFoldPathDiagnosticErrorV1::Cancelled,
+        ProofCacheErrorV1::DeadlineExceeded => StackedFoldPathDiagnosticErrorV1::DeadlineExceeded,
         _ => StackedFoldPathDiagnosticErrorV1::ProofCacheUnavailable,
     }
 }
@@ -361,6 +363,9 @@ const fn map_pair_cache_runtime_error_v1(
         }
         ProofCacheRuntimeErrorV1::Cache(ProofCacheErrorV1::Cancelled) => {
             StackedFoldPathDiagnosticErrorV1::Cancelled
+        }
+        ProofCacheRuntimeErrorV1::Cache(ProofCacheErrorV1::DeadlineExceeded) => {
+            StackedFoldPathDiagnosticErrorV1::DeadlineExceeded
         }
         _ => StackedFoldPathDiagnosticErrorV1::ProofCacheUnavailable,
     }
@@ -401,6 +406,20 @@ mod tests {
                 0x2a, 0x87, 0x28, 0x8a,
             ],
             "the issuer binds its V2 model ID and deterministic transcendental model"
+        );
+    }
+
+    #[test]
+    fn proof_cache_deadlines_remain_typed_at_both_error_boundaries() {
+        assert_eq!(
+            map_pair_cache_evidence_error_v1(ProofCacheErrorV1::DeadlineExceeded),
+            StackedFoldPathDiagnosticErrorV1::DeadlineExceeded
+        );
+        assert_eq!(
+            map_pair_cache_runtime_error_v1(ProofCacheRuntimeErrorV1::Cache(
+                ProofCacheErrorV1::DeadlineExceeded
+            )),
+            StackedFoldPathDiagnosticErrorV1::DeadlineExceeded
         );
     }
 }

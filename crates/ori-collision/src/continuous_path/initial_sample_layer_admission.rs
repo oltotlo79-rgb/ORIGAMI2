@@ -17,12 +17,14 @@ use ori_foldability::{ExactAffineTransform, ExactPointValue, ExactRationalValue,
 use ori_kinematics::{MaterialTreeKinematicsModel, MaterialTreePose};
 
 use crate::{
-    IntersectionEvidenceV2, NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1,
-    NonFlatCellTransportErrorV1, NonFlatFacePairOrderStructuralV1,
-    NonFlatFoldedFaceStructuralRefV1, NonFlatLayerOrderStructuralSourceV1,
-    NonFlatOverlapCellStructuralRefV1, StaticCollisionDiagnosticSnapshot, StaticCollisionLimits,
-    StaticCollisionPairDisposition, TopologyRelation, diagnose_static_collision_geometry,
-    validate_non_flat_layer_order_structure_v1,
+    CooperativeOperationControlV1, CooperativeOperationStopV1, IntersectionEvidenceV2,
+    NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1, NonFlatCellTransportErrorV1,
+    NonFlatFacePairOrderStructuralV1, NonFlatFoldedFaceStructuralRefV1,
+    NonFlatLayerOrderStructuralSourceV1, NonFlatOverlapCellStructuralRefV1,
+    StaticCollisionDiagnosticSnapshot, StaticCollisionError, StaticCollisionLimits,
+    StaticCollisionPairDisposition, TopologyRelation,
+    diagnose_static_collision_geometry_with_control_v1,
+    validate_non_flat_layer_order_structure_with_control_v1,
 };
 
 use super::StackedFoldPathDiagnosticErrorV1;
@@ -92,9 +94,10 @@ impl InitialLayerExactPayloadPreflightV1 {
         Ok(())
     }
 
-    fn charge_transform(
+    fn charge_transform_with_control(
         &mut self,
         transform: &ExactAffineTransform,
+        control: &CooperativeOperationControlV1<'_>,
     ) -> Result<(), StackedFoldPathDiagnosticErrorV1> {
         for value in [
             &transform.m00,
@@ -104,20 +107,40 @@ impl InitialLayerExactPayloadPreflightV1 {
             &transform.tx,
             &transform.ty,
         ] {
+            initial_layer_checkpoint_v1(control)?;
             self.charge_rational(value)?;
         }
         Ok(())
     }
 
+    #[cfg(test)]
+    fn charge_transform(
+        &mut self,
+        transform: &ExactAffineTransform,
+    ) -> Result<(), StackedFoldPathDiagnosticErrorV1> {
+        self.charge_transform_with_control(transform, &CooperativeOperationControlV1::unbounded())
+    }
+
+    fn charge_boundary_with_control(
+        &mut self,
+        boundary: &[ExactPointValue],
+        control: &CooperativeOperationControlV1<'_>,
+    ) -> Result<(), StackedFoldPathDiagnosticErrorV1> {
+        for point in boundary {
+            initial_layer_checkpoint_v1(control)?;
+            self.charge_rational(&point.x)?;
+            initial_layer_checkpoint_v1(control)?;
+            self.charge_rational(&point.y)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn charge_boundary(
         &mut self,
         boundary: &[ExactPointValue],
     ) -> Result<(), StackedFoldPathDiagnosticErrorV1> {
-        for point in boundary {
-            self.charge_rational(&point.x)?;
-            self.charge_rational(&point.y)?;
-        }
-        Ok(())
+        self.charge_boundary_with_control(boundary, &CooperativeOperationControlV1::unbounded())
     }
 }
 
@@ -173,6 +196,7 @@ struct InitialSampleLayerAdmissionProofV1 {
     initial_static_snapshot: StaticCollisionDiagnosticSnapshot,
     initial_flat_pairs: Vec<InitialFlatPairAdmissionV1>,
     persistent_flat_hinges: Vec<PersistentFlatHingeAdmissionV1>,
+    directed_orders: Vec<NonFlatFacePairOrderStructuralV1>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +210,14 @@ struct PersistentFlatHingeAdmissionV1 {
     first_face: FaceId,
     second_face: FaceId,
     hinge: EdgeId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct StationaryFlatStackTransportBindingV1 {
+    pub(super) hinge: EdgeId,
+    pub(super) pair: [FaceId; 2],
+    pub(super) lower_face: FaceId,
+    pub(super) upper_face: FaceId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +371,7 @@ pub(super) fn diagnose_nondirect_positive_flat_stack_for_test_v1(
 /// and remains bit-exact 180 degrees.
 pub struct NativeStackedFoldInitialSampleLayerAdmissionV1<T> {
     proof: Arc<InitialSampleLayerAdmissionProofV1>,
+    issuer: Arc<()>,
     source_type: PhantomData<fn() -> T>,
 }
 
@@ -346,9 +379,82 @@ impl<T> Clone for NativeStackedFoldInitialSampleLayerAdmissionV1<T> {
     fn clone(&self) -> Self {
         Self {
             proof: Arc::clone(&self.proof),
+            issuer: Arc::clone(&self.issuer),
             source_type: PhantomData,
         }
     }
+}
+
+pub(super) fn retain_initial_sample_layer_admission_issuer_v1<T>(
+    admission: &NativeStackedFoldInitialSampleLayerAdmissionV1<T>,
+) -> Arc<()> {
+    Arc::clone(&admission.issuer)
+}
+
+pub(super) fn initial_sample_layer_admission_has_issuer_v1<T>(
+    issuer: &Arc<()>,
+    admission: &NativeStackedFoldInitialSampleLayerAdmissionV1<T>,
+) -> bool {
+    Arc::ptr_eq(issuer, &admission.issuer)
+}
+
+/// Binds the directed source order of exactly two authenticated stationary
+/// flat-stack hinges without exposing the admission's retained payload.
+///
+/// The returned order is source-authenticated data, not a continuous proof.
+/// A caller must independently prove that each direct pair has one constant
+/// relative material transform over its complete path.
+pub(super) fn stationary_flat_stack_transport_bindings_v1<T>(
+    admission: &NativeStackedFoldInitialSampleLayerAdmissionV1<T>,
+    model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+    expected: &[(EdgeId, [FaceId; 2]); 2],
+) -> Option<[StationaryFlatStackTransportBindingV1; 2]> {
+    if admission.proof.model != *model
+        || !model.owns_pose(source_pose)
+        || !admission.proof.pose.same_instance(source_pose)
+        || admission.proof.persistent_flat_hinges.len() != 2
+        || admission.proof.directed_orders.len() != 2
+    {
+        return None;
+    }
+    let bind = |(hinge, pair): (EdgeId, [FaceId; 2])| {
+        let (first_face, second_face) = initial_layer_canonical_pair_v1(pair[0], pair[1]);
+        let authenticated_hinge = admission
+            .proof
+            .persistent_flat_hinges
+            .iter()
+            .find(|entry| {
+                entry.first_face == first_face
+                    && entry.second_face == second_face
+                    && entry.hinge == hinge
+            })?;
+        let directed = admission.proof.directed_orders.iter().find(|order| {
+            initial_layer_canonical_pair_v1(order.lower_face, order.upper_face)
+                == (
+                    authenticated_hinge.first_face,
+                    authenticated_hinge.second_face,
+                )
+        })?;
+        (directed.lower_face != directed.upper_face).then_some(
+            StationaryFlatStackTransportBindingV1 {
+                hinge,
+                pair: [first_face, second_face],
+                lower_face: directed.lower_face,
+                upper_face: directed.upper_face,
+            },
+        )
+    };
+    let bindings = [bind(expected[0])?, bind(expected[1])?];
+    (bindings[0].pair != bindings[1].pair
+        && bindings[0].hinge != bindings[1].hinge
+        && admission.proof.persistent_flat_hinges.iter().all(|entry| {
+            bindings.iter().any(|binding| {
+                binding.hinge == entry.hinge
+                    && binding.pair == [entry.first_face, entry.second_face]
+            })
+        }))
+    .then_some(bindings)
 }
 
 impl<T> NativeStackedFoldInitialSampleLayerAdmissionV1<T> {
@@ -418,7 +524,7 @@ pub(super) fn sampled_layer_admission_matches_snapshot_v1<T>(
         return false;
     }
     if sample_index == 0 {
-        return sample_pose.hinge_angles() == initial_pose.hinge_angles()
+        return initial_layer_zero_sample_pose_matches_v1(sample_pose, initial_pose)
             && initial_sample_layer_admission_matches_snapshot_v1(
                 admission,
                 model,
@@ -498,6 +604,14 @@ pub(super) fn sampled_layer_admission_matches_snapshot_v1<T>(
         let decision = diagnose_persistent_flat_stack_sample_observation_v1(observation);
         decision.is_ok()
     })
+}
+
+fn initial_layer_zero_sample_pose_matches_v1(
+    sample_pose: &MaterialTreePose,
+    initial_pose: &MaterialTreePose,
+) -> bool {
+    sample_pose.same_instance(initial_pose)
+        && sample_pose.hinge_angles() == initial_pose.hinge_angles()
 }
 
 fn direct_shared_hinge_v1(
@@ -656,10 +770,12 @@ fn capture_initial_layer_source_v1<'a, T>(
     model_faces: usize,
     pose_hinges: usize,
     limits: StaticCollisionLimits,
+    control: &CooperativeOperationControlV1<'_>,
 ) -> Result<(CapturedInitialLayerSourceV1<'a>, usize), StackedFoldPathDiagnosticErrorV1>
 where
     T: StackedFoldInitialLayerOrderSourceV1,
 {
+    initial_layer_checkpoint_v1(control)?;
     let counts = InitialLayerAdmissionCountsV1 {
         model_faces,
         material_faces: source.material_face_count(),
@@ -670,6 +786,7 @@ where
         pose_hinges,
         source_hinges: source.hinge_angle_count_v1(),
     };
+    initial_layer_checkpoint_v1(control)?;
     let expected_pairs = preflight_initial_layer_admission_counts_v1(counts, limits)?;
     let mut exact_payload = InitialLayerExactPayloadPreflightV1::new(limits);
 
@@ -685,6 +802,7 @@ where
     initial_layer_resource_limit_v1(hinge_angles.try_reserve_exact(counts.source_hinges))?;
 
     for index in 0..counts.material_faces {
+        initial_layer_checkpoint_v1(control)?;
         material_faces.push(
             source
                 .material_face_id(index)
@@ -692,10 +810,11 @@ where
         );
     }
     for index in 0..counts.folded_faces {
+        initial_layer_checkpoint_v1(control)?;
         let folded = source
             .folded_face(index)
             .ok_or(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable)?;
-        exact_payload.charge_transform(folded.source_to_plane)?;
+        exact_payload.charge_transform_with_control(folded.source_to_plane, control)?;
         folded_faces.push(folded);
     }
 
@@ -707,6 +826,7 @@ where
         .min(MAX_STACKED_FOLD_INITIAL_LAYER_TOTAL_BOUNDARY_POINTS_V1);
     let mut total = 0_usize;
     for index in 0..counts.overlap_cells {
+        initial_layer_checkpoint_v1(control)?;
         let cell = source
             .overlap_cell(index)
             .ok_or(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable)?;
@@ -722,10 +842,11 @@ where
         if total > maximum_total {
             return Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit);
         }
-        exact_payload.charge_boundary(cell.exact_boundary)?;
+        exact_payload.charge_boundary_with_control(cell.exact_boundary, control)?;
         overlap_cells.push(cell);
     }
     for index in 0..counts.directed_orders {
+        initial_layer_checkpoint_v1(control)?;
         directed_orders.push(
             source
                 .face_pair_order(index)
@@ -733,6 +854,7 @@ where
         );
     }
     for index in 0..counts.source_hinges {
+        initial_layer_checkpoint_v1(control)?;
         hinge_angles.push(
             source
                 .hinge_angle_v1(index)
@@ -740,6 +862,11 @@ where
         );
     }
 
+    initial_layer_checkpoint_v1(control)?;
+    let fixed_face = source.fixed_face_v1();
+    initial_layer_checkpoint_v1(control)?;
+    let paper_thickness_bits = source.paper_thickness_bits_v1();
+    initial_layer_checkpoint_v1(control)?;
     Ok((
         CapturedInitialLayerSourceV1 {
             material_faces,
@@ -747,9 +874,9 @@ where
             overlap_cells,
             directed_orders,
             tested_pairs: counts.tested_pairs,
-            fixed_face: source.fixed_face_v1(),
+            fixed_face,
             hinge_angles,
-            paper_thickness_bits: source.paper_thickness_bits_v1(),
+            paper_thickness_bits,
         },
         expected_pairs,
     ))
@@ -766,6 +893,7 @@ fn initial_layer_canonical_pair_v1(first: FaceId, second: FaceId) -> (FaceId, Fa
 fn validate_initial_layer_order_dag_v1(
     face_count: usize,
     directed_edges: &[(usize, usize)],
+    control: &CooperativeOperationControlV1<'_>,
 ) -> Result<(), StackedFoldPathDiagnosticErrorV1> {
     if directed_edges.len() > NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1 {
         return Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit);
@@ -779,6 +907,7 @@ fn validate_initial_layer_order_dag_v1(
     outdegree.resize(face_count, 0);
     let maximum_outdegree = face_count.saturating_sub(1);
     for &(lower, upper) in directed_edges {
+        initial_layer_checkpoint_v1(control)?;
         if lower >= face_count || upper >= face_count || lower == upper {
             return initial_layer_unavailable_v1();
         }
@@ -797,27 +926,32 @@ fn validate_initial_layer_order_dag_v1(
     let mut outgoing = Vec::<Vec<usize>>::new();
     initial_layer_resource_limit_v1(outgoing.try_reserve_exact(face_count))?;
     for degree in &outdegree {
+        initial_layer_checkpoint_v1(control)?;
         let mut next_faces = Vec::new();
         initial_layer_resource_limit_v1(next_faces.try_reserve_exact(*degree))?;
         outgoing.push(next_faces);
     }
     for &(lower, upper) in directed_edges {
+        initial_layer_checkpoint_v1(control)?;
         outgoing[lower].push(upper);
     }
 
     let mut queue = VecDeque::new();
     initial_layer_resource_limit_v1(queue.try_reserve(face_count))?;
     for (face, degree) in indegree.iter().copied().enumerate() {
+        initial_layer_checkpoint_v1(control)?;
         if degree == 0 {
             queue.push_back(face);
         }
     }
     let mut visited = 0_usize;
     while let Some(face) = queue.pop_front() {
+        initial_layer_checkpoint_v1(control)?;
         visited = visited
             .checked_add(1)
             .ok_or(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)?;
         for &next_face in &outgoing[face] {
+            initial_layer_checkpoint_v1(control)?;
             let next_degree = indegree[next_face]
                 .checked_sub(1)
                 .ok_or(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable)?;
@@ -837,6 +971,10 @@ fn map_structural_validation_error_v1(
     error: NonFlatCellTransportErrorV1,
 ) -> StackedFoldPathDiagnosticErrorV1 {
     match error {
+        NonFlatCellTransportErrorV1::Cancelled => StackedFoldPathDiagnosticErrorV1::Cancelled,
+        NonFlatCellTransportErrorV1::DeadlineExceeded => {
+            StackedFoldPathDiagnosticErrorV1::DeadlineExceeded
+        }
         NonFlatCellTransportErrorV1::ResourceLimit => {
             StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit
         }
@@ -845,6 +983,29 @@ fn map_structural_validation_error_v1(
         | NonFlatCellTransportErrorV1::Crossing => {
             StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable
         }
+    }
+}
+
+fn initial_layer_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), StackedFoldPathDiagnosticErrorV1> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => StackedFoldPathDiagnosticErrorV1::Cancelled,
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            StackedFoldPathDiagnosticErrorV1::DeadlineExceeded
+        }
+    })
+}
+
+fn map_initial_layer_static_error_v1(
+    error: StaticCollisionError,
+) -> StackedFoldPathDiagnosticErrorV1 {
+    match error {
+        StaticCollisionError::Cancelled => StackedFoldPathDiagnosticErrorV1::Cancelled,
+        StaticCollisionError::DeadlineExceeded => {
+            StackedFoldPathDiagnosticErrorV1::DeadlineExceeded
+        }
+        _ => StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable,
     }
 }
 
@@ -866,6 +1027,31 @@ pub fn prepare_stacked_fold_initial_sample_layer_admission_v1<T>(
 where
     T: StackedFoldInitialLayerOrderSourceV1,
 {
+    prepare_stacked_fold_initial_sample_layer_admission_with_control_v1(
+        model,
+        initial_pose,
+        paper_thickness_mm,
+        static_limits,
+        source,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+/// Controlled form of [`prepare_stacked_fold_initial_sample_layer_admission_v1`].
+/// A cancellation or deadline is returned before the opaque admission is
+/// constructed, so no partial source capture or proof can be published.
+pub fn prepare_stacked_fold_initial_sample_layer_admission_with_control_v1<T>(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    static_limits: StaticCollisionLimits,
+    source: &T,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<NativeStackedFoldInitialSampleLayerAdmissionV1<T>, StackedFoldPathDiagnosticErrorV1>
+where
+    T: StackedFoldInitialLayerOrderSourceV1,
+{
+    initial_layer_checkpoint_v1(control)?;
     let zero_bits = 0.0_f64.to_bits();
     if paper_thickness_mm.to_bits() != zero_bits {
         return initial_layer_unavailable_v1();
@@ -873,20 +1059,24 @@ where
     model
         .bind_pose(initial_pose)
         .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
+    initial_layer_checkpoint_v1(control)?;
 
     let (captured, expected_pairs) = capture_initial_layer_source_v1(
         source,
         model.face_ids().len(),
         initial_pose.hinge_angles().len(),
         static_limits,
+        control,
     )?;
+    initial_layer_checkpoint_v1(control)?;
     if captured.paper_thickness_bits != zero_bits
         || captured.paper_thickness_bits != paper_thickness_mm.to_bits()
     {
         return initial_layer_unavailable_v1();
     }
-    validate_non_flat_layer_order_structure_v1(&captured)
+    validate_non_flat_layer_order_structure_with_control_v1(&captured, control)
         .map_err(map_structural_validation_error_v1)?;
+    initial_layer_checkpoint_v1(control)?;
     if captured.tested_pairs != expected_pairs {
         return initial_layer_unavailable_v1();
     }
@@ -894,6 +1084,7 @@ where
     let mut face_index = HashMap::<FaceId, usize>::new();
     initial_layer_resource_limit_v1(face_index.try_reserve(model.face_ids().len()))?;
     for (index, face) in model.face_ids().iter().copied().enumerate() {
+        initial_layer_checkpoint_v1(control)?;
         if face_index.insert(face, index).is_some() {
             return initial_layer_unavailable_v1();
         }
@@ -904,6 +1095,7 @@ where
     )?;
     source_faces_seen.resize(captured.material_faces.len(), false);
     for face in &captured.material_faces {
+        initial_layer_checkpoint_v1(control)?;
         let source_index = face_index
             .get(face)
             .copied()
@@ -924,6 +1116,7 @@ where
         .iter()
         .zip(&captured.hinge_angles)
     {
+        initial_layer_checkpoint_v1(control)?;
         let bits = angle.angle_degrees().to_bits();
         if !matches!(bits, value if value == zero_bits || value == 180.0_f64.to_bits())
             || *captured_angle != (angle.edge(), bits)
@@ -939,6 +1132,7 @@ where
         directed_edges.try_reserve_exact(captured.directed_orders.len()),
     )?;
     for order in captured.directed_orders.iter().copied() {
+        initial_layer_checkpoint_v1(control)?;
         if order.lower_face == order.upper_face {
             return initial_layer_unavailable_v1();
         }
@@ -956,11 +1150,17 @@ where
         }
         directed_edges.push((lower, upper));
     }
-    validate_initial_layer_order_dag_v1(model.face_ids().len(), &directed_edges)?;
+    validate_initial_layer_order_dag_v1(model.face_ids().len(), &directed_edges, control)?;
 
-    let initial_static_snapshot =
-        diagnose_static_collision_geometry(model, initial_pose, paper_thickness_mm, static_limits)
-            .map_err(|_| StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable)?;
+    initial_layer_checkpoint_v1(control)?;
+    let initial_static_snapshot = diagnose_static_collision_geometry_with_control_v1(
+        model,
+        initial_pose,
+        paper_thickness_mm,
+        static_limits,
+        control,
+    )
+    .map_err(map_initial_layer_static_error_v1)?;
     if initial_static_snapshot.expected_unordered_face_pairs() != expected_pairs
         || initial_static_snapshot.pairs().len() != expected_pairs
         || initial_static_snapshot.penetrating_pairs() != 0
@@ -976,6 +1176,7 @@ where
     let mut persistent_flat_hinges = Vec::new();
     initial_layer_resource_limit_v1(persistent_flat_hinges.try_reserve_exact(ordered_pairs.len()))?;
     for pair in initial_static_snapshot.pairs() {
+        initial_layer_checkpoint_v1(control)?;
         if pair.first_face() == pair.second_face()
             || !face_index.contains_key(&pair.first_face())
             || !face_index.contains_key(&pair.second_face())
@@ -1026,31 +1227,43 @@ where
     {
         return initial_layer_unavailable_v1();
     }
+    initial_layer_checkpoint_v1(control)?;
     initial_flat_pairs.sort_unstable_by_key(|entry| {
         (
             entry.first_face.canonical_bytes(),
             entry.second_face.canonical_bytes(),
         )
     });
-    if initial_flat_pairs.windows(2).any(|entries| {
-        entries[0].first_face == entries[1].first_face
+    for entries in initial_flat_pairs.windows(2) {
+        initial_layer_checkpoint_v1(control)?;
+        if entries[0].first_face == entries[1].first_face
             && entries[0].second_face == entries[1].second_face
-    }) {
-        return initial_layer_unavailable_v1();
+        {
+            return initial_layer_unavailable_v1();
+        }
     }
+    initial_layer_checkpoint_v1(control)?;
     persistent_flat_hinges.sort_unstable_by_key(|entry| {
         (
             entry.first_face.canonical_bytes(),
             entry.second_face.canonical_bytes(),
         )
     });
-    if persistent_flat_hinges.windows(2).any(|entries| {
-        entries[0].first_face == entries[1].first_face
+    for entries in persistent_flat_hinges.windows(2) {
+        initial_layer_checkpoint_v1(control)?;
+        if entries[0].first_face == entries[1].first_face
             && entries[0].second_face == entries[1].second_face
-    }) {
-        return initial_layer_unavailable_v1();
+        {
+            return initial_layer_unavailable_v1();
+        }
     }
+    let mut directed_orders = captured.directed_orders;
+    directed_orders.sort_unstable_by_key(|order| {
+        let pair = initial_layer_canonical_pair_v1(order.lower_face, order.upper_face);
+        (pair.0.canonical_bytes(), pair.1.canonical_bytes())
+    });
 
+    initial_layer_checkpoint_v1(control)?;
     Ok(NativeStackedFoldInitialSampleLayerAdmissionV1 {
         proof: Arc::new(InitialSampleLayerAdmissionProofV1 {
             model: model.clone(),
@@ -1059,512 +1272,12 @@ where
             initial_static_snapshot,
             initial_flat_pairs,
             persistent_flat_hinges,
+            directed_orders,
         }),
+        issuer: Arc::new(()),
         source_type: PhantomData,
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use std::cell::Cell;
-
-    use super::*;
-
-    struct ReadOnceSourceV1 {
-        face: FaceId,
-        transform: ExactAffineTransform,
-        calls: Cell<u16>,
-    }
-
-    impl ReadOnceSourceV1 {
-        fn observe(&self, bit: u16) {
-            let calls = self.calls.get();
-            assert_eq!(calls & bit, 0, "source observation was read twice");
-            self.calls.set(calls | bit);
-        }
-    }
-
-    impl NonFlatLayerOrderStructuralSourceV1 for ReadOnceSourceV1 {
-        fn material_face_count(&self) -> usize {
-            self.observe(1 << 0);
-            1
-        }
-
-        fn material_face_id(&self, index: usize) -> Option<FaceId> {
-            self.observe(1 << 1);
-            (index == 0).then_some(self.face)
-        }
-
-        fn folded_face_count(&self) -> usize {
-            self.observe(1 << 2);
-            1
-        }
-
-        fn folded_face(&self, index: usize) -> Option<NonFlatFoldedFaceStructuralRefV1<'_>> {
-            self.observe(1 << 3);
-            (index == 0).then_some(NonFlatFoldedFaceStructuralRefV1 {
-                face_id: self.face,
-                dropped_world_axis: 2,
-                source_to_plane: &self.transform,
-            })
-        }
-
-        fn overlap_cell_count(&self) -> usize {
-            self.observe(1 << 4);
-            0
-        }
-
-        fn overlap_cell(&self, _index: usize) -> Option<NonFlatOverlapCellStructuralRefV1<'_>> {
-            panic!("zero declared cells must not be read")
-        }
-
-        fn face_pair_order_count(&self) -> usize {
-            self.observe(1 << 5);
-            0
-        }
-
-        fn face_pair_order(&self, _index: usize) -> Option<NonFlatFacePairOrderStructuralV1> {
-            panic!("zero declared orders must not be read")
-        }
-    }
-
-    impl StackedFoldInitialLayerOrderSourceV1 for ReadOnceSourceV1 {
-        fn tested_face_pairs_v1(&self) -> usize {
-            self.observe(1 << 6);
-            0
-        }
-
-        fn fixed_face_v1(&self) -> Option<FaceId> {
-            self.observe(1 << 7);
-            Some(self.face)
-        }
-
-        fn hinge_angle_count_v1(&self) -> usize {
-            self.observe(1 << 8);
-            0
-        }
-
-        fn hinge_angle_v1(&self, _index: usize) -> Option<(EdgeId, u64)> {
-            panic!("zero declared hinges must not be read")
-        }
-
-        fn paper_thickness_bits_v1(&self) -> u64 {
-            self.observe(1 << 9);
-            0.0_f64.to_bits()
-        }
-    }
-
-    fn exact_integer_v1(value: u8) -> ExactRationalValue {
-        ExactRationalValue {
-            sign: if value == 0 {
-                ExactSign::Zero
-            } else {
-                ExactSign::Positive
-            },
-            numerator_magnitude_be: (value != 0).then_some(vec![value]).unwrap_or_default(),
-            denominator_be: vec![1],
-        }
-    }
-
-    fn exact_identity_v1() -> ExactAffineTransform {
-        ExactAffineTransform {
-            m00: exact_integer_v1(1),
-            m01: exact_integer_v1(0),
-            m10: exact_integer_v1(0),
-            m11: exact_integer_v1(1),
-            tx: exact_integer_v1(0),
-            ty: exact_integer_v1(0),
-        }
-    }
-
-    fn bounded_counts_v1() -> InitialLayerAdmissionCountsV1 {
-        InitialLayerAdmissionCountsV1 {
-            model_faces: 3,
-            material_faces: 3,
-            folded_faces: 3,
-            overlap_cells: 1,
-            directed_orders: 1,
-            tested_pairs: 3,
-            pose_hinges: 2,
-            source_hinges: 2,
-        }
-    }
-
-    fn exact_payload_tracker_v1(
-        total_bytes: usize,
-        total_byte_limit: usize,
-        max_integer_bytes: usize,
-    ) -> InitialLayerExactPayloadPreflightV1 {
-        InitialLayerExactPayloadPreflightV1 {
-            total_bytes,
-            total_byte_limit,
-            max_integer_bits: max_integer_bytes.saturating_mul(BITS_PER_BYTE_V1),
-            max_integer_bytes,
-        }
-    }
-
-    fn valid_positive_sample_observation_v1(
-        pair: (FaceId, FaceId),
-    ) -> PersistentFlatStackSampleObservationV1 {
-        PersistentFlatStackSampleObservationV1 {
-            pair,
-            complete_pair_scan: true,
-            penetration_free: true,
-            authority_pair_authenticated: true,
-            direct_shared_hinge_authenticated: true,
-            hinge_is_stationary: true,
-            initial_hinge_angle_bits: Some(180.0_f64.to_bits()),
-            current_hinge_angle_bits: Some(180.0_f64.to_bits()),
-            topology: TopologyRelation::SharedHingeEdge,
-            evidence: IntersectionEvidenceV2::SharedFeatureFlatStack,
-            disposition: StaticCollisionPairDisposition::Indeterminate,
-        }
-    }
-
-    #[test]
-    fn positive_sample_persistent_flat_stack_rejects_each_failed_strict_condition() {
-        let valid = valid_positive_sample_observation_v1((FaceId::new(), FaceId::new()));
-        assert!(persistent_flat_stack_sample_observation_is_admissible_v1(
-            valid
-        ));
-        let invalid = [
-            PersistentFlatStackSampleObservationV1 {
-                complete_pair_scan: false,
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                penetration_free: false,
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                authority_pair_authenticated: false,
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                direct_shared_hinge_authenticated: false,
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                hinge_is_stationary: false,
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                initial_hinge_angle_bits: Some(180.0_f64.to_bits() - 1),
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                current_hinge_angle_bits: Some(180.0_f64.to_bits() - 1),
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                topology: TopologyRelation::SharedVertex,
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                evidence: IntersectionEvidenceV2::Indeterminate,
-                ..valid
-            },
-            PersistentFlatStackSampleObservationV1 {
-                disposition: StaticCollisionPairDisposition::Penetrating,
-                ..valid
-            },
-        ];
-        for observation in invalid {
-            assert!(
-                !persistent_flat_stack_sample_observation_is_admissible_v1(observation),
-                "every strict positive-sample condition is independently mandatory: \
-                 {observation:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn nondirect_source_ordered_flat_pair_is_initial_only_and_reports_positive_reason() {
-        // A current valid Tree cannot produce this static row: shared-hinge
-        // flat-stack evidence also supplies one direct Tree hinge. This pure
-        // boundary regression deliberately preserves the defensive behavior
-        // if a future static classifier broadens that evidence class.
-        let first = FaceId::new();
-        let second = FaceId::new();
-        let expected_pair = initial_layer_canonical_pair_v1(first, second);
-        let initial = classify_initial_layer_pair_admission_v1(
-            (second, first),
-            true,
-            StaticCollisionPairDisposition::Indeterminate,
-            IntersectionEvidenceV2::SharedFeatureFlatStack,
-            None,
-            None,
-        );
-        assert_eq!(initial.pair, expected_pair);
-        assert_eq!(
-            initial.kind,
-            InitialLayerPairAdmissionKindV1::InitialOnlyFlatStack
-        );
-
-        let rejection =
-            diagnose_nondirect_positive_flat_stack_for_test_v1((second, first)).unwrap_err();
-        assert_eq!(rejection.pair, expected_pair);
-        assert_eq!(
-            rejection.reason,
-            PersistentFlatStackSampleRejectionReasonV1::MissingDirectSharedHinge
-        );
-    }
-
-    #[test]
-    fn exact_payload_byte_limits_are_inclusive_and_fail_one_over() {
-        let one = exact_integer_v1(1);
-        let zero = exact_integer_v1(0);
-        let hard_limit = ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES;
-
-        let mut at_hard_limit = exact_payload_tracker_v1(hard_limit - 1, hard_limit, 1);
-        assert_eq!(at_hard_limit.charge_rational(&zero), Ok(()));
-        assert_eq!(at_hard_limit.total_bytes, hard_limit);
-        let mut one_over_hard = exact_payload_tracker_v1(hard_limit, hard_limit, 1);
-        assert_eq!(
-            one_over_hard.charge_rational(&zero),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        );
-
-        let limits = StaticCollisionLimits {
-            max_rational_input_bits: 8,
-            max_total_rational_input_storage_bits: 16,
-            ..StaticCollisionLimits::default()
-        };
-        let mut at_limits_cap = InitialLayerExactPayloadPreflightV1::new(limits);
-        assert_eq!(at_limits_cap.total_byte_limit, 2);
-        assert_eq!(at_limits_cap.charge_rational(&one), Ok(()));
-        assert_eq!(at_limits_cap.total_bytes, 2);
-        assert_eq!(
-            at_limits_cap.charge_rational(&zero),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        );
-    }
-
-    #[test]
-    fn exact_payload_overflow_and_oversized_integer_fail_before_conversion() {
-        let zero = exact_integer_v1(0);
-        let mut overflow = exact_payload_tracker_v1(usize::MAX, usize::MAX, 1);
-        assert_eq!(
-            overflow.charge_rational(&zero),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        );
-
-        let limits = StaticCollisionLimits::default();
-        let mut oversized = InitialLayerExactPayloadPreflightV1::new(limits);
-        let huge = ExactRationalValue {
-            sign: ExactSign::Positive,
-            numerator_magnitude_be: vec![1; oversized.max_integer_bytes + 1],
-            denominator_be: vec![1],
-        };
-        assert_eq!(
-            oversized.charge_rational(&huge),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        );
-        assert_eq!(oversized.total_bytes, 0);
-    }
-
-    #[test]
-    fn malformed_exact_slices_fail_closed_before_being_charged() {
-        let mut tracker =
-            InitialLayerExactPayloadPreflightV1::new(StaticCollisionLimits::default());
-        let malformed = [
-            ExactRationalValue {
-                denominator_be: Vec::new(),
-                ..exact_integer_v1(1)
-            },
-            ExactRationalValue {
-                denominator_be: vec![0],
-                ..exact_integer_v1(1)
-            },
-            ExactRationalValue {
-                denominator_be: vec![0, 1],
-                ..exact_integer_v1(1)
-            },
-            ExactRationalValue {
-                numerator_magnitude_be: vec![0, 0],
-                ..exact_integer_v1(0)
-            },
-            ExactRationalValue {
-                numerator_magnitude_be: vec![0],
-                denominator_be: vec![2],
-                ..exact_integer_v1(0)
-            },
-            ExactRationalValue {
-                sign: ExactSign::Zero,
-                ..exact_integer_v1(1)
-            },
-            ExactRationalValue {
-                sign: ExactSign::Positive,
-                ..exact_integer_v1(0)
-            },
-            ExactRationalValue {
-                sign: ExactSign::Positive,
-                numerator_magnitude_be: vec![0],
-                denominator_be: vec![1],
-            },
-        ];
-        for value in malformed {
-            assert_eq!(
-                tracker.charge_rational(&value),
-                Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable)
-            );
-            assert_eq!(tracker.total_bytes, 0);
-        }
-    }
-
-    #[test]
-    fn both_live_zero_numerator_encodings_are_accepted() {
-        let mut tracker =
-            InitialLayerExactPayloadPreflightV1::new(StaticCollisionLimits::default());
-        let empty_numerator = exact_integer_v1(0);
-        let single_zero_numerator = ExactRationalValue {
-            numerator_magnitude_be: vec![0],
-            ..exact_integer_v1(0)
-        };
-        assert_eq!(tracker.charge_rational(&empty_numerator), Ok(()));
-        assert_eq!(tracker.total_bytes, 1);
-        assert_eq!(tracker.charge_rational(&single_zero_numerator), Ok(()));
-        assert_eq!(tracker.total_bytes, 3);
-    }
-
-    #[test]
-    fn canonical_transform_and_exact_boundary_charge_every_component() {
-        let mut tracker =
-            InitialLayerExactPayloadPreflightV1::new(StaticCollisionLimits::default());
-        tracker
-            .charge_transform(&exact_identity_v1())
-            .expect("canonical exact transform");
-        tracker
-            .charge_boundary(&[ExactPointValue {
-                x: exact_integer_v1(1),
-                y: exact_integer_v1(0),
-            }])
-            .expect("canonical exact boundary");
-        assert_eq!(tracker.total_bytes, 11);
-    }
-
-    #[test]
-    fn initial_layer_admission_resource_preflight_is_inclusive_and_rejects_pair_one_over() {
-        let exact_limits = StaticCollisionLimits {
-            max_faces: 3,
-            max_unordered_face_pairs: 3,
-            ..StaticCollisionLimits::default()
-        };
-        assert_eq!(
-            preflight_initial_layer_admission_counts_v1(bounded_counts_v1(), exact_limits),
-            Ok(3)
-        );
-        assert_eq!(
-            preflight_initial_layer_admission_counts_v1(
-                bounded_counts_v1(),
-                StaticCollisionLimits {
-                    max_unordered_face_pairs: 2,
-                    ..exact_limits
-                },
-            ),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        );
-
-        let face_count = 318;
-        let expected_pairs = face_count * (face_count - 1) / 2;
-        assert_eq!(
-            preflight_initial_layer_admission_counts_v1(
-                InitialLayerAdmissionCountsV1 {
-                    model_faces: face_count,
-                    material_faces: face_count,
-                    folded_faces: face_count,
-                    overlap_cells: 0,
-                    directed_orders: 0,
-                    tested_pairs: expected_pairs,
-                    pose_hinges: face_count - 1,
-                    source_hinges: face_count - 1,
-                },
-                StaticCollisionLimits {
-                    max_faces: usize::MAX,
-                    max_unordered_face_pairs: usize::MAX,
-                    ..StaticCollisionLimits::default()
-                },
-            ),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        );
-        assert_eq!(
-            preflight_initial_layer_admission_counts_v1(
-                InitialLayerAdmissionCountsV1 {
-                    model_faces: usize::MAX,
-                    material_faces: 0,
-                    folded_faces: 0,
-                    overlap_cells: 0,
-                    directed_orders: 0,
-                    tested_pairs: 0,
-                    pose_hinges: 0,
-                    source_hinges: 0,
-                },
-                StaticCollisionLimits {
-                    max_faces: usize::MAX,
-                    max_unordered_face_pairs: usize::MAX,
-                    ..StaticCollisionLimits::default()
-                },
-            ),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        );
-    }
-
-    #[test]
-    fn initial_layer_admission_allocation_failure_is_fail_closed() {
-        let mut values = Vec::<u8>::new();
-        assert_eq!(
-            initial_layer_resource_limit_v1(values.try_reserve(usize::MAX)),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        );
-    }
-
-    #[test]
-    fn initial_layer_source_is_captured_once_before_validation() {
-        let face = FaceId::new();
-        let source = ReadOnceSourceV1 {
-            face,
-            transform: exact_identity_v1(),
-            calls: Cell::new(0),
-        };
-        let (captured, expected_pairs) =
-            capture_initial_layer_source_v1(&source, 1, 0, StaticCollisionLimits::default())
-                .expect("bounded one-face source snapshot");
-        assert_eq!(expected_pairs, 0);
-        assert_eq!(captured.material_faces, vec![face]);
-        assert_eq!(captured.folded_faces.len(), 1);
-        assert_eq!(captured.fixed_face, Some(face));
-        assert_eq!(source.calls.get(), (1 << 10) - 1);
-    }
-
-    #[test]
-    fn oversized_exact_source_fails_during_the_single_capture() {
-        let face = FaceId::new();
-        let mut transform = exact_identity_v1();
-        let integer_limit_bytes =
-            ori_foldability::DEFAULT_MAX_EXACT_INTEGER_BITS / BITS_PER_BYTE_V1;
-        transform.m00 = ExactRationalValue {
-            sign: ExactSign::Positive,
-            numerator_magnitude_be: vec![1; integer_limit_bytes + 1],
-            denominator_be: vec![1],
-        };
-        let source = ReadOnceSourceV1 {
-            face,
-            transform,
-            calls: Cell::new(0),
-        };
-        assert!(matches!(
-            capture_initial_layer_source_v1(
-                &source,
-                1,
-                0,
-                StaticCollisionLimits {
-                    max_rational_input_bits: usize::MAX,
-                    max_total_rational_input_storage_bits: usize::MAX,
-                    ..StaticCollisionLimits::default()
-                },
-            ),
-            Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderResourceLimit)
-        ));
-        assert_eq!(source.calls.get(), 383);
-    }
-}
+mod tests;

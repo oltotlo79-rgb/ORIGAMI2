@@ -1,4 +1,5 @@
 use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::atomic::AtomicBool,
     time::{Duration, Instant},
 };
@@ -233,6 +234,53 @@ fn proof_cache_conflicting_batch_rolls_back_atomically() {
             .expect("planned lookup")
             .is_none()
     );
+}
+
+#[test]
+fn replacement_publication_panic_never_exposes_a_partial_batch() {
+    let existing = base_fixture();
+    let mut first_key = existing.key.clone();
+    first_key.revision += 1;
+    first_key.pose_generation += 1;
+    first_key.geometry_fingerprint[0] ^= 1;
+    let first = fixture_for(first_key, 5);
+    let mut second_key = existing.key.clone();
+    second_key.revision += 2;
+    second_key.pose_generation += 2;
+    second_key.geometry_fingerprint[0] ^= 2;
+    let second = fixture_for(second_key, 6);
+    let mut cache = default_cache();
+    publish_fixture(&mut cache, &existing);
+    let storage_before = cache.logical_storage_bytes();
+
+    arm_publish_replacement_panic_for_test_v1(1);
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            let _ = cache.publish_batch_v1(
+                vec![first.candidate.clone(), second.candidate.clone()],
+                operation_control(),
+            );
+        }))
+        .is_err(),
+        "the deterministic fault must interrupt replacement construction"
+    );
+
+    assert_eq!(cache.entry_count(), 1);
+    assert_eq!(cache.logical_storage_bytes(), storage_before);
+    assert!(
+        cache
+            .lookup_v1(&existing.key, &generous_work_limits())
+            .expect("existing lookup after unwind")
+            .is_some()
+    );
+    for key in [&first.key, &second.key] {
+        assert!(
+            cache
+                .lookup_v1(key, &generous_work_limits())
+                .expect("planned lookup after unwind")
+                .is_none()
+        );
+    }
 }
 
 #[test]

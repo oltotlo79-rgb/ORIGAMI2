@@ -6,6 +6,8 @@
 //! Cached observations are opaque, non-serializable runtime values and grant
 //! no project-mutation authority.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 #[path = "proof_cache_encoding.rs"]
@@ -70,6 +72,35 @@ const CANONICAL_ID_BYTES_V1: usize = 16;
 const FINGERPRINT_BYTES_V1: usize = 32;
 const U64_BYTES_V1: usize = 8;
 const MODEL_TAG_BYTES_V1: usize = 1;
+
+#[cfg(test)]
+thread_local! {
+    static PANIC_AFTER_PUBLISH_REPLACEMENT_INSERTS_V1: Cell<Option<usize>> =
+        const { Cell::new(None) };
+}
+
+#[cfg(test)]
+fn panic_after_publish_replacement_inserts_for_test_v1(inserted_entries: usize) {
+    PANIC_AFTER_PUBLISH_REPLACEMENT_INSERTS_V1.with(|fault| {
+        let should_panic = fault.get() == Some(inserted_entries);
+        if should_panic {
+            fault.set(None);
+            panic!("injected proof-cache replacement publication panic");
+        }
+    });
+}
+
+#[cfg(test)]
+fn arm_publish_replacement_panic_for_test_v1(inserted_entries: usize) {
+    assert!(inserted_entries > 0, "the fault must follow a real insert");
+    PANIC_AFTER_PUBLISH_REPLACEMENT_INSERTS_V1.with(|fault| {
+        assert_eq!(
+            fault.replace(Some(inserted_entries)),
+            None,
+            "one replacement publication fault may be armed"
+        );
+    });
+}
 
 pub struct PersistentPairProofCacheV1 {
     limits: ProofCacheLimitsV1,
@@ -238,18 +269,32 @@ impl PersistentPairProofCacheV1 {
             planned_entries.push(PairProofCacheEntryV1::from(candidate));
         }
         control.checkpoint()?;
-        // Every fallible check has completed. The commit phase deliberately
-        // contains no cancellation point, so an observed error can never
-        // expose a partially published batch.
+        // Build the complete replacement without touching the live map. This
+        // keeps the published state unchanged if allocation or an unexpected
+        // unwind interrupts construction. The final swap is the sole commit.
+        let mut replacement_entries = self.entries.clone();
+        #[cfg(test)]
+        let mut inserted_entries = 0usize;
         for entry in planned_entries {
-            self.entries.insert(entry.key.clone(), entry);
+            let previous = replacement_entries.insert(entry.key.clone(), entry);
+            debug_assert!(
+                previous.is_none(),
+                "planned proof-cache entries were preflighted as absent"
+            );
+            #[cfg(test)]
+            {
+                inserted_entries += 1;
+                panic_after_publish_replacement_inserts_for_test_v1(inserted_entries);
+            }
         }
+        let total_entries = replacement_entries.len();
+        self.entries = replacement_entries;
         self.logical_storage_bytes = logical_storage_bytes;
         Ok(ProofCachePublishReportV1 {
             admitted_entries,
             already_present_entries,
             unproven_due_to_capacity,
-            total_entries: self.entries.len(),
+            total_entries,
             logical_storage_bytes,
             cache_operation_work,
         })

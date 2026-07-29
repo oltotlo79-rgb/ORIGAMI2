@@ -2660,6 +2660,96 @@ pub enum StackedFoldPathDiagnosticErrorV1 {
     InitialLayerOrderResourceLimit,
 }
 
+/// Opaque native evidence for one exact continuously clear Tree path.
+///
+/// Issuance and revalidation use only the general, admission-free path
+/// diagnostic. In particular, an independently admitted initial layer order
+/// cannot be converted into this certificate. The type deliberately
+/// implements neither `Clone` nor persistence traits.
+#[derive(Debug)]
+pub struct StackedFoldTreeContinuousCertificateV1 {
+    source_absolute: Vec<HingeAngle>,
+    target_absolute: Vec<HingeAngle>,
+    paper_thickness_bits: u64,
+    limits: StackedFoldPathDiagnosticLimitsV1,
+    diagnostic: StackedFoldBoundedPathDiagnosticV1,
+}
+
+impl StackedFoldTreeContinuousCertificateV1 {
+    /// Repeats the admission-free native proof for the exact saved path.
+    ///
+    /// Source and target angles, including signed zero, and paper thickness
+    /// must match bit-for-bit before the diagnostic is rerun.
+    #[must_use]
+    pub fn is_for(
+        &self,
+        model: &MaterialTreeKinematicsModel,
+        source_pose: &MaterialTreePose,
+        target_absolute: &CanonicalHingeAngles,
+        paper_thickness_mm: f64,
+    ) -> bool {
+        paper_thickness_mm.to_bits() == self.paper_thickness_bits
+            && exact_hinge_angles_match_v1(source_pose.hinge_angles(), &self.source_absolute)
+            && exact_hinge_angles_match_v1(target_absolute.as_slice(), &self.target_absolute)
+            && diagnose_collective_hinge_path_from_pose_v1(
+                model,
+                source_pose,
+                &self.source_absolute,
+                &self.target_absolute,
+                paper_thickness_mm,
+                self.limits,
+            )
+            .is_ok_and(|actual| {
+                actual == self.diagnostic
+                    && actual.continuous_clearance_certified()
+                    && actual.continuous_certificate_model_id().is_some()
+            })
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+}
+
+/// Mints opaque Tree-path evidence only after the admission-free native
+/// analytic or interval classifier certifies the complete exact path.
+pub fn certify_tree_continuous_path_from_pose_v1(
+    model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+    target_absolute: &CanonicalHingeAngles,
+    paper_thickness_mm: f64,
+    limits: StackedFoldPathDiagnosticLimitsV1,
+) -> Result<Option<StackedFoldTreeContinuousCertificateV1>, StackedFoldPathDiagnosticErrorV1> {
+    let source_absolute = source_pose.hinge_angles().to_vec();
+    let target_absolute = target_absolute.as_slice().to_vec();
+    let diagnostic = diagnose_collective_hinge_path_from_pose_v1(
+        model,
+        source_pose,
+        &source_absolute,
+        &target_absolute,
+        paper_thickness_mm,
+        limits,
+    )?;
+    Ok((diagnostic.continuous_clearance_certified()
+        && diagnostic.continuous_certificate_model_id().is_some())
+    .then_some(StackedFoldTreeContinuousCertificateV1 {
+        source_absolute,
+        target_absolute,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        limits,
+        diagnostic,
+    }))
+}
+
+fn exact_hinge_angles_match_v1(left: &[HingeAngle], right: &[HingeAngle]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.edge() == right.edge()
+                && left.angle_degrees().to_bits() == right.angle_degrees().to_bits()
+        })
+}
+
 /// Opaque positive-thickness Tree-path evidence.  It retains the complete
 /// canonical endpoints and is useful only through [`Self::is_for`], which
 /// rebinds the source pose to the supplied model and repeats the native proof.

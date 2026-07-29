@@ -104,6 +104,49 @@ fn separated_two_hinge_strip_gets_interval_clearance_certificate() {
 }
 
 #[test]
+fn opaque_tree_certificate_revalidates_only_the_exact_admission_free_path() {
+    let model = one_hinge_model();
+    let edge = model.hinges()[0].edge();
+    let source = CanonicalHingeAngles::new(vec![HingeAngle::new(edge, 0.0).unwrap()]).unwrap();
+    let source_pose = model
+        .solve(Some(model.face_ids()[0]), &source)
+        .expect("exact flat source pose");
+    let requested = CanonicalHingeAngles::new(vec![HingeAngle::new(edge, 37.0).unwrap()]).unwrap();
+    let limits = StackedFoldPathDiagnosticLimitsV1::default();
+    let certificate =
+        certify_tree_continuous_path_from_pose_v1(&model, &source_pose, &requested, 0.0, limits)
+            .expect("admission-free diagnosis")
+            .expect("single-hinge analytic certificate");
+
+    assert!(certificate.is_for(&model, &source_pose, &requested, 0.0));
+    assert!(!certificate.authorizes_project_mutation());
+
+    let target_one_ulp = CanonicalHingeAngles::new(vec![
+        HingeAngle::new(edge, f64::from_bits(37.0_f64.to_bits() + 1)).unwrap(),
+    ])
+    .unwrap();
+    assert!(!certificate.is_for(&model, &source_pose, &target_one_ulp, 0.0));
+
+    let source_one_ulp = CanonicalHingeAngles::new(vec![
+        HingeAngle::new(edge, f64::from_bits(0.0_f64.to_bits() + 1)).unwrap(),
+    ])
+    .unwrap();
+    let source_pose_one_ulp = model
+        .solve(Some(model.face_ids()[0]), &source_one_ulp)
+        .expect("one-ULP source pose");
+    assert!(!certificate.is_for(&model, &source_pose_one_ulp, &requested, 0.0));
+    assert!(!certificate.is_for(
+        &model,
+        &source_pose,
+        &requested,
+        f64::from_bits(0.0_f64.to_bits() + 1),
+    ));
+
+    let foreign_model = one_hinge_model();
+    assert!(!certificate.is_for(&foreign_model, &source_pose, &requested, 0.0));
+}
+
+#[test]
 fn canonical_sweep_matches_bruteforce_for_single_nonadjacent_pair() {
     for (model, expected) in [
         (three_hinge_strip_model(false), true),
@@ -268,4 +311,23 @@ fn near_collision_three_hinge_tree_fails_closed() {
     .unwrap();
     assert!(!result.continuous_clearance_certified());
     assert_eq!(result.safe_stop_angle_degrees(), 0.0);
+    let requested = CanonicalHingeAngles::new(
+        moving
+            .iter()
+            .map(|edge| HingeAngle::new(*edge, 10.0).unwrap())
+            .collect(),
+    )
+    .unwrap();
+    assert!(
+        certify_tree_continuous_path_from_pose_v1(
+            &model,
+            &pose,
+            &requested,
+            0.0,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .expect("bounded admission-free diagnosis")
+        .is_none(),
+        "an uncertified diagnostic must never mint typed evidence"
+    );
 }

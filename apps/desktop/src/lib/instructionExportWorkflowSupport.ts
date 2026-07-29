@@ -6,8 +6,10 @@ import {
   previewInstructionExport,
   saveInstructionExport,
 } from './coreClient.ts'
-import type { InstructionExportFormat } from './instructionExport.ts'
-import { instructionExportErrorMessage } from './instructionExport.ts'
+import {
+  instructionExportErrorMessage,
+  type InstructionExportFormat,
+} from './instructionExport.ts'
 import { localizedInstructionExportFormatLabel } from './appPresentation.ts'
 import {
   formatLocalizedText,

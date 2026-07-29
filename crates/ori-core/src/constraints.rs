@@ -2329,10 +2329,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                     ))
                     .or_default()
                     .push(record.id);
-                mirror_roles.insert(
-                    record.id.canonical_bytes(),
-                    [*first_vertex, *second_vertex],
-                );
+                mirror_roles.insert(record.id.canonical_bytes(), [*first_vertex, *second_vertex]);
                 unchecked.push(record.id);
             }
             GeometricConstraintKindV1::AngleBisector {
@@ -2875,8 +2872,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                     ConstraintId,
                 )> = None;
                 for candidate_mirror_id in mirror_ids {
-                    let [point_vertex, _] =
-                        mirror_roles[&candidate_mirror_id.canonical_bytes()];
+                    let [point_vertex, _] = mirror_roles[&candidate_mirror_id.canonical_bytes()];
                     let Some(point_id) = points_on_lines
                         .get(&(point_vertex.canonical_bytes(), key.axis))
                         .into_iter()

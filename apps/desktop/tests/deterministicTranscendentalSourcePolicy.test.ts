@@ -15,7 +15,13 @@ const runtimeOperationNames = new Set([
 ])
 const frozenKernelPath =
   'crates/ori-numeric/src/deterministic_transcendental.rs'
+const continuousPathRuntimeComparisonTestSource =
+  'crates/ori-collision/src/continuous_path/tests.rs'
+const constraintRuntimeComparisonTestSource =
+  'crates/ori-core/src/constraints/tests.rs'
 const explicitRuntimeComparisonTestSources = new Set([
+  continuousPathRuntimeComparisonTestSource,
+  constraintRuntimeComparisonTestSource,
   'crates/ori-core/src/constraint_solver_deterministic_proof_tests.rs',
   'crates/ori-core/src/editor/tests/editor_deterministic_constraint_admission_tests.rs',
 ])
@@ -419,6 +425,52 @@ test('every new production Rust source is default-denied runtime transcendental 
       `${relativePath} bypasses the default-deny frozen transcendental policy`,
     )
   }
+})
+
+test('continuous-path tests keep their sole runtime comparison inside one assertion', () => {
+  const source = readWorkspaceSource(continuousPathRuntimeComparisonTestSource)
+  const references = findForbiddenRuntimeReferences(source)
+  assert.deepEqual(
+    references.map(({ operation }) => operation),
+    ['.to_radians', '.cos'],
+  )
+
+  const referenceLines = references.map(
+    ({ index }) => source.slice(0, index).split(/\r?\n/u).length,
+  )
+  assert.equal(
+    new Set(referenceLines).size,
+    1,
+    'the explicit runtime comparison must remain confined to one assertion',
+  )
+  const assertionLine = source.split(/\r?\n/u)[referenceLines[0]! - 1]
+  assert.match(
+    assertionLine ?? '',
+    /^\s*assert!\(\(dot - angle_degrees\.to_radians\(\)\.cos\(\)\.abs\(\)\)\.abs\(\) <= 1\.0e-12\);\s*$/u,
+  )
+})
+
+test('constraint tests keep their sole runtime comparison inside one counterexample', () => {
+  const source = readWorkspaceSource(constraintRuntimeComparisonTestSource)
+  const references = findForbiddenRuntimeReferences(source)
+  assert.deepEqual(
+    references.map(({ operation }) => operation),
+    ['.hypot', '.hypot'],
+  )
+
+  const referenceLines = references.map(
+    ({ index }) => source.slice(0, index).split(/\r?\n/u).length,
+  )
+  assert.equal(
+    new Set(referenceLines).size,
+    1,
+    'the explicit runtime comparison must remain confined to one statement',
+  )
+  const comparisonLine = source.split(/\r?\n/u)[referenceLines[0]! - 1]
+  assert.match(
+    comparisonLine ?? '',
+    /^\s*let denominator = first\.0\.hypot\(first\.1\) \* second\.0\.hypot\(second\.1\);\s*$/u,
+  )
 })
 
 test('fixed-angle runtime conversion stays inside its preview-only helper', () => {

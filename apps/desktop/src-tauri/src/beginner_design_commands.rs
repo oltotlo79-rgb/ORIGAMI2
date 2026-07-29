@@ -1086,6 +1086,19 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
         .first()
         .map(|edge| edge.id)
         .unwrap_or_else(EdgeId::new);
+    let deadline_assessment = move || BeginnerGeneratedPlanAssessment {
+        kind: plan.kind,
+        expected_candidate_edge_id,
+        proof_scope: "indeterminate",
+        apply_allowed: false,
+        reason: "deadline_exceeded",
+        shape_approximation_score,
+        shape_difference_reason,
+        component_shape_comparison,
+    };
+    if std::time::Instant::now() >= deadline {
+        return deadline_assessment();
+    }
     if let Err(reason) = validate_beginner_manufacturability_v1(&plan.crease_pattern, paper) {
         return BeginnerGeneratedPlanAssessment {
             kind: plan.kind,
@@ -1311,6 +1324,9 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
                 reason = "global_indeterminate";
             }
         }
+    }
+    if std::time::Instant::now() >= deadline {
+        return deadline_assessment();
     }
     BeginnerGeneratedPlanAssessment {
         kind: plan.kind,

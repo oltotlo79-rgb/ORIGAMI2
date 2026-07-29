@@ -58,6 +58,7 @@ mod block_composition;
 mod cayley;
 mod cell_order_transport;
 mod certified_path_graph;
+mod common_articulation_clearance;
 mod continuous_layer_transport;
 mod continuous_path;
 mod cooperative_control;
@@ -73,6 +74,11 @@ mod stacked_fold_read;
 mod static_collision;
 mod static_transition_chain;
 mod zero_thickness;
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../test-support/miura_cactus.rs"]
+mod miura_cactus_test_support;
 
 pub use cayley::{
     MAX_COMPOSED_THICKNESS_HINGES_V1, NativeSingleHingeThicknessBoundaryV1,
@@ -101,13 +107,28 @@ pub use block_composition::{
     BLOCKWISE_POSITIVE_LAYER_ARITY_V1, BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1,
     BlockComposedPathAuthorityV1, BlockUnionCompletenessGapReportV1, BlockUnionCompletenessInputV1,
     BlockwiseClosureAuthorityV1, BlockwiseClosureInputV1, BlockwisePositiveLayerAuthorityV1,
-    BlockwisePositiveLayerInputV1, COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1,
-    CompleteMultiBlockPositiveLayerAuthorityV1, MULTI_BLOCK_MAX_BLOCKS_V1,
-    MULTI_BLOCK_MIN_BLOCKS_V1, MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1,
+    BlockwisePositiveLayerInputV1, COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_MODEL_ID_V1,
+    COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_MODEL_ID_V1, COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1, COMMON_ARTICULATION_POSE_MODEL_ID_V1,
+    COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1,
+    CommonArticulationBlockComposedPathAuthorityV1, CommonArticulationBlockComposedPathErrorV1,
+    CommonArticulationBlockComposedPathInputV1, CommonArticulationContinuousLayerPathAuthorityV1,
+    CommonArticulationContinuousLayerPathErrorV1, CommonArticulationContinuousLayerPathInputV1,
+    CommonArticulationContinuousLayerPathRevalidationInputV1, CommonArticulationHingeAngleBitsV1,
+    CommonArticulationPoseAuthorityV1, CommonArticulationPoseBlockRestrictionRefV1,
+    CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1, CommonArticulationPoseLimitsV1,
+    CommonArticulationPoseStopV1, CompleteMultiBlockPositiveLayerAuthorityV1,
+    MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1, MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1,
     MultiBlockClosureAuthorityV1, MultiBlockClosureInputV1, MultiBlockPositiveLayerAuthorityV1,
     MultiBlockPositiveLayerInputV1, diagnose_block_union_completeness_v1,
     issue_block_composed_path_authority_v1, issue_blockwise_closure_authority_v1,
     issue_blockwise_positive_layer_authority_v1,
+    issue_common_articulation_block_composed_path_authority_v1,
+    issue_common_articulation_block_composed_path_authority_with_control_v1,
+    issue_common_articulation_continuous_layer_path_authority_v1,
+    issue_common_articulation_continuous_layer_path_authority_with_control_v1,
+    issue_common_articulation_pose_authority_v1,
+    issue_common_articulation_pose_authority_with_control_v1,
     issue_complete_multi_block_positive_layer_authority_v1, issue_multi_block_closure_authority_v1,
     issue_multi_block_positive_layer_authority_v1, multi_block_count_supported_v1,
 };
@@ -128,6 +149,20 @@ pub use certified_path_graph::{
     certify_scheduled_cycle_transition_v1, search_certified_pose_graph_v1,
     search_certified_pose_graph_with_checkpoint_v1, search_certified_pose_graph_with_progress_v1,
 };
+pub use common_articulation_clearance::{
+    COMMON_ARTICULATION_CLEARANCE_GAP_MODEL_ID_V1, COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_CLEARANCE_MAX_CROSS_BLOCK_PAIRS_V1,
+    COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1,
+    COMMON_ARTICULATION_CLEARANCE_MAX_PAIR_CANDIDATES_V1,
+    COMMON_ARTICULATION_CLEARANCE_MAX_STORAGE_BYTES_V1, COMMON_ARTICULATION_CLEARANCE_MAX_WORK_V1,
+    COMMON_ARTICULATION_CLEARANCE_PREREQUISITE_MODEL_ID_V1, CommonArticulationClearanceErrorV1,
+    CommonArticulationClearanceGapDiagnosticV1, CommonArticulationClearanceInputV1,
+    CommonArticulationClearanceLimitsV1, CommonArticulationClearanceOutcomeV1,
+    CommonArticulationClearancePrerequisiteV1, CommonArticulationClearanceRevalidationInputV1,
+    CommonArticulationClearanceUnsupportedReasonV1, CommonArticulationCrossBlockFacePairV1,
+    issue_common_articulation_clearance_prerequisite_v1,
+    issue_common_articulation_clearance_prerequisite_with_control_v1,
+};
 pub use continuous_layer_transport::{
     CONTINUOUS_LAYER_TRANSPORT_CERTIFICATE_MODEL_ID_V1, ContinuousLayerTransportCertificateV1,
     ContinuousLayerTransportErrorV1, ContinuousLayerTransportFromPosesInputV1,
@@ -143,23 +178,25 @@ pub use continuous_path::{
     DyadicSharedVertexIntervalDiagnosticLeafV1, DyadicSharedVertexIntervalDiagnosticV1,
     DyadicSharedVertexSectorBoundaryDiagnosticV1, DyadicSharedVertexWedgeDiagnosticV1,
     DyadicSharedVertexWedgeSeparationDiagnosticV1, ExactDyadicPathIntersectionErrorV1,
+    LAYERED_FIVE_FACE_CHAIN_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     LAYERED_FOUR_FACE_CHAIN_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     LAYERED_THREE_FACE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-    LayeredFourFaceChainContinuousCertificateV1, LayeredFourFaceChainContinuousErrorV1,
-    LayeredFourFaceChainContinuousLimitsV1, LayeredThreeFaceContinuousCertificateV1,
-    LayeredThreeFaceContinuousErrorV1, LayeredThreeFaceContinuousLimitsV1,
-    MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1, MAX_DYADIC_FACE_TRANSFORM_LEAVES_V1,
-    MAX_MULTI_HINGE_UNION_GEOMETRY_HINGES_V2, MAX_MULTI_HINGE_UNION_HINGES_V2,
-    MAX_MULTI_HINGE_UNION_PAIRS_V2, MAX_MULTI_HINGE_UNION_STORAGE_BYTES_V2,
-    MAX_MULTI_HINGE_UNION_WORK_V2, MAX_MULTI_HINGES_PER_FACE_PAIR_V2,
-    MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1, MAX_STACKED_FOLD_PATH_SAMPLES_V1,
-    MULTI_HINGE_RELIEF_UNION_CERTIFICATE_MODEL_ID_V2, MULTI_HINGE_RELIEF_UNION_GAP_MODEL_ID_V2,
-    MultiHingeReliefUnionCertificateV2, MultiHingeReliefUnionCoveredPairV2,
-    MultiHingeReliefUnionErrorV2, MultiHingeReliefUnionGapReportV2, MultiHingeReliefUnionGapV2,
-    MultiHingeReliefUnionHingeGapV2, MultiHingeReliefUnionLimitsV2,
-    NativeStackedFoldInitialSampleLayerAdmissionV1, PositiveThicknessContinuousCertificateV1,
-    PositiveThicknessTreeContinuousCertificateV1, ReliefCoveredSharedHingePairV1,
-    SPLIT_HINGE_UNION_EXTERIOR_RELIEF_ASSUMPTION_MODEL_ID_V1,
+    LayeredFiveFaceChainContinuousCertificateV1, LayeredFiveFaceChainContinuousErrorV1,
+    LayeredFiveFaceChainContinuousLimitsV1, LayeredFourFaceChainContinuousCertificateV1,
+    LayeredFourFaceChainContinuousErrorV1, LayeredFourFaceChainContinuousLimitsV1,
+    LayeredThreeFaceContinuousCertificateV1, LayeredThreeFaceContinuousErrorV1,
+    LayeredThreeFaceContinuousLimitsV1, MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1,
+    MAX_DYADIC_FACE_TRANSFORM_LEAVES_V1, MAX_MULTI_HINGE_UNION_GEOMETRY_HINGES_V2,
+    MAX_MULTI_HINGE_UNION_HINGES_V2, MAX_MULTI_HINGE_UNION_PAIRS_V2,
+    MAX_MULTI_HINGE_UNION_STORAGE_BYTES_V2, MAX_MULTI_HINGE_UNION_WORK_V2,
+    MAX_MULTI_HINGES_PER_FACE_PAIR_V2, MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1,
+    MAX_STACKED_FOLD_PATH_SAMPLES_V1, MULTI_HINGE_RELIEF_UNION_CERTIFICATE_MODEL_ID_V2,
+    MULTI_HINGE_RELIEF_UNION_GAP_MODEL_ID_V2, MultiHingeReliefUnionCertificateV2,
+    MultiHingeReliefUnionCoveredPairV2, MultiHingeReliefUnionErrorV2,
+    MultiHingeReliefUnionGapReportV2, MultiHingeReliefUnionGapV2, MultiHingeReliefUnionHingeGapV2,
+    MultiHingeReliefUnionLimitsV2, NativeStackedFoldInitialSampleLayerAdmissionV1,
+    PositiveThicknessContinuousCertificateV1, PositiveThicknessTreeContinuousCertificateV1,
+    ReliefCoveredSharedHingePairV1, SPLIT_HINGE_UNION_EXTERIOR_RELIEF_ASSUMPTION_MODEL_ID_V1,
     STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
     STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
@@ -181,6 +218,8 @@ pub use continuous_path::{
     StackedFoldPathDiagnosticLimitsV1, StackedFoldTreeContinuousCertificateV1,
     UniformCycleClosureRootsV1, certify_canonical_positive_thickness_cycle_schedule_path_v1,
     certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1,
+    certify_layered_five_face_chain_continuous_path_v1,
+    certify_layered_five_face_chain_continuous_path_with_control_v1,
     certify_layered_four_face_chain_continuous_path_v1,
     certify_layered_four_face_chain_continuous_path_with_control_v1,
     certify_layered_three_face_continuous_path_v1,

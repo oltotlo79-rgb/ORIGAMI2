@@ -8,7 +8,7 @@ use ori_kinematics::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::PositiveThicknessContinuousCertificateV1;
+use crate::{CooperativeOperationStopV1, PositiveThicknessContinuousCertificateV1};
 
 pub const GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1: &str =
     "general_multi_face_positive_thickness_cell_transport_v1";
@@ -547,13 +547,134 @@ impl GeneralMultiFaceCellTransportProofV1 {
         closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
         thickness: f64,
     ) -> bool {
-        self.issuer.same_instance(geometry)
-            && self.source_instance == source as *const LayerOrderSnapshot as usize
-            && self.source == *source
-            && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
-            && self.closure_hash == closure.partition_binding_fingerprint_v2()
-            && self.thickness_bits == thickness.to_bits()
+        self.is_for_with_checkpoint_v1(geometry, source, schedule, closure, thickness, || Ok(()))
+            .unwrap_or(false)
     }
+
+    pub(crate) fn is_for_with_checkpoint_v1(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        source: &LayerOrderSnapshot,
+        schedule: &CanonicalCycleScheduleV1,
+        closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+        thickness: f64,
+        mut checkpoint: impl FnMut() -> Result<(), CooperativeOperationStopV1>,
+    ) -> Result<bool, CooperativeOperationStopV1> {
+        checkpoint()?;
+        if !self.issuer.same_instance(geometry) {
+            return Ok(false);
+        }
+        if self.source_instance != source as *const LayerOrderSnapshot as usize
+            || self.schedule_hash != schedule.certificate_binding_fingerprint_v2()
+            || self.closure_hash != closure.partition_binding_fingerprint_v2()
+            || self.thickness_bits != thickness.to_bits()
+        {
+            return Ok(false);
+        }
+        layer_order_snapshot_equal_with_checkpoint_v1(&self.source, source, &mut checkpoint)
+    }
+}
+
+fn layer_order_snapshot_equal_with_checkpoint_v1(
+    expected: &LayerOrderSnapshot,
+    actual: &LayerOrderSnapshot,
+    checkpoint: &mut impl FnMut() -> Result<(), CooperativeOperationStopV1>,
+) -> Result<bool, CooperativeOperationStopV1> {
+    checkpoint()?;
+    if expected.model_id != actual.model_id
+        || expected.provenance != actual.provenance
+        || expected.reference_face != actual.reference_face
+        || expected.proof_summary != actual.proof_summary
+        || !slice_equal_with_checkpoint_v1(
+            &expected.material_faces,
+            &actual.material_faces,
+            checkpoint,
+        )?
+    {
+        return Ok(false);
+    }
+    match (&expected.global_bottom_to_top, &actual.global_bottom_to_top) {
+        (Some(expected), Some(actual)) => {
+            if !slice_equal_with_checkpoint_v1(expected, actual, checkpoint)? {
+                return Ok(false);
+            }
+        }
+        (None, None) => {}
+        _ => return Ok(false),
+    }
+    if expected.folded_faces.len() != actual.folded_faces.len() {
+        return Ok(false);
+    }
+    for (expected, actual) in expected.folded_faces.iter().zip(&actual.folded_faces) {
+        checkpoint()?;
+        if expected != actual {
+            return Ok(false);
+        }
+    }
+    if expected.overlap_cells.len() != actual.overlap_cells.len() {
+        return Ok(false);
+    }
+    for (expected, actual) in expected.overlap_cells.iter().zip(&actual.overlap_cells) {
+        checkpoint()?;
+        if expected.cell_key != actual.cell_key
+            || !slice_equal_with_checkpoint_v1(
+                &expected.exact_boundary,
+                &actual.exact_boundary,
+                checkpoint,
+            )?
+            || !slice_equal_with_checkpoint_v1(
+                &expected.covering_faces,
+                &actual.covering_faces,
+                checkpoint,
+            )?
+            || !slice_equal_with_checkpoint_v1(
+                &expected.bottom_to_top_faces,
+                &actual.bottom_to_top_faces,
+                checkpoint,
+            )?
+        {
+            return Ok(false);
+        }
+    }
+    if expected.face_pair_orders.len() != actual.face_pair_orders.len() {
+        return Ok(false);
+    }
+    for (expected, actual) in expected
+        .face_pair_orders
+        .iter()
+        .zip(&actual.face_pair_orders)
+    {
+        checkpoint()?;
+        if expected.lower_face != actual.lower_face
+            || expected.upper_face != actual.upper_face
+            || !slice_equal_with_checkpoint_v1(
+                &expected.supporting_cells,
+                &actual.supporting_cells,
+                checkpoint,
+            )?
+        {
+            return Ok(false);
+        }
+    }
+    checkpoint()?;
+    Ok(true)
+}
+
+fn slice_equal_with_checkpoint_v1<T: PartialEq>(
+    expected: &[T],
+    actual: &[T],
+    checkpoint: &mut impl FnMut() -> Result<(), CooperativeOperationStopV1>,
+) -> Result<bool, CooperativeOperationStopV1> {
+    if expected.len() != actual.len() {
+        return Ok(false);
+    }
+    for (expected, actual) in expected.iter().zip(actual) {
+        checkpoint()?;
+        if expected != actual {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub fn certify_general_multi_face_cell_transport_v1(

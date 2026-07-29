@@ -388,7 +388,6 @@ fn three_face_certificate_has_exact_and_one_short_resource_limits() {
             max_faces: 3,
             ..limits.static_limits
         },
-        ..limits
     };
     assert!(
         certify_layered_three_face_continuous_path_with_control_v1(

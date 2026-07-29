@@ -1112,6 +1112,22 @@ pub enum CycleSchedulePrepareErrorV1 {
     AngleRange,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleScheduleRestrictionStopV1 {
+    Cancelled,
+    DeadlineExceeded,
+}
+
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum CycleScheduleRestrictionErrorV1 {
+    #[error(transparent)]
+    Prepare(#[from] CycleSchedulePrepareErrorV1),
+    #[error("cycle schedule restriction was cancelled")]
+    Cancelled,
+    #[error("cycle schedule restriction deadline elapsed")]
+    DeadlineExceeded,
+}
+
 /// Frozen model identifier for the opaque common-linear-profile proof.
 pub const EXACT_COMMON_LINEAR_CYCLE_PROFILE_MODEL_ID_V1: &str =
     "exact_common_linear_cycle_profile_v1";
@@ -1872,46 +1888,144 @@ impl CanonicalCycleScheduleV1 {
         block_geometry: &MaterialHingeGraphGeometry,
         block_audit: &MaterialHingeGraphAudit,
     ) -> Result<Self, CycleSchedulePrepareErrorV1> {
-        if !self.matches_binding(source_geometry, source_audit, self.fixed_face)
-            || !block_audit.faces().contains(&self.fixed_face)
-        {
-            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        self.restrict_to_edge_block_with_fixed_face_v1(
+            source_geometry,
+            source_audit,
+            block_geometry,
+            block_audit,
+            self.fixed_face,
+        )
+    }
+
+    /// Rebinds an exact entry restriction to a block-local fixed face.
+    ///
+    /// The domain and admitted entry representations are retained bit-for-bit;
+    /// only the geometry/audit carrier and fixed-face portion of the binding
+    /// change. This permits different leaves of a block-cut tree to use their
+    /// own articulation frame without manufacturing a new path.
+    pub fn restrict_to_edge_block_with_fixed_face_v1(
+        &self,
+        source_geometry: &MaterialHingeGraphGeometry,
+        source_audit: &MaterialHingeGraphAudit,
+        block_geometry: &MaterialHingeGraphGeometry,
+        block_audit: &MaterialHingeGraphAudit,
+        block_fixed_face: FaceId,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        match self.restrict_to_edge_block_with_fixed_face_with_checkpoint_v1(
+            source_geometry,
+            source_audit,
+            block_geometry,
+            block_audit,
+            block_fixed_face,
+            || Ok(()),
+        ) {
+            Ok(schedule) => Ok(schedule),
+            Err(CycleScheduleRestrictionErrorV1::Prepare(error)) => Err(error),
+            Err(
+                CycleScheduleRestrictionErrorV1::Cancelled
+                | CycleScheduleRestrictionErrorV1::DeadlineExceeded,
+            ) => unreachable!("an unbounded schedule restriction cannot stop"),
         }
-        let block_edges = block_geometry
-            .hinges()
-            .iter()
-            .map(|hinge| hinge.edge())
-            .collect::<std::collections::HashSet<_>>();
-        let entries = self
-            .entries
-            .iter()
-            .filter(|entry| block_edges.contains(&entry.edge))
-            .cloned()
-            .collect::<Vec<_>>();
-        let half_angle_entries = self
-            .half_angle_entries
-            .iter()
-            .filter(|entry| block_edges.contains(&entry.edge()))
-            .cloned()
-            .collect::<Vec<_>>();
-        if entries.len() + half_angle_entries.len() != block_edges.len()
-            || entries
-                .iter()
-                .any(|entry| !block_edges.contains(&entry.edge))
-            || half_angle_entries
-                .iter()
-                .any(|entry| !block_edges.contains(&entry.edge()))
+    }
+
+    /// Rebinds an exact block restriction while cooperatively checkpointing
+    /// every bounded carrier and fingerprint-materialization loop.
+    pub fn restrict_to_edge_block_with_fixed_face_with_checkpoint_v1(
+        &self,
+        source_geometry: &MaterialHingeGraphGeometry,
+        source_audit: &MaterialHingeGraphAudit,
+        block_geometry: &MaterialHingeGraphGeometry,
+        block_audit: &MaterialHingeGraphAudit,
+        block_fixed_face: FaceId,
+        mut checkpoint: impl FnMut() -> Result<(), CycleScheduleRestrictionStopV1>,
+    ) -> Result<Self, CycleScheduleRestrictionErrorV1> {
+        cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+        let source_binding = binding_fingerprint_with_checkpoint_v1(
+            source_geometry,
+            source_audit,
+            self.fixed_face,
+            &mut checkpoint,
+        )?;
+        if self.binding_fingerprint != source_binding
+            || !source_geometry.face_ids().contains(&block_fixed_face)
+            || !source_audit.faces().contains(&block_fixed_face)
+            || !block_geometry.face_ids().contains(&block_fixed_face)
+            || !block_audit.faces().contains(&block_fixed_face)
+            || block_geometry.face_ids().is_empty()
         {
-            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+        }
+        for face in block_geometry.face_ids() {
+            cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+            if !source_geometry.face_ids().contains(face) {
+                return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+            }
+        }
+        for block_hinge in block_geometry.hinges() {
+            cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+            let mut found = false;
+            for source_hinge in source_geometry.hinges() {
+                cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+                if source_hinge == block_hinge {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+            }
+        }
+        let mut block_edges = std::collections::HashSet::new();
+        for hinge in block_geometry.hinges() {
+            cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+            block_edges.insert(hinge.edge());
+        }
+        if block_edges.is_empty() {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+        }
+        let mut entries = Vec::new();
+        for entry in &self.entries {
+            cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+            if block_edges.contains(&entry.edge) {
+                entries.push(entry.clone());
+            }
+        }
+        let mut half_angle_entries = Vec::new();
+        for entry in &self.half_angle_entries {
+            cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+            if block_edges.contains(&entry.edge()) {
+                half_angle_entries.push(entry.clone());
+            }
+        }
+        if entries.len() + half_angle_entries.len() != block_edges.len() {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+        }
+        for entry in &entries {
+            cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+            if !block_edges.contains(&entry.edge) {
+                return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+            }
+        }
+        for entry in &half_angle_entries {
+            cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
+            if !block_edges.contains(&entry.edge()) {
+                return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+            }
         }
         Ok(Self {
-            binding_fingerprint: binding_fingerprint(block_geometry, block_audit, self.fixed_face),
-            schedule_fingerprint_v2: schedule_fingerprint_v2(
+            binding_fingerprint: binding_fingerprint_with_checkpoint_v1(
+                block_geometry,
+                block_audit,
+                block_fixed_face,
+                &mut checkpoint,
+            )?,
+            schedule_fingerprint_v2: schedule_fingerprint_v2_with_checkpoint_v1(
                 self.domain,
                 &entries,
                 &half_angle_entries,
-            ),
-            fixed_face: self.fixed_face,
+                &mut checkpoint,
+            )?,
+            fixed_face: block_fixed_face,
             domain: self.domain,
             entries,
             half_angle_entries,
@@ -2772,6 +2886,82 @@ fn schedule_fingerprint_v2(
     )
 }
 
+fn schedule_fingerprint_v2_with_checkpoint_v1(
+    domain: [f64; 2],
+    entries: &[Entry],
+    half_angle_entries: &[PreparedHalfAngleRationalEntryV1],
+    checkpoint: &mut impl FnMut() -> Result<(), CycleScheduleRestrictionStopV1>,
+) -> Result<[u8; 32], CycleScheduleRestrictionErrorV1> {
+    const ORDINARY_KIND_TAG: u8 = 0;
+    const HALF_ANGLE_RATIONAL_KIND_TAG: u8 = 1;
+
+    cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+    debug_assert!(entries.is_empty() || half_angle_entries.is_empty());
+    let mut hash = Sha256::new();
+    hash.update(b"ORIGAMI2_CANONICAL_CYCLE_SCHEDULE_CERTIFICATE_BINDING_V2");
+    update_length_prefixed_bytes_v2(&mut hash, CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2.as_bytes());
+    update_length_prefixed_bytes_v2(
+        &mut hash,
+        DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1.as_bytes(),
+    );
+    let half_angle = !half_angle_entries.is_empty();
+    hash.update([if half_angle {
+        HALF_ANGLE_RATIONAL_KIND_TAG
+    } else {
+        ORDINARY_KIND_TAG
+    }]);
+    for endpoint in domain {
+        cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+        hash.update(endpoint.to_bits().to_be_bytes());
+    }
+    hash.update(
+        u64::try_from(entries.len() + half_angle_entries.len())
+            .expect("an in-memory schedule entry count must fit u64")
+            .to_be_bytes(),
+    );
+    for entry in entries {
+        cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+        hash.update([ORDINARY_KIND_TAG]);
+        hash.update(entry.edge.canonical_bytes());
+        hash.update(entry.initial.to_bits().to_be_bytes());
+        hash.update(
+            u64::try_from(entry.coefficients.len())
+                .expect("an in-memory coefficient count must fit u64")
+                .to_be_bytes(),
+        );
+        for coefficient in &entry.coefficients {
+            cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+            hash.update(coefficient.to_bits().to_be_bytes());
+        }
+    }
+    for entry in half_angle_entries {
+        cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+        hash.update([HALF_ANGLE_RATIONAL_KIND_TAG]);
+        hash.update(entry.edge.canonical_bytes());
+        for value in &entry.u_domain {
+            update_canonical_big_rational_with_checkpoint_v1(&mut hash, value, checkpoint)?;
+        }
+        hash.update(
+            u64::try_from(entry.numerator_power_coefficients.len())
+                .expect("an in-memory numerator coefficient count must fit u64")
+                .to_be_bytes(),
+        );
+        for value in &entry.numerator_power_coefficients {
+            update_canonical_big_rational_with_checkpoint_v1(&mut hash, value, checkpoint)?;
+        }
+        hash.update(
+            u64::try_from(entry.denominator_power_coefficients.len())
+                .expect("an in-memory denominator coefficient count must fit u64")
+                .to_be_bytes(),
+        );
+        for value in &entry.denominator_power_coefficients {
+            update_canonical_big_rational_with_checkpoint_v1(&mut hash, value, checkpoint)?;
+        }
+    }
+    cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+    Ok(hash.finalize().into())
+}
+
 fn schedule_fingerprint_v2_with_model_ids(
     domain: [f64; 2],
     entries: &[Entry],
@@ -2880,6 +3070,37 @@ fn update_canonical_big_rational_v2(hash: &mut Sha256, value: &BigRational) {
     hash.update(denominator);
 }
 
+fn update_canonical_big_rational_with_checkpoint_v1(
+    hash: &mut Sha256,
+    value: &BigRational,
+    checkpoint: &mut impl FnMut() -> Result<(), CycleScheduleRestrictionStopV1>,
+) -> Result<(), CycleScheduleRestrictionErrorV1> {
+    cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+    let (numerator_sign, mut numerator) = value.numer().to_bytes_be();
+    if numerator.is_empty() {
+        numerator.push(0);
+    }
+    let (_, denominator) = value.denom().to_bytes_be();
+    hash.update([match numerator_sign {
+        num_bigint::Sign::Minus => 0,
+        num_bigint::Sign::NoSign => 1,
+        num_bigint::Sign::Plus => 2,
+    }]);
+    hash.update(
+        u64::try_from(numerator.len())
+            .expect("an in-memory numerator length must fit u64")
+            .to_be_bytes(),
+    );
+    hash.update(numerator);
+    hash.update(
+        u64::try_from(denominator.len())
+            .expect("an in-memory denominator length must fit u64")
+            .to_be_bytes(),
+    );
+    hash.update(denominator);
+    Ok(())
+}
+
 fn binding_fingerprint(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -2916,6 +3137,61 @@ fn binding_fingerprint(
         }
     }
     hash.finalize().into()
+}
+
+fn binding_fingerprint_with_checkpoint_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    checkpoint: &mut impl FnMut() -> Result<(), CycleScheduleRestrictionStopV1>,
+) -> Result<[u8; 32], CycleScheduleRestrictionErrorV1> {
+    let mut hash = Sha256::new();
+    hash.update(fixed_face.canonical_bytes());
+    for face in audit.faces() {
+        cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+        hash.update(face.canonical_bytes());
+    }
+    for edge in audit.spanning_hinges().iter().chain(audit.closure_hinges()) {
+        cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+        hash.update(edge.canonical_bytes());
+    }
+    for hinge in geometry.hinges() {
+        cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+        hash.update(hinge.edge().canonical_bytes());
+        hash.update(hinge.left_face().canonical_bytes());
+        hash.update(hinge.right_face().canonical_bytes());
+        hash.update([match hinge.assignment() {
+            ori_topology::FoldAssignment::Mountain => 0,
+            ori_topology::FoldAssignment::Valley => 1,
+        }]);
+        for value in [
+            hinge.start().x(),
+            hinge.start().y(),
+            hinge.start().z(),
+            hinge.end().x(),
+            hinge.end().y(),
+            hinge.end().z(),
+            hinge.axis().x(),
+            hinge.axis().y(),
+            hinge.axis().z(),
+        ] {
+            cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+            hash.update(value.to_bits().to_be_bytes());
+        }
+    }
+    cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
+    Ok(hash.finalize().into())
+}
+
+fn cycle_schedule_restriction_checkpoint_v1(
+    checkpoint: &mut impl FnMut() -> Result<(), CycleScheduleRestrictionStopV1>,
+) -> Result<(), CycleScheduleRestrictionErrorV1> {
+    checkpoint().map_err(|stop| match stop {
+        CycleScheduleRestrictionStopV1::Cancelled => CycleScheduleRestrictionErrorV1::Cancelled,
+        CycleScheduleRestrictionStopV1::DeadlineExceeded => {
+            CycleScheduleRestrictionErrorV1::DeadlineExceeded
+        }
+    })
 }
 
 #[cfg(test)]

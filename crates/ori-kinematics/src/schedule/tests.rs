@@ -859,6 +859,119 @@ fn schedule_fingerprint_v2_is_deterministic_across_reorder_and_restriction() {
 }
 
 #[test]
+fn three_block_restriction_rebases_leaf_fixed_faces_exactly() {
+    let (geometry, audit, original_fixed_face, edges) = fixture();
+    let schedule_entries = entries(&edges);
+    let schedule = CanonicalCycleScheduleV1::prepare(
+        &geometry,
+        &audit,
+        original_fixed_face,
+        [0.0, 1.0],
+        schedule_entries.clone(),
+        CycleScheduleLimitsV1::default(),
+    )
+    .unwrap();
+
+    for (index, hinge) in geometry.hinges().iter().enumerate() {
+        let edge = hinge.edge();
+        let block_geometry = MaterialHingeGraphGeometry::new_for_test(
+            vec![hinge.left_face(), hinge.right_face()],
+            vec![hinge.clone()],
+        );
+        let block_fixed_face = block_geometry.face_ids()[index % 2];
+        let restricted = schedule
+            .restrict_to_edge_block_with_fixed_face_v1(
+                &geometry,
+                &audit,
+                &block_geometry,
+                &audit,
+                block_fixed_face,
+            )
+            .unwrap();
+        let independently_prepared = CanonicalCycleScheduleV1::prepare(
+            &block_geometry,
+            &audit,
+            block_fixed_face,
+            [0.0, 1.0],
+            schedule_entries
+                .iter()
+                .filter(|entry| entry.edge == edge)
+                .cloned()
+                .collect(),
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(restricted, independently_prepared);
+    }
+
+    let first_hinge = geometry.hinges()[0].clone();
+    let first_block = MaterialHingeGraphGeometry::new_for_test(
+        vec![first_hinge.left_face(), first_hinge.right_face()],
+        vec![first_hinge],
+    );
+    assert_eq!(
+        schedule
+            .restrict_to_edge_block_v1(&geometry, &audit, &first_block, &audit)
+            .unwrap(),
+        schedule
+            .restrict_to_edge_block_with_fixed_face_v1(
+                &geometry,
+                &audit,
+                &first_block,
+                &audit,
+                original_fixed_face,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        schedule.restrict_to_edge_block_with_fixed_face_v1(
+            &geometry,
+            &audit,
+            &first_block,
+            &audit,
+            FaceId::new(),
+        ),
+        Err(CycleSchedulePrepareErrorV1::InvalidInput)
+    );
+    let source_hinge = &geometry.hinges()[0];
+    let foreign_hinge = TreeHinge::new_for_test(
+        source_hinge.edge(),
+        FoldAssignment::Valley,
+        source_hinge.left_face(),
+        source_hinge.right_face(),
+        source_hinge.start(),
+        source_hinge.end(),
+        source_hinge.axis(),
+    );
+    let foreign_block = MaterialHingeGraphGeometry::new_for_test(
+        first_block.face_ids().to_vec(),
+        vec![foreign_hinge],
+    );
+    assert_eq!(
+        schedule.restrict_to_edge_block_with_fixed_face_v1(
+            &geometry,
+            &audit,
+            &foreign_block,
+            &audit,
+            original_fixed_face,
+        ),
+        Err(CycleSchedulePrepareErrorV1::InvalidInput)
+    );
+    let empty_block =
+        MaterialHingeGraphGeometry::new_for_test(first_block.face_ids().to_vec(), Vec::new());
+    assert_eq!(
+        schedule.restrict_to_edge_block_with_fixed_face_v1(
+            &geometry,
+            &audit,
+            &empty_block,
+            &audit,
+            original_fixed_face,
+        ),
+        Err(CycleSchedulePrepareErrorV1::InvalidInput)
+    );
+}
+
+#[test]
 fn kawasaki_degree_four_generator_is_deterministic_and_resource_bounded() {
     let ns = ProjectId::new();
     let faces = [b"a", b"b", b"c", b"d"].map(|name| FaceId::derive_v5(ns, name));

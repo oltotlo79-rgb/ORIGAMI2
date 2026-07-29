@@ -140,10 +140,12 @@ impl NonFlatLayerOrderStructuralSourceV1 for StructuralFixture {
         if let Some(accesses) = &self.count_accessor_calls {
             accesses.fetch_add(1, Ordering::AcqRel);
         }
-        if let Some(reads) = &self.escalating_overlap_cell_count_reads {
-            if reads.fetch_add(1, Ordering::AcqRel) > 0 {
-                return usize::MAX;
-            }
+        if self
+            .escalating_overlap_cell_count_reads
+            .as_ref()
+            .is_some_and(|reads| reads.fetch_add(1, Ordering::AcqRel) > 0)
+        {
+            return usize::MAX;
         }
         self.overlap_cell_count_override.unwrap_or(self.cells.len())
     }
@@ -189,10 +191,10 @@ impl NonFlatLayerOrderStructuralSourceV1 for StructuralFixture {
                 lower_face: *lower,
                 upper_face: *upper,
             });
-        if index == 0 {
-            if let Some(cancel) = &self.cancel_after_first_pair_order {
-                cancel.store(true, Ordering::Release);
-            }
+        if index == 0
+            && let Some(cancel) = &self.cancel_after_first_pair_order
+        {
+            cancel.store(true, Ordering::Release);
         }
         pair
     }

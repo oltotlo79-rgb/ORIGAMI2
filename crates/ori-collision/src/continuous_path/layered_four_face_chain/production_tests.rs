@@ -322,9 +322,9 @@ fn production_source_v1(
                 && exact_stationary_flat_pairs
                 && exact_moving_boundary_pair
                 && moving_boundary_theorem
-                && gap_depth.is_some()
+                && let Some(gap_depth) = gap_depth
             {
-                return (moving_hinge, source_angles, source_pose, gap_depth.unwrap());
+                return (moving_hinge, source_angles, source_pose, gap_depth);
             }
             observed.push((
                 moving_hinge,

@@ -32,8 +32,7 @@ use super::{
         LayeredChainIntervalCheckpointPhaseV1, LayeredChainIntervalErrorV1,
         bounded_face_boundaries_v1, canonical_pair_v1,
         layered_continuous_resource_limits_within_hard_caps_v1,
-        layered_leaf_count_v1 as leaf_count_v1, validate_linear_chain_hinges_v1,
-        validate_single_moving_flat_chain_schedule_v1,
+        layered_leaf_count_v1 as leaf_count_v1,
         verify_layered_chain_nonadjacent_registry_gaps_with_checkpoint_v1,
     },
     retain_initial_sample_layer_admission_issuer_v1,
@@ -526,50 +525,76 @@ fn matches_three_face_schedule_v1(
     {
         return None;
     }
-    let direct_hinges = [&model.hinges()[0], &model.hinges()[1]].map(|hinge| {
-        (
-            hinge.edge(),
-            canonical_pair_v1(hinge.left_face(), hinge.right_face()),
-        )
-    });
-    let partition = validate_linear_chain_hinges_v1(
-        model.face_ids(),
-        &direct_hinges,
-        MAX_LAYERED_THREE_FACE_INTERVAL_FACES_V1,
-        3,
-    )
-    .ok()??;
-    let source = [
-        &source_pose.hinge_angles()[0],
-        &source_pose.hinge_angles()[1],
-    ]
-    .map(|angle| (angle.edge(), angle.angle_degrees()));
-    let target = [&target.as_slice()[0], &target.as_slice()[1]]
-        .map(|angle| (angle.edge(), angle.angle_degrees()));
-    let schedule = validate_single_moving_flat_chain_schedule_v1(
-        &direct_hinges,
-        &source,
-        &target,
-        MAX_LAYERED_THREE_FACE_INTERVAL_HINGES_V1,
-        MAX_LAYERED_THREE_FACE_INTERVAL_HINGES_V1,
-    )
-    .ok()??;
-    if schedule
+    let mut moving = None;
+    let mut stationary = None;
+    for (source, target) in source_pose.hinge_angles().iter().zip(target.as_slice()) {
+        if source.edge() != target.edge() {
+            return None;
+        }
+        let source_bits = source.angle_degrees().to_bits();
+        let target_bits = target.angle_degrees().to_bits();
+        if source_bits == 0.0_f64.to_bits()
+            && target.angle_degrees().is_finite()
+            && target.angle_degrees() > 0.0
+            && target.angle_degrees() < 180.0
+        {
+            moving = Some(source.edge());
+        } else if source_bits == 180.0_f64.to_bits() && target_bits == 180.0_f64.to_bits() {
+            stationary = Some(source.edge());
+        } else {
+            return None;
+        }
+    }
+    let (moving_hinge, stationary_hinge) = moving.zip(stationary)?;
+    let moving_tree_hinge = model
+        .hinges()
         .iter()
-        .map(|hinge| hinge.pair)
-        .ne(partition.direct_pairs.iter().copied())
-        || partition.nonadjacent_pairs.len() != 1
+        .find(|hinge| hinge.edge() == moving_hinge)?;
+    let stationary_tree_hinge = model
+        .hinges()
+        .iter()
+        .find(|hinge| hinge.edge() == stationary_hinge)?;
+    let moving_pair = canonical_pair_v1(
+        moving_tree_hinge.left_face(),
+        moving_tree_hinge.right_face(),
+    );
+    let stationary_pair = canonical_pair_v1(
+        stationary_tree_hinge.left_face(),
+        stationary_tree_hinge.right_face(),
+    );
+    if moving_pair == stationary_pair {
+        return None;
+    }
+    let all_faces = model.face_ids();
+    let shared = moving_pair
+        .into_iter()
+        .find(|face| stationary_pair.contains(face))?;
+    let moving_outer = moving_pair.into_iter().find(|face| *face != shared)?;
+    let stationary_outer = stationary_pair.into_iter().find(|face| *face != shared)?;
+    if !all_faces.contains(&shared)
+        || !all_faces.contains(&moving_outer)
+        || !all_faces.contains(&stationary_outer)
+        || moving_outer == stationary_outer
     {
         return None;
     }
-    let moving = schedule.iter().find(|hinge| hinge.moving)?;
-    let stationary = schedule.iter().find(|hinge| !hinge.moving)?;
+    let nonadjacent_pair = canonical_pair_v1(moving_outer, stationary_outer);
+    let mut actual = [stationary_pair, moving_pair, nonadjacent_pair];
+    actual.sort_unstable_by_key(|pair| (pair[0].canonical_bytes(), pair[1].canonical_bytes()));
+    let expected = [
+        canonical_pair_v1(all_faces[0], all_faces[1]),
+        canonical_pair_v1(all_faces[0], all_faces[2]),
+        canonical_pair_v1(all_faces[1], all_faces[2]),
+    ];
+    if actual != expected {
+        return None;
+    }
     Some(ThreeFacePairPartitionV1 {
-        moving_hinge: moving.edge,
-        stationary_hinge: stationary.edge,
-        stationary_pair: stationary.pair,
-        moving_pair: moving.pair,
-        nonadjacent_pair: partition.nonadjacent_pairs[0],
+        moving_hinge,
+        stationary_hinge,
+        stationary_pair,
+        moving_pair,
+        nonadjacent_pair,
     })
 }
 

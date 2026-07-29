@@ -676,11 +676,13 @@ fn canonical_face_pair_array_v1(first: FaceId, second: FaceId) -> [FaceId; 2] {
     [first, second]
 }
 
-fn three_stationary_transport_authority_v1() -> (
+type ThreeStationaryTransportAuthorityFixtureV1 = (
     [(EdgeId, [FaceId; 2]); 3],
     [PersistentFlatHingeAdmissionV1; 3],
     [NonFlatFacePairOrderStructuralV1; 3],
-) {
+);
+
+fn three_stationary_transport_authority_v1() -> ThreeStationaryTransportAuthorityFixtureV1 {
     let pairs = [
         canonical_face_pair_array_v1(FaceId::new(), FaceId::new()),
         canonical_face_pair_array_v1(FaceId::new(), FaceId::new()),

@@ -1530,24 +1530,29 @@ fn all_face_vertices_within_axis_with_control_v1(
 /// authenticated hinge edge. This is called only after their plane
 /// intersection has been proved nonzero and equal to the complete hinge line.
 #[cfg(test)]
+struct NoncoplanarSharedHingeFiniteIntersectionInputV1<'a> {
+    first: &'a ExactFacePose,
+    second: &'a ExactFacePose,
+    hinge: &'a ExactHingePose,
+    first_normal: &'a ExactVector3,
+    second_normal: &'a ExactVector3,
+    hinge_direction: &'a ExactVector3,
+    hinge_length_squared: &'a BigRational,
+}
+
+#[cfg(test)]
 fn noncoplanar_shared_hinge_finite_intersection_proven(
-    first: &ExactFacePose,
-    second: &ExactFacePose,
-    hinge: &ExactHingePose,
-    first_normal: &ExactVector3,
-    second_normal: &ExactVector3,
-    hinge_direction: &ExactVector3,
-    hinge_length_squared: &BigRational,
+    input: NoncoplanarSharedHingeFiniteIntersectionInputV1<'_>,
     meter: &mut WorkMeter<'_>,
 ) -> Result<bool, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1> {
     noncoplanar_shared_hinge_finite_intersection_proven_with_control_v1(
-        first,
-        second,
-        hinge,
-        first_normal,
-        second_normal,
-        hinge_direction,
-        hinge_length_squared,
+        input.first,
+        input.second,
+        input.hinge,
+        input.first_normal,
+        input.second_normal,
+        input.hinge_direction,
+        input.hinge_length_squared,
         &CooperativeOperationControlV1::unbounded(),
         meter,
     )
@@ -4149,13 +4154,15 @@ mod tests {
                         };
                         assert_eq!(
                             noncoplanar_shared_hinge_finite_intersection_proven(
-                                ordered_first,
-                                ordered_second,
-                                &variant_hinge,
-                                ordered_first_normal,
-                                ordered_second_normal,
-                                &variant_axis,
-                                &variant_length_squared,
+                                NoncoplanarSharedHingeFiniteIntersectionInputV1 {
+                                    first: ordered_first,
+                                    second: ordered_second,
+                                    hinge: &variant_hinge,
+                                    first_normal: ordered_first_normal,
+                                    second_normal: ordered_second_normal,
+                                    hinge_direction: &variant_axis,
+                                    hinge_length_squared: &variant_length_squared,
+                                },
                                 &mut variant_meter,
                             )
                             .expect("symmetric non-coplanar finite-intersection proof"),

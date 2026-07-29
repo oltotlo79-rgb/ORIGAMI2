@@ -2,15 +2,34 @@ use std::collections::HashSet;
 
 use ori_domain::{EdgeId, FaceId};
 use ori_foldability::LayerOrderSnapshot;
+pub use ori_kinematics::{
+    COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_MODEL_ID_V1, CommonArticulationHingeAngleBitsV1,
+    CommonArticulationPoseAuthorityV1, CommonArticulationPoseBlockRestrictionRefV1,
+    CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1, CommonArticulationPoseLimitsV1,
+    CommonArticulationPoseStopV1,
+};
 use ori_kinematics::{
-    CanonicalCycleScheduleV1, DyadicMaterialHingeIntervalClosureCertificateV1,
-    MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+    CanonicalCycleScheduleV1, CanonicalMaterialEdgeBlockDecompositionV1, CycleScheduleLimitsV1,
+    CycleScheduleRestrictionErrorV1, CycleScheduleRestrictionStopV1,
+    DyadicMaterialHingeIntervalClosureCertificateV1, MaterialHingeGraphAudit,
+    MaterialHingeGraphGeometry, prove_common_articulation_pose_authority_with_checkpoint_v1,
 };
 use sha2::{Digest, Sha256};
+use thiserror::Error;
 
-use crate::{GeneralMultiFaceCellTransportProofV1, PositiveThicknessContinuousCertificateV1};
+use crate::{
+    CommonArticulationClearanceErrorV1, CommonArticulationClearanceLimitsV1,
+    CommonArticulationClearancePrerequisiteV1, CommonArticulationClearanceRevalidationInputV1,
+    CooperativeOperationControlV1, CooperativeOperationStopV1,
+    GeneralMultiFaceCellTransportProofV1, PositiveThicknessContinuousCertificateV1,
+};
 
 pub const BLOCK_COMPOSED_PATH_MODEL_ID_V1: &str = "block_composed_path_authority_v1";
+pub const COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_MODEL_ID_V1: &str =
+    "common_articulation_block_composed_path_authority_v1";
+pub const COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_MODEL_ID_V1: &str =
+    "common_articulation_continuous_layer_path_authority_v1";
 pub const BLOCK_COMPOSITION_LIMIT_V1: usize = 32;
 pub const BLOCKWISE_CLOSURE_MODEL_ID_V1: &str = "blockwise_interval_closure_authority_v1";
 pub const BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1: &str = "blockwise_positive_layer_authority_v1";
@@ -22,6 +41,29 @@ pub const MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
 pub const COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
     "complete_live_multi_block_positive_layer_authority_v1";
 pub const BLOCK_UNION_COMPLETENESS_MAX_ITEMS_V1: usize = 4_096;
+
+pub fn issue_common_articulation_pose_authority_v1(
+    input: CommonArticulationPoseInputV1<'_>,
+) -> Result<CommonArticulationPoseAuthorityV1, CommonArticulationPoseErrorV1> {
+    issue_common_articulation_pose_authority_with_control_v1(
+        input,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+pub fn issue_common_articulation_pose_authority_with_control_v1(
+    input: CommonArticulationPoseInputV1<'_>,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<CommonArticulationPoseAuthorityV1, CommonArticulationPoseErrorV1> {
+    prove_common_articulation_pose_authority_with_checkpoint_v1(input, || {
+        control.checkpoint().map_err(|stop| match stop {
+            CooperativeOperationStopV1::Cancelled => CommonArticulationPoseStopV1::Cancelled,
+            CooperativeOperationStopV1::DeadlineExceeded => {
+                CommonArticulationPoseStopV1::DeadlineExceeded
+            }
+        })
+    })
+}
 
 pub struct BlockUnionCompletenessInputV1<'a> {
     pub faces: &'a [FaceId],
@@ -90,6 +132,38 @@ fn canonical_hinges_v1(geometry: &MaterialHingeGraphGeometry) -> Vec<EdgeId> {
         .collect::<Vec<_>>();
     ids.sort_unstable_by_key(EdgeId::canonical_bytes);
     ids
+}
+
+fn canonical_faces_with_checkpoint_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<Vec<FaceId>, CommonArticulationContinuousLayerPathErrorV1> {
+    let mut ids = Vec::new();
+    ids.try_reserve_exact(geometry.face_ids().len())
+        .map_err(|_| CommonArticulationContinuousLayerPathErrorV1::ResourceLimit)?;
+    for face in geometry.face_ids() {
+        checkpoint()?;
+        ids.push(*face);
+    }
+    ids.sort_unstable_by_key(FaceId::canonical_bytes);
+    checkpoint()?;
+    Ok(ids)
+}
+
+fn canonical_hinges_with_checkpoint_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<Vec<EdgeId>, CommonArticulationContinuousLayerPathErrorV1> {
+    let mut ids = Vec::new();
+    ids.try_reserve_exact(geometry.hinges().len())
+        .map_err(|_| CommonArticulationContinuousLayerPathErrorV1::ResourceLimit)?;
+    for hinge in geometry.hinges() {
+        checkpoint()?;
+        ids.push(hinge.edge());
+    }
+    ids.sort_unstable_by_key(EdgeId::canonical_bytes);
+    checkpoint()?;
+    Ok(ids)
 }
 
 #[must_use]
@@ -294,28 +368,67 @@ impl CompleteMultiBlockPositiveLayerAuthorityV1 {
         articulation_layer_fingerprint: [u8; 32],
         target_angles: &[(EdgeId, f64)],
     ) -> bool {
-        self.issuer.same_instance(live_geometry)
-            && self.live_faces == canonical_faces_v1(live_geometry)
-            && self.live_hinges == canonical_hinges_v1(live_geometry)
-            && complete_block_union_matches_live_v1(
+        self.revalidates_with_checkpoint_v1(
+            live_geometry,
+            sources,
+            thickness,
+            issuer_context,
+            articulation_layer_fingerprint,
+            target_angles,
+            &mut || Ok(()),
+        )
+        .unwrap_or(false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn revalidates_with_checkpoint_v1(
+        &self,
+        live_geometry: &MaterialHingeGraphGeometry,
+        sources: &[&LayerOrderSnapshot],
+        thickness: f64,
+        issuer_context: [u8; 32],
+        articulation_layer_fingerprint: [u8; 32],
+        target_angles: &[(EdgeId, f64)],
+        checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+    ) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
+        checkpoint()?;
+        if !self.issuer.same_instance(live_geometry) {
+            return Ok(false);
+        }
+        let live_faces = canonical_faces_with_checkpoint_v1(live_geometry, checkpoint)?;
+        let live_hinges = canonical_hinges_with_checkpoint_v1(live_geometry, checkpoint)?;
+        if self.live_faces != live_faces
+            || self.live_hinges != live_hinges
+            || !complete_block_union_matches_live_with_checkpoint_v1(
                 &self.blocks,
                 &self.live_faces,
                 &self.live_hinges,
-            )
-            && owned_multi_block_bindings_v1(&self.parent) == self.blocks
-            && self.parent.revalidates_v1(
+                checkpoint,
+            )?
+            || owned_multi_block_bindings_with_checkpoint_v1(&self.parent, checkpoint)?
+                != self.blocks
+            || !self.parent.revalidates_with_checkpoint_v1(
                 sources,
                 thickness,
                 issuer_context,
                 articulation_layer_fingerprint,
-            )
-            && self.parent.target_angles_match_v1(target_angles)
-            && complete_multi_block_positive_layer_binding_v1(
+                checkpoint,
+            )?
+            || !self
+                .parent
+                .target_angles_match_with_checkpoint_v1(target_angles, checkpoint)?
+            || complete_multi_block_positive_layer_binding_with_checkpoint_v1(
                 self.parent.binding,
                 &self.live_faces,
                 &self.live_hinges,
                 &self.blocks,
-            ) == self.binding
+                checkpoint,
+            )? != self.binding
+        {
+            return Ok(false);
+        }
+        checkpoint()?;
+        Ok(true)
     }
 }
 
@@ -365,28 +478,49 @@ impl MultiBlockPositiveLayerAuthorityV1 {
 
     #[must_use]
     pub fn target_angles_match_v1(&self, actual: &[(EdgeId, f64)]) -> bool {
+        self.target_angles_match_with_checkpoint_v1(actual, &mut || Ok(()))
+            .unwrap_or(false)
+    }
+
+    fn target_angles_match_with_checkpoint_v1(
+        &self,
+        actual: &[(EdgeId, f64)],
+        checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+    ) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
         let mut expected = Vec::new();
         for block in &self.parent.blocks {
+            checkpoint()?;
             let Some(endpoint) = block.schedule.evaluate(1.0) else {
-                return false;
+                return Ok(false);
             };
-            expected.extend(
-                endpoint
-                    .as_slice()
-                    .iter()
-                    .map(|angle| (angle.edge(), angle.angle_degrees())),
-            );
+            for angle in endpoint.as_slice() {
+                checkpoint()?;
+                expected.push((angle.edge(), angle.angle_degrees()));
+            }
         }
         expected.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
-        if expected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return false;
+        for pair in expected.windows(2) {
+            checkpoint()?;
+            if pair[0].0 == pair[1].0 {
+                return Ok(false);
+            }
         }
-        let mut actual = actual.to_vec();
-        actual.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
-        expected.len() == actual.len()
-            && expected.iter().zip(actual).all(|(expected, actual)| {
-                expected.0 == actual.0 && expected.1.to_bits() == actual.1.to_bits()
-            })
+        let mut canonical_actual = Vec::new();
+        for angle in actual {
+            checkpoint()?;
+            canonical_actual.push(*angle);
+        }
+        canonical_actual.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+        if expected.len() != canonical_actual.len() {
+            return Ok(false);
+        }
+        for (expected, actual) in expected.iter().zip(canonical_actual) {
+            checkpoint()?;
+            if expected.0 != actual.0 || expected.1.to_bits() != actual.1.to_bits() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     #[must_use]
@@ -397,6 +531,25 @@ impl MultiBlockPositiveLayerAuthorityV1 {
         issuer_context: [u8; 32],
         articulation_layer_fingerprint: [u8; 32],
     ) -> bool {
+        self.revalidates_with_checkpoint_v1(
+            sources,
+            thickness,
+            issuer_context,
+            articulation_layer_fingerprint,
+            &mut || Ok(()),
+        )
+        .unwrap_or(false)
+    }
+
+    fn revalidates_with_checkpoint_v1(
+        &self,
+        sources: &[&LayerOrderSnapshot],
+        thickness: f64,
+        issuer_context: [u8; 32],
+        articulation_layer_fingerprint: [u8; 32],
+        checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+    ) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
+        checkpoint()?;
         if sources.len() != self.parent.blocks.len()
             || thickness.to_bits() != self.parent.thickness_bits
             || issuer_context != self.parent.issuer_context
@@ -404,9 +557,10 @@ impl MultiBlockPositiveLayerAuthorityV1 {
             || articulation_layer_fingerprint != self.articulation_layer_fingerprint
             || articulation_layer_fingerprint == [0; 32]
         {
-            return false;
+            return Ok(false);
         }
         for (index, source) in sources.iter().enumerate() {
+            checkpoint()?;
             let block = &self.parent.blocks[index];
             let fixed_face = block.closure.fixed_face();
             if !self.positive[index].is_for(
@@ -416,21 +570,28 @@ impl MultiBlockPositiveLayerAuthorityV1 {
                 &block.schedule,
                 &block.closure,
                 thickness,
-            ) || !self.layer[index].is_for(
+            ) {
+                return Ok(false);
+            }
+            checkpoint()?;
+            if !layer_proof_is_for_with_final_checkpoint_v1(
+                &self.layer[index],
                 &block.geometry,
                 source,
                 &block.schedule,
                 &block.closure,
                 thickness,
-            ) {
-                return false;
+                checkpoint,
+            )? {
+                return Ok(false);
             }
         }
-        multi_block_positive_layer_binding_v1(
+        Ok(multi_block_positive_layer_binding_with_checkpoint_v1(
             self.parent.binding,
             &self.layer,
             articulation_layer_fingerprint,
-        ) == self.binding
+            checkpoint,
+        )? == self.binding)
     }
 }
 
@@ -824,6 +985,65 @@ fn block_intersection_is_tree_v1(blocks: &[CanonicalBlockBindingV1]) -> bool {
     visited.into_iter().all(|seen| seen)
 }
 
+fn block_intersection_is_tree_with_checkpoint_v1(
+    blocks: &[CanonicalBlockBindingV1],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
+    if blocks.len() < 2 {
+        return Ok(false);
+    }
+    let mut adjacency = vec![Vec::new(); blocks.len()];
+    let mut edge_count = 0usize;
+    for first in 0..blocks.len() {
+        checkpoint()?;
+        for second in first + 1..blocks.len() {
+            checkpoint()?;
+            let mut shared = 0usize;
+            for face in &blocks[first].faces {
+                checkpoint()?;
+                if blocks[second]
+                    .faces
+                    .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
+                    .is_ok()
+                {
+                    shared += 1;
+                }
+            }
+            if shared > 1 {
+                return Ok(false);
+            }
+            if shared == 1 {
+                adjacency[first].push(second);
+                adjacency[second].push(first);
+                edge_count += 1;
+            }
+        }
+    }
+    if edge_count != blocks.len() - 1 {
+        return Ok(false);
+    }
+    let mut visited = vec![false; blocks.len()];
+    let mut pending = vec![0usize];
+    visited[0] = true;
+    while let Some(block) = pending.pop() {
+        checkpoint()?;
+        for &neighbor in &adjacency[block] {
+            checkpoint()?;
+            if !visited[neighbor] {
+                visited[neighbor] = true;
+                pending.push(neighbor);
+            }
+        }
+    }
+    for seen in visited {
+        checkpoint()?;
+        if !seen {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Issues bounded tree-composition authority for exactly the supplied blocks.
 ///
 /// No inference is made that the supplied hinge union exhausts any external
@@ -1064,6 +1284,15 @@ fn complete_multi_block_report_matches_parent_v1(
         && owned_multi_block_bindings_v1(parent) == report.blocks
 }
 
+#[cfg(test)]
+pub(crate) fn complete_multi_block_report_matches_parent_for_test_v1(
+    live_geometry: &MaterialHingeGraphGeometry,
+    report: &BlockUnionCompletenessGapReportV1,
+    parent: &MultiBlockPositiveLayerAuthorityV1,
+) -> bool {
+    complete_multi_block_report_matches_parent_v1(live_geometry, report, parent)
+}
+
 fn owned_multi_block_bindings_v1(
     authority: &MultiBlockPositiveLayerAuthorityV1,
 ) -> Vec<CanonicalBlockBindingV1> {
@@ -1076,6 +1305,37 @@ fn owned_multi_block_bindings_v1(
             faces: block.faces.clone(),
         })
         .collect()
+}
+
+fn owned_multi_block_bindings_with_checkpoint_v1(
+    authority: &MultiBlockPositiveLayerAuthorityV1,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<Vec<CanonicalBlockBindingV1>, CommonArticulationContinuousLayerPathErrorV1> {
+    let mut bindings = Vec::new();
+    bindings
+        .try_reserve_exact(authority.parent.blocks.len())
+        .map_err(|_| CommonArticulationContinuousLayerPathErrorV1::ResourceLimit)?;
+    for block in &authority.parent.blocks {
+        checkpoint()?;
+        let mut edges = Vec::new();
+        edges
+            .try_reserve_exact(block.edges.len())
+            .map_err(|_| CommonArticulationContinuousLayerPathErrorV1::ResourceLimit)?;
+        for edge in &block.edges {
+            checkpoint()?;
+            edges.push(*edge);
+        }
+        let mut faces = Vec::new();
+        faces
+            .try_reserve_exact(block.faces.len())
+            .map_err(|_| CommonArticulationContinuousLayerPathErrorV1::ResourceLimit)?;
+        for face in &block.faces {
+            checkpoint()?;
+            faces.push(*face);
+        }
+        bindings.push(CanonicalBlockBindingV1 { edges, faces });
+    }
+    Ok(bindings)
 }
 
 fn complete_block_union_matches_live_v1(
@@ -1116,6 +1376,61 @@ fn complete_block_union_matches_live_v1(
         && hinge_union == live_hinges
 }
 
+fn complete_block_union_matches_live_with_checkpoint_v1(
+    blocks: &[CanonicalBlockBindingV1],
+    live_faces: &[FaceId],
+    live_hinges: &[EdgeId],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
+    if !multi_block_count_supported_v1(blocks.len()) {
+        return Ok(false);
+    }
+    for block in blocks {
+        checkpoint()?;
+        if block.faces.is_empty() || block.edges.is_empty() {
+            return Ok(false);
+        }
+        for pair in block.faces.windows(2) {
+            checkpoint()?;
+            if pair[0].canonical_bytes() >= pair[1].canonical_bytes() {
+                return Ok(false);
+            }
+        }
+        for pair in block.edges.windows(2) {
+            checkpoint()?;
+            if pair[0].canonical_bytes() >= pair[1].canonical_bytes() {
+                return Ok(false);
+            }
+        }
+    }
+    if !block_intersection_is_tree_with_checkpoint_v1(blocks, checkpoint)? {
+        return Ok(false);
+    }
+    let mut face_union = Vec::new();
+    let mut hinge_union = Vec::new();
+    for block in blocks {
+        checkpoint()?;
+        for face in &block.faces {
+            checkpoint()?;
+            face_union.push(*face);
+        }
+        for edge in &block.edges {
+            checkpoint()?;
+            hinge_union.push(*edge);
+        }
+    }
+    face_union.sort_unstable_by_key(FaceId::canonical_bytes);
+    face_union.dedup();
+    hinge_union.sort_unstable_by_key(EdgeId::canonical_bytes);
+    for pair in hinge_union.windows(2) {
+        checkpoint()?;
+        if pair[0] == pair[1] {
+            return Ok(false);
+        }
+    }
+    Ok(face_union == live_faces && hinge_union == live_hinges)
+}
+
 fn complete_multi_block_positive_layer_binding_v1(
     parent_binding: [u8; 32],
     live_faces: &[FaceId],
@@ -1147,6 +1462,44 @@ fn complete_multi_block_positive_layer_binding_v1(
     hash.finalize().into()
 }
 
+fn complete_multi_block_positive_layer_binding_with_checkpoint_v1(
+    parent_binding: [u8; 32],
+    live_faces: &[FaceId],
+    live_hinges: &[EdgeId],
+    blocks: &[CanonicalBlockBindingV1],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<[u8; 32], CommonArticulationContinuousLayerPathErrorV1> {
+    let mut hash = Sha256::new();
+    hash.update(COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    hash.update(parent_binding);
+    hash.update((live_faces.len() as u64).to_le_bytes());
+    for face in live_faces {
+        checkpoint()?;
+        hash.update(face.canonical_bytes());
+    }
+    hash.update((live_hinges.len() as u64).to_le_bytes());
+    for hinge in live_hinges {
+        checkpoint()?;
+        hash.update(hinge.canonical_bytes());
+    }
+    hash.update((blocks.len() as u64).to_le_bytes());
+    for block in blocks {
+        checkpoint()?;
+        hash.update((block.faces.len() as u64).to_le_bytes());
+        for face in &block.faces {
+            checkpoint()?;
+            hash.update(face.canonical_bytes());
+        }
+        hash.update((block.edges.len() as u64).to_le_bytes());
+        for edge in &block.edges {
+            checkpoint()?;
+            hash.update(edge.canonical_bytes());
+        }
+    }
+    checkpoint()?;
+    Ok(hash.finalize().into())
+}
+
 fn multi_block_positive_layer_binding_v1(
     parent_binding: [u8; 32],
     layers: &[GeneralMultiFaceCellTransportProofV1],
@@ -1175,6 +1528,41 @@ fn multi_block_positive_layer_binding_v1(
         hash.update((pairs as u64).to_le_bytes());
     }
     hash.finalize().into()
+}
+
+fn multi_block_positive_layer_binding_with_checkpoint_v1(
+    parent_binding: [u8; 32],
+    layers: &[GeneralMultiFaceCellTransportProofV1],
+    articulation_layer_fingerprint: [u8; 32],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<[u8; 32], CommonArticulationContinuousLayerPathErrorV1> {
+    let mut records = Vec::new();
+    records
+        .try_reserve_exact(layers.len())
+        .map_err(|_| CommonArticulationContinuousLayerPathErrorV1::ResourceLimit)?;
+    for proof in layers {
+        checkpoint()?;
+        records.push((
+            proof.target_order_hash(),
+            proof.paper_thickness_mm().to_bits(),
+            proof.transition_hashes().len(),
+            proof.pair_order_count(),
+        ));
+    }
+    records.sort_unstable();
+    let mut hash = Sha256::new();
+    hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    hash.update(parent_binding);
+    hash.update(articulation_layer_fingerprint);
+    for (target, thickness, transitions, pairs) in records {
+        checkpoint()?;
+        hash.update(target);
+        hash.update(thickness.to_le_bytes());
+        hash.update((transitions as u64).to_le_bytes());
+        hash.update((pairs as u64).to_le_bytes());
+    }
+    checkpoint()?;
+    Ok(hash.finalize().into())
 }
 
 /// Research wrapper that binds already-issued whole-graph parent proofs to one
@@ -1353,6 +1741,1303 @@ pub fn issue_block_composed_path_authority_v1(
     })
 }
 
+/// Exact live inputs for the staged common-articulation composition boundary.
+///
+/// `common_pose` and `clearance` are moved into a successful authority. This
+/// boundary intentionally does not accept snapshots or caller-manufactured
+/// fingerprints in place of either opaque prerequisite.
+pub struct CommonArticulationBlockComposedPathInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub pose: &'a ori_kinematics::ClosedMaterialHingeGraphPose,
+    pub decomposition: &'a CanonicalMaterialEdgeBlockDecompositionV1,
+    pub common_pose: CommonArticulationPoseAuthorityV1,
+    pub common_pose_limits: CommonArticulationPoseLimitsV1,
+    pub schedule: &'a CanonicalCycleScheduleV1,
+    pub schedule_limits: CycleScheduleLimitsV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub paper_thickness_mm: f64,
+    pub clearance: CommonArticulationClearancePrerequisiteV1,
+    pub clearance_limits: CommonArticulationClearanceLimitsV1,
+    /// The existing caller-facing edge partition. It must exactly equal the
+    /// canonical block decomposition, including every block face binding.
+    pub blocks: Vec<Vec<EdgeId>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum CommonArticulationBlockComposedPathErrorV1 {
+    #[error("the staged block-composition input is malformed")]
+    InvalidInput,
+    #[error("the staged block-composition operation exceeded a resource limit")]
+    ResourceLimit,
+    #[error("the submitted edge partition differs from the canonical decomposition")]
+    CanonicalBlockPartitionMismatch,
+    #[error("the common-articulation pose prerequisite failed exact revalidation: {0}")]
+    CommonPose(CommonArticulationPoseErrorV1),
+    #[error("the common-articulation clearance prerequisite failed exact revalidation: {0}")]
+    Clearance(CommonArticulationClearanceErrorV1),
+    #[error("the staged block-composition operation was cancelled")]
+    Cancelled,
+    #[error("the staged block-composition operation deadline elapsed")]
+    DeadlineExceeded,
+}
+
+/// Opaque staged integration authority for P2-2.
+///
+/// This authority retains both non-cloneable prerequisites by move and binds
+/// their fingerprints to the exact canonical decomposition. P2-3 is not
+/// complete, so it grants no continuous-motion, collision-clearance, project,
+/// Apply, or viewer authority.
+///
+/// ```compile_fail
+/// use ori_collision::CommonArticulationBlockComposedPathAuthorityV1;
+///
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<CommonArticulationBlockComposedPathAuthorityV1>();
+/// ```
+///
+/// ```compile_fail
+/// use ori_collision::CommonArticulationBlockComposedPathAuthorityV1;
+///
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<CommonArticulationBlockComposedPathAuthorityV1>();
+/// ```
+#[derive(Debug)]
+pub struct CommonArticulationBlockComposedPathAuthorityV1 {
+    binding: [u8; 32],
+    blocks: Vec<CanonicalBlockBindingV1>,
+    common_pose: CommonArticulationPoseAuthorityV1,
+    clearance: CommonArticulationClearancePrerequisiteV1,
+}
+
+impl CommonArticulationBlockComposedPathAuthorityV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding
+    }
+
+    #[must_use]
+    pub const fn common_pose_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.common_pose.binding_fingerprint_v1()
+    }
+
+    #[must_use]
+    pub const fn clearance_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.clearance.binding_fingerprint_v1()
+    }
+
+    #[must_use]
+    pub fn block_count_v1(&self) -> usize {
+        self.blocks.len()
+    }
+
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_collision_clearance(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_viewer(&self) -> bool {
+        false
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn revalidate_exact_with_control_v1(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        pose: &ori_kinematics::ClosedMaterialHingeGraphPose,
+        decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
+        common_pose_limits: CommonArticulationPoseLimitsV1,
+        schedule: &CanonicalCycleScheduleV1,
+        schedule_limits: CycleScheduleLimitsV1,
+        closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+        paper_thickness_mm: f64,
+        clearance_limits: CommonArticulationClearanceLimitsV1,
+        control: &CooperativeOperationControlV1<'_>,
+    ) -> Result<(), CommonArticulationBlockComposedPathErrorV1> {
+        staged_block_composition_checkpoint_v1(control)?;
+        if !decomposition.is_for_geometry(geometry)
+            || !pose.is_for_geometry(geometry)
+            || !paper_thickness_mm.is_finite()
+            || paper_thickness_mm <= 0.0
+        {
+            return Err(CommonArticulationBlockComposedPathErrorV1::InvalidInput);
+        }
+        self.common_pose
+            .revalidate_with_checkpoint_v1(
+                CommonArticulationPoseInputV1 {
+                    geometry,
+                    pose,
+                    decomposition,
+                    paper_thickness_mm,
+                    limits: common_pose_limits,
+                },
+                || staged_common_pose_checkpoint_v1(control),
+            )
+            .map_err(map_staged_common_pose_error_v1)?;
+        staged_block_composition_checkpoint_v1(control)?;
+        self.clearance
+            .revalidate_with_control_v1(
+                CommonArticulationClearanceRevalidationInputV1 {
+                    geometry,
+                    audit,
+                    pose,
+                    decomposition,
+                    common_pose: &self.common_pose,
+                    common_pose_limits,
+                    schedule,
+                    schedule_limits,
+                    closure,
+                    paper_thickness_mm,
+                    limits: clearance_limits,
+                },
+                control,
+            )
+            .map_err(map_staged_clearance_error_v1)?;
+        staged_block_composition_checkpoint_v1(control)?;
+        let blocks = canonical_decomposition_block_bindings_v1(decomposition, control)?;
+        if blocks != self.blocks
+            || self.binding
+                != common_articulation_block_composed_binding_v1(
+                    schedule,
+                    closure,
+                    paper_thickness_mm,
+                    &blocks,
+                    self.common_pose.binding_fingerprint_v1(),
+                    self.clearance.binding_fingerprint_v1(),
+                )
+        {
+            return Err(
+                CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch,
+            );
+        }
+        Ok(())
+    }
+}
+
+pub fn issue_common_articulation_block_composed_path_authority_v1(
+    input: CommonArticulationBlockComposedPathInputV1<'_>,
+) -> Result<
+    CommonArticulationBlockComposedPathAuthorityV1,
+    CommonArticulationBlockComposedPathErrorV1,
+> {
+    issue_common_articulation_block_composed_path_authority_with_control_v1(
+        input,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+pub fn issue_common_articulation_block_composed_path_authority_with_control_v1(
+    input: CommonArticulationBlockComposedPathInputV1<'_>,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<
+    CommonArticulationBlockComposedPathAuthorityV1,
+    CommonArticulationBlockComposedPathErrorV1,
+> {
+    staged_block_composition_checkpoint_v1(control)?;
+    if !input.decomposition.is_for_geometry(input.geometry)
+        || !input.pose.is_for_geometry(input.geometry)
+        || !input.paper_thickness_mm.is_finite()
+        || input.paper_thickness_mm <= 0.0
+    {
+        return Err(CommonArticulationBlockComposedPathErrorV1::InvalidInput);
+    }
+
+    staged_block_composition_checkpoint_v1(control)?;
+    input
+        .common_pose
+        .revalidate_with_checkpoint_v1(
+            CommonArticulationPoseInputV1 {
+                geometry: input.geometry,
+                pose: input.pose,
+                decomposition: input.decomposition,
+                paper_thickness_mm: input.paper_thickness_mm,
+                limits: input.common_pose_limits,
+            },
+            || staged_common_pose_checkpoint_v1(control),
+        )
+        .map_err(map_staged_common_pose_error_v1)?;
+    staged_block_composition_checkpoint_v1(control)?;
+    input
+        .clearance
+        .revalidate_with_control_v1(
+            CommonArticulationClearanceRevalidationInputV1 {
+                geometry: input.geometry,
+                audit: input.audit,
+                pose: input.pose,
+                decomposition: input.decomposition,
+                common_pose: &input.common_pose,
+                common_pose_limits: input.common_pose_limits,
+                schedule: input.schedule,
+                schedule_limits: input.schedule_limits,
+                closure: input.closure,
+                paper_thickness_mm: input.paper_thickness_mm,
+                limits: input.clearance_limits,
+            },
+            control,
+        )
+        .map_err(map_staged_clearance_error_v1)?;
+
+    staged_block_composition_checkpoint_v1(control)?;
+    let canonical = canonical_block_partition_for_staged_v1(input.geometry, input.blocks, control)?;
+    let decomposition = canonical_decomposition_block_bindings_v1(input.decomposition, control)?;
+    if canonical != decomposition {
+        return Err(CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch);
+    }
+
+    staged_block_composition_checkpoint_v1(control)?;
+    let binding = common_articulation_block_composed_binding_v1(
+        input.schedule,
+        input.closure,
+        input.paper_thickness_mm,
+        &canonical,
+        input.common_pose.binding_fingerprint_v1(),
+        input.clearance.binding_fingerprint_v1(),
+    );
+    staged_block_composition_checkpoint_v1(control)?;
+    Ok(CommonArticulationBlockComposedPathAuthorityV1 {
+        binding,
+        blocks: canonical,
+        common_pose: input.common_pose,
+        clearance: input.clearance,
+    })
+}
+
+fn canonical_block_partition_for_staged_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    blocks: Vec<Vec<EdgeId>>,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<Vec<CanonicalBlockBindingV1>, CommonArticulationBlockComposedPathErrorV1> {
+    if blocks.len() < 2 || blocks.len() > BLOCK_COMPOSITION_LIMIT_V1 {
+        return Err(CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch);
+    }
+    let mut all_edges = HashSet::new();
+    all_edges
+        .try_reserve(geometry.hinges().len())
+        .map_err(|_| CommonArticulationBlockComposedPathErrorV1::ResourceLimit)?;
+    for hinge in geometry.hinges() {
+        staged_block_composition_checkpoint_v1(control)?;
+        if !all_edges.insert(hinge.edge()) {
+            return Err(
+                CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch,
+            );
+        }
+    }
+    let mut observed = HashSet::new();
+    observed
+        .try_reserve(all_edges.len())
+        .map_err(|_| CommonArticulationBlockComposedPathErrorV1::ResourceLimit)?;
+    let mut canonical = Vec::new();
+    canonical
+        .try_reserve_exact(blocks.len())
+        .map_err(|_| CommonArticulationBlockComposedPathErrorV1::ResourceLimit)?;
+    for mut edges in blocks {
+        staged_block_composition_checkpoint_v1(control)?;
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        if edges.is_empty()
+            || edges.windows(2).any(|pair| pair[0] == pair[1])
+            || edges
+                .iter()
+                .any(|edge| !all_edges.contains(edge) || !observed.insert(*edge))
+        {
+            return Err(
+                CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch,
+            );
+        }
+        let mut faces = Vec::new();
+        faces
+            .try_reserve_exact(
+                edges
+                    .len()
+                    .checked_mul(2)
+                    .ok_or(CommonArticulationBlockComposedPathErrorV1::ResourceLimit)?,
+            )
+            .map_err(|_| CommonArticulationBlockComposedPathErrorV1::ResourceLimit)?;
+        for edge in &edges {
+            staged_block_composition_checkpoint_v1(control)?;
+            let hinge = geometry
+                .hinges()
+                .iter()
+                .find(|hinge| hinge.edge() == *edge)
+                .ok_or(
+                    CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch,
+                )?;
+            faces.push(hinge.left_face());
+            faces.push(hinge.right_face());
+        }
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        faces.dedup();
+        canonical.push(CanonicalBlockBindingV1 { edges, faces });
+    }
+    if observed.len() != all_edges.len() {
+        return Err(CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch);
+    }
+    canonical.sort_unstable_by_key(|block| block.edges[0].canonical_bytes());
+    if !block_intersection_is_tree_v1(&canonical) {
+        return Err(CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch);
+    }
+    Ok(canonical)
+}
+
+fn canonical_decomposition_block_bindings_v1(
+    decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<Vec<CanonicalBlockBindingV1>, CommonArticulationBlockComposedPathErrorV1> {
+    let mut canonical = Vec::new();
+    canonical
+        .try_reserve_exact(decomposition.blocks().len())
+        .map_err(|_| CommonArticulationBlockComposedPathErrorV1::ResourceLimit)?;
+    for block in decomposition.blocks() {
+        staged_block_composition_checkpoint_v1(control)?;
+        let mut edges = Vec::new();
+        edges
+            .try_reserve_exact(block.geometry().hinges().len())
+            .map_err(|_| CommonArticulationBlockComposedPathErrorV1::ResourceLimit)?;
+        for hinge in block.geometry().hinges() {
+            staged_block_composition_checkpoint_v1(control)?;
+            edges.push(hinge.edge());
+        }
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        if edges.is_empty() || edges.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(
+                CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch,
+            );
+        }
+        let mut faces = Vec::new();
+        faces
+            .try_reserve_exact(block.geometry().face_ids().len())
+            .map_err(|_| CommonArticulationBlockComposedPathErrorV1::ResourceLimit)?;
+        for face in block.geometry().face_ids() {
+            staged_block_composition_checkpoint_v1(control)?;
+            faces.push(*face);
+        }
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        if faces.is_empty() || faces.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(
+                CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch,
+            );
+        }
+        canonical.push(CanonicalBlockBindingV1 { edges, faces });
+    }
+    canonical.sort_unstable_by_key(|block| block.edges[0].canonical_bytes());
+    if !block_intersection_is_tree_v1(&canonical) {
+        return Err(CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch);
+    }
+    Ok(canonical)
+}
+
+fn common_articulation_block_composed_binding_v1(
+    schedule: &CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+    blocks: &[CanonicalBlockBindingV1],
+    common_pose_binding: [u8; 32],
+    clearance_binding: [u8; 32],
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_MODEL_ID_V1.as_bytes());
+    hash.update(schedule.certificate_binding_fingerprint_v2());
+    hash.update(closure.partition_binding_fingerprint_v2());
+    hash.update(paper_thickness_mm.to_bits().to_be_bytes());
+    hash.update(common_pose_binding);
+    hash.update(clearance_binding);
+    hash.update((blocks.len() as u64).to_be_bytes());
+    for block in blocks {
+        hash.update((block.edges.len() as u64).to_be_bytes());
+        for edge in &block.edges {
+            hash.update(edge.canonical_bytes());
+        }
+        hash.update((block.faces.len() as u64).to_be_bytes());
+        for face in &block.faces {
+            hash.update(face.canonical_bytes());
+        }
+    }
+    hash.finalize().into()
+}
+
+fn map_staged_clearance_error_v1(
+    error: CommonArticulationClearanceErrorV1,
+) -> CommonArticulationBlockComposedPathErrorV1 {
+    match error {
+        CommonArticulationClearanceErrorV1::Cancelled => {
+            CommonArticulationBlockComposedPathErrorV1::Cancelled
+        }
+        CommonArticulationClearanceErrorV1::DeadlineExceeded => {
+            CommonArticulationBlockComposedPathErrorV1::DeadlineExceeded
+        }
+        error => CommonArticulationBlockComposedPathErrorV1::Clearance(error),
+    }
+}
+
+fn map_staged_common_pose_error_v1(
+    error: CommonArticulationPoseErrorV1,
+) -> CommonArticulationBlockComposedPathErrorV1 {
+    match error {
+        CommonArticulationPoseErrorV1::Cancelled => {
+            CommonArticulationBlockComposedPathErrorV1::Cancelled
+        }
+        CommonArticulationPoseErrorV1::DeadlineExceeded => {
+            CommonArticulationBlockComposedPathErrorV1::DeadlineExceeded
+        }
+        error => CommonArticulationBlockComposedPathErrorV1::CommonPose(error),
+    }
+}
+
+fn staged_common_pose_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), CommonArticulationPoseStopV1> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => CommonArticulationPoseStopV1::Cancelled,
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            CommonArticulationPoseStopV1::DeadlineExceeded
+        }
+    })
+}
+
+fn staged_block_composition_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), CommonArticulationBlockComposedPathErrorV1> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => {
+            CommonArticulationBlockComposedPathErrorV1::Cancelled
+        }
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            CommonArticulationBlockComposedPathErrorV1::DeadlineExceeded
+        }
+    })
+}
+
+/// Exact live inputs for the final common-articulation continuous-layer
+/// composition boundary.
+///
+/// All three opaque prerequisites are consumed on success. `whole_parent_layer`
+/// must cover the complete parent geometry; per-block layer proofs alone are
+/// insufficient at this boundary.
+pub struct CommonArticulationContinuousLayerPathInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub pose: &'a ori_kinematics::ClosedMaterialHingeGraphPose,
+    pub decomposition: &'a CanonicalMaterialEdgeBlockDecompositionV1,
+    pub staged: CommonArticulationBlockComposedPathAuthorityV1,
+    pub common_pose_limits: CommonArticulationPoseLimitsV1,
+    pub schedule: &'a CanonicalCycleScheduleV1,
+    pub schedule_limits: CycleScheduleLimitsV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub paper_thickness_mm: f64,
+    pub clearance_limits: CommonArticulationClearanceLimitsV1,
+    pub complete: CompleteMultiBlockPositiveLayerAuthorityV1,
+    pub block_sources: &'a [&'a LayerOrderSnapshot],
+    pub issuer_context: [u8; 32],
+    pub articulation_layer_fingerprint: [u8; 32],
+    pub target_angles: &'a [(EdgeId, f64)],
+    pub source: &'a LayerOrderSnapshot,
+    pub whole_parent_layer: GeneralMultiFaceCellTransportProofV1,
+}
+
+/// Exact live inputs required to revalidate a retained final authority.
+///
+/// The three nested authorities are deliberately absent: revalidation uses
+/// the opaque prerequisites retained inside the final authority itself.
+#[derive(Clone, Copy)]
+pub struct CommonArticulationContinuousLayerPathRevalidationInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub pose: &'a ori_kinematics::ClosedMaterialHingeGraphPose,
+    pub decomposition: &'a CanonicalMaterialEdgeBlockDecompositionV1,
+    pub common_pose_limits: CommonArticulationPoseLimitsV1,
+    pub schedule: &'a CanonicalCycleScheduleV1,
+    pub schedule_limits: CycleScheduleLimitsV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub paper_thickness_mm: f64,
+    pub clearance_limits: CommonArticulationClearanceLimitsV1,
+    pub block_sources: &'a [&'a LayerOrderSnapshot],
+    pub issuer_context: [u8; 32],
+    pub articulation_layer_fingerprint: [u8; 32],
+    pub target_angles: &'a [(EdgeId, f64)],
+    pub source: &'a LayerOrderSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum CommonArticulationContinuousLayerPathErrorV1 {
+    #[error("the final common-articulation path input is malformed")]
+    InvalidInput,
+    #[error("the staged common-articulation authority failed exact revalidation: {0}")]
+    Staged(CommonArticulationBlockComposedPathErrorV1),
+    #[error("the complete multi-block positive-layer authority failed exact revalidation")]
+    CompleteMultiBlockMismatch,
+    #[error("the staged and complete authorities bind different canonical blocks")]
+    CanonicalBlockPartitionMismatch,
+    #[error("a complete-authority block schedule is not the exact full-path restriction")]
+    BlockScheduleRestrictionMismatch,
+    #[error("a block layer source is not the exact whole-parent source restriction")]
+    BlockSourceRestrictionMismatch,
+    #[error("the whole-parent layer transport proof failed exact revalidation")]
+    WholeParentLayerMismatch,
+    #[error("the retained final authority binding does not match the live inputs")]
+    BindingMismatch,
+    #[error("the final common-articulation path operation exceeded a resource limit")]
+    ResourceLimit,
+    #[error("the final common-articulation path operation was cancelled")]
+    Cancelled,
+    #[error("the final common-articulation path operation deadline elapsed")]
+    DeadlineExceeded,
+}
+
+/// Opaque P2-3 authority combining exact common articulation, continuous
+/// clearance, complete blockwise positive-layer coverage, and whole-parent
+/// layer transport.
+///
+/// This is path evidence only. Project mutation, Apply, and viewer publication
+/// remain separate permission boundaries.
+///
+/// ```compile_fail
+/// use ori_collision::CommonArticulationContinuousLayerPathAuthorityV1;
+///
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<CommonArticulationContinuousLayerPathAuthorityV1>();
+/// ```
+///
+/// ```compile_fail
+/// use ori_collision::CommonArticulationContinuousLayerPathAuthorityV1;
+///
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<CommonArticulationContinuousLayerPathAuthorityV1>();
+/// ```
+pub struct CommonArticulationContinuousLayerPathAuthorityV1 {
+    binding: [u8; 32],
+    staged: CommonArticulationBlockComposedPathAuthorityV1,
+    complete: CompleteMultiBlockPositiveLayerAuthorityV1,
+    whole_parent_layer: GeneralMultiFaceCellTransportProofV1,
+}
+
+impl std::fmt::Debug for CommonArticulationContinuousLayerPathAuthorityV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommonArticulationContinuousLayerPathAuthorityV1")
+            .field("binding", &self.binding)
+            .field("block_count", &self.staged.blocks.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CommonArticulationContinuousLayerPathAuthorityV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding
+    }
+
+    #[must_use]
+    pub fn block_count_v1(&self) -> usize {
+        self.staged.blocks.len()
+    }
+
+    #[must_use]
+    pub const fn staged_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.staged.binding_fingerprint_v1()
+    }
+
+    #[must_use]
+    pub const fn complete_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.complete.binding_fingerprint_v1()
+    }
+
+    #[must_use]
+    pub fn whole_parent_target_order_hash_v1(&self) -> [u8; 32] {
+        self.whole_parent_layer.target_order_hash()
+    }
+
+    pub fn revalidate_v1(
+        &self,
+        input: CommonArticulationContinuousLayerPathRevalidationInputV1<'_>,
+    ) -> Result<(), CommonArticulationContinuousLayerPathErrorV1> {
+        self.revalidate_with_control_v1(input, &CooperativeOperationControlV1::unbounded())
+    }
+
+    pub fn revalidate_with_control_v1(
+        &self,
+        input: CommonArticulationContinuousLayerPathRevalidationInputV1<'_>,
+        control: &CooperativeOperationControlV1<'_>,
+    ) -> Result<(), CommonArticulationContinuousLayerPathErrorV1> {
+        let mut checkpoint = || final_path_checkpoint_v1(control);
+        self.revalidate_with_checkpoint_v1(input, control, &mut checkpoint)
+    }
+
+    fn revalidate_with_checkpoint_v1(
+        &self,
+        input: CommonArticulationContinuousLayerPathRevalidationInputV1<'_>,
+        control: &CooperativeOperationControlV1<'_>,
+        checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+    ) -> Result<(), CommonArticulationContinuousLayerPathErrorV1> {
+        let binding = validate_common_articulation_continuous_layer_path_v1(
+            input,
+            &self.staged,
+            &self.complete,
+            &self.whole_parent_layer,
+            control,
+            checkpoint,
+        )?;
+        checkpoint()?;
+        if binding != self.binding {
+            return Err(CommonArticulationContinuousLayerPathErrorV1::BindingMismatch);
+        }
+        checkpoint()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn revalidate_with_checkpoint_for_test_v1(
+        &self,
+        input: CommonArticulationContinuousLayerPathRevalidationInputV1<'_>,
+        mut checkpoint: impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+    ) -> Result<(), CommonArticulationContinuousLayerPathErrorV1> {
+        self.revalidate_with_checkpoint_v1(
+            input,
+            &CooperativeOperationControlV1::unbounded(),
+            &mut checkpoint,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_binding_for_test_v1(&mut self) {
+        self.binding[0] ^= 1;
+    }
+
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        true
+    }
+
+    #[must_use]
+    pub const fn authorizes_collision_clearance(&self) -> bool {
+        true
+    }
+
+    #[must_use]
+    pub const fn authorizes_layer_transport(&self) -> bool {
+        true
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_viewer(&self) -> bool {
+        false
+    }
+}
+
+pub fn issue_common_articulation_continuous_layer_path_authority_v1(
+    input: CommonArticulationContinuousLayerPathInputV1<'_>,
+) -> Result<
+    CommonArticulationContinuousLayerPathAuthorityV1,
+    CommonArticulationContinuousLayerPathErrorV1,
+> {
+    issue_common_articulation_continuous_layer_path_authority_with_control_v1(
+        input,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+pub fn issue_common_articulation_continuous_layer_path_authority_with_control_v1(
+    input: CommonArticulationContinuousLayerPathInputV1<'_>,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<
+    CommonArticulationContinuousLayerPathAuthorityV1,
+    CommonArticulationContinuousLayerPathErrorV1,
+> {
+    let live_input = CommonArticulationContinuousLayerPathRevalidationInputV1 {
+        geometry: input.geometry,
+        audit: input.audit,
+        pose: input.pose,
+        decomposition: input.decomposition,
+        common_pose_limits: input.common_pose_limits,
+        schedule: input.schedule,
+        schedule_limits: input.schedule_limits,
+        closure: input.closure,
+        paper_thickness_mm: input.paper_thickness_mm,
+        clearance_limits: input.clearance_limits,
+        block_sources: input.block_sources,
+        issuer_context: input.issuer_context,
+        articulation_layer_fingerprint: input.articulation_layer_fingerprint,
+        target_angles: input.target_angles,
+        source: input.source,
+    };
+    let mut checkpoint = || final_path_checkpoint_v1(control);
+    let binding = validate_common_articulation_continuous_layer_path_v1(
+        live_input,
+        &input.staged,
+        &input.complete,
+        &input.whole_parent_layer,
+        control,
+        &mut checkpoint,
+    )?;
+    checkpoint()?;
+    Ok(CommonArticulationContinuousLayerPathAuthorityV1 {
+        binding,
+        staged: input.staged,
+        complete: input.complete,
+        whole_parent_layer: input.whole_parent_layer,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_common_articulation_continuous_layer_path_v1(
+    input: CommonArticulationContinuousLayerPathRevalidationInputV1<'_>,
+    staged: &CommonArticulationBlockComposedPathAuthorityV1,
+    complete: &CompleteMultiBlockPositiveLayerAuthorityV1,
+    whole_parent_layer: &GeneralMultiFaceCellTransportProofV1,
+    control: &CooperativeOperationControlV1<'_>,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<[u8; 32], CommonArticulationContinuousLayerPathErrorV1> {
+    checkpoint()?;
+    if !input.paper_thickness_mm.is_finite()
+        || input.paper_thickness_mm <= 0.0
+        || input.issuer_context == [0; 32]
+        || input.articulation_layer_fingerprint == [0; 32]
+    {
+        return Err(CommonArticulationContinuousLayerPathErrorV1::InvalidInput);
+    }
+    staged
+        .revalidate_exact_with_control_v1(
+            input.geometry,
+            input.audit,
+            input.pose,
+            input.decomposition,
+            input.common_pose_limits,
+            input.schedule,
+            input.schedule_limits,
+            input.closure,
+            input.paper_thickness_mm,
+            input.clearance_limits,
+            control,
+        )
+        .map_err(map_final_staged_error_v1)?;
+    checkpoint()?;
+    if !complete.revalidates_with_checkpoint_v1(
+        input.geometry,
+        input.block_sources,
+        input.paper_thickness_mm,
+        input.issuer_context,
+        input.articulation_layer_fingerprint,
+        input.target_angles,
+        checkpoint,
+    )? {
+        return Err(CommonArticulationContinuousLayerPathErrorV1::CompleteMultiBlockMismatch);
+    }
+    if !canonical_block_bindings_equal_with_checkpoint_v1(
+        &staged.blocks,
+        &complete.blocks,
+        checkpoint,
+    )? {
+        return Err(CommonArticulationContinuousLayerPathErrorV1::CanonicalBlockPartitionMismatch);
+    }
+    checkpoint()?;
+    if !layer_proof_is_for_with_final_checkpoint_v1(
+        whole_parent_layer,
+        input.geometry,
+        input.source,
+        input.schedule,
+        input.closure,
+        input.paper_thickness_mm,
+        checkpoint,
+    )? {
+        return Err(CommonArticulationContinuousLayerPathErrorV1::WholeParentLayerMismatch);
+    }
+    validate_complete_block_schedule_restrictions_v1(
+        input.geometry,
+        input.audit,
+        input.schedule,
+        complete,
+        checkpoint,
+    )?;
+    validate_block_source_restrictions_v1(
+        input.source,
+        &complete.blocks,
+        input.block_sources,
+        checkpoint,
+    )?;
+    let canonical_target_angles =
+        canonical_target_angles_for_final_path_v1(input.target_angles, checkpoint)?;
+    common_articulation_continuous_layer_path_binding_with_checkpoint_v1(
+        input.schedule,
+        input.closure,
+        input.paper_thickness_mm,
+        &staged.blocks,
+        staged.binding,
+        complete.binding,
+        whole_parent_layer,
+        input.issuer_context,
+        input.articulation_layer_fingerprint,
+        &canonical_target_angles,
+        checkpoint,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn common_articulation_continuous_layer_path_binding_with_checkpoint_v1(
+    schedule: &CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+    blocks: &[CanonicalBlockBindingV1],
+    staged_binding: [u8; 32],
+    complete_binding: [u8; 32],
+    whole_parent_layer: &GeneralMultiFaceCellTransportProofV1,
+    issuer_context: [u8; 32],
+    articulation_layer_fingerprint: [u8; 32],
+    canonical_target_angles: &[(EdgeId, f64)],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<[u8; 32], CommonArticulationContinuousLayerPathErrorV1> {
+    let mut hash = Sha256::new();
+    hash.update(COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_MODEL_ID_V1.as_bytes());
+    hash.update(schedule.certificate_binding_fingerprint_v2());
+    hash.update(closure.partition_binding_fingerprint_v2());
+    hash.update(paper_thickness_mm.to_bits().to_be_bytes());
+    hash.update(staged_binding);
+    hash.update(complete_binding);
+    hash.update((whole_parent_layer.transition_hashes().len() as u64).to_be_bytes());
+    for transition_hash in whole_parent_layer.transition_hashes() {
+        checkpoint()?;
+        hash.update(transition_hash);
+    }
+    hash.update((whole_parent_layer.pair_order_count() as u64).to_be_bytes());
+    hash.update(issuer_context);
+    hash.update(articulation_layer_fingerprint);
+    hash.update((blocks.len() as u64).to_be_bytes());
+    for block in blocks {
+        checkpoint()?;
+        hash.update((block.edges.len() as u64).to_be_bytes());
+        for edge in &block.edges {
+            checkpoint()?;
+            hash.update(edge.canonical_bytes());
+        }
+        hash.update((block.faces.len() as u64).to_be_bytes());
+        for face in &block.faces {
+            checkpoint()?;
+            hash.update(face.canonical_bytes());
+        }
+    }
+    hash.update((canonical_target_angles.len() as u64).to_be_bytes());
+    for (edge, angle) in canonical_target_angles {
+        checkpoint()?;
+        hash.update(edge.canonical_bytes());
+        hash.update(angle.to_bits().to_be_bytes());
+    }
+    checkpoint()?;
+    Ok(hash.finalize().into())
+}
+
+fn canonical_target_angles_for_final_path_v1(
+    target_angles: &[(EdgeId, f64)],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<Vec<(EdgeId, f64)>, CommonArticulationContinuousLayerPathErrorV1> {
+    let mut canonical = Vec::new();
+    canonical
+        .try_reserve_exact(target_angles.len())
+        .map_err(|_| CommonArticulationContinuousLayerPathErrorV1::ResourceLimit)?;
+    for angle in target_angles {
+        checkpoint()?;
+        canonical.push(*angle);
+    }
+    canonical.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+    checkpoint()?;
+    Ok(canonical)
+}
+
+fn canonical_block_bindings_equal_with_checkpoint_v1(
+    expected: &[CanonicalBlockBindingV1],
+    actual: &[CanonicalBlockBindingV1],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
+    if expected.len() != actual.len() {
+        return Ok(false);
+    }
+    for (expected, actual) in expected.iter().zip(actual) {
+        checkpoint()?;
+        if !slice_equal_with_final_checkpoint_v1(&expected.edges, &actual.edges, checkpoint)?
+            || !slice_equal_with_final_checkpoint_v1(&expected.faces, &actual.faces, checkpoint)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restrict_schedule_with_final_checkpoint_v1(
+    schedule: &CanonicalCycleScheduleV1,
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    block_geometry: &MaterialHingeGraphGeometry,
+    block_audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<CanonicalCycleScheduleV1, CommonArticulationContinuousLayerPathErrorV1> {
+    let mut unexpected_checkpoint_error = None;
+    let result = schedule.restrict_to_edge_block_with_fixed_face_with_checkpoint_v1(
+        geometry,
+        audit,
+        block_geometry,
+        block_audit,
+        fixed_face,
+        || match checkpoint() {
+            Ok(()) => Ok(()),
+            Err(CommonArticulationContinuousLayerPathErrorV1::Cancelled) => {
+                Err(CycleScheduleRestrictionStopV1::Cancelled)
+            }
+            Err(CommonArticulationContinuousLayerPathErrorV1::DeadlineExceeded) => {
+                Err(CycleScheduleRestrictionStopV1::DeadlineExceeded)
+            }
+            Err(error) => {
+                unexpected_checkpoint_error = Some(error);
+                Err(CycleScheduleRestrictionStopV1::Cancelled)
+            }
+        },
+    );
+    if let Some(error) = unexpected_checkpoint_error {
+        return Err(error);
+    }
+    result.map_err(|error| match error {
+        CycleScheduleRestrictionErrorV1::Cancelled => {
+            CommonArticulationContinuousLayerPathErrorV1::Cancelled
+        }
+        CycleScheduleRestrictionErrorV1::DeadlineExceeded => {
+            CommonArticulationContinuousLayerPathErrorV1::DeadlineExceeded
+        }
+        CycleScheduleRestrictionErrorV1::Prepare(_) => {
+            CommonArticulationContinuousLayerPathErrorV1::BlockScheduleRestrictionMismatch
+        }
+    })
+}
+
+fn validate_complete_block_schedule_restrictions_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    schedule: &CanonicalCycleScheduleV1,
+    complete: &CompleteMultiBlockPositiveLayerAuthorityV1,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<(), CommonArticulationContinuousLayerPathErrorV1> {
+    if complete.parent.parent.blocks.len() != complete.blocks.len() {
+        return Err(CommonArticulationContinuousLayerPathErrorV1::CanonicalBlockPartitionMismatch);
+    }
+    for block in &complete.parent.parent.blocks {
+        checkpoint()?;
+        let restricted = restrict_schedule_with_final_checkpoint_v1(
+            schedule,
+            geometry,
+            audit,
+            &block.geometry,
+            &block.audit,
+            block.closure.fixed_face(),
+            checkpoint,
+        )?;
+        if restricted.certificate_binding_fingerprint_v2()
+            != block.schedule.certificate_binding_fingerprint_v2()
+            || restricted.graph_binding_fingerprint_v1()
+                != block.schedule.graph_binding_fingerprint_v1()
+        {
+            return Err(
+                CommonArticulationContinuousLayerPathErrorV1::BlockScheduleRestrictionMismatch,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_block_source_restrictions_v1(
+    source: &LayerOrderSnapshot,
+    blocks: &[CanonicalBlockBindingV1],
+    block_sources: &[&LayerOrderSnapshot],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<(), CommonArticulationContinuousLayerPathErrorV1> {
+    if blocks.len() != block_sources.len() {
+        return Err(CommonArticulationContinuousLayerPathErrorV1::BlockSourceRestrictionMismatch);
+    }
+    for (block, restricted) in blocks.iter().zip(block_sources) {
+        checkpoint()?;
+        if !layer_source_is_exact_face_restriction_v1(source, restricted, &block.faces, checkpoint)?
+        {
+            return Err(
+                CommonArticulationContinuousLayerPathErrorV1::BlockSourceRestrictionMismatch,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn layer_source_is_exact_face_restriction_v1(
+    source: &LayerOrderSnapshot,
+    restricted: &LayerOrderSnapshot,
+    faces: &[FaceId],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
+    let contains = |face: FaceId| {
+        faces
+            .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
+            .is_ok()
+    };
+    if source.model_id != restricted.model_id
+        || source.provenance != restricted.provenance
+        || source.proof_summary != restricted.proof_summary
+    {
+        return Ok(false);
+    }
+    let mut expected_material_faces = Vec::new();
+    for face in &source.material_faces {
+        checkpoint()?;
+        if contains(face.face_id) {
+            expected_material_faces.push(*face);
+        }
+    }
+    if !slice_equal_with_final_checkpoint_v1(
+        &expected_material_faces,
+        &restricted.material_faces,
+        checkpoint,
+    )? {
+        return Ok(false);
+    }
+    let mut expected_folded_faces = Vec::new();
+    for face in &source.folded_faces {
+        checkpoint()?;
+        if contains(face.face.face_id) {
+            expected_folded_faces.push(face.clone());
+        }
+    }
+    if !slice_equal_with_final_checkpoint_v1(
+        &expected_folded_faces,
+        &restricted.folded_faces,
+        checkpoint,
+    )? {
+        return Ok(false);
+    }
+    let mut expected_pair_orders = Vec::new();
+    for pair in &source.face_pair_orders {
+        checkpoint()?;
+        if contains(pair.lower_face.face_id) && contains(pair.upper_face.face_id) {
+            expected_pair_orders.push(pair.clone());
+        }
+    }
+    if !slice_equal_with_final_checkpoint_v1(
+        &expected_pair_orders,
+        &restricted.face_pair_orders,
+        checkpoint,
+    )? {
+        return Ok(false);
+    }
+    match (
+        &source.global_bottom_to_top,
+        &restricted.global_bottom_to_top,
+    ) {
+        (Some(source), Some(restricted)) => {
+            let mut expected = Vec::new();
+            for face in source {
+                checkpoint()?;
+                if contains(face.face_id) {
+                    expected.push(*face);
+                }
+            }
+            if !slice_equal_with_final_checkpoint_v1(&expected, restricted, checkpoint)? {
+                return Ok(false);
+            }
+        }
+        (None, None) => {}
+        _ => return Ok(false),
+    }
+    checkpoint()?;
+    let mut expected_reference = source.reference_face.filter(|face| contains(face.face_id));
+    if expected_reference.is_none() {
+        for face in &source.material_faces {
+            checkpoint()?;
+            if contains(face.face_id) {
+                expected_reference = Some(*face);
+                break;
+            }
+        }
+    }
+    if expected_reference != restricted.reference_face {
+        return Ok(false);
+    }
+    let mut actual_cells = restricted.overlap_cells.iter();
+    for cell in &source.overlap_cells {
+        checkpoint()?;
+        let mut cell_is_relevant = false;
+        for face in &cell.bottom_to_top_faces {
+            checkpoint()?;
+            if contains(*face) {
+                cell_is_relevant = true;
+                break;
+            }
+        }
+        if !cell_is_relevant {
+            continue;
+        }
+        let Some(actual) = actual_cells.next() else {
+            return Ok(false);
+        };
+        if cell.cell_key != actual.cell_key
+            || !slice_equal_with_final_checkpoint_v1(
+                &cell.exact_boundary,
+                &actual.exact_boundary,
+                checkpoint,
+            )?
+        {
+            return Ok(false);
+        }
+        let mut expected_covering = Vec::new();
+        for face in &cell.covering_faces {
+            checkpoint()?;
+            if contains(face.face_id) {
+                expected_covering.push(*face);
+            }
+        }
+        if !slice_equal_with_final_checkpoint_v1(
+            &expected_covering,
+            &actual.covering_faces,
+            checkpoint,
+        )? {
+            return Ok(false);
+        }
+        let mut expected_order = Vec::new();
+        for face in &cell.bottom_to_top_faces {
+            checkpoint()?;
+            if contains(*face) {
+                expected_order.push(*face);
+            }
+        }
+        if !slice_equal_with_final_checkpoint_v1(
+            &expected_order,
+            &actual.bottom_to_top_faces,
+            checkpoint,
+        )? {
+            return Ok(false);
+        }
+    }
+    checkpoint()?;
+    Ok(actual_cells.next().is_none())
+}
+
+fn slice_equal_with_final_checkpoint_v1<T: PartialEq>(
+    expected: &[T],
+    actual: &[T],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
+    if expected.len() != actual.len() {
+        return Ok(false);
+    }
+    for (expected, actual) in expected.iter().zip(actual) {
+        checkpoint()?;
+        if expected != actual {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn map_final_staged_error_v1(
+    error: CommonArticulationBlockComposedPathErrorV1,
+) -> CommonArticulationContinuousLayerPathErrorV1 {
+    match error {
+        CommonArticulationBlockComposedPathErrorV1::Cancelled => {
+            CommonArticulationContinuousLayerPathErrorV1::Cancelled
+        }
+        CommonArticulationBlockComposedPathErrorV1::DeadlineExceeded => {
+            CommonArticulationContinuousLayerPathErrorV1::DeadlineExceeded
+        }
+        error => CommonArticulationContinuousLayerPathErrorV1::Staged(error),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layer_proof_is_for_with_final_checkpoint_v1(
+    proof: &GeneralMultiFaceCellTransportProofV1,
+    geometry: &MaterialHingeGraphGeometry,
+    source: &LayerOrderSnapshot,
+    schedule: &CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    thickness: f64,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
+) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
+    let mut unexpected_checkpoint_error = None;
+    let result =
+        proof.is_for_with_checkpoint_v1(geometry, source, schedule, closure, thickness, || {
+            match checkpoint() {
+                Ok(()) => Ok(()),
+                Err(CommonArticulationContinuousLayerPathErrorV1::Cancelled) => {
+                    Err(CooperativeOperationStopV1::Cancelled)
+                }
+                Err(CommonArticulationContinuousLayerPathErrorV1::DeadlineExceeded) => {
+                    Err(CooperativeOperationStopV1::DeadlineExceeded)
+                }
+                Err(error) => {
+                    unexpected_checkpoint_error = Some(error);
+                    Err(CooperativeOperationStopV1::Cancelled)
+                }
+            }
+        });
+    if let Some(error) = unexpected_checkpoint_error {
+        return Err(error);
+    }
+    result.map_err(map_cooperative_stop_to_final_v1)
+}
+
+fn map_cooperative_stop_to_final_v1(
+    stop: CooperativeOperationStopV1,
+) -> CommonArticulationContinuousLayerPathErrorV1 {
+    match stop {
+        CooperativeOperationStopV1::Cancelled => {
+            CommonArticulationContinuousLayerPathErrorV1::Cancelled
+        }
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            CommonArticulationContinuousLayerPathErrorV1::DeadlineExceeded
+        }
+    }
+}
+
+fn final_path_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), CommonArticulationContinuousLayerPathErrorV1> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => {
+            CommonArticulationContinuousLayerPathErrorV1::Cancelled
+        }
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            CommonArticulationContinuousLayerPathErrorV1::DeadlineExceeded
+        }
+    })
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 #[allow(clippy::duplicate_mod)]
@@ -1361,18 +3046,25 @@ mod miura_cactus_test_support;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet, HashSet};
+    use std::{
+        collections::{BTreeMap, BTreeSet, HashSet},
+        sync::atomic::AtomicBool,
+        time::{Duration, Instant},
+    };
 
     use super::{
         COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1, CanonicalBlockBindingV1,
-        MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1, MultiBlockClosureInputV1,
-        MultiBlockPositiveLayerInputV1, block_intersection_is_tree_v1,
+        CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1,
+        CommonArticulationPoseLimitsV1, MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1,
+        MultiBlockClosureInputV1, MultiBlockPositiveLayerInputV1, block_intersection_is_tree_v1,
+        issue_common_articulation_pose_authority_v1,
+        issue_common_articulation_pose_authority_with_control_v1,
         issue_complete_multi_block_positive_layer_authority_v1,
         issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
         multi_block_count_supported_v1,
     };
     use crate::{
-        GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
+        CooperativeOperationControlV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
         certify_canonical_positive_thickness_cycle_schedule_path_v1,
         certify_general_multi_face_cell_transport_v1,
     };
@@ -1384,9 +3076,10 @@ mod tests {
         GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, LayerOrderSnapshot,
     };
     use ori_kinematics::{
-        CanonicalCycleScheduleV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
-        HalfAngleRationalEntryInputV1, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
-        RationalCoefficientV1, TreeKinematicsLimits,
+        CanonicalCycleScheduleV1, CanonicalEdgeBlockLimitsV1, CanonicalHingeAngles,
+        CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1, HalfAngleRationalEntryInputV1,
+        HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry, RationalCoefficientV1,
+        TreeKinematicsLimits,
     };
     use ori_topology::{FaceExtractionInput, analyze_faces};
 
@@ -1785,6 +3478,87 @@ mod tests {
         assert!(multi_block_count_supported_v1(MULTI_BLOCK_MAX_BLOCKS_V1));
         assert!(!multi_block_count_supported_v1(
             MULTI_BLOCK_MAX_BLOCKS_V1 + 1
+        ));
+    }
+
+    #[test]
+    fn common_articulation_adapter_issues_and_maps_cooperative_stops() {
+        let namespace = ProjectId::new();
+        let (pattern, paper, _) = chain_pattern_for_cells(&[(0, 0), (1, 0), (2, 0)], namespace);
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: namespace,
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .expect("three-cell topology");
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("three-cell geometry");
+        let audit = MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+            .expect("three-cell audit");
+        let angles = CanonicalHingeAngles::new(
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).expect("zero hinge angle"))
+                .collect(),
+        )
+        .expect("canonical zero angles");
+        let pose = geometry
+            .solve_closed(&audit, geometry.face_ids()[0], &angles, 0.0)
+            .expect("closed three-cell pose");
+        let decomposition = geometry
+            .decompose_canonical_edge_blocks_v1(
+                &audit,
+                CanonicalEdgeBlockLimitsV1 {
+                    max_blocks: 8,
+                    max_faces_per_block: 32,
+                    max_hinges_per_block: 32,
+                },
+            )
+            .expect("canonical articulation decomposition");
+        let input = CommonArticulationPoseInputV1 {
+            geometry: &geometry,
+            pose: &pose,
+            decomposition: &decomposition,
+            paper_thickness_mm: paper.thickness_mm,
+            limits: CommonArticulationPoseLimitsV1::default(),
+        };
+        let authority = issue_common_articulation_pose_authority_v1(input)
+            .expect("collision adapter authority");
+        assert!(authority.revalidate_v1(input).is_ok());
+        assert!(!authority.authorizes_continuous_motion());
+        assert!(!authority.authorizes_collision_clearance());
+        assert!(!authority.authorizes_project_mutation());
+        assert!(!authority.authorizes_apply());
+        assert!(!authority.authorizes_viewer());
+
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            issue_common_articulation_pose_authority_with_control_v1(
+                input,
+                &CooperativeOperationControlV1::new(
+                    Some(&cancelled),
+                    Instant::now() + Duration::from_secs(1),
+                ),
+            ),
+            Err(CommonArticulationPoseErrorV1::Cancelled)
+        ));
+        assert!(matches!(
+            issue_common_articulation_pose_authority_with_control_v1(
+                input,
+                &CooperativeOperationControlV1::new(
+                    None,
+                    Instant::now() - Duration::from_millis(1),
+                ),
+            ),
+            Err(CommonArticulationPoseErrorV1::DeadlineExceeded)
         ));
     }
 

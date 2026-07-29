@@ -37,6 +37,7 @@ use crate::{
 
 mod initial_sample_layer_admission;
 mod layered_chain_common;
+mod layered_five_face_chain;
 mod layered_four_face_chain;
 mod layered_three_face;
 mod multi_hinge_union;
@@ -50,6 +51,12 @@ use initial_sample_layer_admission::{
     SampledLayerAdmissionSnapshotV1, initial_sample_layer_admission_has_issuer_v1,
     initial_sample_layer_admission_matches_snapshot_v1,
     retain_initial_sample_layer_admission_issuer_v1, sampled_layer_admission_matches_snapshot_v1,
+};
+pub use layered_five_face_chain::{
+    LAYERED_FIVE_FACE_CHAIN_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+    LayeredFiveFaceChainContinuousCertificateV1, LayeredFiveFaceChainContinuousErrorV1,
+    LayeredFiveFaceChainContinuousLimitsV1, certify_layered_five_face_chain_continuous_path_v1,
+    certify_layered_five_face_chain_continuous_path_with_control_v1,
 };
 pub use layered_four_face_chain::{
     LAYERED_FOUR_FACE_CHAIN_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
@@ -3460,9 +3467,17 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
             .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?;
         let angles = CanonicalHingeAngles::new(angles)
             .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?;
-        let pose = model
-            .solve(initial_pose.fixed_face(), &angles)
-            .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?;
+        let pose = if index == 0 {
+            // The initial-sample layer admission is bound to this exact pose
+            // instance. Re-solving bit-identical angles would mint a distinct
+            // issuer instance and make the strict source-bound callback reject
+            // every otherwise valid admission at sample zero.
+            initial_pose.clone()
+        } else {
+            model
+                .solve(initial_pose.fixed_face(), &angles)
+                .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?
+        };
         if positive_thickness && index > 0 && index < limits.sample_intervals {
             // For the strict two-triangle/one-hinge class up to a right angle,
             // radial separation changes monotonically. The requested endpoint
@@ -6356,10 +6371,6 @@ mod dense_grid_cycle_test_support;
 #[cfg(test)]
 #[path = "../../../test-support/four_bay_cycle.rs"]
 mod four_bay_cycle_test_support;
-#[cfg(test)]
-#[path = "../../../test-support/miura_cactus.rs"]
-mod miura_cactus_test_support;
-
 #[cfg(test)]
 #[rustfmt::skip]
 #[path = "continuous_path/tests.rs"]

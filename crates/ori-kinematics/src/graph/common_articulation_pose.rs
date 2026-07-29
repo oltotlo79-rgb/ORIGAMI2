@@ -243,40 +243,81 @@ impl CommonArticulationPoseAuthorityV1 {
         &self,
         input: CommonArticulationPoseInputV1<'_>,
     ) -> Result<(), CommonArticulationPoseErrorV1> {
-        let candidate = prove_common_articulation_pose_authority_v1(input)?;
-        if self.matches_candidate_v1(&candidate) {
+        self.revalidate_with_checkpoint_v1(input, || Ok(()))
+    }
+
+    /// Reproves the live input and compares every retained binding while
+    /// cooperatively observing cancellation or deadline checkpoints.
+    pub fn revalidate_with_checkpoint_v1(
+        &self,
+        input: CommonArticulationPoseInputV1<'_>,
+        mut checkpoint: impl FnMut() -> Result<(), CommonArticulationPoseStopV1>,
+    ) -> Result<(), CommonArticulationPoseErrorV1> {
+        let candidate =
+            prove_common_articulation_pose_authority_with_checkpoint_v1(input, &mut checkpoint)?;
+        common_articulation_checkpoint_v1(&mut checkpoint)?;
+        if self.matches_candidate_with_checkpoint_v1(&candidate, &mut checkpoint)? {
+            common_articulation_checkpoint_v1(&mut checkpoint)?;
             Ok(())
         } else {
             Err(CommonArticulationPoseErrorV1::IssuerMismatch)
         }
     }
 
-    fn matches_candidate_v1(&self, candidate: &Self) -> bool {
-        self.issuer_geometry == candidate.issuer_geometry
-            && Arc::ptr_eq(&self.issuer_pose, &candidate.issuer_pose)
-            && self.fixed_face == candidate.fixed_face
-            && self.decomposition_limits == candidate.decomposition_limits
-            && self.paper_thickness_bits == candidate.paper_thickness_bits
-            && self.limits == candidate.limits
-            && self.articulation_faces == candidate.articulation_faces
-            && self.logical_work == candidate.logical_work
-            && self.retained_bytes == candidate.retained_bytes
-            && self.binding_fingerprint == candidate.binding_fingerprint
-            && self.blocks.len() == candidate.blocks.len()
-            && self
-                .blocks
-                .iter()
-                .zip(&candidate.blocks)
-                .all(|(expected, actual)| {
-                    expected.geometry_issuer == actual.geometry_issuer
-                        && expected.faces == actual.faces
-                        && candidate_face_transforms_bit_equal_v1(
-                            &expected.face_transforms,
-                            &actual.face_transforms,
-                        )
-                        && expected.hinge_angles == actual.hinge_angles
-                        && expected.articulation_faces == actual.articulation_faces
-                })
+    fn matches_candidate_with_checkpoint_v1(
+        &self,
+        candidate: &Self,
+        checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV1>,
+    ) -> Result<bool, CommonArticulationPoseErrorV1> {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if self.issuer_geometry != candidate.issuer_geometry
+            || !Arc::ptr_eq(&self.issuer_pose, &candidate.issuer_pose)
+            || self.fixed_face != candidate.fixed_face
+            || self.decomposition_limits != candidate.decomposition_limits
+            || self.paper_thickness_bits != candidate.paper_thickness_bits
+            || self.limits != candidate.limits
+            || self.logical_work != candidate.logical_work
+            || self.retained_bytes != candidate.retained_bytes
+            || self.binding_fingerprint != candidate.binding_fingerprint
+            || self.blocks.len() != candidate.blocks.len()
+        {
+            return Ok(false);
+        }
+        if !candidate_slice_equal_with_checkpoint_v1(
+            &self.articulation_faces,
+            &candidate.articulation_faces,
+            checkpoint,
+        )? {
+            return Ok(false);
+        }
+        for (expected, actual) in self.blocks.iter().zip(&candidate.blocks) {
+            common_articulation_checkpoint_v1(checkpoint)?;
+            if expected.geometry_issuer != actual.geometry_issuer
+                || !candidate_slice_equal_with_checkpoint_v1(
+                    &expected.faces,
+                    &actual.faces,
+                    checkpoint,
+                )?
+                || !candidate_face_transforms_bit_equal_with_checkpoint_v1(
+                    &expected.face_transforms,
+                    &actual.face_transforms,
+                    checkpoint,
+                )?
+                || !candidate_slice_equal_with_checkpoint_v1(
+                    &expected.hinge_angles,
+                    &actual.hinge_angles,
+                    checkpoint,
+                )?
+                || !candidate_slice_equal_with_checkpoint_v1(
+                    &expected.articulation_faces,
+                    &actual.articulation_faces,
+                    checkpoint,
+                )?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     #[must_use]
@@ -341,22 +382,17 @@ pub fn prove_common_articulation_pose_authority_with_checkpoint_v1(
         return Err(CommonArticulationPoseErrorV1::ResourceLimit);
     }
 
-    let submitted_faces = input
-        .decomposition
-        .blocks()
-        .iter()
-        .try_fold(0usize, |total, block| {
-            total.checked_add(block.geometry().face_ids().len())
-        })
-        .ok_or(CommonArticulationPoseErrorV1::ResourceLimit)?;
-    let submitted_hinges = input
-        .decomposition
-        .blocks()
-        .iter()
-        .try_fold(0usize, |total, block| {
-            total.checked_add(block.geometry().hinges().len())
-        })
-        .ok_or(CommonArticulationPoseErrorV1::ResourceLimit)?;
+    let mut submitted_faces = 0usize;
+    let mut submitted_hinges = 0usize;
+    for block in input.decomposition.blocks() {
+        common_articulation_checkpoint_v1(&mut checkpoint)?;
+        submitted_faces = submitted_faces
+            .checked_add(block.geometry().face_ids().len())
+            .ok_or(CommonArticulationPoseErrorV1::ResourceLimit)?;
+        submitted_hinges = submitted_hinges
+            .checked_add(block.geometry().hinges().len())
+            .ok_or(CommonArticulationPoseErrorV1::ResourceLimit)?;
+    }
     let block_pairs = block_count
         .checked_mul(block_count.saturating_sub(1))
         .and_then(|value| value.checked_div(2))
@@ -421,19 +457,18 @@ pub fn prove_common_articulation_pose_authority_with_checkpoint_v1(
         }
         hinge_angles.sort_unstable_by_key(|angle| angle.edge.canonical_bytes());
 
-        let mut articulation_faces = block
-            .geometry()
-            .face_ids()
-            .iter()
-            .copied()
-            .filter(|face| {
-                input
-                    .decomposition
-                    .articulation_faces()
-                    .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
-                    .is_ok()
-            })
-            .collect::<Vec<_>>();
+        let mut articulation_faces = Vec::new();
+        for face in block.geometry().face_ids().iter().copied() {
+            common_articulation_checkpoint_v1(&mut checkpoint)?;
+            if input
+                .decomposition
+                .articulation_faces()
+                .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
+                .is_ok()
+            {
+                articulation_faces.push(face);
+            }
+        }
         articulation_faces.sort_unstable_by_key(FaceId::canonical_bytes);
         blocks.push(CommonArticulationPoseBlockRestrictionV1 {
             geometry_issuer: block.geometry().instance_anchor_v1(),
@@ -445,13 +480,14 @@ pub fn prove_common_articulation_pose_authority_with_checkpoint_v1(
     }
 
     common_articulation_checkpoint_v1(&mut checkpoint)?;
-    let binding_fingerprint = binding_fingerprint_v1(
+    let binding_fingerprint = binding_fingerprint_with_checkpoint_v1(
         input.geometry,
         input.pose,
         &blocks,
         input.decomposition.articulation_faces(),
         input.paper_thickness_mm.to_bits(),
-    );
+        &mut checkpoint,
+    )?;
     common_articulation_checkpoint_v1(&mut checkpoint)?;
     Ok(CommonArticulationPoseAuthorityV1 {
         issuer_geometry: input.geometry.instance_anchor_v1(),
@@ -502,12 +538,11 @@ fn validate_parent_pose_v1(
     {
         return Err(CommonArticulationPoseErrorV1::IncompleteParentPose);
     }
-    if geometry
-        .face_ids()
-        .windows(2)
-        .any(|faces| faces[0].canonical_bytes() >= faces[1].canonical_bytes())
-    {
-        return Err(CommonArticulationPoseErrorV1::IncompleteParentPose);
+    for faces in geometry.face_ids().windows(2) {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if faces[0].canonical_bytes() >= faces[1].canonical_bytes() {
+            return Err(CommonArticulationPoseErrorV1::IncompleteParentPose);
+        }
     }
     for (expected, transform) in geometry.face_ids().iter().zip(pose.transforms()) {
         common_articulation_checkpoint_v1(checkpoint)?;
@@ -522,17 +557,23 @@ fn validate_parent_pose_v1(
         .map(|hinge| hinge.edge())
         .collect::<Vec<_>>();
     canonical_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
-    if canonical_edges.windows(2).any(|edges| edges[0] == edges[1])
-        || canonical_edges
-            .iter()
-            .zip(pose.hinge_angles().as_slice())
-            .any(|(edge, angle)| {
-                *edge != angle.edge()
-                    || !angle.angle_degrees().is_finite()
-                    || !(0.0..=180.0).contains(&angle.angle_degrees())
-            })
-        || canonical_edges != pose.closure_certificate().checked_hinges()
-    {
+    for edges in canonical_edges.windows(2) {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if edges[0] == edges[1] {
+            return Err(CommonArticulationPoseErrorV1::IncompleteParentPose);
+        }
+    }
+    for (edge, angle) in canonical_edges.iter().zip(pose.hinge_angles().as_slice()) {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if *edge != angle.edge()
+            || !angle.angle_degrees().is_finite()
+            || !(0.0..=180.0).contains(&angle.angle_degrees())
+        {
+            return Err(CommonArticulationPoseErrorV1::IncompleteParentPose);
+        }
+    }
+    common_articulation_checkpoint_v1(checkpoint)?;
+    if canonical_edges != pose.closure_certificate().checked_hinges() {
         return Err(CommonArticulationPoseErrorV1::IncompleteParentPose);
     }
     Ok(())
@@ -543,12 +584,11 @@ fn validate_decomposition_v1(
     decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
     checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV1>,
 ) -> Result<(), CommonArticulationPoseErrorV1> {
-    if decomposition
-        .articulation_faces()
-        .windows(2)
-        .any(|faces| faces[0].canonical_bytes() >= faces[1].canonical_bytes())
-    {
-        return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
+    for faces in decomposition.articulation_faces().windows(2) {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if faces[0].canonical_bytes() >= faces[1].canonical_bytes() {
+            return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
+        }
     }
 
     let mut union_faces = Vec::new();
@@ -559,18 +599,26 @@ fn validate_decomposition_v1(
         common_articulation_checkpoint_v1(checkpoint)?;
         let faces = block.geometry().face_ids();
         let hinges = block.geometry().hinges();
-        if faces.len() < 2
-            || hinges.is_empty()
-            || faces
-                .windows(2)
-                .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
-        {
+        if faces.len() < 2 || hinges.is_empty() {
             return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
         }
-        let mut block_edges = hinges.iter().map(|hinge| hinge.edge()).collect::<Vec<_>>();
+        for pair in faces.windows(2) {
+            common_articulation_checkpoint_v1(checkpoint)?;
+            if pair[0].canonical_bytes() >= pair[1].canonical_bytes() {
+                return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
+            }
+        }
+        let mut block_edges = Vec::new();
+        for hinge in hinges {
+            common_articulation_checkpoint_v1(checkpoint)?;
+            block_edges.push(hinge.edge());
+        }
         block_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
-        if block_edges.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
+        for pair in block_edges.windows(2) {
+            common_articulation_checkpoint_v1(checkpoint)?;
+            if pair[0] == pair[1] {
+                return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
+            }
         }
         let key = (faces[0].canonical_bytes(), block_edges[0].canonical_bytes());
         if prior_key.is_some_and(|prior| prior >= key) {
@@ -578,13 +626,17 @@ fn validate_decomposition_v1(
         }
         prior_key = Some(key);
 
-        let mut audit_edges = block
+        let mut audit_edges = Vec::new();
+        for edge in block
             .audit()
             .spanning_hinges()
             .iter()
             .chain(block.audit().closure_hinges())
             .copied()
-            .collect::<Vec<_>>();
+        {
+            common_articulation_checkpoint_v1(checkpoint)?;
+            audit_edges.push(edge);
+        }
         audit_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
         if block.audit().faces() != faces || audit_edges != block_edges {
             return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
@@ -599,11 +651,15 @@ fn validate_decomposition_v1(
         }
         for hinge in hinges {
             common_articulation_checkpoint_v1(checkpoint)?;
-            let Some(parent_hinge) = geometry
-                .hinges()
-                .iter()
-                .find(|candidate| candidate.edge() == hinge.edge())
-            else {
+            let mut parent_hinge = None;
+            for candidate in geometry.hinges() {
+                common_articulation_checkpoint_v1(checkpoint)?;
+                if candidate.edge() == hinge.edge() {
+                    parent_hinge = Some(candidate);
+                    break;
+                }
+            }
+            let Some(parent_hinge) = parent_hinge else {
                 return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
             };
             if parent_hinge != hinge {
@@ -616,44 +672,58 @@ fn validate_decomposition_v1(
     union_faces.sort_unstable_by_key(FaceId::canonical_bytes);
     union_faces.dedup();
     union_hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
-    let mut parent_hinges = geometry
-        .hinges()
-        .iter()
-        .map(|hinge| hinge.edge())
-        .collect::<Vec<_>>();
+    let mut parent_hinges = Vec::new();
+    for hinge in geometry.hinges() {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        parent_hinges.push(hinge.edge());
+    }
     parent_hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
-    let mut articulation_faces = incidence
-        .into_iter()
-        .filter_map(|(face, count)| (count > 1).then_some(face))
-        .collect::<Vec<_>>();
+    let mut articulation_faces = Vec::new();
+    for (face, count) in incidence {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if count > 1 {
+            articulation_faces.push(face);
+        }
+    }
     articulation_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+    for pair in union_hinges.windows(2) {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if pair[0] == pair[1] {
+            return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
+        }
+    }
     if union_faces != geometry.face_ids()
-        || union_hinges.windows(2).any(|pair| pair[0] == pair[1])
         || union_hinges != parent_hinges
         || articulation_faces != decomposition.articulation_faces()
-        || !block_intersection_is_tree_v1(decomposition)
     {
+        return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
+    }
+    if !block_intersection_is_tree_with_checkpoint_v1(decomposition, checkpoint)? {
         return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
     }
     Ok(())
 }
 
-fn block_intersection_is_tree_v1(
+fn block_intersection_is_tree_with_checkpoint_v1(
     decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
-) -> bool {
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV1>,
+) -> Result<bool, CommonArticulationPoseErrorV1> {
     let blocks = decomposition.blocks();
     let mut adjacency = vec![Vec::new(); blocks.len()];
     let mut edge_count = 0usize;
     for first in 0..blocks.len() {
+        common_articulation_checkpoint_v1(checkpoint)?;
         for second in first + 1..blocks.len() {
-            let shared = blocks[first]
-                .geometry()
-                .face_ids()
-                .iter()
-                .filter(|face| blocks[second].geometry().face_ids().contains(face))
-                .count();
+            common_articulation_checkpoint_v1(checkpoint)?;
+            let mut shared = 0usize;
+            for face in blocks[first].geometry().face_ids() {
+                common_articulation_checkpoint_v1(checkpoint)?;
+                if blocks[second].geometry().face_ids().contains(face) {
+                    shared += 1;
+                }
+            }
             if shared > 1 {
-                return false;
+                return Ok(false);
             }
             if shared == 1 {
                 adjacency[first].push(second);
@@ -663,20 +733,28 @@ fn block_intersection_is_tree_v1(
         }
     }
     if edge_count != blocks.len().saturating_sub(1) {
-        return false;
+        return Ok(false);
     }
     let mut visited = vec![false; blocks.len()];
     let mut queue = VecDeque::from([0usize]);
     visited[0] = true;
     while let Some(block) = queue.pop_front() {
+        common_articulation_checkpoint_v1(checkpoint)?;
         for &next in &adjacency[block] {
+            common_articulation_checkpoint_v1(checkpoint)?;
             if !visited[next] {
                 visited[next] = true;
                 queue.push_back(next);
             }
         }
     }
-    visited.into_iter().all(|seen| seen)
+    for seen in visited {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if !seen {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn angle_bits_v1(angles: &CanonicalHingeAngles, edge: EdgeId) -> Option<u64> {
@@ -744,56 +822,89 @@ fn rigid_transform_bits_v1(transform: RigidTransform) -> [u64; 12] {
     ]
 }
 
-fn candidate_face_transforms_bit_equal_v1(
-    first: &[CandidateFaceTransform],
-    second: &[CandidateFaceTransform],
-) -> bool {
-    first.len() == second.len()
-        && first.iter().zip(second).all(|(first, second)| {
-            first.face() == second.face()
-                && rigid_transform_bits_v1(first.transform())
-                    == rigid_transform_bits_v1(second.transform())
-        })
+fn candidate_slice_equal_with_checkpoint_v1<T: PartialEq>(
+    first: &[T],
+    second: &[T],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV1>,
+) -> Result<bool, CommonArticulationPoseErrorV1> {
+    if first.len() != second.len() {
+        return Ok(false);
+    }
+    for (first, second) in first.iter().zip(second) {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if first != second {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
-fn binding_fingerprint_v1(
+fn candidate_face_transforms_bit_equal_with_checkpoint_v1(
+    first: &[CandidateFaceTransform],
+    second: &[CandidateFaceTransform],
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV1>,
+) -> Result<bool, CommonArticulationPoseErrorV1> {
+    if first.len() != second.len() {
+        return Ok(false);
+    }
+    for (first, second) in first.iter().zip(second) {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        if first.face() != second.face()
+            || rigid_transform_bits_v1(first.transform())
+                != rigid_transform_bits_v1(second.transform())
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn binding_fingerprint_with_checkpoint_v1(
     geometry: &MaterialHingeGraphGeometry,
     pose: &ClosedMaterialHingeGraphPose,
     blocks: &[CommonArticulationPoseBlockRestrictionV1],
     articulation_faces: &[FaceId],
     paper_thickness_bits: u64,
-) -> [u8; 32] {
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV1>,
+) -> Result<[u8; 32], CommonArticulationPoseErrorV1> {
     let mut hash = Sha256::new();
     hash.update(COMMON_ARTICULATION_POSE_MODEL_ID_V1.as_bytes());
     hash.update(paper_thickness_bits.to_le_bytes());
     hash.update(pose.fixed_face().canonical_bytes());
     for face in geometry.face_ids() {
+        common_articulation_checkpoint_v1(checkpoint)?;
         hash.update(face.canonical_bytes());
         if let Some(transform) = pose.face_transform(*face) {
             for bits in rigid_transform_bits_v1(transform) {
+                common_articulation_checkpoint_v1(checkpoint)?;
                 hash.update(bits.to_le_bytes());
             }
         }
     }
     for angle in pose.hinge_angles().as_slice() {
+        common_articulation_checkpoint_v1(checkpoint)?;
         hash.update(angle.edge().canonical_bytes());
         hash.update(angle.angle_degrees().to_bits().to_le_bytes());
     }
     for block in blocks {
+        common_articulation_checkpoint_v1(checkpoint)?;
         hash.update((block.faces.len() as u64).to_le_bytes());
         hash.update((block.hinge_angles.len() as u64).to_le_bytes());
         for face in &block.faces {
+            common_articulation_checkpoint_v1(checkpoint)?;
             hash.update(face.canonical_bytes());
         }
         for hinge in &block.hinge_angles {
+            common_articulation_checkpoint_v1(checkpoint)?;
             hash.update(hinge.edge.canonical_bytes());
             hash.update(hinge.angle_degrees_bits.to_le_bytes());
         }
     }
     for face in articulation_faces {
+        common_articulation_checkpoint_v1(checkpoint)?;
         hash.update(face.canonical_bytes());
     }
-    hash.finalize().into()
+    Ok(hash.finalize().into())
 }
 
 fn common_articulation_checkpoint_v1(
@@ -1213,6 +1324,58 @@ mod tests {
                     .expect_err("typed cooperative stop"),
                     expected
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn revalidation_stops_during_reproof_and_candidate_comparison() {
+        let fixture = chain_fixture_v1(8);
+        let input = fixture.input(0.1, CommonArticulationPoseLimitsV1::default());
+        let authority =
+            prove_common_articulation_pose_authority_v1(input).expect("baseline authority");
+
+        let mut issuance_checkpoints = 0usize;
+        prove_common_articulation_pose_authority_with_checkpoint_v1(input, || {
+            issuance_checkpoints += 1;
+            Ok(())
+        })
+        .expect("count issuance checkpoints");
+        let mut revalidation_checkpoints = 0usize;
+        authority
+            .revalidate_with_checkpoint_v1(input, || {
+                revalidation_checkpoints += 1;
+                Ok(())
+            })
+            .expect("count revalidation checkpoints");
+        assert!(revalidation_checkpoints > issuance_checkpoints + 4);
+
+        for stop_at in [1, issuance_checkpoints + 2, revalidation_checkpoints] {
+            for (stop, expected) in [
+                (
+                    CommonArticulationPoseStopV1::Cancelled,
+                    CommonArticulationPoseErrorV1::Cancelled,
+                ),
+                (
+                    CommonArticulationPoseStopV1::DeadlineExceeded,
+                    CommonArticulationPoseErrorV1::DeadlineExceeded,
+                ),
+            ] {
+                let mut observed = 0usize;
+                assert_eq!(
+                    authority
+                        .revalidate_with_checkpoint_v1(input, || {
+                            observed += 1;
+                            if observed == stop_at {
+                                Err(stop)
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .expect_err("revalidation cooperative stop"),
+                    expected
+                );
+                assert_eq!(observed, stop_at);
             }
         }
     }

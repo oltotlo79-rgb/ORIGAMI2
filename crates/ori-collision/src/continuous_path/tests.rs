@@ -1317,7 +1317,7 @@ fn cactus_star_groups_three_or_more_cycles_around_an_articulation_face() {
 
 #[test]
 fn two_patch_miura_cactus_has_native_layer_authority() {
-    let (pattern, paper, _) = super::miura_cactus_test_support::two_patch_miura_cactus_pattern();
+    let (pattern, paper, _) = crate::miura_cactus_test_support::two_patch_miura_cactus_pattern();
     let project = fixed_id("ca20", 1);
     let topology = analyze_faces(FaceExtractionInput {
         identity_namespace: project,
@@ -1380,7 +1380,7 @@ fn two_patch_miura_cactus_has_native_layer_authority() {
 #[test]
 fn three_by_three_blocks_issue_canonical_blockwise_closure() {
     let project = fixed_id("ca40", 1);
-    let blocks = super::miura_cactus_test_support::independent_three_by_three_miura_blocks();
+    let blocks = crate::miura_cactus_test_support::independent_three_by_three_miura_blocks();
     let prepared = blocks.map(|(pattern, paper, moving)| {
         let topology = analyze_faces(FaceExtractionInput {
             identity_namespace: project,
@@ -4746,6 +4746,42 @@ fn authenticated_two_face_zero_thickness_path_gets_narrow_certificate() {
         )
         .is_none()
     );
+}
+
+#[test]
+fn sampled_layer_callback_receives_retained_initial_pose_instance_at_zero_sample() {
+    let model = one_hinge_model();
+    let edge = model.hinges()[0].edge();
+    let source = CanonicalHingeAngles::new(vec![HingeAngle::new(edge, 0.0).unwrap()]).unwrap();
+    let initial = model
+        .solve(Some(model.face_ids()[0]), &source)
+        .expect("initial single-hinge pose");
+    let target = CanonicalHingeAngles::new(vec![HingeAngle::new(edge, 180.0).unwrap()]).unwrap();
+    let zero_sample_seen = std::cell::Cell::new(false);
+    let retained_initial_only =
+        |index: usize, pose: &MaterialTreePose, _: &StaticCollisionDiagnosticSnapshot| {
+            if index == 0 {
+                zero_sample_seen.set(true);
+                pose.same_instance(&initial)
+            } else {
+                false
+            }
+        };
+
+    diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
+        &model,
+        &initial,
+        initial.hinge_angles(),
+        target.as_slice(),
+        0.0,
+        StackedFoldPathDiagnosticLimitsV1::default(),
+        None,
+        Some(&retained_initial_only),
+        &CooperativeOperationControlV1::unbounded(),
+    )
+    .expect("the source-bound callback must accept the retained zero sample");
+
+    assert!(zero_sample_seen.get());
 }
 
 #[test]

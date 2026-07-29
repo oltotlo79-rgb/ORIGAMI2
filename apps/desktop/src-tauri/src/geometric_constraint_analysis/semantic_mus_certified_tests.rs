@@ -1,4 +1,5 @@
 use super::*;
+use ori_core::DirectConstraintConflictKindV1;
 
 #[test]
 fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
@@ -54,6 +55,7 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
             pair_constraint_algebraic_witness_count: 0,
             length_constraint_constructive_witness_count: 0,
             zero_length_closure_constructive_witness_count: 0,
+            anchored_mirror_residual_only_witness_count: 0,
             authorizes_project_mutation: false,
             replayable_across_runtimes:
                 ori_numeric::deterministic_transcendental_model_supported_v1(),
@@ -139,6 +141,10 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
         encoded["semantic_mus"]["zero_length_closure_constructive_witness_count"],
         0,
     );
+    assert_eq!(
+        encoded["semantic_mus"]["anchored_mirror_residual_only_witness_count"],
+        0,
+    );
     assert_eq!(fixture.pattern, pattern_before);
     assert_eq!(document, document_before);
 }
@@ -212,6 +218,7 @@ fn different_fixed_lengths_are_promoted_by_the_constructive_singleton_witness() 
             pair_constraint_algebraic_witness_count: 0,
             length_constraint_constructive_witness_count: 0,
             zero_length_closure_constructive_witness_count: 0,
+            anchored_mirror_residual_only_witness_count: 0,
             authorizes_project_mutation: false,
             replayable_across_runtimes,
             ..
@@ -384,4 +391,274 @@ fn non_direct_response_serializes_null_and_oversized_direct_input_stays_unknown(
             ..
         }) if direct_core_constraint_ids.is_empty()
     ));
+}
+
+#[test]
+fn reverse_binary64_ratio_domain_uses_the_existing_wire_tag_and_semantic_dto() {
+    let mut vertices = Vec::new();
+    let mut edges = Vec::new();
+    let mut edge_ids = Vec::new();
+    for index in 0..5 {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        vertices.extend([
+            Vertex {
+                id: start,
+                position: Point2::new(index as f64 * 4.0, 0.0),
+            },
+            Vertex {
+                id: end,
+                position: Point2::new(index as f64 * 4.0 + 1.0, 0.0),
+            },
+        ]);
+        edges.push(Edge {
+            id: edge,
+            start,
+            end,
+            kind: EdgeKind::Auxiliary,
+        });
+        edge_ids.push(edge);
+    }
+    let pattern = CreasePattern { vertices, edges };
+    let records = vec![
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: edge_ids[4],
+            length_mm: 7.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: edge_ids[4],
+            denominator_edge: edge_ids[0],
+            ratio: 11.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: edge_ids[0],
+            denominator_edge: edge_ids[1],
+            ratio: 2.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: edge_ids[1],
+            denominator_edge: edge_ids[2],
+            ratio: 3.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: edge_ids[2],
+            denominator_edge: edge_ids[3],
+            ratio: 5.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: edge_ids[3],
+            denominator_edge: edge_ids[0],
+            ratio: 0.1,
+        }),
+    ];
+    let expected_ids = canonical_ids(&records);
+    let outcome = analyze_geometric_constraint_document_outcome_with_observer(
+        &pattern,
+        &document(records),
+        &mut continuing_observer(),
+    )
+    .expect("reverse-domain analysis must map through the desktop boundary");
+
+    let (conflicts, bounded_direct_mus) = match outcome.result {
+        GeometricConstraintPreflightResult::DirectConflict {
+            conflicts,
+            bounded_direct_mus,
+        } => (conflicts, bounded_direct_mus),
+        other => panic!("expected reverse-domain direct conflict, got {other:?}"),
+    };
+    assert!(conflicts.iter().any(|conflict| {
+        matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
+                fixed_edge,
+                ratio_constraint_count: 5,
+            } if *fixed_edge == edge_ids[4]
+        ) && conflict.constraint_ids() == expected_ids.as_slice()
+    }));
+    assert!(matches!(
+        &bounded_direct_mus,
+        BoundedDirectMusResult::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        } if constraint_ids == &expected_ids && *oracle_calls > 0
+    ));
+
+    let semantic_mus = outcome
+        .semantic_mus
+        .expect("reverse-domain direct result must carry semantic status");
+    assert!(matches!(
+        &semantic_mus,
+        GeometricConstraintSemanticMusResult::Certified {
+            constraint_ids,
+            constraint_count: 6,
+            deletion_witness_checks: 6,
+            length_constraint_constructive_witness_count: 6,
+            authorizes_project_mutation: false,
+            ..
+        } if constraint_ids == &expected_ids
+    ));
+
+    let response = GeometricConstraintPreflightResponse {
+        project_instance_id: ProjectId::new(),
+        project_id: ProjectId::new(),
+        revision: 11,
+        result: GeometricConstraintPreflightResult::DirectConflict {
+            conflicts,
+            bounded_direct_mus,
+        },
+        semantic_mus: Some(semantic_mus),
+    };
+    let encoded =
+        serde_json::to_value(response).expect("serialize reverse-domain desktop response");
+    assert_eq!(
+        encoded["result"]["conflicts"][0]["conflict"]["kind"],
+        "inconsistent_length_ratio_graph_with_fixed_length",
+    );
+    assert_eq!(
+        encoded["result"]["conflicts"][0]["conflict"]["ratio_constraint_count"],
+        5,
+    );
+    assert_eq!(encoded["semantic_mus"]["status"], "certified");
+    assert_eq!(
+        encoded["semantic_mus"]["length_constraint_constructive_witness_count"],
+        6,
+    );
+}
+
+#[test]
+fn disjoint_fixed_root_ratio_domains_cross_the_desktop_boundary_as_a_four_id_mus() {
+    let mut vertices = Vec::new();
+    let mut edges = Vec::new();
+    let mut edge_ids = Vec::new();
+    for index in 0..3 {
+        let start = VertexId::new();
+        let end = VertexId::new();
+        let edge = EdgeId::new();
+        vertices.extend([
+            Vertex {
+                id: start,
+                position: Point2::new(index as f64 * 4.0, 0.0),
+            },
+            Vertex {
+                id: end,
+                position: Point2::new(index as f64 * 4.0 + 1.0, 0.0),
+            },
+        ]);
+        edges.push(Edge {
+            id: edge,
+            start,
+            end,
+            kind: EdgeKind::Auxiliary,
+        });
+        edge_ids.push(edge);
+    }
+    let pattern = CreasePattern { vertices, edges };
+    let records = vec![
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: edge_ids[0],
+            length_mm: 1.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: edge_ids[1],
+            length_mm: 1.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: edge_ids[2],
+            denominator_edge: edge_ids[0],
+            ratio: 2.0,
+        }),
+        record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: edge_ids[2],
+            denominator_edge: edge_ids[1],
+            ratio: 3.0,
+        }),
+    ];
+    let expected_ids = canonical_ids(&records);
+    let outcome = analyze_geometric_constraint_document_outcome_with_observer(
+        &pattern,
+        &document(records),
+        &mut continuing_observer(),
+    )
+    .expect("cross-root domain analysis must map through the desktop boundary");
+
+    let (conflicts, bounded_direct_mus) = match outcome.result {
+        GeometricConstraintPreflightResult::DirectConflict {
+            conflicts,
+            bounded_direct_mus,
+        } => (conflicts, bounded_direct_mus),
+        other => panic!("expected cross-root direct conflict, got {other:?}"),
+    };
+    let mut expected_fixed_edges = [edge_ids[0], edge_ids[1]];
+    expected_fixed_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    assert!(conflicts.iter().any(|conflict| {
+        matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::InconsistentLengthRatioGraphBetweenFixedLengths {
+                first_fixed_edge,
+                second_fixed_edge,
+                ratio_constraint_count: 2,
+            } if [*first_fixed_edge, *second_fixed_edge] == expected_fixed_edges
+        ) && conflict.constraint_ids() == expected_ids.as_slice()
+    }));
+    assert!(matches!(
+        &bounded_direct_mus,
+        BoundedDirectMusResult::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        } if constraint_ids == &expected_ids && *oracle_calls > 0
+    ));
+
+    let semantic_mus = outcome
+        .semantic_mus
+        .expect("cross-root direct result must carry semantic status");
+    assert!(matches!(
+        &semantic_mus,
+        GeometricConstraintSemanticMusResult::Certified {
+            constraint_ids,
+            constraint_count: 4,
+            deletion_witness_checks: 4,
+            length_constraint_constructive_witness_count: 4,
+            authorizes_project_mutation: false,
+            ..
+        } if constraint_ids == &expected_ids
+    ));
+
+    let response = GeometricConstraintPreflightResponse {
+        project_instance_id: ProjectId::new(),
+        project_id: ProjectId::new(),
+        revision: 12,
+        result: GeometricConstraintPreflightResult::DirectConflict {
+            conflicts,
+            bounded_direct_mus,
+        },
+        semantic_mus: Some(semantic_mus),
+    };
+    let encoded = serde_json::to_value(response).expect("serialize cross-root desktop response");
+    let encoded_conflict = encoded["result"]["conflicts"]
+        .as_array()
+        .expect("conflicts array")
+        .iter()
+        .find(|conflict| {
+            conflict["conflict"]["kind"] == "inconsistent_length_ratio_graph_between_fixed_lengths"
+        })
+        .expect("serialized cross-root conflict");
+    assert_eq!(encoded_conflict["conflict"]["ratio_constraint_count"], 2,);
+    assert_eq!(
+        encoded_conflict["conflict"]["first_fixed_edge"],
+        serde_json::json!(expected_fixed_edges[0]),
+    );
+    assert_eq!(
+        encoded_conflict["conflict"]["second_fixed_edge"],
+        serde_json::json!(expected_fixed_edges[1]),
+    );
+    assert_eq!(
+        encoded_conflict["constraint_ids"].as_array().unwrap().len(),
+        4
+    );
+    assert_eq!(encoded["semantic_mus"]["status"], "certified");
+    assert_eq!(
+        encoded["semantic_mus"]["length_constraint_constructive_witness_count"],
+        4,
+    );
 }

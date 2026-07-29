@@ -56,6 +56,7 @@ const SIMPLE_KEYS = [
   'jsonHint',
   'noConstraints',
   'unknownConstraint',
+  'unknownConstraintKind',
   'targetUnavailable',
   'selectTarget',
   'deleteConstraint',
@@ -142,6 +143,7 @@ const NESTED_KEYS = {
     'length_ratio_with_incompatible_fixed_lengths',
     'non_unit_length_ratio_cycle_with_fixed_length',
     'inconsistent_length_ratio_graph_with_fixed_length',
+    'inconsistent_length_ratio_graph_between_fixed_lengths',
     'different_fixed_lengths_in_equal_length_component',
     'perpendicular_orientations_in_parallel_component',
     'non_parallel_fixed_angle_in_parallel_component',
@@ -194,7 +196,7 @@ test('geometric constraint panel catalog is exact, closed, and deeply frozen', (
   }
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    '2756bdf1eb280a63c86088f9b7ef2eca20c61ccff782aa9e2e6ad24cdb04ea6b',
+    '79152211b097390afdd57532c56cb7ed319fcafe553c75d662557c023e4e387f',
   )
   assert.equal(Object.hasOwn(TEXT, 'ja'), false)
   assert.equal(TEXT.title.ja, '幾何制約')
@@ -245,6 +247,7 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
         'pairAlgebraic',
         'lengthConstructive',
         'zeroClosure',
+        'mirrorResidual',
         'scope',
         'ids',
       ],
@@ -260,6 +263,7 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
         'pairAlgebraic',
         'lengthConstructive',
         'zeroClosure',
+        'mirrorResidual',
         'scope',
         'ids',
       ],

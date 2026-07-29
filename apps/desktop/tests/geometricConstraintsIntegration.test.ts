@@ -8,6 +8,9 @@ import {
 
 const app = source('../src/App.tsx')
 const panel = source('../src/components/GeometricConstraintPanel.tsx')
+const preflightStatus = source(
+  '../src/components/GeometricConstraintPreflightStatus.tsx',
+)
 const panelText = source('../src/lib/geometricConstraintPanelText.ts')
 const client = source('../src/lib/coreClient.ts')
 const nativeRoot = source('../src-tauri/src/lib.rs')
@@ -124,10 +127,10 @@ test('the visible panel never upgrades unknown or direct conflict to a safe resu
     app,
     /semanticMus=\{geometricConstraintPreflight\?\.semantic_mus \?\? null\}/u,
   )
-  assert.match(panel, /preflight\?\.status === 'direct_conflict'/u)
-  assert.match(panel, /preflight\?\.status === 'unknown'/u)
-  assert.match(panel, /semanticMusUnknownWithCore/u)
-  assert.match(panel, /className = 'is-blocking'/u)
+  assert.match(preflightStatus, /preflight\?\.status === 'direct_conflict'/u)
+  assert.match(preflightStatus, /preflight\?\.status === 'unknown'/u)
+  assert.match(preflightStatus, /semanticMusUnknownWithCore/u)
+  assert.match(preflightStatus, /className = 'is-blocking'/u)
   assert.match(panelText, /決定論的binary64意味論的最小コア認証/u)
   assert.match(panelText, /凍結された決定論モデル下で再認証可能/u)
   assert.match(panelText, /現runtime内のみのfallback/u)
@@ -138,12 +141,13 @@ test('the visible panel never upgrades unknown or direct conflict to a safe resu
     /直接矛盾は見つかりません（全制約の充足可能性は未証明）/u,
   )
   assert.doesNotMatch(panelText, /制約を満たしています|安全です/u)
-  assert.match(panel, /GEOMETRIC_CONSTRAINT_PANEL_TEXT as TEXT/u)
-  assert.doesNotMatch(panel, /[ぁ-んァ-ン一-龯]/u)
-  assert.doesNotMatch(panel, /\blocalized\s*\(/u)
-  assert.doesNotMatch(panel, /formatLocalizedText\(locale,\s*\{/u)
+  const visiblePanel = `${panel}\n${preflightStatus}`
+  assert.match(visiblePanel, /GEOMETRIC_CONSTRAINT_PANEL_TEXT as TEXT/u)
+  assert.doesNotMatch(visiblePanel, /[ぁ-んァ-ン一-龯]/u)
+  assert.doesNotMatch(visiblePanel, /\blocalized\s*\(/u)
+  assert.doesNotMatch(visiblePanel, /formatLocalizedText\(locale,\s*\{/u)
   assert.doesNotMatch(
-    panel,
+    visiblePanel,
     />\s*(?:X \(mm\)|Y \(mm\)|residual:|rank\s|DOF\s|condition\s)/u,
   )
   for (const displayText of collectStrings(
@@ -151,7 +155,7 @@ test('the visible panel never upgrades unknown or direct conflict to a safe resu
   )) {
     if (displayText === ', ') continue
     assert.equal(
-      panel.includes(`'${displayText}'`),
+      visiblePanel.includes(`'${displayText}'`),
       false,
       `inline constraint-panel display text: ${displayText}`,
     )

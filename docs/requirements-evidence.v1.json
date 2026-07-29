@@ -223,7 +223,8 @@
         "7bfeba0c40ac4e084263f79bb9457b70eb4fdc09",
         "27b26585cc33618061d4c3c51987c96eeead8982",
         "b5ca7e2c4ac0bba124a96e5c04922f34153fcddd",
-        "0fa0203e11a726cb66332143d7ac8c656de380ea"
+        "0fa0203e11a726cb66332143d7ac8c656de380ea",
+        "77033836b063b9d62dbc06f46dea2babbaf6f50b"
       ],
       "evidence": [
         {
@@ -317,9 +318,39 @@
           "selector": "pub(super) fn conflict_with_limits_and_observer("
         },
         {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "InconsistentLengthRatioGraphBetweenFixedLengths {"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints/directed_ratio_closure.rs",
+          "selector": "fn consider_cross_root_candidate("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints/directed_ratio_closure.rs",
+          "selector": "fn cross_root_candidate_has_only_finite_forward_replays("
+        },
+        {
           "kind": "test",
           "path": "crates/ori-core/src/constraints_general_ratio_graph_tests.rs",
           "selector": "fn every_four_cycle_root_and_both_directions_are_canonical_and_irredundant()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_general_ratio_graph_soundness_tests.rs",
+          "selector": "fn two_fixed_roots_with_disjoint_domains_form_a_canonical_four_id_mus()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_general_ratio_graph_soundness_tests.rs",
+          "selector": "fn cross_root_rounding_aliases_and_overflow_remain_fail_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_general_ratio_graph_limits_tests.rs",
+          "selector": "fn cross_root_witness_and_exact_resource_boundaries_are_fail_closed()"
         },
         {
           "kind": "production-symbol",
@@ -364,7 +395,22 @@
         {
           "kind": "test",
           "path": "crates/ori-core/src/constraint_semantic_mus_tests/direct_family_inventory.rs",
-          "selector": "fn public_semantic_pipeline_hard_inventory_is_nineteen_of_nineteen()"
+          "selector": "fn public_semantic_pipeline_hard_inventory_is_twenty_one_of_twenty_one()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_semantic_mus_tests/direct_family_inventory.rs",
+          "selector": "fn directed_collinear_quarter_turn_semantic_mus_has_two_independent_singleton_witnesses()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/semantic_mus_certified_tests.rs",
+          "selector": "fn disjoint_fixed_root_ratio_domains_cross_the_desktop_boundary_as_a_four_id_mus()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraints.test.ts",
+          "selector": "accepts the 256-ID cross-root witness boundary exactly"
         },
         {
           "kind": "production-symbol",
@@ -388,10 +434,10 @@
         }
       ],
       "limitations": [
-        "only nineteen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants have complete deletion-by-deletion semantic satisfiability witnesses; the four retained families fail closed to Unknown at the semantic MUS boundary"
+        "only twenty-one of the twenty-four wire-compatible DirectConstraintConflictKindV1 variants have complete deletion-by-deletion semantic satisfiability witnesses; PerpendicularOrientationsInParallelComponent, NonParallelFixedAngleInParallelComponent, and ParallelWithFixedNonParallelAngle retain canonical unchecked constraint IDs and fail closed to a blocking solver-required Unknown without semantic certification or project-mutation authority"
       ],
       "missingAcceptance": [
-        "complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the nineteen recognized semantic proof families"
+        "complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the twenty-one recognized semantic proof families"
       ]
     },
     {

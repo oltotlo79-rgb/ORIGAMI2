@@ -219,6 +219,20 @@ const DIRECT_CONFLICTS = [
   },
   {
     conflict: {
+      kind: 'inconsistent_length_ratio_graph_between_fixed_lengths',
+      first_fixed_edge: EDGE_1,
+      second_fixed_edge: EDGE_2,
+      ratio_constraint_count: 2,
+    },
+    constraint_ids: [
+      CONSTRAINT_1,
+      CONSTRAINT_2,
+      CONSTRAINT_3,
+      CONSTRAINT_4,
+    ],
+  },
+  {
+    conflict: {
       kind: 'different_fixed_lengths_in_equal_length_component',
       first_edge: EDGE_1,
       second_edge: EDGE_3,
@@ -744,7 +758,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all twenty-three conflict kinds and the bounded proof core', () => {
+test('normalizes all twenty-four conflict kinds and the bounded proof core', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -760,7 +774,7 @@ test('normalizes all twenty-three conflict kinds and the bounded proof core', ()
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    23,
+    24,
   )
   assert.deepEqual(
     normalized?.result.status === 'direct_conflict'
@@ -775,6 +789,52 @@ test('normalizes all twenty-three conflict kinds and the bounded proof core', ()
   assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 256)
   assert.equal(MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS, 16)
   assert.equal(MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS, 65_535)
+})
+
+test('accepts the 256-ID cross-root witness boundary exactly', () => {
+  const constraint_ids = Array.from(
+    { length: MAX_DIRECT_CONFLICT_WITNESS_IDS },
+    (_, index) => uuid(10_000 + index),
+  )
+  const raw = response({
+    status: 'direct_conflict',
+    conflicts: [{
+      conflict: {
+        kind: 'inconsistent_length_ratio_graph_between_fixed_lengths',
+        first_fixed_edge: EDGE_1,
+        second_fixed_edge: EDGE_2,
+        ratio_constraint_count: MAX_DIRECT_CONFLICT_WITNESS_IDS - 2,
+      },
+      constraint_ids,
+    }],
+  })
+  const normalized =
+    normalizeGeometricConstraintPreflightResponse(raw, BINDING)
+  assert.ok(normalized)
+  assert.equal(
+    normalized.result.status === 'direct_conflict'
+      ? normalized.result.conflicts[0]?.constraint_ids.length
+      : 0,
+    MAX_DIRECT_CONFLICT_WITNESS_IDS,
+  )
+  assert.equal(
+    normalizeGeometricConstraintPreflightResponse(response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'inconsistent_length_ratio_graph_between_fixed_lengths',
+          first_fixed_edge: EDGE_1,
+          second_fixed_edge: EDGE_2,
+          ratio_constraint_count: MAX_DIRECT_CONFLICT_WITNESS_IDS - 1,
+        },
+        constraint_ids: [
+          ...constraint_ids,
+          uuid(10_000 + MAX_DIRECT_CONFLICT_WITNESS_IDS),
+        ],
+      }],
+    }), BINDING),
+    null,
+  )
 })
 
 test('different length ratio proof requires exactly three cause IDs', () => {
@@ -1840,6 +1900,97 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
         ],
       }],
     })),
+    ...[1, 255, 2.5].map((ratio_constraint_count) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'inconsistent_length_ratio_graph_between_fixed_lengths',
+          first_fixed_edge: EDGE_1,
+          second_fixed_edge: EDGE_2,
+          ratio_constraint_count,
+        },
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
+      }],
+    })),
+    ...[
+      {
+        first_fixed_edge: EDGE_1,
+        second_fixed_edge: EDGE_1,
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
+      },
+      {
+        first_fixed_edge: uuid(0xabc).toUpperCase(),
+        second_fixed_edge: EDGE_2,
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
+      },
+      {
+        first_fixed_edge: EDGE_1,
+        second_fixed_edge: EDGE_2,
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+        ],
+      },
+      {
+        first_fixed_edge: EDGE_1,
+        second_fixed_edge: EDGE_2,
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_2,
+          CONSTRAINT_4,
+        ],
+      },
+    ].map(({
+      first_fixed_edge,
+      second_fixed_edge,
+      constraint_ids,
+    }) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'inconsistent_length_ratio_graph_between_fixed_lengths',
+          first_fixed_edge,
+          second_fixed_edge,
+          ratio_constraint_count: 2,
+        },
+        constraint_ids,
+      }],
+    })),
+    response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'inconsistent_length_ratio_graph_between_fixed_lengths',
+          first_fixed_edge: EDGE_1,
+          second_fixed_edge: EDGE_2,
+          ratio_constraint_count: 2,
+          future: true,
+        },
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
+      }],
+    }),
     ...[1, 255, 2.5].map((equal_constraint_count) => response({
       status: 'direct_conflict',
       conflicts: [{

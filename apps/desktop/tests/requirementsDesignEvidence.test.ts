@@ -48,7 +48,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 retains its wire tags and tracks seventeen sound proof families', () => {
+test('EDT-009 retains its wire tags and tracks twenty-one sound proof families', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
@@ -58,12 +58,13 @@ test('EDT-009 retains its wire tags and tracks seventeen sound proof families', 
   ]
     .map((match) => match.groups?.name)
     .filter((name): name is string => name !== undefined)
-  assert.equal(enumVariants.length, 23)
-  assert.equal(new Set(enumVariants).size, 23)
+  assert.equal(enumVariants.length, 24)
+  assert.equal(new Set(enumVariants).size, 24)
 
   const statusRow = status.match(/^\| EDT-009 \| 部分実装 \|.*$/mu)?.[0]
   assert.ok(statusRow)
   const allowlist = [
+    'InconsistentLengthRatioGraphBetweenFixedLengths',
     'DifferentFixedLengths',
     'DifferentFixedAngles',
     'HorizontalAndVertical',
@@ -75,6 +76,9 @@ test('EDT-009 retains its wire tags and tracks seventeen sound proof families', 
     'SameOrientationWithFixedNonParallelAngle',
     'PerpendicularOrientationsWithFixedNonRightAngle',
     'DifferentRotationalSymmetryAnglesWithFixedRadius',
+    'NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius',
+    'RotationalSymmetryWithCollinearRadius',
+    'MirrorSymmetryWithPointOnAxisAndFixedSeparation',
     'PositiveFixedLengthInBoundedZeroLengthClosure',
     'ZeroLengthClosureReachesNondegenerateProvider',
     'EqualLengthWithNonUnitRatioAndFixedLength',
@@ -89,16 +93,21 @@ test('EDT-009 retains its wire tags and tracks seventeen sound proof families', 
     .filter((name): name is string => name !== undefined)
     .filter((name) => enumVariants.includes(name))
     .filter((name, index, names) => names.indexOf(name) === index)
-  assert.deepEqual(documentedVariants, allowlist)
-  assert.equal(
-    enumVariants.filter((name) => !allowlist.includes(name)).length,
-    6,
+  const retained = [
+    'PerpendicularOrientationsInParallelComponent',
+    'NonParallelFixedAngleInParallelComponent',
+    'ParallelWithFixedNonParallelAngle',
+  ]
+  assert.deepEqual(documentedVariants, [...allowlist, ...retained])
+  assert.deepEqual(
+    enumVariants.filter((name) => !allowlist.includes(name)),
+    retained,
   )
   assert.match(statusRow, /legacy 21 variantをwire互換/u)
-  assert.match(statusRow, /sound allowlist/u)
+  assert.match(statusRow, /sound semantic family/u)
   assert.match(
     status,
-    /2026-07-28 EDT-009現行訂正:[^\n]+sound familyは17[^\n]+legacy familyは6[^\n]+認識済み17 family[^\n]+semantic MUS/u,
+    /2026-07-30 EDT-009二固定root比率domain・directed quarter-turn現行訂正:[^\n]+24 wire-compatible variant[^\n]+hard semantic inventoryは21 family[^\n]+残る3 family[^\n]+semantic MUS/u,
   )
   assert.match(statusRow, /`Unknown`へfail-closed/u)
   assert.match(statusRow, /全11種の一般充足可能性、完全な一般矛盾原因、一般最小不能部分集合は未完成/u)
@@ -159,10 +168,10 @@ test('EDT-009 retains its wire tags and tracks seventeen sound proof families', 
   )
   assert.ok(edtEvidence)
   assert.deepEqual(edtEvidence.limitations, [
-    'only seventeen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the frozen binary64 proof residuals; the six retained legacy variants fail closed to Unknown',
+    'only twenty-one of the twenty-four wire-compatible DirectConstraintConflictKindV1 variants have complete deletion-by-deletion semantic satisfiability witnesses; PerpendicularOrientationsInParallelComponent, NonParallelFixedAngleInParallelComponent, and ParallelWithFixedNonParallelAngle retain canonical unchecked constraint IDs and fail closed to a blocking solver-required Unknown without semantic certification or project-mutation authority',
   ])
   assert.deepEqual(edtEvidence.missingAcceptance, [
-    'complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the seventeen recognized direct proof families',
+    'complete sound satisfiability and unsatisfiability decisions plus general semantic minimal unsatisfiable-subset discovery across all eleven constraint kinds beyond the twenty-one recognized semantic proof families',
   ])
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
@@ -189,6 +198,9 @@ test('EDT-009 retains its wire tags and tracks seventeen sound proof families', 
   assert.ok(edtEvidence.commits.includes(
     'b5ca7e2c4ac0bba124a96e5c04922f34153fcddd',
   ))
+  assert.ok(edtEvidence.commits.includes(
+    '77033836b063b9d62dbc06f46dea2babbaf6f50b',
+  ))
   assert.ok(edtEvidence.evidence.some(
     (item: { path: string, selector: string }) =>
       item.path === 'crates/ori-core/src/constraints_same_orientation_angle_tests.rs'
@@ -205,15 +217,7 @@ test('EDT-009 retains its wire tags and tracks seventeen sound proof families', 
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
-      item.selector === 'fn incompatible_fixed_lengths_and_ratio_are_rejected_before_numerical_tolerance()',
-  ))
-  assert.ok(edtEvidence.evidence.some(
-    (item: { selector: string }) =>
       item.selector === 'fn different_ratios_need_a_fixed_denominator_and_incompatible_binary64_products()',
-  ))
-  assert.ok(edtEvidence.evidence.some(
-    (item: { selector: string }) =>
-      item.selector === 'fn different_ratios_with_fixed_denominator_can_share_an_underflowed_zero_numerator()',
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { path: string, selector: string }) =>

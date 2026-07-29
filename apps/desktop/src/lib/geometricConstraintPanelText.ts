@@ -93,6 +93,7 @@ type GeometricConstraintPanelSimpleTextKey =
   | 'jsonHint'
   | 'noConstraints'
   | 'unknownConstraint'
+  | 'unknownConstraintKind'
   | 'targetUnavailable'
   | 'selectTarget'
   | 'deleteConstraint'
@@ -264,6 +265,7 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
   ),
   noConstraints: text('制約はまだありません。', 'No constraints yet.'),
   unknownConstraint: text('不明な制約', 'Unknown constraint'),
+  unknownConstraintKind: text('種別不明', 'unknown kind'),
   targetUnavailable: text('対象を確認できません', 'Target unavailable'),
   selectTarget: text('対象を選択', 'Select target'),
   deleteConstraint: text(
@@ -339,8 +341,8 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     'Deterministic-binary64 semantic minimal-core certification',
   ),
   semanticMusCertified: text(
-    '決定論的binary64意味論的最小コアを認証しました（{count}件、直接オラクル{calls}回、削除証人{checks}件、作業量{work}）。証人方式：現在配置{current}件、軸厳密化{axis}件、単一制約構成{constructive}件、二制約構成{pairConstructive}件、二制約代数縮退{pairAlgebraic}件、有界長さ制約構成{lengthConstructive}件、ゼロ長閉包構成{zeroClosure}件。{scope} コア：{ids}',
-    'Certified a deterministic-binary64 semantic minimal core ({count} constraints, {calls} direct-oracle calls, {checks} deletion witnesses, work {work}). Witness methods: {current} current-assignment, {axis} axis-exactification, {constructive} single-constraint constructive, {pairConstructive} pair-constraint constructive, {pairAlgebraic} pair-constraint algebraic-collapse, {lengthConstructive} bounded length-only constructive, {zeroClosure} bounded zero-length-closure constructive. {scope} Core: {ids}',
+    '決定論的binary64意味論的最小コアを認証しました（{count}件、直接オラクル{calls}回、削除証人{checks}件、作業量{work}）。証人方式：現在配置{current}件、軸厳密化{axis}件、単一制約構成{constructive}件、二制約構成{pairConstructive}件、二制約代数縮退{pairAlgebraic}件、有界長さ制約構成{lengthConstructive}件、ゼロ長閉包構成{zeroClosure}件、アンカー鏡映残差限定{mirrorResidual}件。{scope} コア：{ids}',
+    'Certified a deterministic-binary64 semantic minimal core ({count} constraints, {calls} direct-oracle calls, {checks} deletion witnesses, work {work}). Witness methods: {current} current-assignment, {axis} axis-exactification, {constructive} single-constraint constructive, {pairConstructive} pair-constraint constructive, {pairAlgebraic} pair-constraint algebraic-collapse, {lengthConstructive} bounded length-only constructive, {zeroClosure} bounded zero-length-closure constructive, {mirrorResidual} anchored-mirror residual-only. {scope} Core: {ids}',
   ),
   semanticMusUnknownWithCore: text(
     '直接矛盾コア（{count}件）は得られましたが、意味論的最小性は認証されていません。理由：{reason}。進捗：削除証人{certified}/{checks}件、作業量{work}。コア：{ids}',
@@ -445,6 +447,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     inconsistent_length_ratio_graph_with_fixed_length: text(
       '正の固定長につながる長さ比グラフに、厳密に両立しない循環があります',
       'A length-ratio graph connected to a positive fixed length contains an exactly inconsistent cycle',
+    ),
+    inconsistent_length_ratio_graph_between_fixed_lengths: text(
+      '2つの正の固定長が、長さ比グラフ上の同じ辺に交わらないbinary64値域を強制しています',
+      'Two positive fixed lengths force disjoint binary64 domains in their connecting length-ratio graph',
     ),
     different_fixed_lengths_in_equal_length_component: text(
       '等長制約でつながった辺に、厳密に異なる固定長が指定されています',

@@ -418,6 +418,16 @@ describe('GeometricConstraintPanel', () => {
       },
       {
         conflict: {
+          kind: 'inconsistent_length_ratio_graph_between_fixed_lengths' as const,
+          first_fixed_edge: IDS[0]!,
+          second_fixed_edge: IDS[1]!,
+          ratio_constraint_count: 2,
+        },
+        expected:
+          'Two positive fixed lengths force disjoint binary64 domains in their connecting length-ratio graph',
+      },
+      {
+        conflict: {
           kind: 'different_fixed_lengths_in_equal_length_component' as const,
           first_edge: IDS[0]!,
           second_edge: IDS[2]!,
@@ -755,6 +765,104 @@ describe('GeometricConstraintPanel', () => {
     }))
     alert = screen.getByRole('alert')
     expect(alert.textContent).toContain('安全確認済みとして扱いません')
+  })
+
+  it('labels solver-required IDs with bounded revision-matched constraint kinds', () => {
+    const document: GeometricConstraintDocument = {
+      schema_version: 1,
+      constraints: [
+        {
+          id: IDS[13]!,
+          constraint: {
+            kind: 'parallel',
+            first_edge: IDS[0]!,
+            second_edge: IDS[1]!,
+          },
+        },
+        {
+          id: IDS[12]!,
+          constraint: {
+            kind: 'fixed_angle',
+            vertex: IDS[6]!,
+            first_edge: IDS[0]!,
+            second_edge: IDS[1]!,
+            angle_degrees: 90,
+          },
+        },
+      ],
+    }
+    const preflight: GeometricConstraintPreflightResult = {
+      status: 'unknown',
+      reason: 'solver_required_constraint_kinds',
+      unchecked_constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
+    }
+    const { rerender } = renderPanel({
+      document,
+      preflight,
+      localeStore: localeFixture('en'),
+    })
+
+    let alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(
+      'Unchecked constraints: 00000000…0013 (Fixed angle), 00000000…0014 (Parallel), 00000000…0015 (unknown kind)',
+    )
+    for (const id of preflight.unchecked_constraint_ids) {
+      expect(alert.textContent).not.toContain(id)
+    }
+
+    rerender(panel({
+      document,
+      preflight,
+      localeStore: localeFixture('ja'),
+    }))
+    alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(
+      '未確認の制約: 00000000…0013 (角度固定)、00000000…0014 (平行)、00000000…0015 (種別不明)',
+    )
+
+    rerender(panel({
+      document,
+      localeStore: localeFixture('en'),
+      preflight: {
+        status: 'unknown',
+        reason: 'work_limit_exceeded',
+        unchecked_constraint_ids: [IDS[12]!],
+      },
+    }))
+    alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(
+      'Unchecked constraints: 00000000…0013',
+    )
+    expect(alert.textContent).not.toContain('(Fixed angle)')
+    expect(alert.textContent).not.toContain('(unknown kind)')
+  })
+
+  it('caps solver-required kind diagnostics at the existing twenty-ID boundary', () => {
+    const ids = IDS.slice(0, 21)
+    const document: GeometricConstraintDocument = {
+      schema_version: 1,
+      constraints: ids.map((id) => ({
+        id,
+        constraint: {
+          kind: 'horizontal' as const,
+          edge: IDS[23]!,
+        },
+      })),
+    }
+    renderPanel({
+      document,
+      localeStore: localeFixture('en'),
+      preflight: {
+        status: 'unknown',
+        reason: 'solver_required_constraint_kinds',
+        unchecked_constraint_ids: ids,
+      },
+    })
+
+    const text = screen.getByRole('alert').textContent ?? ''
+    expect(text.match(/\(Horizontal\)/gu) ?? []).toHaveLength(20)
+    expect(text).toContain('00000000…0020 (Horizontal), 1 more')
+    expect(text).not.toContain('00000000…0021')
   })
 
   it('uses the exact narrow wording for a no-direct-conflict result', () => {

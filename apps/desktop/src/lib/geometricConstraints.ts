@@ -169,6 +169,12 @@ export type DirectConstraintConflictKindV1 =
       ratio_constraint_count: number
     }>
   | Readonly<{
+      kind: 'inconsistent_length_ratio_graph_between_fixed_lengths'
+      first_fixed_edge: string
+      second_fixed_edge: string
+      ratio_constraint_count: number
+    }>
+  | Readonly<{
       kind: 'different_fixed_lengths_in_equal_length_component'
       first_edge: string
       second_edge: string
@@ -1221,6 +1227,31 @@ function parseDirectConflictKind(
         }),
         witnessSize: record.ratio_constraint_count + 1,
       }
+    case 'inconsistent_length_ratio_graph_between_fixed_lengths':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'first_fixed_edge',
+          'second_fixed_edge',
+          'ratio_constraint_count',
+        ])
+        || !isCanonicalUuid(record.first_fixed_edge)
+        || !isCanonicalUuid(record.second_fixed_edge)
+        || record.first_fixed_edge === record.second_fixed_edge
+        || typeof record.ratio_constraint_count !== 'number'
+        || !Number.isSafeInteger(record.ratio_constraint_count)
+        || record.ratio_constraint_count < 2
+        || record.ratio_constraint_count > MAX_DIRECT_CONFLICT_WITNESS_IDS - 2
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          first_fixed_edge: record.first_fixed_edge,
+          second_fixed_edge: record.second_fixed_edge,
+          ratio_constraint_count: record.ratio_constraint_count,
+        }),
+        witnessSize: record.ratio_constraint_count + 2,
+      }
     case 'different_fixed_lengths_in_equal_length_component':
       if (
         !hasExactKeys(record, [
@@ -1562,6 +1593,14 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
       target = [
         kind.kind,
         kind.fixed_edge,
+        String(kind.ratio_constraint_count),
+      ]
+      break
+    case 'inconsistent_length_ratio_graph_between_fixed_lengths':
+      target = [
+        kind.kind,
+        kind.first_fixed_edge,
+        kind.second_fixed_edge,
         String(kind.ratio_constraint_count),
       ]
       break

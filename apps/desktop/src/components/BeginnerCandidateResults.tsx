@@ -187,7 +187,7 @@ export function BeginnerCandidateResults({
                               ? text(APP_TEXT.globalFlatFoldabilityIsProvenImpossible)
                               : assessment?.reason === 'global_resource_limit'
                                 ? text(APP_TEXT.globalValidationIsIndeterminateBecauseItsResourceLimitWasReached)
-                                : assessment?.reason === 'global_timeout'
+                                : assessment?.reason === 'global_timeout' || assessment?.reason === 'deadline_exceeded'
                                   ? text(APP_TEXT.globalValidationIsIndeterminateBecauseItsTimeLimitWasReached)
                                 : assessment?.reason === 'global_indeterminate'
                                   ? text(APP_TEXT.globalFlatFoldabilityValidationWasIndeterminate)

@@ -1063,6 +1063,7 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
     | 'global_flat_foldability_impossible'
     | 'global_resource_limit'
     | 'global_timeout'
+    | 'deadline_exceeded'
     | 'global_indeterminate'
     | 'multi_reference_disagreement'
 }
@@ -1411,7 +1412,7 @@ function normalizeBeginnerCandidateResponse(
         'necessary_conditions_violated', 'local_analysis_blocked',
         'local_theorem_not_applicable', 'local_analysis_indeterminate',
         'global_flat_foldability_proven', 'global_flat_foldability_impossible',
-        'global_resource_limit', 'global_timeout', 'global_indeterminate',
+        'global_resource_limit', 'global_timeout', 'deadline_exceeded', 'global_indeterminate',
         'multi_reference_disagreement',
       ].includes(String(record.reason))
       || (record.apply_allowed === false
@@ -1419,16 +1420,16 @@ function normalizeBeginnerCandidateResponse(
           'manufacturability_missing_vertex',
           'manufacturability_minimum_crease_spacing', 'manufacturability_minimum_face_area',
           'manufacturability_paper_boundary_margin', 'necessary_conditions_violated', 'local_analysis_blocked',
-          'global_flat_foldability_impossible']
+          'global_flat_foldability_impossible', 'deadline_exceeded']
           .concat('multi_reference_disagreement')
           .includes(String(record.reason)))
       || (record.proof_scope === 'indeterminate' && record.apply_allowed !== true
-        && record.reason !== 'multi_reference_disagreement')
+        && !['multi_reference_disagreement', 'deadline_exceeded'].includes(String(record.reason)))
       || (record.reason === 'global_flat_foldability_proven'
         && (record.proof_scope !== 'sufficient' || record.apply_allowed !== true))
       || (record.reason === 'global_flat_foldability_impossible'
         && (record.proof_scope !== 'necessary' || record.apply_allowed !== false))
-      || (['global_resource_limit', 'global_timeout', 'global_indeterminate']
+      || (['global_resource_limit', 'global_timeout', 'deadline_exceeded', 'global_indeterminate']
         .includes(String(record.reason))
         && record.proof_scope !== 'indeterminate')
     ) return null

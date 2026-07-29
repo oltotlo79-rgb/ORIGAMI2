@@ -216,6 +216,14 @@ test('generated candidates receive bounded global proof outcomes before apply', 
   assert.match(app, /Global validation is indeterminate because its resource limit was reached/)
 })
 
+test('expired beginner certification deadlines remain wire-valid and block apply', () => {
+  assert.match(native, /reason: "deadline_exceeded"/)
+  assert.match(native, /apply_allowed: false/)
+  assert.match(client, /'deadline_exceeded'/)
+  assert.match(client, /'multi_reference_disagreement', 'deadline_exceeded'/)
+  assert.match(app, /assessment\?\.reason === 'global_timeout' \|\| assessment\?\.reason === 'deadline_exceeded'/)
+})
+
 test('GLB-backed candidates expose read-only quantized shape comparison', () => {
   assert.match(native, /compare_plan_to_reference_model_v1/)
   assert.match(native, /shape_approximation_score/)

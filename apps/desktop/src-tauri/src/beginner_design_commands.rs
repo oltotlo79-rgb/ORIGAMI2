@@ -1018,7 +1018,7 @@ pub(super) fn certify_beginner_fold_path_v1(
                 let certificate = ori_collision::certify_canonical_positive_thickness_cycle_schedule_path_v1(
                     &geometry, &audit, fixed_face, generated.schedule(), &closure, paper.thickness_mm, 32,
                 )?;
-                certificate.is_for(&geometry, fixed_face, generated.schedule(), &closure, paper.thickness_mm)
+                certificate.is_for(&geometry, &audit, fixed_face, generated.schedule(), &closure, paper.thickness_mm)
                     .then_some(ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
             } else if paper.thickness_mm == 0.0 {
                 ori_collision::diagnose_scheduled_cycle_path_v1(

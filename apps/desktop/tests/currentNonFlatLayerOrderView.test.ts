@@ -20,12 +20,14 @@ const INSTANCE = uuid(1)
 const PROJECT = uuid(2)
 const FACE_A = uuid(11)
 const FACE_B = uuid(12)
+const FACE_C = uuid(13)
 const EDGE_1 = uuid(21)
 const EDGE_2 = uuid(22)
 const DIGEST_A = 'a'.repeat(64)
 const DIGEST_B = 'b'.repeat(64)
 const DIGEST_C = 'c'.repeat(64)
 const DIGEST_D = 'e'.repeat(64)
+const DIGEST_E = 'f'.repeat(64)
 const FINGERPRINT = 'd'.repeat(64)
 
 const ONE = {
@@ -76,6 +78,7 @@ const PLANE_AXES: Record<string, [string, string]> = {
 type Options = Readonly<{
   droppedAxis?: 'x' | 'y' | 'z'
   cells?: 0 | 1 | 2
+  facePairOrders?: 0 | 1 | 2 | 3
   poseModelId?: string
 }>
 
@@ -100,6 +103,7 @@ function response(options: Options = {}) {
     : cellCount === 1
       ? [cell(DIGEST_C, DIGEST_A)]
       : [cell(DIGEST_C, DIGEST_A), cell(DIGEST_D, DIGEST_B)]
+  const normalizedPairCount = cells.length === 0 ? 0 : 1
   return {
     version: 1,
     modelId: CURRENT_NON_FLAT_LAYER_ORDER_VIEW_MODEL_ID_V1,
@@ -145,7 +149,7 @@ function response(options: Options = {}) {
       materialFaceCount: 2,
       sourceOverlapCellsAuthenticated: 0,
       overlapCellCount: cells.length,
-      facePairOrderCount: cells.length,
+      facePairOrderCount: options.facePairOrders ?? normalizedPairCount,
       worldBoundaryPointCount: 6,
       exactBoundaryPointCount: cells.length * 3,
     },
@@ -155,6 +159,51 @@ function response(options: Options = {}) {
 }
 
 type Response = ReturnType<typeof response>
+
+function appendThirdFace(value: Response) {
+  const axis = value.faces[0]!.projection.droppedWorldAxis
+  const plane = PLANE_AXES[axis] as [string, string]
+  value.faces.push({
+    faceId: FACE_C,
+    faceKeySha256: DIGEST_C,
+    worldOuterBoundaryXyzMm: [[0, 0, 0], [2, 0, 0], [0, 2, 0]],
+    projection: {
+      droppedWorldAxis: axis,
+      planeAxes: [...plane],
+      sourceToPlaneProjectionExact: identityAffine(),
+    },
+  })
+  value.work.materialFaceCount += 1
+  value.work.worldBoundaryPointCount += 3
+}
+
+function appendCell(
+  value: Response,
+  cellKeySha256: string,
+  lowerFaceId: string,
+  upperFaceId: string,
+) {
+  const template = value.cells[0]!
+  value.cells.push({
+    cellKeySha256,
+    exactBoundarySha256: DIGEST_C,
+    lowerFaceId,
+    upperFaceId,
+    projection: {
+      droppedWorldAxis: template.projection.droppedWorldAxis,
+      planeAxes: [...template.projection.planeAxes],
+      roundedBoundaryUvMm: template.projection.roundedBoundaryUvMm
+        .map((point) => [...point]),
+      exactBoundaryUv: template.projection.exactBoundaryUv.map((point) => ({
+        u: { ...point.u },
+        v: { ...point.v },
+      })),
+    },
+  })
+  value.work.overlapCellCount += 1
+  value.work.exactBoundaryPointCount +=
+    template.projection.exactBoundaryUv.length
+}
 
 /** Applies one mutation to a fresh fixture and returns the value to parse. */
 function forge(
@@ -227,12 +276,28 @@ test('13.1 accepts negative, zero, and positive rationals', () => {
   assert.equal(affine?.m01.denominatorMagnitudeHex, '01')
 })
 
-test('13.1 accepts two canonically ordered cells', () => {
-  const parsed = normalize(response({ cells: 2 }))
+test('13.2 rejects an unobserved extra pair declaration', () => {
+  assert.equal(normalize(response({ cells: 2, facePairOrders: 2 })), null)
+})
+
+test('13.1 accepts two cells covered by one normalized face-pair order', () => {
+  const parsed = normalize(response({ cells: 2, facePairOrders: 1 }))
   assert.ok(parsed)
   assert.equal(parsed.cells.length, 2)
-  assert.equal(parsed.cells[0]?.cellKeySha256, DIGEST_C)
-  assert.equal(parsed.cells[1]?.cellKeySha256, DIGEST_D)
+  assert.equal(parsed.work.overlapCellCount, 2)
+  assert.equal(parsed.work.facePairOrderCount, 1)
+})
+
+test('13.1 accepts a globally cyclic directed-pair registry', () => {
+  const value = response({ cells: 2, facePairOrders: 3 })
+  appendThirdFace(value)
+  value.cells[1]!.lowerFaceId = FACE_B
+  value.cells[1]!.upperFaceId = FACE_C
+  appendCell(value, DIGEST_E, FACE_C, FACE_A)
+  const parsed = normalize(value)
+  assert.ok(parsed)
+  assert.equal(parsed.cells.length, 3)
+  assert.equal(parsed.work.facePairOrderCount, 3)
 })
 
 /**
@@ -569,6 +634,18 @@ rejects('a cell whose dropped axis differs from its faces', (value) => {
 rejects('a cell whose plane axes contradict its dropped axis', (value) => {
   value.cells[0]!.projection.planeAxes = ['y', 'x']
 })
+rejects('opposite directions for the same face pair across cells', () => {
+  const value = response({ cells: 2, facePairOrders: 1 })
+  value.cells[1]!.lowerFaceId = FACE_B
+  value.cells[1]!.upperFaceId = FACE_A
+  return value
+})
+rejects('fewer pair declarations than normalized cell relations', () => {
+  const value = response({ cells: 2, facePairOrders: 1 })
+  appendThirdFace(value)
+  value.cells[1]!.upperFaceId = FACE_C
+  return value
+})
 rejects('an exact and rounded point count mismatch', (value) => {
   value.cells[0]!.projection.roundedBoundaryUvMm.pop()
 })
@@ -604,6 +681,12 @@ rejects('an overlap cell count mismatch', (value) => {
 })
 rejects('a face pair order count mismatch', (value) => {
   value.work.facePairOrderCount = 2
+})
+rejects('a zero face pair order count for a non-empty cell registry', (value) => {
+  value.work.facePairOrderCount = 0
+})
+rejects('a nonzero face pair order count for an empty cell registry', () => {
+  return response({ cells: 0, facePairOrders: 1 })
 })
 rejects('a world boundary point count mismatch', (value) => {
   value.work.worldBoundaryPointCount = 5

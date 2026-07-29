@@ -16,6 +16,7 @@ export type CurrentNonFlatLayerOrderPoseModelIdV1 =
 export const MAX_NON_FLAT_VIEW_FACES_V1 = 512
 export const MAX_NON_FLAT_VIEW_HINGES_V1 = 4_096
 export const MAX_NON_FLAT_VIEW_CELLS_V1 = 4_096
+export const MAX_NON_FLAT_VIEW_FACE_PAIR_ORDERS_V1 = 4_096
 export const MAX_NON_FLAT_VIEW_POLYGON_POINTS_V1 = 4_096
 export const MAX_NON_FLAT_VIEW_WORLD_POINTS_V1 = 100_000
 export const MAX_NON_FLAT_VIEW_EXACT_POINTS_V1 = 100_000
@@ -515,7 +516,10 @@ function work(value: unknown): NonFlatViewWorkV1 | null {
     Number.MAX_SAFE_INTEGER,
   )
   const overlapCellCount = safeCount(record.overlapCellCount, MAX_NON_FLAT_VIEW_CELLS_V1)
-  const facePairOrderCount = safeCount(record.facePairOrderCount, MAX_NON_FLAT_VIEW_CELLS_V1)
+  const facePairOrderCount = safeCount(
+    record.facePairOrderCount,
+    MAX_NON_FLAT_VIEW_FACE_PAIR_ORDERS_V1,
+  )
   const worldBoundaryPointCount = safeCount(
     record.worldBoundaryPointCount,
     MAX_NON_FLAT_VIEW_WORLD_POINTS_V1,
@@ -612,6 +616,8 @@ export function normalizeCurrentNonFlatLayerOrderViewV1(
   const rawCells = denseArray(root.cells, MAX_NON_FLAT_VIEW_CELLS_V1)
   if (!rawCells) return null
   const detachedCells: NonFlatViewCellV1[] = []
+  const directedCellPairs = new Map<string, Set<string>>()
+  let normalizedCellPairCount = 0
   let previousCellKey: string | null = null
   let exactPoints = 0
   for (const raw of rawCells) {
@@ -620,6 +626,21 @@ export function normalizeCurrentNonFlatLayerOrderViewV1(
       !parsed
       || (previousCellKey !== null && previousCellKey >= parsed.cellKeySha256)
     ) return null
+    // Every cell must be supportable by one globally consistent directed-pair
+    // registry. Repeated same-direction relations are idempotent; the opposite
+    // direction is contradictory. A longer directed cycle remains admissible.
+    if (directedCellPairs.get(parsed.upperFaceId)?.has(parsed.lowerFaceId)) {
+      return null
+    }
+    let upperFaces = directedCellPairs.get(parsed.lowerFaceId)
+    if (!upperFaces) {
+      upperFaces = new Set<string>()
+      directedCellPairs.set(parsed.lowerFaceId, upperFaces)
+    }
+    if (!upperFaces.has(parsed.upperFaceId)) {
+      upperFaces.add(parsed.upperFaceId)
+      normalizedCellPairCount += 1
+    }
     exactPoints += parsed.projection.exactBoundaryUv.length
     if (
       !Number.isSafeInteger(exactPoints)
@@ -631,7 +652,10 @@ export function normalizeCurrentNonFlatLayerOrderViewV1(
   if (
     parsedWork.materialFaceCount !== detachedFaces.length
     || parsedWork.overlapCellCount !== detachedCells.length
-    || parsedWork.facePairOrderCount !== detachedCells.length
+    || (detachedCells.length === 0
+      ? parsedWork.facePairOrderCount !== 0
+      : normalizedCellPairCount < 1
+        || parsedWork.facePairOrderCount !== normalizedCellPairCount)
     || parsedWork.worldBoundaryPointCount !== worldPoints
     || parsedWork.exactBoundaryPointCount !== exactPoints
   ) return null

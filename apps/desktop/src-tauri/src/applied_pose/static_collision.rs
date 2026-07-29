@@ -574,7 +574,9 @@ fn diagnostic_response_from_error_with_snapshot(
                     CurrentStaticCollisionDiagnosticReason::InconsistentState,
                 )
             }
-            StaticCollisionError::ResourceLimitExceeded => {
+            StaticCollisionError::Cancelled
+            | StaticCollisionError::DeadlineExceeded
+            | StaticCollisionError::ResourceLimitExceeded => {
                 CurrentStaticCollisionDiagnosticResponse::blocking(
                     binding,
                     CurrentStaticCollisionDiagnosticReason::ResourceLimitExceeded,

@@ -938,7 +938,7 @@ impl DyadicPathNativeAuthorityV1 {
         record_target: [u8; 32],
         record_path_binding: &str,
     ) -> bool {
-        let Some((geometry, _audit, _pose)) = self.pose_capability.graph() else {
+        let Some((geometry, audit, _pose)) = self.pose_capability.graph() else {
             return false;
         };
         let path_binding = self
@@ -968,6 +968,7 @@ impl DyadicPathNativeAuthorityV1 {
                             };
                             positive.is_for(
                                 geometry,
+                                audit,
                                 closure.fixed_face(),
                                 &edge.schedule,
                                 closure,

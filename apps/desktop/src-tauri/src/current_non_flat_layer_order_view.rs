@@ -19,7 +19,7 @@ use ori_collision::{
 use ori_core::StackedFoldNonFlatLayerOrderV1;
 use ori_domain::{EdgeId, FaceId, ProjectId};
 use ori_foldability::{ExactRationalValue, ExactSign};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tauri::State;
 
@@ -54,6 +54,54 @@ const MAX_EXACT_MAGNITUDE_BYTES_V1: usize = 8 * 1024 * 1024;
 const MAX_SERIALIZED_JSON_BYTES_V1: usize = 16 * 1024 * 1024;
 /// `Number.MAX_SAFE_INTEGER`; every wire count must stay lossless in JSON.
 const MAX_SAFE_WIRE_INTEGER_V1: usize = 9_007_199_254_740_991;
+
+/// Deserializes one domain ID only from its lowercase hyphenated wire form.
+///
+/// `uuid` intentionally accepts simple, braced, URN, and mixed-case strings.
+/// The viewer contract does not: request identity is compared as one canonical
+/// wire value on both sides of the Tauri boundary.
+fn deserialize_canonical_wire_id_v1<'de, D, T>(
+    deserializer: D,
+    is_nil: impl FnOnce(&T) -> bool,
+) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned + Serialize,
+{
+    const INVALID_CANONICAL_ID: &str = "invalid canonical identifier";
+    let raw = String::deserialize(deserializer)?;
+    let parsed = serde_json::from_value::<T>(serde_json::Value::String(raw.clone()))
+        .map_err(|_| <D::Error as serde::de::Error>::custom(INVALID_CANONICAL_ID))?;
+    let canonical = wire_id(&parsed)
+        .map_err(|_| <D::Error as serde::de::Error>::custom(INVALID_CANONICAL_ID))?;
+    if is_nil(&parsed) || raw != canonical {
+        return Err(<D::Error as serde::de::Error>::custom(INVALID_CANONICAL_ID));
+    }
+    Ok(parsed)
+}
+
+fn deserialize_canonical_project_id_v1<'de, D>(deserializer: D) -> Result<ProjectId, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_canonical_wire_id_v1(deserializer, |id: &ProjectId| {
+        id.canonical_bytes() == [0; 16]
+    })
+}
+
+fn deserialize_canonical_face_id_v1<'de, D>(deserializer: D) -> Result<FaceId, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_canonical_wire_id_v1(deserializer, |id: &FaceId| id.canonical_bytes() == [0; 16])
+}
+
+fn deserialize_canonical_edge_id_v1<'de, D>(deserializer: D) -> Result<EdgeId, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_canonical_wire_id_v1(deserializer, |id: &EdgeId| id.canonical_bytes() == [0; 16])
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +152,7 @@ impl CurrentNonFlatLayerOrderViewErrorV1 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct CurrentNonFlatLayerOrderViewHingeAngleRequestV1 {
+    #[serde(deserialize_with = "deserialize_canonical_edge_id_v1")]
     edge_id: EdgeId,
     angle_degrees: f64,
 }
@@ -111,6 +160,7 @@ pub(super) struct CurrentNonFlatLayerOrderViewHingeAngleRequestV1 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct CurrentNonFlatLayerOrderViewPoseRequestV1 {
+    #[serde(deserialize_with = "deserialize_canonical_face_id_v1")]
     fixed_face_id: FaceId,
     hinge_angles: Vec<CurrentNonFlatLayerOrderViewHingeAngleRequestV1>,
 }
@@ -119,7 +169,9 @@ pub(super) struct CurrentNonFlatLayerOrderViewPoseRequestV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct CurrentNonFlatLayerOrderViewRequestV1 {
     version: u8,
+    #[serde(deserialize_with = "deserialize_canonical_project_id_v1")]
     expected_project_instance_id: ProjectId,
+    #[serde(deserialize_with = "deserialize_canonical_project_id_v1")]
     expected_project_id: ProjectId,
     expected_revision: u64,
     expected_fold_model_fingerprint_sha256: String,
@@ -441,7 +493,8 @@ fn build_current_non_flat_layer_order_view_v1(
     // One aggregate accumulator: the 8 MiB ceiling covers the whole response.
     let mut magnitude_bytes = 0usize;
     let (faces, world_points) = build_faces(proof, &view, &mut magnitude_bytes)?;
-    let (cells, exact_points) = build_cells(proof, &faces, &mut magnitude_bytes)?;
+    let (cells, exact_points, normalized_pair_count) =
+        build_cells(proof, &faces, &mut magnitude_bytes)?;
     let response = CurrentNonFlatLayerOrderViewResponseV1 {
         version: 1,
         model_id: CURRENT_NON_FLAT_LAYER_ORDER_VIEW_MODEL_ID_V1,
@@ -455,7 +508,7 @@ fn build_current_non_flat_layer_order_view_v1(
             material_face_count: faces.len(),
             source_overlap_cells_authenticated: proof.source_overlap_cells_authenticated(),
             overlap_cell_count: cells.len(),
-            face_pair_order_count: cells.len(),
+            face_pair_order_count: normalized_pair_count,
             world_boundary_point_count: world_points,
             exact_boundary_point_count: exact_points,
         },
@@ -532,8 +585,8 @@ fn validate_view_resource_counts_v1(
         return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
     }
     if counts.declared_cells != counts.actual_cells
-        || counts.actual_pairs != counts.actual_cells
-        || counts.declared_pairs != counts.actual_cells
+        || counts.declared_pairs != counts.actual_pairs
+        || !valid_pair_registry_cardinality_v1(counts.actual_cells, counts.actual_pairs)
     {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
     }
@@ -544,6 +597,16 @@ fn validate_view_resource_counts_v1(
         validate_safe_wire_integer_v1(work)?;
     }
     Ok(())
+}
+
+/// A non-empty cell registry needs at least one directed pair, while one
+/// normalized pair may cover several disconnected overlap components.
+const fn valid_pair_registry_cardinality_v1(cells: usize, pairs: usize) -> bool {
+    if cells == 0 {
+        pairs == 0
+    } else {
+        pairs > 0 && pairs <= cells
+    }
 }
 
 /// Bounds one cell boundary: equal rounded/exact counts inside the cap.
@@ -1028,13 +1091,30 @@ fn build_cells(
     proof: &StackedFoldNonFlatLayerOrderV1,
     faces: &[CurrentNonFlatLayerOrderFaceDtoV1],
     magnitude_bytes: &mut usize,
-) -> Result<(Vec<CurrentNonFlatLayerOrderCellDtoV1>, usize), CurrentNonFlatLayerOrderViewErrorV1> {
+) -> Result<
+    (Vec<CurrentNonFlatLayerOrderCellDtoV1>, usize, usize),
+    CurrentNonFlatLayerOrderViewErrorV1,
+> {
+    let pair_registry =
+        canonical_directed_pair_registry_v1(proof.face_pair_orders().len(), |index| {
+            proof
+                .face_pair_orders()
+                .get(index)
+                .map(|pair| (pair.lower_face(), pair.upper_face()))
+        })?;
+    validate_cell_pair_registry_coverage_v1(
+        &pair_registry,
+        proof.overlap_cells().len(),
+        |index| {
+            proof
+                .overlap_cells()
+                .get(index)
+                .map(|cell| (cell.lower_face(), cell.upper_face()))
+        },
+    )?;
     let mut total_points = 0usize;
     let mut cells = Vec::with_capacity(proof.overlap_cells().len());
-    for (cell, pair) in proof.overlap_cells().iter().zip(proof.face_pair_orders()) {
-        if cell.lower_face() != pair.lower_face() || cell.upper_face() != pair.upper_face() {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-        }
+    for cell in proof.overlap_cells() {
         let lower_face_id = wire_id(&cell.lower_face())
             .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::internal())?;
         let upper_face_id = wire_id(&cell.upper_face())
@@ -1107,7 +1187,77 @@ fn build_cells(
     {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
     }
-    Ok((cells, total_points))
+    Ok((cells, total_points, pair_registry.len()))
+}
+
+/// Builds an iteration-order-independent directed pair registry.
+///
+/// Same-direction duplicates are idempotent, matching the shared collision
+/// validator. Opposite directions are contradictory and fail closed.
+fn canonical_directed_pair_registry_v1(
+    pair_count: usize,
+    mut pair_at: impl FnMut(usize) -> Option<(FaceId, FaceId)>,
+) -> Result<Vec<(FaceId, FaceId)>, CurrentNonFlatLayerOrderViewErrorV1> {
+    let mut registry = Vec::new();
+    registry
+        .try_reserve_exact(pair_count)
+        .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::resource())?;
+    for index in 0..pair_count {
+        let (lower, upper) =
+            pair_at(index).ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::invalid)?;
+        if lower == upper {
+            return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+        }
+        registry.push((lower, upper));
+    }
+    registry
+        .sort_unstable_by_key(|(lower, upper)| (lower.canonical_bytes(), upper.canonical_bytes()));
+    registry.dedup();
+    for (lower, upper) in &registry {
+        if directed_pair_registry_index_v1(&registry, *upper, *lower).is_some() {
+            return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+        }
+    }
+    Ok(registry)
+}
+
+fn directed_pair_registry_index_v1(
+    registry: &[(FaceId, FaceId)],
+    lower: FaceId,
+    upper: FaceId,
+) -> Option<usize> {
+    let key = (lower.canonical_bytes(), upper.canonical_bytes());
+    registry
+        .binary_search_by_key(&key, |(lower, upper)| {
+            (lower.canonical_bytes(), upper.canonical_bytes())
+        })
+        .ok()
+}
+
+/// Requires every overlap cell to reference a declared directed pair and every
+/// declared normalized pair to cover at least one cell.
+fn validate_cell_pair_registry_coverage_v1(
+    registry: &[(FaceId, FaceId)],
+    cell_count: usize,
+    mut cell_at: impl FnMut(usize) -> Option<(FaceId, FaceId)>,
+) -> Result<(), CurrentNonFlatLayerOrderViewErrorV1> {
+    let mut covered = Vec::new();
+    covered
+        .try_reserve_exact(registry.len())
+        .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::resource())?;
+    covered.resize(registry.len(), false);
+    for index in 0..cell_count {
+        let (lower, upper) =
+            cell_at(index).ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::invalid)?;
+        let pair_index = directed_pair_registry_index_v1(registry, lower, upper)
+            .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::invalid)?;
+        covered[pair_index] = true;
+    }
+    if covered.iter().all(|covered| *covered) {
+        Ok(())
+    } else {
+        Err(CurrentNonFlatLayerOrderViewErrorV1::invalid())
+    }
 }
 
 /// Final re-verification of every count, ordering, and authority literal.
@@ -1118,11 +1268,25 @@ fn verify_response_invariants(
     if !response.read_only || response.authorizes_project_mutation {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::internal());
     }
+    let normalized_pair_count =
+        canonical_directed_pair_registry_v1(proof.face_pair_orders().len(), |index| {
+            proof
+                .face_pair_orders()
+                .get(index)
+                .map(|pair| (pair.lower_face(), pair.upper_face()))
+        })?
+        .len();
     if response.work.material_face_count != response.faces.len()
         || response.work.overlap_cell_count != response.cells.len()
-        || response.work.face_pair_order_count != response.cells.len()
+        || response.work.face_pair_order_count != normalized_pair_count
+        || !valid_pair_registry_cardinality_v1(
+            response.cells.len(),
+            response.work.face_pair_order_count,
+        )
         || response.faces.len() != proof.material_faces().len()
         || response.cells.len() != proof.overlap_cell_count()
+        || proof.overlap_cell_count() != proof.overlap_cells().len()
+        || proof.face_pair_order_count() != proof.face_pair_orders().len()
     {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
     }
@@ -1419,6 +1583,52 @@ mod tests {
     }
 
     #[test]
+    fn raw_request_ids_require_canonical_non_nil_wire_forms() {
+        let canonical = serde_json::json!({
+            "version": 1,
+            "expectedProjectInstanceId": "11111111-1111-4111-8111-111111111111",
+            "expectedProjectId": "22222222-2222-4222-8222-222222222222",
+            "expectedRevision": 12,
+            "expectedFoldModelFingerprintSha256": "a".repeat(64),
+            "expectedAppliedPose": {
+                "fixedFaceId": "33333333-3333-4333-8333-333333333333",
+                "hingeAngles": [{
+                    "edgeId": "44444444-4444-4444-8444-444444444444",
+                    "angleDegrees": 73.5
+                }]
+            }
+        });
+        serde_json::from_value::<CurrentNonFlatLayerOrderViewRequestV1>(canonical.clone())
+            .expect("the canonical request wire form is accepted");
+
+        let mut simple = canonical.clone();
+        simple["expectedProjectInstanceId"] = serde_json::json!("11111111111141118111111111111111");
+        let mut mixed_case = canonical.clone();
+        mixed_case["expectedProjectId"] = serde_json::json!("AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA");
+        let mut braced = canonical.clone();
+        braced["expectedAppliedPose"]["fixedFaceId"] =
+            serde_json::json!("{33333333-3333-4333-8333-333333333333}");
+        let mut urn = canonical.clone();
+        urn["expectedAppliedPose"]["hingeAngles"][0]["edgeId"] =
+            serde_json::json!("urn:uuid:44444444-4444-4444-8444-444444444444");
+        let mut nil = canonical;
+        nil["expectedProjectId"] = serde_json::json!("00000000-0000-0000-0000-000000000000");
+
+        for (label, value) in [
+            ("simple", simple),
+            ("mixed case", mixed_case),
+            ("braced", braced),
+            ("URN", urn),
+            ("nil", nil),
+        ] {
+            assert!(
+                serde_json::from_value::<CurrentNonFlatLayerOrderViewRequestV1>(value).is_err(),
+                "{label} request ID must fail before the command runs"
+            );
+        }
+    }
+
+    #[test]
     fn applied_non_flat_evidence_yields_a_read_only_view() {
         let project = non_flat_tree_project(90.0);
         let response = view(&project);
@@ -1435,7 +1645,10 @@ mod tests {
         );
         assert_eq!(response.work.material_face_count, response.faces.len());
         assert_eq!(response.work.overlap_cell_count, response.cells.len());
-        assert_eq!(response.work.face_pair_order_count, response.cells.len());
+        assert!(valid_pair_registry_cardinality_v1(
+            response.cells.len(),
+            response.work.face_pair_order_count,
+        ));
         assert!(!response.faces.is_empty());
         assert!(
             response
@@ -2110,6 +2323,15 @@ mod tests {
     }
 
     #[test]
+    fn a_normalized_pair_registry_can_cover_multiple_overlap_cells() {
+        let mut value = counts();
+        value.declared_cells = 2;
+        value.actual_cells = 2;
+        validate_view_resource_counts_v1(value)
+            .expect("one normalized directed pair may cover two cells");
+    }
+
+    #[test]
     fn the_world_polygon_ceiling_is_inclusive() {
         for vertices in [
             3,
@@ -2239,6 +2461,122 @@ mod tests {
         let mut actual = counts();
         actual.actual_pairs = 2;
         invalid(validate_view_resource_counts_v1(actual).expect_err("actual pair mismatch"));
+        let mut missing = counts();
+        missing.declared_pairs = 0;
+        missing.actual_pairs = 0;
+        invalid(validate_view_resource_counts_v1(missing).expect_err("a cell needs one pair"));
+        let mut without_cells = counts();
+        without_cells.declared_cells = 0;
+        without_cells.actual_cells = 0;
+        invalid(
+            validate_view_resource_counts_v1(without_cells)
+                .expect_err("a pair without a cell is not covered"),
+        );
+    }
+
+    #[test]
+    fn the_native_view_accepts_two_cells_for_one_normalized_directed_pair() {
+        let lower = FaceId::new();
+        let upper = FaceId::new();
+        let pairs = [(lower, upper)];
+        let cells = [(lower, upper), (lower, upper)];
+        let registry =
+            canonical_directed_pair_registry_v1(pairs.len(), |index| pairs.get(index).copied())
+                .expect("the normalized pair registry is canonical");
+        validate_cell_pair_registry_coverage_v1(&registry, cells.len(), |index| {
+            cells.get(index).copied()
+        })
+        .expect("both native overlap cells resolve through one directed pair");
+        assert_eq!(registry, pairs);
+    }
+
+    #[test]
+    fn cell_aligned_same_direction_pair_declarations_are_idempotent() {
+        let lower = FaceId::new();
+        let upper = FaceId::new();
+        let pairs = [(lower, upper), (lower, upper)];
+        let cells = [(lower, upper), (lower, upper)];
+        let registry =
+            canonical_directed_pair_registry_v1(pairs.len(), |index| pairs.get(index).copied())
+                .expect("same-direction declarations normalize to one relation");
+        assert_eq!(registry, vec![(lower, upper)]);
+        validate_cell_pair_registry_coverage_v1(&registry, cells.len(), |index| {
+            cells.get(index).copied()
+        })
+        .expect("both cells are covered by the idempotent relation");
+    }
+
+    #[test]
+    fn canonical_pair_lookup_reaches_first_middle_and_last_from_unsorted_input() {
+        let faces: [FaceId; 6] = std::array::from_fn(|_| FaceId::new());
+        let unsorted = [
+            (faces[4], faces[5]),
+            (faces[0], faces[1]),
+            (faces[2], faces[3]),
+        ];
+        let registry = canonical_directed_pair_registry_v1(unsorted.len(), |index| {
+            unsorted.get(index).copied()
+        })
+        .expect("the registry canonicalizes input order");
+        assert_eq!(registry.len(), 3);
+        for (expected_index, (lower, upper)) in registry.iter().copied().enumerate() {
+            assert_eq!(
+                directed_pair_registry_index_v1(&registry, lower, upper),
+                Some(expected_index),
+                "every canonical registry position must be searchable"
+            );
+        }
+        let cells = [registry[2], registry[0], registry[1]];
+        validate_cell_pair_registry_coverage_v1(&registry, cells.len(), |index| {
+            cells.get(index).copied()
+        })
+        .expect("coverage lookup reaches the first, middle, and last pair");
+    }
+
+    #[test]
+    fn directed_pair_registry_lookup_rejects_reverse_missing_and_uncovered_relations() {
+        let first = FaceId::new();
+        let second = FaceId::new();
+        let third = FaceId::new();
+        let contradictory = [(first, second), (second, first)];
+        invalid(
+            canonical_directed_pair_registry_v1(contradictory.len(), |index| {
+                contradictory.get(index).copied()
+            })
+            .expect_err("opposite directions contradict"),
+        );
+
+        let one_pair = [(first, second)];
+        let registry = canonical_directed_pair_registry_v1(one_pair.len(), |index| {
+            one_pair.get(index).copied()
+        })
+        .unwrap();
+        let reversed_cell = [(second, first)];
+        invalid(
+            validate_cell_pair_registry_coverage_v1(&registry, reversed_cell.len(), |index| {
+                reversed_cell.get(index).copied()
+            })
+            .expect_err("a reverse-direction cell is unregistered"),
+        );
+        let foreign_cell = [(first, third)];
+        invalid(
+            validate_cell_pair_registry_coverage_v1(&registry, foreign_cell.len(), |index| {
+                foreign_cell.get(index).copied()
+            })
+            .expect_err("an undeclared cell pair is unregistered"),
+        );
+
+        let two_pairs = [(first, second), (first, third)];
+        let registry = canonical_directed_pair_registry_v1(two_pairs.len(), |index| {
+            two_pairs.get(index).copied()
+        })
+        .unwrap();
+        invalid(
+            validate_cell_pair_registry_coverage_v1(&registry, one_pair.len(), |index| {
+                one_pair.get(index).copied()
+            })
+            .expect_err("every declared directed pair needs a supporting cell"),
+        );
     }
 
     #[test]

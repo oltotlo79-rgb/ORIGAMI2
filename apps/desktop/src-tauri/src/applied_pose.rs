@@ -21,6 +21,8 @@ pub(super) use static_collision::{
     inspect_current_static_collision, with_revalidated_current_static_collision_certificate,
 };
 
+#[cfg(test)]
+use std::{cell::Cell, marker::PhantomData, rc::Rc};
 use std::{
     error::Error,
     fmt,
@@ -179,6 +181,72 @@ struct CurrentAppliedPoseTransactionSnapshotV1 {
     pair_proof_cache: ProofCacheRuntimeRollbackSnapshotV1,
 }
 
+#[cfg(test)]
+#[must_use = "the rollback fault remains armed only while this guard is held"]
+pub(super) struct ArmedTransactionRollbackFailureGuardV1 {
+    token: u64,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for ArmedTransactionRollbackFailureGuardV1 {
+    fn drop(&mut self) {
+        FAIL_NEXT_TRANSACTION_ROLLBACK_V1.with(|slot| {
+            if slot.get() == Some(self.token) {
+                slot.set(None);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static NEXT_TRANSACTION_ROLLBACK_FAILURE_TOKEN_V1: Cell<u64> = const { Cell::new(0) };
+    static FAIL_NEXT_TRANSACTION_ROLLBACK_V1: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_next_transaction_rollback_for_test_v1() -> ArmedTransactionRollbackFailureGuardV1
+{
+    let token = NEXT_TRANSACTION_ROLLBACK_FAILURE_TOKEN_V1.with(|next| {
+        let token = next
+            .get()
+            .checked_add(1)
+            .expect("transaction rollback failure token overflow");
+        next.set(token);
+        token
+    });
+    FAIL_NEXT_TRANSACTION_ROLLBACK_V1.with(|slot| {
+        assert!(
+            slot.get().is_none(),
+            "one rollback stale-epoch injection may be armed"
+        );
+        slot.set(Some(token));
+    });
+    ArmedTransactionRollbackFailureGuardV1 {
+        token,
+        _not_send_or_sync: PhantomData,
+    }
+}
+
+#[cfg(test)]
+fn take_transaction_rollback_failure_for_test_v1() -> bool {
+    FAIL_NEXT_TRANSACTION_ROLLBACK_V1.with(Cell::take).is_some()
+}
+
+/// Produces an already-consumed rollback guard so callers can verify that
+/// their surrounding rollback images are still restored on this invariant
+/// failure. Production code has no way to construct this state.
+#[cfg(test)]
+pub(super) fn consumed_transaction_rollback_for_test_v1(
+    project: &ProjectState,
+) -> Result<CurrentAppliedPoseTransactionRollbackV1, PoseAuthorityError> {
+    let authority = project.applied_pose_authority.clone();
+    let mut rollback = authority.begin_transaction_rollback_v1()?;
+    rollback.rollback()?;
+    Ok(rollback)
+}
+
 /// Armed rollback for a target-pose adoption that is not yet part of a fully
 /// published desktop transaction.
 pub(super) struct CurrentAppliedPoseTransactionRollbackV1 {
@@ -190,21 +258,15 @@ impl CurrentAppliedPoseTransactionRollbackV1 {
     pub(super) fn rollback(&mut self) -> Result<(), PoseAuthorityError> {
         let snapshot = self
             .snapshot
-            .take()
+            .as_mut()
             .ok_or(PoseAuthorityError::InternalInconsistency)?;
-        self.authority.restore_transaction_snapshot_v1(snapshot)
+        self.authority.restore_transaction_snapshot_v1(snapshot)?;
+        self.snapshot = None;
+        Ok(())
     }
 
     pub(super) fn disarm(mut self) {
         self.snapshot = None;
-    }
-}
-
-impl Drop for CurrentAppliedPoseTransactionRollbackV1 {
-    fn drop(&mut self) {
-        if let Some(snapshot) = self.snapshot.take() {
-            let _ = self.authority.restore_transaction_snapshot_v1(snapshot);
-        }
     }
 }
 
@@ -576,10 +638,16 @@ pub(super) fn restore_persisted_current_pose_transactional_v1(
     pose: &InstructionPose,
 ) -> Result<CurrentAppliedPoseTransactionRollbackV1, PoseAuthorityError> {
     let authority = project.applied_pose_authority.clone();
-    let rollback = authority.begin_transaction_rollback_v1()?;
-    let (_, captured) = capture_persisted_current_pose_request_v1(project, pose)?;
-    let prepared = captured.prepare()?;
-    authority.commit_prepared(project, prepared)?;
+    let mut rollback = authority.begin_transaction_rollback_v1()?;
+    let result = (|| {
+        let (_, captured) = capture_persisted_current_pose_request_v1(project, pose)?;
+        let prepared = captured.prepare()?;
+        authority.commit_prepared(project, prepared)
+    })();
+    if let Err(error) = result {
+        rollback.rollback()?;
+        return Err(error);
+    }
     Ok(rollback)
 }
 
@@ -589,12 +657,19 @@ pub(super) fn restore_persisted_current_pose_failing_after_prepare_for_test_v1(
     pose: &InstructionPose,
 ) -> Result<CurrentAppliedPoseTransactionRollbackV1, PoseAuthorityError> {
     let authority = project.applied_pose_authority.clone();
-    let rollback = authority.begin_transaction_rollback_v1()?;
-    let (_, captured) = capture_persisted_current_pose_request_v1(project, pose)?;
-    let prepared = captured.prepare()?;
-    authority.commit_prepared_with_semantic_clone(project, prepared, |_| {
-        Err(PoseAuthorityError::SemanticPoseUnavailable)
-    })?;
+    let mut rollback = authority.begin_transaction_rollback_v1()?;
+    let result = (|| {
+        let (_, captured) = capture_persisted_current_pose_request_v1(project, pose)?;
+        let prepared = captured.prepare()?;
+        authority.commit_prepared_with_semantic_clone(project, prepared, |_| {
+            Err(PoseAuthorityError::SemanticPoseUnavailable)
+        })?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        rollback.rollback()?;
+        return Err(error);
+    }
     Ok(rollback)
 }
 
@@ -929,15 +1004,39 @@ impl CurrentAppliedPoseAuthority {
 
     fn restore_transaction_snapshot_v1(
         &self,
-        snapshot: CurrentAppliedPoseTransactionSnapshotV1,
+        snapshot: &mut CurrentAppliedPoseTransactionSnapshotV1,
     ) -> Result<(), PoseAuthorityError> {
+        #[cfg(test)]
+        if take_transaction_rollback_failure_for_test_v1() {
+            // Reproduce the former persistent-StaleProof condition. The
+            // rollback image now restores its private origin exactly, so this
+            // must not require a retry loop.
+            self.pair_proof_cache
+                .advance_pose_authority_v1(0)
+                .map_err(|_| PoseAuthorityError::LockUnavailable)?;
+            self.pair_proof_cache
+                .advance_pose_authority_v1(0)
+                .map_err(|_| PoseAuthorityError::LockUnavailable)?;
+        }
         // Restore the cache while holding pose authority so rollback follows
-        // the same project -> pose -> cache order as normal adoption.
-        let mut slot = self.lock()?;
-        self.pair_proof_cache
-            .restore_rollback_snapshot_v1(snapshot.pair_proof_cache)
+        // the same project -> pose -> cache order as normal adoption. Poison
+        // recovery is deliberately restricted to rollback: the exact snapshot
+        // replaces the entire slot before either authority is used again.
+        let (mut slot, recovered_poison) = match self.slot.lock() {
+            Ok(slot) => (slot, false),
+            Err(poisoned) => {
+                let slot = poisoned.into_inner();
+                (slot, true)
+            }
+        };
+        snapshot
+            .pair_proof_cache
+            .restore_origin_exact_for_rollback_v1()
             .map_err(|_| PoseAuthorityError::LockUnavailable)?;
-        *slot = snapshot.slot;
+        *slot = snapshot.slot.clone();
+        if recovered_poison {
+            self.slot.clear_poison();
+        }
         Ok(())
     }
 
@@ -1184,7 +1283,7 @@ impl PoseAuthorityInvalidation<'_> {
         control: ProofCacheOperationControlV1<'_>,
     ) {
         if let Some(ticket) = self.edit_ticket.take() {
-            if self
+            let _ = self
                 .pair_proof_cache
                 .complete_edit_epoch_with_upstream_work_v1(
                     ticket,
@@ -1195,11 +1294,7 @@ impl PoseAuthorityInvalidation<'_> {
                     faces,
                     upstream_preparation_work,
                     control,
-                )
-                .is_err()
-            {
-                let _ = self.pair_proof_cache.abandon_edit_epoch_v1(ticket);
-            }
+                );
         }
         self.slot.current = None;
         self.slot.pending = None;
@@ -1938,6 +2033,48 @@ pub(super) mod tests {
         let prepared = authority.capture_request(project, request)?.prepare()?;
         authority.commit_prepared(project, prepared)?;
         Ok(())
+    }
+
+    #[test]
+    fn transaction_rollback_failure_guard_preserves_old_arm_and_clears_every_exit_path() {
+        let original_guard = fail_next_transaction_rollback_for_test_v1();
+        let duplicate = std::panic::catch_unwind(|| {
+            let _duplicate_guard = fail_next_transaction_rollback_for_test_v1();
+        });
+        assert!(duplicate.is_err());
+        assert!(
+            take_transaction_rollback_failure_for_test_v1(),
+            "a rejected duplicate arm cannot replace the original fault"
+        );
+        let replacement_guard = fail_next_transaction_rollback_for_test_v1();
+        drop(original_guard);
+        assert!(
+            take_transaction_rollback_failure_for_test_v1(),
+            "a consumed guard cannot clear an equal later arm with a new token"
+        );
+        drop(replacement_guard);
+
+        let early_return = (|| -> Result<(), ()> {
+            let _rollback_failure_guard = fail_next_transaction_rollback_for_test_v1();
+            Err(())
+        })();
+        assert_eq!(early_return, Err(()));
+        assert!(!take_transaction_rollback_failure_for_test_v1());
+
+        let unwound = std::panic::catch_unwind(|| {
+            let _rollback_failure_guard = fail_next_transaction_rollback_for_test_v1();
+            panic!("inject transaction rollback fault setup unwind");
+        });
+        assert!(unwound.is_err());
+        assert!(!take_transaction_rollback_failure_for_test_v1());
+
+        let consumed_guard = fail_next_transaction_rollback_for_test_v1();
+        assert!(take_transaction_rollback_failure_for_test_v1());
+        drop(consumed_guard);
+        assert!(
+            !take_transaction_rollback_failure_for_test_v1(),
+            "dropping a consumed guard cannot clear or synthesize another fault"
+        );
     }
 
     #[test]
@@ -3046,6 +3183,31 @@ pub(super) mod tests {
                 has_current: false,
                 has_pending: false,
             }
+        );
+    }
+
+    #[test]
+    fn armed_pose_rollback_recovers_a_poisoned_pose_mutex_before_restoring() {
+        let authority = CurrentAppliedPoseAuthority::default();
+        let before = authority.test_snapshot().expect("initial pose authority");
+        let mut rollback = authority
+            .begin_transaction_rollback_v1()
+            .expect("armed rollback image");
+
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _slot = authority.slot.lock().expect("unpoisoned test slot");
+                panic!("injected pose rollback lock poison");
+            }))
+            .is_err(),
+            "the injected panic must poison the normal pose lock"
+        );
+        rollback
+            .rollback()
+            .expect("rollback-only recovery replaces the exact pose image");
+        assert_eq!(
+            authority.test_snapshot().expect("recovered pose authority"),
+            before
         );
     }
 }

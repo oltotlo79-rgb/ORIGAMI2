@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     KinematicsError,
+    interval::{IntervalRigidTransformV1, OutwardIntervalErrorV1, OutwardIntervalV1},
     transform::{Point3, RigidTransform, canonical_zero, length, scale, subtract},
 };
 
@@ -283,6 +284,144 @@ struct PreparedTree {
 #[derive(Debug, Clone)]
 pub struct MaterialTreeKinematicsModel {
     tree: Arc<PreparedTree>,
+}
+
+/// Hard limits for a bounded outward enclosure of one closed dyadic Tree leaf.
+///
+/// The leaf depth is additionally capped at 52 so its `index / 2^depth`
+/// endpoints are exactly representable binary64 dyadics.  Source coordinates
+/// and angles are binary64 inputs, hence [`OutwardIntervalV1::from_rounded`]
+/// encloses their exact rational values before any interval arithmetic.
+///
+/// `max_interval_work` limits the expression complexity of every individual
+/// interval value. `max_total_interval_work` is a separate, shared operation
+/// budget: one unit is charged for each hinge angle box, hinge transform,
+/// transform composition, and emitted vertex transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialTreeDyadicIntervalLimitsV1 {
+    pub max_faces: usize,
+    pub max_hinges: usize,
+    pub max_vertices: usize,
+    pub max_interval_work: usize,
+    pub max_total_interval_work: usize,
+}
+
+impl Default for MaterialTreeDyadicIntervalLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_faces: 3,
+            max_hinges: 2,
+            max_vertices: 64,
+            max_interval_work: 100_000,
+            max_total_interval_work: 10_000,
+        }
+    }
+}
+
+/// Fail-closed result for outward material Tree leaf preparation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaterialTreeDyadicIntervalErrorV1 {
+    InvalidLeaf,
+    SourceIssuerMismatch,
+    SourceAnglesMismatch,
+    TargetAnglesMismatch,
+    ResourceLimit,
+    Cancelled,
+    IntervalUnavailable,
+}
+
+/// One face's source vertices enclosed in world-space outward intervals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialTreeDyadicFaceVerticesV1 {
+    face: FaceId,
+    vertices: Vec<(VertexId, [OutwardIntervalV1; 3])>,
+}
+
+impl MaterialTreeDyadicFaceVerticesV1 {
+    #[must_use]
+    pub const fn face(&self) -> FaceId {
+        self.face
+    }
+
+    #[must_use]
+    pub fn vertices(&self) -> &[(VertexId, [OutwardIntervalV1; 3])] {
+        &self.vertices
+    }
+}
+
+/// Opaque identity-bound enclosure for all material-face vertices on one
+/// closed `index / 2^depth .. (index + 1) / 2^depth` angle leaf.
+///
+/// Bounds are deliberately intervals, never ordinary `f64` AABBs.  A caller
+/// can establish strict separation only when a complete axis projection has
+/// a strict gap (`upper < lower`); touching intervals prove nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialTreeDyadicFaceIntervalRegistryV1 {
+    source: Arc<PreparedTree>,
+    source_pose: Arc<TreePoseData>,
+    fixed_face: Option<FaceId>,
+    source_angles: CanonicalHingeAngles,
+    target_angles: CanonicalHingeAngles,
+    depth: u8,
+    index: u64,
+    faces: Vec<MaterialTreeDyadicFaceVerticesV1>,
+}
+
+impl MaterialTreeDyadicFaceIntervalRegistryV1 {
+    #[must_use]
+    pub const fn depth(&self) -> u8 {
+        self.depth
+    }
+
+    #[must_use]
+    pub const fn index(&self) -> u64 {
+        self.index
+    }
+
+    #[must_use]
+    pub fn face_vertices(&self, face: FaceId) -> Option<&[(VertexId, [OutwardIntervalV1; 3])]> {
+        self.faces
+            .binary_search_by_key(&face.canonical_bytes(), |item| item.face.canonical_bytes())
+            .ok()
+            .map(|index| self.faces[index].vertices())
+    }
+
+    /// Rechecks source issuer, exact pose instance, complete canonical angle
+    /// vectors, and the closed dyadic leaf identity.
+    #[must_use]
+    pub fn is_for(
+        &self,
+        model: &MaterialTreeKinematicsModel,
+        source_pose: &MaterialTreePose,
+        target_angles: &CanonicalHingeAngles,
+        depth: u8,
+        index: u64,
+    ) -> bool {
+        model.owns_pose(source_pose)
+            && Arc::ptr_eq(&self.source, &model.tree)
+            && Arc::ptr_eq(&self.source_pose, &source_pose.pose)
+            && self.fixed_face == source_pose.fixed_face
+            && self.source_angles.as_slice() == source_pose.hinge_angles()
+            && &self.target_angles == target_angles
+            && self.depth == depth
+            && self.index == index
+            && self.faces.len() == model.tree.face_ids.len()
+            && self
+                .faces
+                .iter()
+                .zip(&model.tree.face_ids)
+                .all(|(entry, face)| {
+                    entry.face == *face
+                        && find_material_face_boundary(&model.tree, *face).is_some_and(|boundary| {
+                            entry.vertices.len() == boundary.vertices().len()
+                                && entry
+                                    .vertices
+                                    .iter()
+                                    .zip(boundary.vertices())
+                                    .all(|((vertex, _), expected)| vertex == expected)
+                        })
+                })
+    }
 }
 
 /// Validated material face and hinge geometry for connected graphs, including
@@ -976,6 +1115,210 @@ impl MaterialTreeKinematicsModel {
     }
 
     model_observers!();
+
+    /// Encloses every world-space material vertex over one closed dyadic leaf
+    /// of the linear source-to-target angle path.
+    ///
+    /// `checkpoint` is called before each bounded phase and per hinge/face/
+    /// vertex. Returning `false` is cancellation (and includes caller-owned
+    /// deadline checks). No partial registry is returned on cancellation,
+    /// malformed identity, or an exhausted resource bound.
+    pub fn prepare_dyadic_face_vertex_intervals_with_checkpoint_v1(
+        &self,
+        source_pose: &MaterialTreePose,
+        target_angles: &CanonicalHingeAngles,
+        depth: u8,
+        index: u64,
+        limits: MaterialTreeDyadicIntervalLimitsV1,
+        mut checkpoint: impl FnMut() -> bool,
+    ) -> Result<MaterialTreeDyadicFaceIntervalRegistryV1, MaterialTreeDyadicIntervalErrorV1> {
+        dyadic_interval_checkpoint_v1(&mut checkpoint)?;
+        let denominator = dyadic_leaf_denominator_v1(depth)?;
+        if index >= denominator {
+            return Err(MaterialTreeDyadicIntervalErrorV1::InvalidLeaf);
+        }
+        if !self.owns_pose(source_pose) {
+            return Err(MaterialTreeDyadicIntervalErrorV1::SourceIssuerMismatch);
+        }
+        if self.tree.face_ids.len() > limits.max_faces
+            || self.tree.hinges.len() > limits.max_hinges
+            || self.tree.positions.len() > limits.max_vertices
+        {
+            return Err(MaterialTreeDyadicIntervalErrorV1::ResourceLimit);
+        }
+        if source_pose.angles.as_slice().len() != self.tree.hinges.len() {
+            return Err(MaterialTreeDyadicIntervalErrorV1::SourceAnglesMismatch);
+        }
+        if target_angles.as_slice().len() != self.tree.hinges.len() {
+            return Err(MaterialTreeDyadicIntervalErrorV1::TargetAnglesMismatch);
+        }
+        let mut work_budget = DyadicIntervalWorkBudgetV1::new(limits.max_total_interval_work);
+        let angle_boxes = dyadic_tree_angle_boxes_v1(
+            source_pose.angles.as_slice(),
+            target_angles.as_slice(),
+            depth,
+            index,
+            limits.max_interval_work,
+            &mut work_budget,
+            &mut checkpoint,
+        )?;
+
+        let root = if self.tree.hinges.is_empty() {
+            if source_pose.fixed_face.is_some() {
+                return Err(MaterialTreeDyadicIntervalErrorV1::SourceAnglesMismatch);
+            }
+            *self
+                .tree
+                .face_ids
+                .first()
+                .ok_or(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?
+        } else {
+            let root = source_pose
+                .fixed_face
+                .ok_or(MaterialTreeDyadicIntervalErrorV1::SourceAnglesMismatch)?;
+            if !self.tree.face_ids.contains(&root) {
+                return Err(MaterialTreeDyadicIntervalErrorV1::SourceAnglesMismatch);
+            }
+            root
+        };
+        let mut transforms = HashMap::<FaceId, IntervalRigidTransformV1>::new();
+        transforms
+            .try_reserve(self.tree.face_ids.len())
+            .map_err(|_| MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?;
+        transforms.insert(
+            root,
+            interval_error_v1(IntervalRigidTransformV1::identity())?,
+        );
+        let mut queue = VecDeque::<FaceId>::new();
+        queue
+            .try_reserve(self.tree.face_ids.len())
+            .map_err(|_| MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?;
+        queue.push_back(root);
+        while let Some(parent_face) = queue.pop_front() {
+            dyadic_interval_checkpoint_v1(&mut checkpoint)?;
+            let parent = *transforms
+                .get(&parent_face)
+                .ok_or(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?;
+            let neighbors = self
+                .tree
+                .adjacency
+                .get(&parent_face)
+                .ok_or(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?;
+            for neighbor in neighbors {
+                dyadic_interval_checkpoint_v1(&mut checkpoint)?;
+                if transforms.contains_key(&neighbor.face) {
+                    continue;
+                }
+                let hinge = self
+                    .tree
+                    .hinges
+                    .get(neighbor.hinge_index)
+                    .ok_or(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?;
+                let angle = *angle_boxes
+                    .get(&hinge.edge)
+                    .ok_or(MaterialTreeDyadicIntervalErrorV1::TargetAnglesMismatch)?;
+                let axis = hinge.axis;
+                let signed_axis = [
+                    axis.x() * neighbor.rotation_sign,
+                    axis.y() * neighbor.rotation_sign,
+                    axis.z() * neighbor.rotation_sign,
+                ];
+                work_budget.charge()?;
+                let local = interval_error_v1(IntervalRigidTransformV1::about_axis(
+                    signed_axis,
+                    [hinge.start.x(), hinge.start.y(), hinge.start.z()],
+                    angle,
+                    limits.max_interval_work,
+                ))?;
+                work_budget.charge()?;
+                let child = interval_error_v1(parent.compose(local, limits.max_interval_work))?;
+                if transforms.insert(neighbor.face, child).is_some() {
+                    return Err(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable);
+                }
+                queue.push_back(neighbor.face);
+            }
+        }
+        if transforms.len() != self.tree.face_ids.len() {
+            return Err(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable);
+        }
+
+        let mut faces = Vec::new();
+        let max_total_vertices = limits
+            .max_faces
+            .checked_mul(limits.max_vertices)
+            .ok_or(MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?;
+        let mut total_vertices = 0_usize;
+        faces
+            .try_reserve_exact(self.tree.face_ids.len())
+            .map_err(|_| MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?;
+        for face in &self.tree.face_ids {
+            dyadic_interval_checkpoint_v1(&mut checkpoint)?;
+            let boundary = find_material_face_boundary(&self.tree, *face)
+                .ok_or(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?;
+            let mut vertices = Vec::new();
+            total_vertices = total_vertices
+                .checked_add(boundary.vertices().len())
+                .filter(|total| *total <= max_total_vertices)
+                .ok_or(MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?;
+            vertices
+                .try_reserve_exact(boundary.vertices().len())
+                .map_err(|_| MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?;
+            let transform = *transforms
+                .get(face)
+                .ok_or(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?;
+            for vertex in boundary.vertices() {
+                dyadic_interval_checkpoint_v1(&mut checkpoint)?;
+                let point = self
+                    .tree
+                    .positions
+                    .get(vertex)
+                    .copied()
+                    .ok_or(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?;
+                let point = [point.x(), point.y(), point.z()]
+                    .map(OutwardIntervalV1::from_rounded)
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?
+                    .try_into()
+                    .map_err(|_| MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable)?;
+                work_budget.charge()?;
+                let world = interval_error_v1(transform.apply(point, limits.max_interval_work))?;
+                vertices.push((*vertex, world));
+            }
+            faces.push(MaterialTreeDyadicFaceVerticesV1 {
+                face: *face,
+                vertices,
+            });
+        }
+        Ok(MaterialTreeDyadicFaceIntervalRegistryV1 {
+            source: Arc::clone(&self.tree),
+            source_pose: Arc::clone(&source_pose.pose),
+            fixed_face: source_pose.fixed_face,
+            source_angles: source_pose.angles.as_ref().clone(),
+            target_angles: target_angles.clone(),
+            depth,
+            index,
+            faces,
+        })
+    }
+
+    pub fn prepare_dyadic_face_vertex_intervals_v1(
+        &self,
+        source_pose: &MaterialTreePose,
+        target_angles: &CanonicalHingeAngles,
+        depth: u8,
+        index: u64,
+        limits: MaterialTreeDyadicIntervalLimitsV1,
+    ) -> Result<MaterialTreeDyadicFaceIntervalRegistryV1, MaterialTreeDyadicIntervalErrorV1> {
+        self.prepare_dyadic_face_vertex_intervals_with_checkpoint_v1(
+            source_pose,
+            target_angles,
+            depth,
+            index,
+            limits,
+            || true,
+        )
+    }
 }
 
 impl ObservationTreeKinematicsModel {
@@ -2359,6 +2702,144 @@ fn prepare_material_graph_effective(
     })
 }
 
+fn dyadic_interval_checkpoint_v1(
+    checkpoint: &mut impl FnMut() -> bool,
+) -> Result<(), MaterialTreeDyadicIntervalErrorV1> {
+    checkpoint()
+        .then_some(())
+        .ok_or(MaterialTreeDyadicIntervalErrorV1::Cancelled)
+}
+
+fn dyadic_leaf_denominator_v1(depth: u8) -> Result<u64, MaterialTreeDyadicIntervalErrorV1> {
+    if depth > 52 {
+        return Err(MaterialTreeDyadicIntervalErrorV1::InvalidLeaf);
+    }
+    1_u64
+        .checked_shl(u32::from(depth))
+        .ok_or(MaterialTreeDyadicIntervalErrorV1::InvalidLeaf)
+}
+
+fn interval_error_v1<T>(
+    result: Result<T, OutwardIntervalErrorV1>,
+) -> Result<T, MaterialTreeDyadicIntervalErrorV1> {
+    result.map_err(|error| match error {
+        OutwardIntervalErrorV1::ResourceLimit => MaterialTreeDyadicIntervalErrorV1::ResourceLimit,
+        OutwardIntervalErrorV1::InvalidEndpoint
+        | OutwardIntervalErrorV1::DivisionByZeroInterval => {
+            MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable
+        }
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DyadicIntervalWorkBudgetV1 {
+    remaining: usize,
+}
+
+impl DyadicIntervalWorkBudgetV1 {
+    const fn new(maximum: usize) -> Self {
+        Self { remaining: maximum }
+    }
+
+    fn charge(&mut self) -> Result<(), MaterialTreeDyadicIntervalErrorV1> {
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .ok_or(MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?;
+        Ok(())
+    }
+}
+
+fn dyadic_tree_angle_boxes_v1(
+    source: &[HingeAngle],
+    target: &[HingeAngle],
+    depth: u8,
+    index: u64,
+    max_work: usize,
+    work_budget: &mut DyadicIntervalWorkBudgetV1,
+    checkpoint: &mut impl FnMut() -> bool,
+) -> Result<HashMap<EdgeId, OutwardIntervalV1>, MaterialTreeDyadicIntervalErrorV1> {
+    let denominator = dyadic_leaf_denominator_v1(depth)?;
+    let upper_index = index
+        .checked_add(1)
+        .filter(|value| *value <= denominator)
+        .ok_or(MaterialTreeDyadicIntervalErrorV1::InvalidLeaf)?;
+    if source.len() != target.len()
+        || source
+            .iter()
+            .zip(target)
+            .any(|(source, target)| source.edge() != target.edge())
+    {
+        return Err(MaterialTreeDyadicIntervalErrorV1::TargetAnglesMismatch);
+    }
+    let lower_t = OutwardIntervalV1::new(
+        index as f64 / denominator as f64,
+        index as f64 / denominator as f64,
+    )
+    .map_err(|_| MaterialTreeDyadicIntervalErrorV1::InvalidLeaf)?;
+    let upper_t = OutwardIntervalV1::new(
+        upper_index as f64 / denominator as f64,
+        upper_index as f64 / denominator as f64,
+    )
+    .map_err(|_| MaterialTreeDyadicIntervalErrorV1::InvalidLeaf)?;
+    let mut output = HashMap::new();
+    output
+        .try_reserve(source.len())
+        .map_err(|_| MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?;
+    for (source, target) in source.iter().zip(target) {
+        dyadic_interval_checkpoint_v1(checkpoint)?;
+        work_budget.charge()?;
+        if source.angle_degrees().to_bits() == target.angle_degrees().to_bits() {
+            if output
+                .insert(
+                    source.edge(),
+                    tree_angle_input_interval_v1(source.angle_degrees())?,
+                )
+                .is_some()
+            {
+                return Err(MaterialTreeDyadicIntervalErrorV1::SourceAnglesMismatch);
+            }
+            continue;
+        }
+        let source_interval = tree_angle_input_interval_v1(source.angle_degrees())?;
+        let target_interval = tree_angle_input_interval_v1(target.angle_degrees())?;
+        let delta = interval_error_v1(target_interval.sub(source_interval))?;
+        let left = interval_error_v1(source_interval.add(interval_error_v1(delta.mul(lower_t))?))?;
+        let right = interval_error_v1(source_interval.add(interval_error_v1(delta.mul(upper_t))?))?;
+        let interval = interval_error_v1(OutwardIntervalV1::new(
+            left.lower().min(right.lower()),
+            left.upper().max(right.upper()),
+        ))?;
+        // Every `HingeAngle` is already authenticated in the closed
+        // 0..=180-degree domain. Outward arithmetic around an exact endpoint
+        // may deliberately add one representable value outside that domain
+        // (for example, multiplying by the exact dyadic zero). Intersecting
+        // with the authenticated physical domain preserves soundness and
+        // keeps the root/last closed leaves available.
+        let interval = interval_error_v1(interval.intersect_bounds(0.0, 180.0))?;
+        if interval.work() > max_work {
+            return Err(MaterialTreeDyadicIntervalErrorV1::IntervalUnavailable);
+        }
+        if output.insert(source.edge(), interval).is_some() {
+            return Err(MaterialTreeDyadicIntervalErrorV1::SourceAnglesMismatch);
+        }
+    }
+    Ok(output)
+}
+
+fn tree_angle_input_interval_v1(
+    angle: f64,
+) -> Result<OutwardIntervalV1, MaterialTreeDyadicIntervalErrorV1> {
+    // Keep exact cardinal inputs closed: the trig kernel has exact 0/90/180
+    // branches. Every non-cardinal binary64 source is first widened with the
+    // standard next_down/next_up input conversion.
+    if matches!(angle, 0.0 | 90.0 | 180.0) {
+        interval_error_v1(OutwardIntervalV1::new(angle, angle))
+    } else {
+        interval_error_v1(OutwardIntervalV1::from_rounded(angle))
+    }
+}
+
 fn solve_tree(
     model: &PreparedTree,
     fixed_face: Option<FaceId>,
@@ -2607,15 +3088,12 @@ fn checked_double(count: usize, maximum: usize) -> Result<usize, KinematicsError
 
 #[cfg(test)]
 mod tests {
-    use ori_domain::{EdgeId, Point2, VertexId};
+    use std::{collections::HashMap, sync::Arc};
+
+    use ori_domain::{EdgeId, FaceId, Point2, VertexId};
     use ori_topology::{CanonicalFaceKeyError, FoldAssignment};
 
-    use super::{
-        HingeAngle, SimpleBoundaryValidationBudget, assignment_signed_angle_degrees_v1,
-        checked_accumulate, checked_double, exact_point_key, map_canonical_face_key_error,
-        validate_simple_boundary,
-    };
-    use crate::KinematicsError;
+    use super::*;
 
     fn vertex_ids(count: usize) -> Vec<VertexId> {
         (0..count).map(|_| VertexId::new()).collect()
@@ -2627,6 +3105,182 @@ mod tests {
             points,
             &mut SimpleBoundaryValidationBudget::production(),
         )
+    }
+
+    fn interval_test_angles_v1(edges: [EdgeId; 2], values: [f64; 2]) -> CanonicalHingeAngles {
+        CanonicalHingeAngles::new(vec![
+            HingeAngle::new(edges[0], values[0]).unwrap(),
+            HingeAngle::new(edges[1], values[1]).unwrap(),
+        ])
+        .unwrap()
+    }
+
+    fn interval_test_model_v1() -> (MaterialTreeKinematicsModel, FaceId, [EdgeId; 2]) {
+        let root = FaceId::new();
+        let middle = FaceId::new();
+        let far = FaceId::new();
+        let mut face_ids = vec![root, middle, far];
+        face_ids.sort_unstable_by_key(|face| face.canonical_bytes());
+
+        let mut edges = [EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(|edge| edge.canonical_bytes());
+        let [first_edge, second_edge] = edges;
+
+        let [a, b, c, d, e] = [
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+        ];
+        let positions = [
+            (a, Point3::new(0.0, 0.0, 0.0).unwrap()),
+            (b, Point3::new(1.0, 0.0, 0.0).unwrap()),
+            (c, Point3::new(0.0, 1.0, 0.0).unwrap()),
+            (d, Point3::new(0.0, 0.0, -1.0).unwrap()),
+            (e, Point3::new(0.0, 1.0, -1.0).unwrap()),
+        ]
+        .into_iter()
+        .collect();
+        let boundary_edges = [EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        let mut face_boundaries = vec![
+            PreparedFaceBoundary {
+                face: root,
+                vertices: vec![a, b, c],
+                edges: boundary_edges.to_vec(),
+            },
+            PreparedFaceBoundary {
+                face: middle,
+                vertices: vec![a, b, d],
+                edges: boundary_edges.to_vec(),
+            },
+            PreparedFaceBoundary {
+                face: far,
+                vertices: vec![a, d, e],
+                edges: boundary_edges.to_vec(),
+            },
+        ];
+        face_boundaries.sort_unstable_by_key(|boundary| boundary.face.canonical_bytes());
+        let hinges = vec![
+            TreeHinge::new_for_test(
+                first_edge,
+                FoldAssignment::Mountain,
+                root,
+                middle,
+                Point3::new(0.0, 0.0, 0.0).unwrap(),
+                Point3::new(1.0, 0.0, 0.0).unwrap(),
+                Point3::new(1.0, 0.0, 0.0).unwrap(),
+            ),
+            TreeHinge::new_for_test(
+                second_edge,
+                FoldAssignment::Valley,
+                middle,
+                far,
+                Point3::new(0.0, 0.0, 0.0).unwrap(),
+                Point3::new(0.0, 0.0, -1.0).unwrap(),
+                Point3::new(0.0, 0.0, -1.0).unwrap(),
+            ),
+        ];
+        let mut adjacency = HashMap::new();
+        adjacency.insert(
+            root,
+            vec![Neighbor {
+                face: middle,
+                hinge_index: 0,
+                rotation_sign: 1.0,
+            }],
+        );
+        adjacency.insert(
+            middle,
+            vec![
+                Neighbor {
+                    face: root,
+                    hinge_index: 0,
+                    rotation_sign: -1.0,
+                },
+                Neighbor {
+                    face: far,
+                    hinge_index: 1,
+                    rotation_sign: -1.0,
+                },
+            ],
+        );
+        adjacency.insert(
+            far,
+            vec![Neighbor {
+                face: middle,
+                hinge_index: 1,
+                rotation_sign: 1.0,
+            }],
+        );
+        (
+            MaterialTreeKinematicsModel {
+                tree: Arc::new(PreparedTree {
+                    face_ids,
+                    face_boundaries,
+                    positions,
+                    hinges,
+                    adjacency,
+                }),
+            },
+            root,
+            edges,
+        )
+    }
+
+    fn single_face_interval_test_model_v1() -> (MaterialTreeKinematicsModel, FaceId) {
+        let face = FaceId::new();
+        let vertices = [VertexId::new(), VertexId::new(), VertexId::new()];
+        let positions = [
+            (vertices[0], Point3::new(0.0, 0.0, 0.0).unwrap()),
+            (vertices[1], Point3::new(1.0, 0.0, 0.0).unwrap()),
+            (vertices[2], Point3::new(0.0, 1.0, 0.0).unwrap()),
+        ]
+        .into_iter()
+        .collect();
+        (
+            MaterialTreeKinematicsModel {
+                tree: Arc::new(PreparedTree {
+                    face_ids: vec![face],
+                    face_boundaries: vec![PreparedFaceBoundary {
+                        face,
+                        vertices: vertices.to_vec(),
+                        edges: vec![EdgeId::new(), EdgeId::new(), EdgeId::new()],
+                    }],
+                    positions,
+                    hinges: Vec::new(),
+                    adjacency: HashMap::from([(face, Vec::new())]),
+                }),
+            },
+            face,
+        )
+    }
+
+    fn assert_registry_encloses_pose_v1(
+        registry: &MaterialTreeDyadicFaceIntervalRegistryV1,
+        pose: &MaterialTreePose,
+    ) {
+        for face in pose.face_ids() {
+            let transform = pose.face_transform(*face).unwrap();
+            for vertex in pose.face_boundary(*face).unwrap().vertices() {
+                let material = pose.vertex_position(*vertex).unwrap();
+                let world = transform.apply_point(material).unwrap();
+                let (_, enclosure) = registry
+                    .face_vertices(*face)
+                    .unwrap()
+                    .iter()
+                    .find(|(candidate, _)| candidate == vertex)
+                    .unwrap();
+                for (interval, coordinate) in
+                    enclosure.iter().zip([world.x(), world.y(), world.z()])
+                {
+                    assert!(
+                        interval.lower() <= coordinate && coordinate <= interval.upper(),
+                        "face {face:?}, vertex {vertex:?}, coordinate {coordinate} outside {interval:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2677,6 +3331,253 @@ mod tests {
         assert_eq!(
             checked_double(usize::MAX, usize::MAX),
             Err(KinematicsError::ResourceLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn dyadic_angle_boxes_cover_root_and_exact_shared_endpoint() {
+        let edge = EdgeId::new();
+        let source = [HingeAngle::new(edge, 0.0).unwrap()];
+        let target = [HingeAngle::new(edge, 37.0).unwrap()];
+        let root = dyadic_tree_angle_boxes_v1(
+            &source,
+            &target,
+            0,
+            0,
+            1_000,
+            &mut DyadicIntervalWorkBudgetV1::new(1_000),
+            &mut || true,
+        )
+        .unwrap();
+        let root = root.get(&edge).unwrap();
+        assert!(root.lower() <= 0.0 && root.upper() >= 37.0);
+
+        let left = dyadic_tree_angle_boxes_v1(
+            &source,
+            &target,
+            1,
+            0,
+            1_000,
+            &mut DyadicIntervalWorkBudgetV1::new(1_000),
+            &mut || true,
+        )
+        .unwrap();
+        let right = dyadic_tree_angle_boxes_v1(
+            &source,
+            &target,
+            1,
+            1,
+            1_000,
+            &mut DyadicIntervalWorkBudgetV1::new(1_000),
+            &mut || true,
+        )
+        .unwrap();
+        let left = left.get(&edge).unwrap();
+        let right = right.get(&edge).unwrap();
+        assert!(left.lower() <= 18.5 && left.upper() >= 18.5);
+        assert!(right.lower() <= 18.5 && right.upper() >= 18.5);
+        assert_eq!(dyadic_leaf_denominator_v1(52), Ok(1_u64 << 52));
+        assert!(dyadic_leaf_denominator_v1(53).is_err());
+    }
+
+    #[test]
+    fn dyadic_angle_boxes_keep_zero_endpoint_and_stationary_flat_hinge() {
+        let mut edges = [EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(|edge| edge.canonical_bytes());
+        let source = [
+            HingeAngle::new(edges[0], 0.0).unwrap(),
+            HingeAngle::new(edges[1], 180.0).unwrap(),
+        ];
+        let target = [
+            HingeAngle::new(edges[0], 37.0).unwrap(),
+            HingeAngle::new(edges[1], 180.0).unwrap(),
+        ];
+        let boxes = dyadic_tree_angle_boxes_v1(
+            &source,
+            &target,
+            1,
+            0,
+            1_000,
+            &mut DyadicIntervalWorkBudgetV1::new(2),
+            &mut || true,
+        )
+        .unwrap();
+        let moving = boxes.get(&edges[0]).unwrap();
+        assert_eq!(moving.lower(), 0.0);
+        assert!(moving.upper() >= 18.5);
+        let stationary = boxes.get(&edges[1]).unwrap();
+        assert_eq!((stationary.lower(), stationary.upper()), (180.0, 180.0));
+    }
+
+    #[test]
+    fn dyadic_angle_boxes_reject_source_order_and_one_short_target() {
+        let first = EdgeId::new();
+        let second = EdgeId::new();
+        let (first, second) = if first.canonical_bytes() < second.canonical_bytes() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let source = [
+            HingeAngle::new(first, 0.0).unwrap(),
+            HingeAngle::new(second, 180.0).unwrap(),
+        ];
+        assert!(
+            dyadic_tree_angle_boxes_v1(
+                &source,
+                &source[..1],
+                0,
+                0,
+                1_000,
+                &mut DyadicIntervalWorkBudgetV1::new(1_000),
+                &mut || true,
+            )
+            .is_err()
+        );
+        let reversed = [source[1], source[0]];
+        assert!(
+            dyadic_tree_angle_boxes_v1(
+                &source,
+                &reversed,
+                0,
+                0,
+                1_000,
+                &mut DyadicIntervalWorkBudgetV1::new(1_000),
+                &mut || true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn dyadic_interval_checkpoint_fails_closed_for_cancel_or_deadline() {
+        assert_eq!(
+            dyadic_interval_checkpoint_v1(&mut || false),
+            Err(super::MaterialTreeDyadicIntervalErrorV1::Cancelled)
+        );
+    }
+
+    #[test]
+    fn dyadic_angle_boxes_check_cancel_between_hinges() {
+        let mut edges = [EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(|edge| edge.canonical_bytes());
+        let source = [
+            HingeAngle::new(edges[0], 10.0).unwrap(),
+            HingeAngle::new(edges[1], 20.0).unwrap(),
+        ];
+        let target = [
+            HingeAngle::new(edges[0], 30.0).unwrap(),
+            HingeAngle::new(edges[1], 40.0).unwrap(),
+        ];
+        let mut checks = 0;
+        assert_eq!(
+            dyadic_tree_angle_boxes_v1(
+                &source,
+                &target,
+                0,
+                0,
+                1_000,
+                &mut DyadicIntervalWorkBudgetV1::new(1_000),
+                &mut || {
+                    checks += 1;
+                    checks < 2
+                },
+            ),
+            Err(MaterialTreeDyadicIntervalErrorV1::Cancelled)
+        );
+        assert_eq!(checks, 2);
+    }
+
+    #[test]
+    fn dyadic_registry_accepts_single_face_identity_leaf() {
+        let (model, face) = single_face_interval_test_model_v1();
+        let angles = CanonicalHingeAngles::new(Vec::new()).unwrap();
+        let pose = model.solve(None, &angles).unwrap();
+        let registry = model
+            .prepare_dyadic_face_vertex_intervals_v1(
+                &pose,
+                &angles,
+                0,
+                0,
+                MaterialTreeDyadicIntervalLimitsV1::default(),
+            )
+            .unwrap();
+        assert!(registry.is_for(&model, &pose, &angles, 0, 0));
+        assert_registry_encloses_pose_v1(&registry, &pose);
+        assert_eq!(registry.face_vertices(face).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn dyadic_registry_encloses_two_hinge_leaf_endpoints_midpoints_and_shared_boundary() {
+        let (model, root, edges) = interval_test_model_v1();
+        let source_angles = interval_test_angles_v1(edges, [10.0, 20.0]);
+        let target_angles = interval_test_angles_v1(edges, [50.0, 80.0]);
+        let source_pose = model.solve(Some(root), &source_angles).unwrap();
+        let limits = MaterialTreeDyadicIntervalLimitsV1::default();
+        let left = model
+            .prepare_dyadic_face_vertex_intervals_v1(&source_pose, &target_angles, 1, 0, limits)
+            .unwrap();
+        let right = model
+            .prepare_dyadic_face_vertex_intervals_v1(&source_pose, &target_angles, 1, 1, limits)
+            .unwrap();
+
+        for (registry, leaf_samples) in [
+            (&left, [[10.0, 20.0], [20.0, 35.0], [30.0, 50.0]]),
+            (&right, [[30.0, 50.0], [40.0, 65.0], [50.0, 80.0]]),
+        ] {
+            for values in leaf_samples {
+                let pose = model
+                    .solve(Some(root), &interval_test_angles_v1(edges, values))
+                    .unwrap();
+                assert_registry_encloses_pose_v1(registry, &pose);
+            }
+        }
+        assert!(left.is_for(&model, &source_pose, &target_angles, 1, 0));
+        assert!(right.is_for(&model, &source_pose, &target_angles, 1, 1));
+        let aba_source = model.solve(Some(root), &source_angles).unwrap();
+        assert!(!left.is_for(&model, &aba_source, &target_angles, 1, 0));
+
+        let exact_work = 2 + 2 * 2 + 3 * 3;
+        let exact_limits = MaterialTreeDyadicIntervalLimitsV1 {
+            max_total_interval_work: exact_work,
+            ..limits
+        };
+        assert!(
+            model
+                .prepare_dyadic_face_vertex_intervals_v1(
+                    &source_pose,
+                    &target_angles,
+                    1,
+                    0,
+                    exact_limits,
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            model.prepare_dyadic_face_vertex_intervals_v1(
+                &source_pose,
+                &target_angles,
+                1,
+                0,
+                MaterialTreeDyadicIntervalLimitsV1 {
+                    max_total_interval_work: exact_work - 1,
+                    ..limits
+                },
+            ),
+            Err(MaterialTreeDyadicIntervalErrorV1::ResourceLimit)
+        );
+        assert_eq!(
+            model.prepare_dyadic_face_vertex_intervals_v1(
+                &source_pose,
+                &target_angles,
+                1,
+                0,
+                MaterialTreeDyadicIntervalLimitsV1 {
+                    max_faces: 2,
+                    ..limits
+                },
+            ),
+            Err(MaterialTreeDyadicIntervalErrorV1::ResourceLimit)
         );
     }
 

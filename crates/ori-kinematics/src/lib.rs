@@ -132,6 +132,8 @@ pub use tree::{
     EffectiveCutRetainedFacePairRegistryLimitsV1, EffectiveCutRetainedFacePairRegistryV1,
     HingeAngle, MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialFaceBoundary,
     MaterialHingeGraphGeometry, MaterialHingePairCanonicalInputV1, MaterialHingePairProjectionV1,
+    MaterialTreeDyadicFaceIntervalRegistryV1, MaterialTreeDyadicFaceVerticesV1,
+    MaterialTreeDyadicIntervalErrorV1, MaterialTreeDyadicIntervalLimitsV1,
     MaterialTreeKinematicsModel, MaterialTreePose, ObservationTreeKinematicsModel,
     ObservationTreePose, TreeHinge, TreeKinematicsLimits, VertexPosition3,
     assignment_signed_angle_degrees_v1, prepare_effective_cut_kinematics_diagnostic_v1,

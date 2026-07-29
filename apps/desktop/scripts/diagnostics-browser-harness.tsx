@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { DiagnosticsDialog } from '../src/components/DiagnosticsDialog.tsx'
 import { LanguageControl } from '../src/components/LanguageControl.tsx'
 import { DIAGNOSTIC_SCOPES } from '../src/lib/diagnostics.ts'
+import { REDACTED_DIAGNOSTICS_SHARE_SCHEMA } from '../src/lib/diagnosticsShare.ts'
 import { localeStore, selectLocalizedText, useLocale } from '../src/lib/i18n.ts'
 import '../src/App.css'
 
@@ -16,9 +17,21 @@ declare global {
   }
 }
 
+const emptyUnprovenCounts = {
+  awaitingProof: 0,
+  proofBlocked: 0,
+  unknownEvidenceInsufficient: 0,
+  unknownResourceLimit: 0,
+  unknownCancelled: 0,
+  unknownDeadlineReached: 0,
+}
 const json = JSON.stringify({
-  schema: 'origami2.redacted-diagnostics.v1',
+  schema: REDACTED_DIAGNOSTICS_SHARE_SCHEMA,
   unexpected: DIAGNOSTIC_SCOPES.map((scope) => ({ scope, count: '0' })),
+  speculativeUnprovenFolds: {
+    applied: { ...emptyUnprovenCounts },
+    unappliedRedo: { ...emptyUnprovenCounts },
+  },
 })
 const byteLength = new TextEncoder().encode(json).byteLength
 const mock = { saveCalls: 0, activeSaves: 0, maximumActiveSaves: 0 }

@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::AppliedPoseErrorV1;
+
 use super::{super::CommandError, SpeculativeUnprovenFoldBindingV1};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +23,7 @@ pub enum SpeculativeUnprovenFoldStatusV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeculativeUnprovenFoldProofOutcomeV1 {
-    /// Reserved for a future resolver that requires an opaque, typed proof.
+    /// Produced only by the resolver that consumes an opaque, typed proof.
     ///
     /// The generic history resolver rejects this outcome because a binding is
     /// metadata, not certification authority.
@@ -106,6 +108,20 @@ pub enum SpeculativeUnprovenFoldHistoryLocationV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeculativeUnprovenFoldApplyResourceV1 {
+    HistoryMarkBinding,
+    TargetPattern,
+    TargetPaper,
+    TargetInstructionTimeline,
+    TargetProjectLayers,
+    TargetBeginnerDesignProfile,
+    CurrentTargetPose,
+    ResolutionTicketTargetPose,
+    UndoHistoryEntries,
+    RetainedBaseMarks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpeculativeUnprovenFoldResolutionReportV1 {
     pub location: SpeculativeUnprovenFoldHistoryLocationV1,
     pub outcome: SpeculativeUnprovenFoldProofOutcomeV1,
@@ -151,6 +167,16 @@ pub enum SpeculativeUnprovenFoldApplyErrorV1 {
     DuplicateBinding,
     #[error("the unresolved speculative history limit has been reached")]
     PendingMarkLimitReached,
+    #[error("the speculative applied-base history depth cannot be incremented")]
+    AppliedBaseHistoryDepthLimitReached,
+    #[error("the speculative resolution-ticket target revision is invalid")]
+    InvalidTargetRevision,
+    #[error("the speculative resolution-ticket target pose could not be retained")]
+    ResolutionTicketTargetPose(#[from] AppliedPoseErrorV1),
+    #[error("the speculative Apply could not reserve {resource:?} before commit")]
+    CommitPreparationResourceLimit {
+        resource: SpeculativeUnprovenFoldApplyResourceV1,
+    },
     #[error(transparent)]
     Command(#[from] CommandError),
 }
@@ -167,6 +193,10 @@ pub enum SpeculativeUnprovenFoldResolutionErrorV1 {
     BindingMetadataMismatch,
     #[error("the speculative history binding already has a terminal result")]
     AlreadyResolved,
+    #[error("the certified proof belongs to a different live editor instance")]
+    ForeignEditor,
+    #[error("the certified proof is internally inconsistent")]
+    InvalidCertifiedProof,
     #[error("certified resolution requires an opaque typed proof")]
     CertifiedRequiresTypedProof,
 }

@@ -7,18 +7,26 @@ use ori_domain::{
     BeginnerDesignProfileV1, CreasePattern, DEFAULT_PROJECT_LAYER_ID, EdgeLayerAssignmentV1,
     InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
     InstructionStepId, InstructionTimeline, InstructionVisual, MAX_INSTRUCTION_HINGE_RECORDS,
-    MAX_INSTRUCTION_STEPS, MAX_LAYER_EDGE_ASSIGNMENTS, MIN_INSTRUCTION_DURATION_MS, ProjectId,
-    ProjectLayerDocumentV1, validate_instruction_timeline,
+    MAX_INSTRUCTION_HINGES_PER_STEP, MAX_INSTRUCTION_STEPS, MAX_LAYER_EDGE_ASSIGNMENTS,
+    MIN_INSTRUCTION_DURATION_MS, ProjectId, ProjectLayerDocumentV1, validate_instruction_timeline,
     validate_project_layer_document_against_pattern_v1, validate_project_layer_document_v1,
 };
 use thiserror::Error;
 
+mod fallible_clone;
+
+pub(crate) use fallible_clone::{
+    try_clone_beginner_design_profile_v1, try_clone_crease_pattern_v1,
+    try_clone_instruction_timeline_v1, try_clone_paper_v1, try_clone_project_layer_document_v1,
+};
+use fallible_clone::{try_clone_instruction_step_v1, try_owned_string};
+
 use crate::{
     AppliedPoseErrorV1, AppliedPoseLimitsV1, AppliedPoseV1, MAX_REVISION,
-    PreparedStackedFoldRequestedPoseV1, Revision, SourceEdgeSubdivisionV1,
-    SpeculativeApproximateBlockingObservationV1, SpeculativeUnprovenFoldBindingV1,
-    SpeculativeUnprovenFoldMetadataErrorV1, StackedFoldDocumentCommandV1,
-    StackedFoldInitialLayerOrderV1,
+    PreparedStackedFoldRequestedPoseV1, PreparedStackedFoldSourcePoseResourceV1, Revision,
+    SourceEdgeSubdivisionV1, SpeculativeApproximateBlockingObservationV1,
+    SpeculativeUnprovenFoldBindingV1, SpeculativeUnprovenFoldMetadataErrorV1,
+    StackedFoldDocumentCommandV1, StackedFoldInitialLayerOrderV1,
     diagnose_stacked_fold_requested_path_with_initial_layer_order_v1, prepare_applied_pose_v1,
 };
 
@@ -36,6 +44,50 @@ struct SpeculativeUnprovenTargetSealV1 {
     target_revision: Revision,
     command: StackedFoldDocumentCommandV1,
     applied_pose: AppliedPoseV1,
+}
+
+/// Crate-private inputs for native speculative-token issuance.
+///
+/// Keeping the complete issuance context together makes it harder for internal
+/// callers to accidentally reorder independent identity, generation, and live
+/// document arguments.
+pub(crate) struct SpeculativeUnprovenFoldTokenIssueInputV1<'a> {
+    pub(crate) editor_instance_anchor: Arc<()>,
+    pub(crate) source_applied_pose: Option<&'a AppliedPoseV1>,
+    pub(crate) source_instruction_timeline: &'a InstructionTimeline,
+    pub(crate) source_project_layers: &'a ProjectLayerDocumentV1,
+    pub(crate) source_beginner_design_profile: &'a BeginnerDesignProfileV1,
+    pub(crate) project_instance_id: ProjectId,
+    pub(crate) requested: &'a PreparedStackedFoldRequestedPoseV1,
+    pub(crate) initial_layer_order: &'a StackedFoldInitialLayerOrderV1,
+    pub(crate) pose_generation: u64,
+    pub(crate) request_generation_id: ProjectId,
+    pub(crate) paper_thickness_mm: f64,
+}
+
+struct ValidatedSpeculativeUnprovenFoldTokenPartsV1 {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    source_revision: Revision,
+    source_geometry_fingerprint_sha256: [u8; 32],
+    pose_generation: u64,
+    request_generation_id: ProjectId,
+    paper_thickness_mm: f64,
+    approximate_blocking_observation: SpeculativeApproximateBlockingObservationV1,
+    target_seal: SpeculativeUnprovenTargetSealV1,
+}
+
+#[cfg(test)]
+pub(crate) struct SpeculativeUnprovenFoldAppliedTargetInputV1<'a> {
+    pub(crate) editor_instance_anchor: Arc<()>,
+    pub(crate) source_applied_pose: Option<&'a AppliedPoseV1>,
+    pub(crate) target_revision: Revision,
+    pub(crate) pattern: &'a CreasePattern,
+    pub(crate) paper: &'a Paper,
+    pub(crate) instruction_timeline: &'a InstructionTimeline,
+    pub(crate) project_layers: &'a ProjectLayerDocumentV1,
+    pub(crate) beginner_design_profile: &'a BeginnerDesignProfileV1,
+    pub(crate) applied_pose: &'a AppliedPoseV1,
 }
 
 /// Native-only, one-shot permission to record one speculative stacked fold.
@@ -94,6 +146,24 @@ pub enum SpeculativeUnprovenFoldTokenIssueErrorV1 {
     TargetLengthDisplayReferenceInvalid,
     #[error("the prepared initial pose does not match the live editor's semantic source pose")]
     SourceAppliedPoseMismatch,
+    #[error("the live source pose could not be reconstructed for speculative issuance")]
+    SourceAppliedPoseReconstructionUnavailable,
+    #[error(
+        "the live source-pose {resource:?} count {actual} exceeds the supported maximum {maximum}"
+    )]
+    SourceAppliedPoseResourceLimitExceeded {
+        resource: PreparedStackedFoldSourcePoseResourceV1,
+        actual: usize,
+        maximum: usize,
+    },
+    #[error("the live source-pose {resource:?} count overflowed")]
+    SourceAppliedPoseResourceCountOverflow {
+        resource: PreparedStackedFoldSourcePoseResourceV1,
+    },
+    #[error("memory for the live source-pose {resource:?} could not be reserved")]
+    SourceAppliedPoseAllocationFailed {
+        resource: PreparedStackedFoldSourcePoseResourceV1,
+    },
     #[error("the production bounded path diagnostic could not be reproduced")]
     PathDiagnosticUnavailable,
     #[error("a continuously certified path must use certified Apply")]
@@ -142,18 +212,21 @@ pub enum SpeculativeUnprovenFoldTokenIssueErrorV1 {
 /// metadata, a hand-built binding, or a claimed nonblocking flag into Apply
 /// authority.
 pub(crate) fn issue_speculative_unproven_fold_token_v1(
-    editor_instance_anchor: Arc<()>,
-    source_applied_pose: Option<&AppliedPoseV1>,
-    source_instruction_timeline: &InstructionTimeline,
-    source_project_layers: &ProjectLayerDocumentV1,
-    source_beginner_design_profile: &BeginnerDesignProfileV1,
-    project_instance_id: ProjectId,
-    requested: &PreparedStackedFoldRequestedPoseV1,
-    initial_layer_order: &StackedFoldInitialLayerOrderV1,
-    pose_generation: u64,
-    request_generation_id: ProjectId,
-    paper_thickness_mm: f64,
+    input: SpeculativeUnprovenFoldTokenIssueInputV1<'_>,
 ) -> Result<SpeculativeUnprovenFoldTokenV1, SpeculativeUnprovenFoldTokenIssueErrorV1> {
+    let SpeculativeUnprovenFoldTokenIssueInputV1 {
+        editor_instance_anchor,
+        source_applied_pose,
+        source_instruction_timeline,
+        source_project_layers,
+        source_beginner_design_profile,
+        project_instance_id,
+        requested,
+        initial_layer_order,
+        pose_generation,
+        request_generation_id,
+        paper_thickness_mm,
+    } = input;
     let initial = requested.initial();
     let diagnostic = diagnose_stacked_fold_requested_path_with_initial_layer_order_v1(
         requested,
@@ -189,31 +262,34 @@ pub(crate) fn issue_speculative_unproven_fold_token_v1(
         source_beginner_design_profile,
         requested,
     )?;
-    issue_from_validated_parts_v1(
+    issue_from_validated_parts_v1(ValidatedSpeculativeUnprovenFoldTokenPartsV1 {
         project_instance_id,
-        lineage.identity_namespace(),
-        lineage.source_revision(),
-        lineage.source_fingerprint().0,
+        project_id: lineage.identity_namespace(),
+        source_revision: lineage.source_revision(),
+        source_geometry_fingerprint_sha256: lineage.source_fingerprint().0,
         pose_generation,
         request_generation_id,
         paper_thickness_mm,
-        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+        approximate_blocking_observation:
+            SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
         target_seal,
-    )
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn issue_from_validated_parts_v1(
-    project_instance_id: ProjectId,
-    project_id: ProjectId,
-    source_revision: Revision,
-    source_geometry_fingerprint_sha256: [u8; 32],
-    pose_generation: u64,
-    request_generation_id: ProjectId,
-    paper_thickness_mm: f64,
-    approximate_blocking_observation: SpeculativeApproximateBlockingObservationV1,
-    target_seal: SpeculativeUnprovenTargetSealV1,
+    parts: ValidatedSpeculativeUnprovenFoldTokenPartsV1,
 ) -> Result<SpeculativeUnprovenFoldTokenV1, SpeculativeUnprovenFoldTokenIssueErrorV1> {
+    let ValidatedSpeculativeUnprovenFoldTokenPartsV1 {
+        project_instance_id,
+        project_id,
+        source_revision,
+        source_geometry_fingerprint_sha256,
+        pose_generation,
+        request_generation_id,
+        paper_thickness_mm,
+        approximate_blocking_observation,
+        target_seal,
+    } = parts;
     if matches!(
         approximate_blocking_observation,
         SpeculativeApproximateBlockingObservationV1::BlockingSampleObserved { .. }
@@ -224,7 +300,7 @@ fn issue_from_validated_parts_v1(
         project_instance_id,
         project_id,
         source_revision,
-        lowercase_sha256(source_geometry_fingerprint_sha256),
+        try_lowercase_sha256(source_geometry_fingerprint_sha256)?,
         pose_generation,
         request_generation_id,
         paper_thickness_mm,
@@ -237,7 +313,12 @@ fn issue_from_validated_parts_v1(
 }
 
 impl SpeculativeUnprovenFoldTokenV1 {
-    /// Reauthenticates every token premise against the locked live project.
+    /// Checks the caller-visible binding dimensions retained by this token.
+    ///
+    /// This metadata check does not authenticate the private editor-instance
+    /// anchor, captured source pose, or complete target seal, and grants no
+    /// Apply authority. The consuming Apply path independently verifies those
+    /// native-only premises before releasing the target command.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn reauthenticates_v1(
@@ -253,8 +334,10 @@ impl SpeculativeUnprovenFoldTokenV1 {
         self.binding.project_instance_id() == project_instance_id
             && self.binding.project_id() == project_id
             && self.binding.source_revision() == source_revision
-            && self.binding.source_geometry_fingerprint_sha256()
-                == lowercase_sha256(source_geometry_fingerprint_sha256)
+            && lowercase_sha256_matches(
+                source_geometry_fingerprint_sha256,
+                self.binding.source_geometry_fingerprint_sha256(),
+            )
             && self.binding.pose_generation() == pose_generation
             && self.binding.request_generation_id() == request_generation_id
             && self.binding.paper_thickness_bits() == paper_thickness_bits
@@ -330,17 +413,21 @@ impl SpeculativeUnprovenTargetSealV1 {
             &hinge_angles,
             AppliedPoseLimitsV1::default(),
         )?;
+        let mut persisted_hinge_angles = Vec::new();
+        persisted_hinge_angles
+            .try_reserve_exact(hinge_count)
+            .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
+        persisted_hinge_angles.extend(hinge_angles.iter().map(|(edge, angle_degrees)| {
+            InstructionHingeAngle {
+                edge: *edge,
+                angle_degrees: *angle_degrees,
+            }
+        }));
         let persisted_pose = InstructionPose {
             model: InstructionPoseModel::AbsoluteHingeAnglesV1,
-            source_model_fingerprint: lineage.target_fingerprint().to_hex(),
+            source_model_fingerprint: try_lowercase_sha256(lineage.target_fingerprint().0)?,
             fixed_face: pose.fixed_face(),
-            hinge_angles: hinge_angles
-                .iter()
-                .map(|(edge, angle_degrees)| InstructionHingeAngle {
-                    edge: *edge,
-                    angle_degrees: *angle_degrees,
-                })
-                .collect(),
+            hinge_angles: persisted_hinge_angles,
         };
         let candidate = geometry.candidate();
         let instruction_timeline = append_speculative_instruction_step_v1(
@@ -353,12 +440,18 @@ impl SpeculativeUnprovenTargetSealV1 {
             geometry.proof().source_edges(),
             &candidate.pattern,
         )?;
+        let beginner_design_profile =
+            try_clone_beginner_design_profile_v1(source_beginner_design_profile)?;
         let command = StackedFoldDocumentCommandV1::new(
-            candidate.pattern.clone(),
-            candidate.paper.clone(),
+            try_clone_crease_pattern_v1(&candidate.pattern)?,
+            try_clone_paper_v1(&candidate.paper)?,
             instruction_timeline,
             project_layers,
-            Box::new(source_beginner_design_profile.clone()),
+            // Every nested profile buffer has already been reserved fallibly.
+            // Stable Rust does not expose a fallible `Box<T>` constructor, so
+            // only this final fixed-size box follows the global allocator's
+            // process-level allocation-failure contract.
+            Box::new(beginner_design_profile),
         );
         Ok(Self {
             editor_instance_anchor,
@@ -373,18 +466,23 @@ impl SpeculativeUnprovenTargetSealV1 {
 
     #[cfg(test)]
     fn capture_applied_target_v1(
-        editor_instance_anchor: Arc<()>,
-        source_applied_pose: Option<&AppliedPoseV1>,
-        target_revision: Revision,
-        pattern: &CreasePattern,
-        paper: &Paper,
-        instruction_timeline: &InstructionTimeline,
-        project_layers: &ProjectLayerDocumentV1,
-        beginner_design_profile: &BeginnerDesignProfileV1,
-        applied_pose: &AppliedPoseV1,
+        input: SpeculativeUnprovenFoldAppliedTargetInputV1<'_>,
     ) -> Result<Self, SpeculativeUnprovenFoldTokenIssueErrorV1> {
+        let SpeculativeUnprovenFoldAppliedTargetInputV1 {
+            editor_instance_anchor,
+            source_applied_pose,
+            target_revision,
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+            applied_pose,
+        } = input;
         let hinge_count = applied_pose.hinge_angles().len();
         check_target_seal_resource_counts_v1(hinge_count)?;
+        let beginner_design_profile =
+            try_clone_beginner_design_profile_v1(beginner_design_profile)?;
         Ok(Self {
             editor_instance_anchor,
             source_applied_pose: source_applied_pose
@@ -392,11 +490,13 @@ impl SpeculativeUnprovenTargetSealV1 {
                 .transpose()?,
             target_revision,
             command: StackedFoldDocumentCommandV1::new(
-                pattern.clone(),
-                paper.clone(),
-                instruction_timeline.clone(),
-                project_layers.clone(),
-                Box::new(beginner_design_profile.clone()),
+                try_clone_crease_pattern_v1(pattern)?,
+                try_clone_paper_v1(paper)?,
+                try_clone_instruction_timeline_v1(instruction_timeline)?,
+                try_clone_project_layer_document_v1(project_layers)?,
+                // See `capture_requested_v1`: all nested allocations are
+                // fallible; only the final fixed-size box uses `Box::new`.
+                Box::new(beginner_design_profile),
             ),
             applied_pose: applied_pose.try_clone()?,
         })
@@ -428,9 +528,11 @@ fn append_speculative_instruction_step_v1(
     persisted_pose: InstructionPose,
     step_id: InstructionStepId,
 ) -> Result<InstructionTimeline, SpeculativeUnprovenFoldTokenIssueErrorV1> {
-    let source_hinge_record_count = source.steps.iter().fold(0_usize, |total, step| {
-        total.saturating_add(step.pose.hinge_angles.len())
-    });
+    let source_hinge_record_count = source.steps.iter().try_fold(0_usize, |total, step| {
+        total
+            .checked_add(step.pose.hinge_angles.len())
+            .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)
+    })?;
     check_target_instruction_timeline_resource_counts_v1(
         source.steps.len(),
         source_hinge_record_count,
@@ -444,15 +546,22 @@ fn append_speculative_instruction_step_v1(
     validate_instruction_timeline(source)
         .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetInstructionTimeline)?;
 
-    let target_step_count = source.steps.len().saturating_add(1);
+    let target_step_count = source
+        .steps
+        .len()
+        .checked_add(1)
+        .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)?;
     let mut steps = Vec::new();
     steps
         .try_reserve_exact(target_step_count)
         .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
-    steps.extend(source.steps.iter().cloned());
+    for step in &source.steps {
+        steps.push(try_clone_instruction_step_v1(step)?);
+    }
+    let title = try_owned_string("Stacked fold (awaiting proof)")?;
     steps.push(InstructionStep {
         id: step_id,
-        title: "Stacked fold (awaiting proof)".to_owned(),
+        title,
         description: String::new(),
         caution: String::new(),
         duration_ms: MIN_INSTRUCTION_DURATION_MS,
@@ -470,7 +579,9 @@ fn check_target_instruction_timeline_resource_counts_v1(
     source_hinge_record_count: usize,
     target_hinge_record_count: usize,
 ) -> Result<(), SpeculativeUnprovenFoldTokenIssueErrorV1> {
-    let target_step_count = source_step_count.saturating_add(1);
+    let target_step_count = source_step_count
+        .checked_add(1)
+        .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)?;
     if target_step_count > MAX_INSTRUCTION_STEPS {
         return Err(
             SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineStepLimitExceeded {
@@ -480,8 +591,9 @@ fn check_target_instruction_timeline_resource_counts_v1(
         );
     }
 
-    let target_total_hinge_record_count =
-        source_hinge_record_count.saturating_add(target_hinge_record_count);
+    let target_total_hinge_record_count = source_hinge_record_count
+        .checked_add(target_hinge_record_count)
+        .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)?;
     if target_total_hinge_record_count > MAX_INSTRUCTION_HINGE_RECORDS {
         return Err(
             SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineHingeRecordLimitExceeded {
@@ -560,24 +672,26 @@ fn transport_project_layers_to_target_v1(
                 subdivision.source_edge().canonical_bytes()
             })
             .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::InvalidTargetProjectLayers)?;
-        target_assignment_count = target_assignment_count
-            .checked_add(source_subdivisions[subdivision_index].target_edges().len())
-            .unwrap_or(usize::MAX);
-        if target_assignment_count > MAX_LAYER_EDGE_ASSIGNMENTS {
-            return Err(
-                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetProjectLayerAssignmentLimitExceeded {
-                    actual: target_assignment_count,
-                    maximum: MAX_LAYER_EDGE_ASSIGNMENTS,
-                },
-            );
-        }
+        target_assignment_count = checked_target_layer_assignment_count_v1(
+            target_assignment_count,
+            source_subdivisions[subdivision_index].target_edges().len(),
+        )?;
     }
 
     let mut layers = Vec::new();
     layers
         .try_reserve_exact(source.layers.len())
         .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
-    layers.extend(source.layers.iter().cloned());
+    for layer in &source.layers {
+        layers.push(ori_domain::LayerRecordV1 {
+            id: layer.id,
+            name: try_owned_string(&layer.name)?,
+            content_kind: layer.content_kind,
+            visible: layer.visible,
+            locked: layer.locked,
+            opacity: layer.opacity,
+        });
+    }
 
     let mut edge_assignments = Vec::new();
     edge_assignments
@@ -618,13 +732,31 @@ fn transport_project_layers_to_target_v1(
     Ok(target)
 }
 
+fn checked_target_layer_assignment_count_v1(
+    current: usize,
+    additional: usize,
+) -> Result<usize, SpeculativeUnprovenFoldTokenIssueErrorV1> {
+    let actual = current
+        .checked_add(additional)
+        .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)?;
+    if actual > MAX_LAYER_EDGE_ASSIGNMENTS {
+        return Err(
+            SpeculativeUnprovenFoldTokenIssueErrorV1::TargetProjectLayerAssignmentLimitExceeded {
+                actual,
+                maximum: MAX_LAYER_EDGE_ASSIGNMENTS,
+            },
+        );
+    }
+    Ok(actual)
+}
+
 fn check_target_seal_resource_counts_v1(
     hinge_count: usize,
 ) -> Result<(), SpeculativeUnprovenFoldTokenIssueErrorV1> {
     hinge_count
         .checked_add(SPECULATIVE_TARGET_SEAL_FIXED_RECORDS_V1)
         .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)?;
-    let maximum = ori_foldability::DEFAULT_MAX_HINGES;
+    let maximum = ori_foldability::DEFAULT_MAX_HINGES.min(MAX_INSTRUCTION_HINGES_PER_STEP);
     if hinge_count > maximum {
         return Err(
             SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceLimitExceeded {
@@ -639,42 +771,38 @@ fn check_target_seal_resource_counts_v1(
 #[cfg(test)]
 pub(crate) fn issue_speculative_unproven_fold_token_for_test_v1(
     binding: SpeculativeUnprovenFoldBindingV1,
-    editor_instance_anchor: Arc<()>,
-    source_applied_pose: Option<&AppliedPoseV1>,
-    target_revision: Revision,
-    pattern: &CreasePattern,
-    paper: &Paper,
-    instruction_timeline: &InstructionTimeline,
-    project_layers: &ProjectLayerDocumentV1,
-    beginner_design_profile: &BeginnerDesignProfileV1,
-    applied_pose: &AppliedPoseV1,
+    target: SpeculativeUnprovenFoldAppliedTargetInputV1<'_>,
 ) -> Result<SpeculativeUnprovenFoldTokenV1, SpeculativeUnprovenFoldTokenIssueErrorV1> {
     binding.validate()?;
-    let target_seal = SpeculativeUnprovenTargetSealV1::capture_applied_target_v1(
-        editor_instance_anchor,
-        source_applied_pose,
-        target_revision,
-        pattern,
-        paper,
-        instruction_timeline,
-        project_layers,
-        beginner_design_profile,
-        applied_pose,
-    )?;
+    let target_seal = SpeculativeUnprovenTargetSealV1::capture_applied_target_v1(target)?;
     Ok(SpeculativeUnprovenFoldTokenV1 {
         binding,
         target_seal,
     })
 }
 
-fn lowercase_sha256(bytes: [u8; 32]) -> String {
+fn try_lowercase_sha256(
+    bytes: [u8; 32],
+) -> Result<String, SpeculativeUnprovenFoldTokenIssueErrorV1> {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(64);
+    let mut output = String::new();
+    output
+        .try_reserve_exact(64)
+        .map_err(|_| SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealAllocationFailed)?;
     for byte in bytes {
         output.push(char::from(DIGITS[usize::from(byte >> 4)]));
         output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
-    output
+    Ok(output)
+}
+
+fn lowercase_sha256_matches(bytes: [u8; 32], encoded: &str) -> bool {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    encoded.len() == 64
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            encoded.as_bytes()[index * 2] == DIGITS[usize::from(byte >> 4)]
+                && encoded.as_bytes()[index * 2 + 1] == DIGITS[usize::from(byte & 0x0f)]
+        })
 }
 
 #[cfg(test)]
@@ -776,15 +904,17 @@ mod tests {
         )
         .expect("single-face target pose");
         SpeculativeUnprovenTargetSealV1::capture_applied_target_v1(
-            Arc::new(()),
-            None,
-            8,
-            &pattern,
-            &paper,
-            &InstructionTimeline::default(),
-            &ProjectLayerDocumentV1::default(),
-            &BeginnerDesignProfileV1::default(),
-            &pose,
+            SpeculativeUnprovenFoldAppliedTargetInputV1 {
+                editor_instance_anchor: Arc::new(()),
+                source_applied_pose: None,
+                target_revision: 8,
+                pattern: &pattern,
+                paper: &paper,
+                instruction_timeline: &InstructionTimeline::default(),
+                project_layers: &ProjectLayerDocumentV1::default(),
+                beginner_design_profile: &BeginnerDesignProfileV1::default(),
+                applied_pose: &pose,
+            },
         )
         .expect("target seal")
     }
@@ -792,17 +922,17 @@ mod tests {
     fn issue(
         observation: SpeculativeApproximateBlockingObservationV1,
     ) -> Result<SpeculativeUnprovenFoldTokenV1, SpeculativeUnprovenFoldTokenIssueErrorV1> {
-        issue_from_validated_parts_v1(
-            ProjectId::new(),
-            ProjectId::new(),
-            7,
-            [0x5a; 32],
-            11,
-            ProjectId::new(),
-            0.25,
-            observation,
-            target_seal(),
-        )
+        issue_from_validated_parts_v1(ValidatedSpeculativeUnprovenFoldTokenPartsV1 {
+            project_instance_id: ProjectId::new(),
+            project_id: ProjectId::new(),
+            source_revision: 7,
+            source_geometry_fingerprint_sha256: [0x5a; 32],
+            pose_generation: 11,
+            request_generation_id: ProjectId::new(),
+            paper_thickness_mm: 0.25,
+            approximate_blocking_observation: observation,
+            target_seal: target_seal(),
+        })
     }
 
     #[test]
@@ -821,17 +951,18 @@ mod tests {
         let instance = ProjectId::new();
         let project = ProjectId::new();
         let request = ProjectId::new();
-        let token = issue_from_validated_parts_v1(
-            instance,
-            project,
-            7,
-            [0x5a; 32],
-            11,
-            request,
-            0.25,
-            SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
-            target_seal(),
-        )
+        let token = issue_from_validated_parts_v1(ValidatedSpeculativeUnprovenFoldTokenPartsV1 {
+            project_instance_id: instance,
+            project_id: project,
+            source_revision: 7,
+            source_geometry_fingerprint_sha256: [0x5a; 32],
+            pose_generation: 11,
+            request_generation_id: request,
+            paper_thickness_mm: 0.25,
+            approximate_blocking_observation:
+                SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+            target_seal: target_seal(),
+        })
         .expect("sound speculative token");
         let exact = (
             instance,
@@ -963,13 +1094,15 @@ mod tests {
             check_target_seal_resource_counts_v1(usize::MAX),
             Err(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)
         ));
-        let over_limit = ori_foldability::DEFAULT_MAX_HINGES + 1;
+        let maximum = ori_foldability::DEFAULT_MAX_HINGES.min(MAX_INSTRUCTION_HINGES_PER_STEP);
+        assert_eq!(check_target_seal_resource_counts_v1(maximum), Ok(()));
+        let over_limit = maximum + 1;
         assert_eq!(
             check_target_seal_resource_counts_v1(over_limit),
             Err(
                 SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceLimitExceeded {
                     actual: over_limit,
-                    maximum: ori_foldability::DEFAULT_MAX_HINGES,
+                    maximum,
                 }
             )
         );
@@ -1054,22 +1187,22 @@ mod tests {
         );
         assert_eq!(
             check_target_instruction_timeline_resource_counts_v1(usize::MAX, 0, 0),
-            Err(
-                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineStepLimitExceeded {
-                    actual: usize::MAX,
-                    maximum: MAX_INSTRUCTION_STEPS,
-                }
-            )
+            Err(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)
         );
         assert_eq!(
             check_target_instruction_timeline_resource_counts_v1(0, usize::MAX, 1),
-            Err(
-                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetInstructionTimelineHingeRecordLimitExceeded {
-                    actual: usize::MAX,
-                    maximum: MAX_INSTRUCTION_HINGE_RECORDS,
-                }
-            )
+            Err(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)
         );
+    }
+
+    #[test]
+    fn fingerprint_hex_encoding_is_fallible_and_allocation_free_to_compare() {
+        let bytes = [0xa5; 32];
+        let encoded = try_lowercase_sha256(bytes).expect("reserve fixed digest string");
+        assert_eq!(encoded, "a5".repeat(32));
+        assert!(lowercase_sha256_matches(bytes, &encoded));
+        assert!(!lowercase_sha256_matches([0x5a; 32], &encoded));
+        assert!(!lowercase_sha256_matches(bytes, &encoded[..63]));
     }
 
     #[test]
@@ -1107,6 +1240,27 @@ mod tests {
         );
         validate_project_layer_document_against_pattern_v1(&target, &target_pattern)
             .expect("transported layer document remains valid");
+    }
+
+    #[test]
+    fn transported_layer_assignment_count_uses_checked_arithmetic() {
+        assert_eq!(
+            checked_target_layer_assignment_count_v1(MAX_LAYER_EDGE_ASSIGNMENTS - 1, 1),
+            Ok(MAX_LAYER_EDGE_ASSIGNMENTS)
+        );
+        assert_eq!(
+            checked_target_layer_assignment_count_v1(MAX_LAYER_EDGE_ASSIGNMENTS, 1),
+            Err(
+                SpeculativeUnprovenFoldTokenIssueErrorV1::TargetProjectLayerAssignmentLimitExceeded {
+                    actual: MAX_LAYER_EDGE_ASSIGNMENTS + 1,
+                    maximum: MAX_LAYER_EDGE_ASSIGNMENTS,
+                }
+            )
+        );
+        assert_eq!(
+            checked_target_layer_assignment_count_v1(usize::MAX, 1),
+            Err(SpeculativeUnprovenFoldTokenIssueErrorV1::TargetSealResourceCountOverflow)
+        );
     }
 
     #[test]

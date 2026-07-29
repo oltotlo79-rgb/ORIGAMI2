@@ -32,10 +32,18 @@ use crate::{
 mod speculative_unproven_token;
 
 #[cfg(test)]
-pub(crate) use speculative_unproven_token::issue_speculative_unproven_fold_token_for_test_v1;
-pub(crate) use speculative_unproven_token::issue_speculative_unproven_fold_token_v1;
+pub(crate) use speculative_unproven_token::{
+    SpeculativeUnprovenFoldAppliedTargetInputV1, issue_speculative_unproven_fold_token_for_test_v1,
+};
 pub use speculative_unproven_token::{
     SpeculativeUnprovenFoldTokenIssueErrorV1, SpeculativeUnprovenFoldTokenV1,
+};
+pub(crate) use speculative_unproven_token::{
+    SpeculativeUnprovenFoldTokenIssueInputV1, issue_speculative_unproven_fold_token_v1,
+};
+pub(crate) use speculative_unproven_token::{
+    try_clone_beginner_design_profile_v1, try_clone_crease_pattern_v1,
+    try_clone_instruction_timeline_v1, try_clone_paper_v1, try_clone_project_layer_document_v1,
 };
 
 pub const DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES: usize = 2_048;
@@ -2256,43 +2264,309 @@ pub fn prepare_stacked_fold_initial_pose_v1(
     Ok(PreparedStackedFoldInitialPoseV1 { target, pose })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparedStackedFoldSourcePoseResourceV1 {
+    SourceVertices,
+    SourceEdges,
+    SourcePaperBoundaryVertices,
+    SourceFaces,
+    SourceHinges,
+    SourceAngleRecords,
+    TargetFaces,
+    TargetHinges,
+    TargetEdgeMappingRecords,
+    TotalRecords,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub(crate) enum PreparedStackedFoldSourcePoseMatchErrorV1 {
+    #[error("the prepared target pose is not the exact lift of the live source pose")]
+    Mismatch,
+    #[error("the live source pose could not be reconstructed")]
+    ReconstructionUnavailable,
+    #[error("{resource:?} count {actual} exceeds the supported maximum {maximum}")]
+    ResourceLimitExceeded {
+        resource: PreparedStackedFoldSourcePoseResourceV1,
+        actual: usize,
+        maximum: usize,
+    },
+    #[error("the {resource:?} count overflowed")]
+    ResourceCountOverflow {
+        resource: PreparedStackedFoldSourcePoseResourceV1,
+    },
+    #[error("memory for {resource:?} could not be reserved")]
+    AllocationFailed {
+        resource: PreparedStackedFoldSourcePoseResourceV1,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreparedStackedFoldSourcePoseMatchLimitsV1 {
+    max_source_vertices: usize,
+    max_source_edges: usize,
+    max_source_paper_boundary_vertices: usize,
+    max_source_faces: usize,
+    max_source_hinges: usize,
+    max_target_faces: usize,
+    max_target_hinges: usize,
+    max_target_edge_mapping_records: usize,
+    max_total_records: usize,
+}
+
+impl PreparedStackedFoldSourcePoseMatchLimitsV1 {
+    fn effective(self) -> Self {
+        let hard = Self::default();
+        Self {
+            max_source_vertices: self.max_source_vertices.min(hard.max_source_vertices),
+            max_source_edges: self.max_source_edges.min(hard.max_source_edges),
+            max_source_paper_boundary_vertices: self
+                .max_source_paper_boundary_vertices
+                .min(hard.max_source_paper_boundary_vertices),
+            max_source_faces: self.max_source_faces.min(hard.max_source_faces),
+            max_source_hinges: self.max_source_hinges.min(hard.max_source_hinges),
+            max_target_faces: self.max_target_faces.min(hard.max_target_faces),
+            max_target_hinges: self.max_target_hinges.min(hard.max_target_hinges),
+            max_target_edge_mapping_records: self
+                .max_target_edge_mapping_records
+                .min(hard.max_target_edge_mapping_records),
+            max_total_records: self.max_total_records.min(hard.max_total_records),
+        }
+    }
+}
+
+impl Default for PreparedStackedFoldSourcePoseMatchLimitsV1 {
+    fn default() -> Self {
+        let tree = TreeKinematicsLimits::default();
+        let max_source_hinges = ori_foldability::DEFAULT_MAX_HINGES
+            .min(ori_domain::MAX_INSTRUCTION_HINGES_PER_STEP)
+            .min(tree.max_hinges);
+        let max_target_hinges = ori_foldability::DEFAULT_MAX_HINGES
+            .min(ori_domain::MAX_INSTRUCTION_HINGES_PER_STEP)
+            .min(tree.max_hinges);
+        Self {
+            max_source_vertices: crate::DEFAULT_MAX_SOURCE_VERTICES.min(tree.max_source_vertices),
+            max_source_edges: crate::DEFAULT_MAX_SOURCE_EDGES.min(tree.max_source_edges),
+            max_source_paper_boundary_vertices: crate::DEFAULT_MAX_PAPER_BOUNDARY_VERTICES
+                .min(tree.max_paper_boundary_vertices),
+            max_source_faces: ori_foldability::DEFAULT_MAX_FACES
+                .min(DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES)
+                .min(tree.max_faces),
+            max_source_hinges,
+            max_target_faces: ori_foldability::DEFAULT_MAX_FACES
+                .min(DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES)
+                .min(tree.max_faces),
+            max_target_hinges,
+            max_target_edge_mapping_records: crate::DEFAULT_MAX_SOURCE_EDGES.min(max_target_hinges),
+            max_total_records: ori_foldability::DEFAULT_MAX_TOTAL_RECORDS,
+        }
+    }
+}
+
+fn check_prepared_source_pose_limit_v1(
+    resource: PreparedStackedFoldSourcePoseResourceV1,
+    actual: usize,
+    maximum: usize,
+) -> Result<(), PreparedStackedFoldSourcePoseMatchErrorV1> {
+    if actual > maximum {
+        Err(
+            PreparedStackedFoldSourcePoseMatchErrorV1::ResourceLimitExceeded {
+                resource,
+                actual,
+                maximum,
+            },
+        )
+    } else {
+        Ok(())
+    }
+}
+
+fn checked_add_prepared_source_pose_count_v1(
+    current: usize,
+    additional: usize,
+    resource: PreparedStackedFoldSourcePoseResourceV1,
+) -> Result<usize, PreparedStackedFoldSourcePoseMatchErrorV1> {
+    current
+        .checked_add(additional)
+        .ok_or(PreparedStackedFoldSourcePoseMatchErrorV1::ResourceCountOverflow { resource })
+}
+
+fn add_prepared_source_pose_total_records_v1(
+    total: &mut usize,
+    additional: usize,
+    maximum: usize,
+) -> Result<(), PreparedStackedFoldSourcePoseMatchErrorV1> {
+    *total = checked_add_prepared_source_pose_count_v1(
+        *total,
+        additional,
+        PreparedStackedFoldSourcePoseResourceV1::TotalRecords,
+    )?;
+    check_prepared_source_pose_limit_v1(
+        PreparedStackedFoldSourcePoseResourceV1::TotalRecords,
+        *total,
+        maximum,
+    )
+}
+
+fn expected_target_angle_mapping_matches_v1<I>(expected: &mut [(EdgeId, f64)], actual: I) -> bool
+where
+    I: ExactSizeIterator<Item = (EdgeId, EdgeId, f64)>,
+{
+    expected.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+    if expected.windows(2).any(|pair| pair[0].0 == pair[1].0) || expected.len() != actual.len() {
+        return false;
+    }
+    expected.iter().zip(actual).all(
+        |((expected_edge, expected_angle), (model_edge, pose_edge, actual_angle))| {
+            *expected_edge == model_edge
+                && model_edge == pose_edge
+                && expected_angle.to_bits() == actual_angle.to_bits()
+        },
+    )
+}
+
 /// Reconstructs the live source pose and verifies that the opaque prepared
 /// request's initial target pose is its exact lineage lift.
 ///
 /// This is an issuance-time check for one-shot speculative authority. It does
-/// not create a proof or mutation capability on its own.
+/// not create a proof or mutation capability on its own. The explicit limits,
+/// checked arithmetic, and owned buffers in this boundary fail closed; the
+/// topology and fingerprint implementations retain their own allocation
+/// contracts.
 pub(crate) fn prepared_stacked_fold_request_matches_applied_source_pose_v1(
     requested: &PreparedStackedFoldRequestedPoseV1,
     source_pattern: &CreasePattern,
     source_paper: &Paper,
     current: &AppliedPoseV1,
-) -> bool {
+) -> Result<(), PreparedStackedFoldSourcePoseMatchErrorV1> {
+    prepared_stacked_fold_request_matches_applied_source_pose_with_limits_v1(
+        requested,
+        source_pattern,
+        source_paper,
+        current,
+        PreparedStackedFoldSourcePoseMatchLimitsV1::default(),
+    )
+}
+
+fn prepared_stacked_fold_request_matches_applied_source_pose_with_limits_v1(
+    requested: &PreparedStackedFoldRequestedPoseV1,
+    source_pattern: &CreasePattern,
+    source_paper: &Paper,
+    current: &AppliedPoseV1,
+    limits: PreparedStackedFoldSourcePoseMatchLimitsV1,
+) -> Result<(), PreparedStackedFoldSourcePoseMatchErrorV1> {
+    let limits = limits.effective();
     if current.model_id() != APPLIED_POSE_MODEL_ID_V1 {
-        return false;
+        return Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch);
     }
     let initial = requested.initial();
     let proof = initial.target().geometry().proof();
     let lineage = proof.lineage();
-    if fold_model_fingerprint_v1(source_pattern, source_paper) != lineage.source_fingerprint() {
-        return false;
+    let target_model = initial.target().model();
+    let target_pose = initial.pose();
+
+    for (resource, actual, maximum) in [
+        (
+            PreparedStackedFoldSourcePoseResourceV1::SourceVertices,
+            source_pattern.vertices.len(),
+            limits.max_source_vertices,
+        ),
+        (
+            PreparedStackedFoldSourcePoseResourceV1::SourceEdges,
+            source_pattern.edges.len(),
+            limits.max_source_edges,
+        ),
+        (
+            PreparedStackedFoldSourcePoseResourceV1::SourcePaperBoundaryVertices,
+            source_paper.boundary_vertices.len(),
+            limits.max_source_paper_boundary_vertices,
+        ),
+        (
+            PreparedStackedFoldSourcePoseResourceV1::SourceFaces,
+            current.face_ids().len(),
+            limits.max_source_faces,
+        ),
+        (
+            PreparedStackedFoldSourcePoseResourceV1::SourceHinges,
+            current.hinge_angles().len(),
+            limits.max_source_hinges,
+        ),
+        (
+            PreparedStackedFoldSourcePoseResourceV1::TargetFaces,
+            target_model.face_ids().len(),
+            limits.max_target_faces,
+        ),
+        (
+            PreparedStackedFoldSourcePoseResourceV1::TargetHinges,
+            target_model.hinges().len(),
+            limits.max_target_hinges,
+        ),
+        (
+            PreparedStackedFoldSourcePoseResourceV1::TargetFaces,
+            target_pose.face_ids().len(),
+            limits.max_target_faces,
+        ),
+        (
+            PreparedStackedFoldSourcePoseResourceV1::TargetHinges,
+            target_pose.hinge_angles().len(),
+            limits.max_target_hinges,
+        ),
+    ] {
+        check_prepared_source_pose_limit_v1(resource, actual, maximum)?;
     }
-    let Ok(topology) = simulation_snapshot(
+
+    let mut total_records = 0_usize;
+    for count in [
+        source_pattern.vertices.len(),
+        source_pattern.edges.len(),
+        source_paper.boundary_vertices.len(),
+        current.face_ids().len(),
+        current.hinge_angles().len(),
+        target_model.face_ids().len(),
+        target_model.hinges().len(),
+        target_pose.face_ids().len(),
+        target_pose.hinge_angles().len(),
+    ] {
+        add_prepared_source_pose_total_records_v1(
+            &mut total_records,
+            count,
+            limits.max_total_records,
+        )?;
+    }
+
+    if fold_model_fingerprint_v1(source_pattern, source_paper) != lineage.source_fingerprint() {
+        return Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch);
+    }
+    let topology = simulation_snapshot(
         lineage.identity_namespace(),
         lineage.source_revision(),
         source_paper,
         source_pattern,
         FaceLineageTopology::Source,
-    ) else {
-        return false;
-    };
-    let Ok(source_model) = MaterialTreeKinematicsModel::prepare(
-        source_pattern,
-        source_paper,
-        &topology,
-        TreeKinematicsLimits::default(),
-    ) else {
-        return false;
-    };
+    )
+    .map_err(|_| PreparedStackedFoldSourcePoseMatchErrorV1::ReconstructionUnavailable)?;
+    let mut tree_limits = TreeKinematicsLimits::default();
+    tree_limits.max_source_vertices = tree_limits
+        .max_source_vertices
+        .min(limits.max_source_vertices);
+    tree_limits.max_source_edges = tree_limits.max_source_edges.min(limits.max_source_edges);
+    tree_limits.max_paper_boundary_vertices = tree_limits
+        .max_paper_boundary_vertices
+        .min(limits.max_source_paper_boundary_vertices);
+    tree_limits.max_faces = tree_limits.max_faces.min(limits.max_source_faces);
+    tree_limits.max_hinges = tree_limits.max_hinges.min(limits.max_source_hinges);
+    let source_model =
+        MaterialTreeKinematicsModel::prepare(source_pattern, source_paper, &topology, tree_limits)
+            .map_err(|_| PreparedStackedFoldSourcePoseMatchErrorV1::ReconstructionUnavailable)?;
+    check_prepared_source_pose_limit_v1(
+        PreparedStackedFoldSourcePoseResourceV1::SourceFaces,
+        source_model.face_ids().len(),
+        limits.max_source_faces,
+    )?;
+    check_prepared_source_pose_limit_v1(
+        PreparedStackedFoldSourcePoseResourceV1::SourceHinges,
+        source_model.hinges().len(),
+        limits.max_source_hinges,
+    )?;
     if source_model.face_ids() != current.face_ids()
         || source_model.hinges().len() != current.hinge_angles().len()
         || !source_model
@@ -2301,17 +2575,31 @@ pub(crate) fn prepared_stacked_fold_request_matches_applied_source_pose_v1(
             .zip(current.hinge_angles())
             .all(|(hinge, angle)| hinge.edge() == angle.edge())
     {
-        return false;
+        return Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch);
     }
-    let Ok(source_angles) = current
-        .hinge_angles()
-        .iter()
-        .map(|angle| HingeAngle::new(angle.edge(), angle.angle_degrees()))
-        .collect::<Result<Vec<_>, _>>()
-        .and_then(CanonicalHingeAngles::new)
-    else {
-        return false;
-    };
+
+    add_prepared_source_pose_total_records_v1(
+        &mut total_records,
+        current.hinge_angles().len(),
+        limits.max_total_records,
+    )?;
+    let mut source_angles = Vec::new();
+    source_angles
+        .try_reserve_exact(current.hinge_angles().len())
+        .map_err(
+            |_| PreparedStackedFoldSourcePoseMatchErrorV1::AllocationFailed {
+                resource: PreparedStackedFoldSourcePoseResourceV1::SourceAngleRecords,
+            },
+        )?;
+    for angle in current.hinge_angles() {
+        source_angles.push(
+            HingeAngle::new(angle.edge(), angle.angle_degrees())
+                .map_err(|_| PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch)?,
+        );
+    }
+    let source_angles = CanonicalHingeAngles::new(source_angles)
+        .map_err(|_| PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch)?;
+
     // Native tree kinematics represents a hinge-free source without a fixed
     // face, while the semantic desktop pose keeps its only material face as
     // the anchor. Normalize only for the native solve, then compare the two
@@ -2321,9 +2609,16 @@ pub(crate) fn prepared_stacked_fold_request_matches_applied_source_pose_v1(
     } else {
         current.fixed_face()
     };
-    let Ok(source_pose) = source_model.solve(solve_fixed_face, &source_angles) else {
-        return false;
-    };
+    let source_pose = source_model
+        .solve(solve_fixed_face, &source_angles)
+        .map_err(|error| match error {
+            KinematicsError::UnrepresentableGeometry
+            | KinematicsError::UnsupportedTopology
+            | KinematicsError::ResourceLimitExceeded => {
+                PreparedStackedFoldSourcePoseMatchErrorV1::ReconstructionUnavailable
+            }
+            _ => PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch,
+        })?;
     let source_fixed_matches = source_pose.fixed_face() == current.fixed_face()
         || (source_pose.hinge_angles().is_empty()
             && source_pose.fixed_face().is_none()
@@ -2342,51 +2637,92 @@ pub(crate) fn prepared_stacked_fold_request_matches_applied_source_pose_v1(
                     && native.angle_degrees().to_bits() == semantic.angle_degrees().to_bits()
             })
     {
-        return false;
+        return Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch);
     }
 
-    let source_angle_by_edge = source_pose
-        .hinge_angles()
-        .iter()
-        .map(|angle| (angle.edge(), angle.angle_degrees()))
-        .collect::<HashMap<_, _>>();
-    let mut expected_target_angles = HashMap::<EdgeId, f64>::new();
+    let source_angle = |edge: EdgeId| {
+        source_pose
+            .hinge_angles()
+            .binary_search_by_key(&edge.canonical_bytes(), |angle| {
+                angle.edge().canonical_bytes()
+            })
+            .ok()
+            .map(|index| source_pose.hinge_angles()[index].angle_degrees())
+    };
+    let mut target_edge_mapping_count = 0_usize;
     for subdivision in proof.source_edges() {
-        if let Some(angle) = source_angle_by_edge
-            .get(&subdivision.source_edge())
-            .copied()
-        {
-            for edge in subdivision.target_edges() {
-                expected_target_angles.insert(*edge, angle);
-            }
+        if source_angle(subdivision.source_edge()).is_some() {
+            target_edge_mapping_count = checked_add_prepared_source_pose_count_v1(
+                target_edge_mapping_count,
+                subdivision.target_edges().len(),
+                PreparedStackedFoldSourcePoseResourceV1::TargetEdgeMappingRecords,
+            )?;
         }
     }
     for subdivision in proof.expected_creases() {
-        for edge in subdivision.target_edges() {
-            expected_target_angles.insert(*edge, 0.0);
+        target_edge_mapping_count = checked_add_prepared_source_pose_count_v1(
+            target_edge_mapping_count,
+            subdivision.target_edges().len(),
+            PreparedStackedFoldSourcePoseResourceV1::TargetEdgeMappingRecords,
+        )?;
+    }
+    check_prepared_source_pose_limit_v1(
+        PreparedStackedFoldSourcePoseResourceV1::TargetEdgeMappingRecords,
+        target_edge_mapping_count,
+        limits.max_target_edge_mapping_records,
+    )?;
+    add_prepared_source_pose_total_records_v1(
+        &mut total_records,
+        target_edge_mapping_count,
+        limits.max_total_records,
+    )?;
+    if target_edge_mapping_count != target_model.hinges().len() {
+        return Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch);
+    }
+
+    let mut expected_target_angles = Vec::<(EdgeId, f64)>::new();
+    expected_target_angles
+        .try_reserve_exact(target_edge_mapping_count)
+        .map_err(
+            |_| PreparedStackedFoldSourcePoseMatchErrorV1::AllocationFailed {
+                resource: PreparedStackedFoldSourcePoseResourceV1::TargetEdgeMappingRecords,
+            },
+        )?;
+    for subdivision in proof.source_edges() {
+        if let Some(angle) = source_angle(subdivision.source_edge()) {
+            expected_target_angles.extend(
+                subdivision
+                    .target_edges()
+                    .iter()
+                    .copied()
+                    .map(|edge| (edge, angle)),
+            );
         }
     }
-    let target_pose = initial.pose();
-    if target_pose.hinge_angles().len() != initial.target().model().hinges().len()
-        || !initial
-            .target()
-            .model()
-            .hinges()
-            .iter()
-            .zip(target_pose.hinge_angles())
-            .all(|(hinge, actual)| {
-                hinge.edge() == actual.edge()
-                    && expected_target_angles
-                        .get(&hinge.edge())
-                        .is_some_and(|expected| {
-                            expected.to_bits() == actual.angle_degrees().to_bits()
-                        })
-            })
+    for subdivision in proof.expected_creases() {
+        expected_target_angles.extend(
+            subdivision
+                .target_edges()
+                .iter()
+                .copied()
+                .map(|edge| (edge, 0.0)),
+        );
+    }
+    if target_pose.face_ids() != target_model.face_ids()
+        || target_pose.hinge_angles().len() != target_model.hinges().len()
+        || !expected_target_angle_mapping_matches_v1(
+            &mut expected_target_angles,
+            target_model
+                .hinges()
+                .iter()
+                .zip(target_pose.hinge_angles())
+                .map(|(hinge, actual)| (hinge.edge(), actual.edge(), actual.angle_degrees())),
+        )
     {
-        return false;
+        return Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch);
     }
     let expected_fixed_face = match source_pose.fixed_face() {
-        None if initial.target().model().hinges().is_empty() => None,
+        None if target_model.hinges().is_empty() => None,
         None => lineage
             .records()
             .first()
@@ -2400,9 +2736,9 @@ pub(crate) fn prepared_stacked_fold_request_matches_applied_source_pose_v1(
             .map(|face| face.face_id),
     };
     if expected_fixed_face != target_pose.fixed_face() {
-        return false;
+        return Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch);
     }
-    lineage.records().iter().all(|record| {
+    if lineage.records().iter().all(|record| {
         let source_face = record.source().face_id;
         source_pose
             .face_transform(source_face)
@@ -2411,7 +2747,11 @@ pub(crate) fn prepared_stacked_fold_request_matches_applied_source_pose_v1(
                     target_pose.face_transform(descendant.face_id) == Some(source)
                 })
             })
-    })
+    }) {
+        Ok(())
+    } else {
+        Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch)
+    }
 }
 
 /// Lifts the authenticated source embedding onto a proved target graph and
@@ -5771,6 +6111,126 @@ mod tests {
     }
 
     #[test]
+    fn prepared_source_pose_match_limits_cannot_relax_hard_ceilings() {
+        let relaxed = PreparedStackedFoldSourcePoseMatchLimitsV1 {
+            max_source_vertices: usize::MAX,
+            max_source_edges: usize::MAX,
+            max_source_paper_boundary_vertices: usize::MAX,
+            max_source_faces: usize::MAX,
+            max_source_hinges: usize::MAX,
+            max_target_faces: usize::MAX,
+            max_target_hinges: usize::MAX,
+            max_target_edge_mapping_records: usize::MAX,
+            max_total_records: usize::MAX,
+        };
+        assert_eq!(
+            relaxed.effective(),
+            PreparedStackedFoldSourcePoseMatchLimitsV1::default()
+        );
+
+        let tightened = PreparedStackedFoldSourcePoseMatchLimitsV1 {
+            max_source_vertices: 1,
+            max_source_edges: 2,
+            max_source_paper_boundary_vertices: 3,
+            max_source_faces: 4,
+            max_source_hinges: 5,
+            max_target_faces: 6,
+            max_target_hinges: 7,
+            max_target_edge_mapping_records: 8,
+            max_total_records: 9,
+        };
+        assert_eq!(tightened.effective(), tightened);
+    }
+
+    #[test]
+    fn prepared_source_pose_match_count_helpers_admit_equality_and_fail_closed() {
+        let maximum =
+            PreparedStackedFoldSourcePoseMatchLimitsV1::default().max_target_edge_mapping_records;
+        assert_eq!(
+            check_prepared_source_pose_limit_v1(
+                PreparedStackedFoldSourcePoseResourceV1::TargetEdgeMappingRecords,
+                maximum,
+                maximum,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_prepared_source_pose_limit_v1(
+                PreparedStackedFoldSourcePoseResourceV1::TargetEdgeMappingRecords,
+                maximum + 1,
+                maximum,
+            ),
+            Err(
+                PreparedStackedFoldSourcePoseMatchErrorV1::ResourceLimitExceeded {
+                    resource: PreparedStackedFoldSourcePoseResourceV1::TargetEdgeMappingRecords,
+                    actual: maximum + 1,
+                    maximum,
+                }
+            )
+        );
+        assert_eq!(
+            checked_add_prepared_source_pose_count_v1(
+                usize::MAX,
+                1,
+                PreparedStackedFoldSourcePoseResourceV1::TotalRecords,
+            ),
+            Err(
+                PreparedStackedFoldSourcePoseMatchErrorV1::ResourceCountOverflow {
+                    resource: PreparedStackedFoldSourcePoseResourceV1::TotalRecords,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn expected_target_angle_mapping_rejects_duplicate_extra_and_missing_edges() {
+        let mut edges = [EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let actual = [(edges[0], 30.0), (edges[1], 0.0)];
+
+        let mut exact = vec![(edges[1], 0.0), (edges[0], 30.0)];
+        assert!(expected_target_angle_mapping_matches_v1(
+            &mut exact,
+            actual.iter().map(|(edge, angle)| (*edge, *edge, *angle)),
+        ));
+
+        let mut duplicate = vec![(edges[0], 30.0), (edges[0], 30.0)];
+        assert!(!expected_target_angle_mapping_matches_v1(
+            &mut duplicate,
+            actual.iter().map(|(edge, angle)| (*edge, *edge, *angle)),
+        ));
+
+        let mut extra = vec![(edges[0], 30.0), (edges[1], 0.0), (edges[2], 15.0)];
+        assert!(!expected_target_angle_mapping_matches_v1(
+            &mut extra,
+            actual.iter().map(|(edge, angle)| (*edge, *edge, *angle)),
+        ));
+
+        let mut missing = vec![(edges[0], 30.0)];
+        assert!(!expected_target_angle_mapping_matches_v1(
+            &mut missing,
+            actual.iter().map(|(edge, angle)| (*edge, *edge, *angle)),
+        ));
+    }
+
+    #[test]
+    fn expected_target_angle_mapping_is_bit_exact_for_ulp_and_signed_zero() {
+        let edge = EdgeId::new();
+        let actual_angle = 30.0_f64;
+        let mut one_ulp_away = vec![(edge, f64::from_bits(actual_angle.to_bits() + 1))];
+        assert!(!expected_target_angle_mapping_matches_v1(
+            &mut one_ulp_away,
+            [(edge, edge, actual_angle)].into_iter(),
+        ));
+
+        let mut positive_zero = vec![(edge, 0.0)];
+        assert!(!expected_target_angle_mapping_matches_v1(
+            &mut positive_zero,
+            [(edge, edge, -0.0)].into_iter(),
+        ));
+    }
+
+    #[test]
     fn topology_builder_creates_provable_cross_arrangement() {
         let identity = ProjectId::new();
         let source_revision = 31;
@@ -6492,13 +6952,14 @@ mod tests {
             crate::AppliedPoseLimitsV1::default(),
         )
         .expect("prepare exact source semantic pose");
-        assert!(
+        assert_eq!(
             prepared_stacked_fold_request_matches_applied_source_pose_v1(
                 &requested,
                 &fixture.source_pattern,
                 &fixture.source_paper,
                 &source_applied_pose,
-            )
+            ),
+            Ok(())
         );
         let unrelated_face = FaceId::new();
         let unrelated_pose = crate::prepare_applied_pose_v1(
@@ -6509,13 +6970,14 @@ mod tests {
             crate::AppliedPoseLimitsV1::default(),
         )
         .expect("prepare an unrelated semantic pose");
-        assert!(
-            !prepared_stacked_fold_request_matches_applied_source_pose_v1(
+        assert_eq!(
+            prepared_stacked_fold_request_matches_applied_source_pose_v1(
                 &requested,
                 &fixture.source_pattern,
                 &fixture.source_paper,
                 &unrelated_pose,
-            )
+            ),
+            Err(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch)
         );
         let mut issuing_editor = crate::EditorState::with_paper(
             fixture.source_pattern.clone(),

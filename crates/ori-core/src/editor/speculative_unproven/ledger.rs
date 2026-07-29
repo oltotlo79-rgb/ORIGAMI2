@@ -2,6 +2,7 @@ use super::{
     MAX_RETAINED_SPECULATIVE_UNPROVEN_BASE_MARKS_V1, SpeculativeUnprovenFoldMarkV1,
     SpeculativeUnprovenFoldStatusCountsV1, SpeculativeUnprovenFoldStatusV1,
 };
+use crate::MAX_REVISION;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeculativeUnprovenFoldStateMarkerV1 {
@@ -23,6 +24,12 @@ pub(crate) struct AppliedBaseUnprovenLedgerV1 {
 }
 
 impl AppliedBaseUnprovenLedgerV1 {
+    pub(crate) fn can_note_applied_entry_v1(&self) -> bool {
+        self.retained_marks
+            .iter()
+            .all(|retained| retained.subsequent_applied_entries < MAX_REVISION)
+    }
+
     pub(crate) fn note_applied_entry(&mut self) {
         for retained in &mut self.retained_marks {
             retained.subsequent_applied_entries = retained
@@ -60,6 +67,28 @@ impl AppliedBaseUnprovenLedgerV1 {
                     .expect("bounded history depth fits u64"),
             });
         }
+    }
+
+    pub(crate) fn try_reserve_one_trimmed_mark_v1(&mut self) -> bool {
+        if self.retained_marks.len() < MAX_RETAINED_SPECULATIVE_UNPROVEN_BASE_MARKS_V1 {
+            return self.retained_marks.try_reserve(1).is_ok();
+        }
+        true
+    }
+
+    pub(crate) fn absorb_one_trimmed_applied_mark_v1(
+        &mut self,
+        mark: Option<SpeculativeUnprovenFoldMarkV1>,
+        retained_applied_entries: usize,
+    ) {
+        let Some(mark) = mark else {
+            return;
+        };
+        self.retain(AppliedBaseUnprovenMarkV1 {
+            mark,
+            subsequent_applied_entries: u64::try_from(retained_applied_entries)
+                .expect("bounded history depth fits u64"),
+        });
     }
 
     fn retain(&mut self, retained: AppliedBaseUnprovenMarkV1) {

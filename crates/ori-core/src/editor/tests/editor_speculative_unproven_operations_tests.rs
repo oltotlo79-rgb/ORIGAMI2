@@ -2,6 +2,64 @@ use ori_domain::ProjectId;
 
 use super::{speculative_unproven_test_support::*, *};
 
+struct SpeculativeAllocationFailpointReset;
+
+impl Drop for SpeculativeAllocationFailpointReset {
+    fn drop(&mut self) {
+        set_speculative_stacked_fold_allocation_failpoint_v1(None);
+    }
+}
+
+fn assert_speculative_apply_failpoint_is_atomic(
+    fixture: &mut SpeculativeFixture,
+    resource: SpeculativeUnprovenFoldApplyResourceV1,
+) {
+    let target_revision = fixture
+        .editor
+        .revision()
+        .checked_add(1)
+        .expect("target revision");
+    let token = token_for_target(
+        fixture,
+        target_revision,
+        &fixture.target_pattern,
+        &fixture.paper,
+        &fixture.applied_pose,
+    );
+    let before = format!("{:?}", fixture.editor);
+    let marker_before = fixture.editor.speculative_unproven_fold_state_marker_v1();
+    set_speculative_stacked_fold_allocation_failpoint_v1(Some(resource));
+    let _reset = SpeculativeAllocationFailpointReset;
+    assert!(matches!(
+        fixture
+            .editor
+            .execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1(token),
+        Err(
+            SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                resource: actual,
+            }
+        ) if actual == resource
+    ));
+    set_speculative_stacked_fold_allocation_failpoint_v1(None);
+    assert_eq!(format!("{:?}", fixture.editor), before);
+    assert_eq!(
+        fixture.editor.speculative_unproven_fold_state_marker_v1(),
+        marker_before
+    );
+
+    let retry_token = token_for_target(
+        fixture,
+        target_revision,
+        &fixture.target_pattern,
+        &fixture.paper,
+        &fixture.applied_pose,
+    );
+    fixture
+        .editor
+        .execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1(retry_token)
+        .expect("the unchanged editor remains retryable");
+}
+
 #[test]
 fn unproven_mark_survives_undo_redo_and_restores_the_exact_marker() {
     let mut fixture = fixture();
@@ -133,7 +191,7 @@ fn inspection_is_read_only_and_reports_terminal_status_at_the_live_location() {
         fixture
             .editor
             .inspect_speculative_unproven_fold_v1(&binding),
-        Ok(Some(resolved.clone()))
+        Ok(Some(resolved))
     );
 
     fixture
@@ -563,4 +621,386 @@ fn stale_or_blocking_bindings_reject_atomically_before_apply() {
     );
     assert_eq!(fixture.editor.revision(), 0);
     assert!(!fixture.editor.can_undo());
+}
+
+#[test]
+fn typed_certification_removes_only_the_mark_in_every_history_location() {
+    fn assert_document_state_unchanged(
+        fixture: &SpeculativeFixture,
+        revision: Revision,
+        pattern: &CreasePattern,
+        timeline: &InstructionTimeline,
+        pose: &AppliedPoseV1,
+        undo_len: usize,
+        redo_len: usize,
+    ) {
+        assert_eq!(fixture.editor.revision(), revision);
+        assert_eq!(fixture.editor.pattern(), pattern);
+        assert_eq!(fixture.editor.instruction_timeline(), timeline);
+        assert_eq!(fixture.editor.current_applied_pose(), Some(pose));
+        assert_eq!(fixture.editor.undo_stack.len(), undo_len);
+        assert_eq!(fixture.editor.redo_stack.len(), redo_len);
+    }
+
+    let mut retained = fixture();
+    let retained_binding = binding(
+        &retained,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let retained_ticket = apply_marked_with_ticket(&mut retained, retained_binding.clone());
+    let retained_before = (
+        retained.editor.revision(),
+        retained.editor.pattern().clone(),
+        retained.editor.instruction_timeline().clone(),
+        retained
+            .editor
+            .current_applied_pose()
+            .expect("applied target pose")
+            .clone(),
+        retained.editor.undo_stack.len(),
+        retained.editor.redo_stack.len(),
+    );
+    assert_eq!(
+        retained
+            .editor
+            .resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(retained_ticket))
+            .expect("resolve retained Undo mark"),
+        SpeculativeUnprovenFoldResolutionReportV1 {
+            location: SpeculativeUnprovenFoldHistoryLocationV1::AppliedRetainedUndo,
+            outcome: SpeculativeUnprovenFoldProofOutcomeV1::Certified,
+            subsequent_edit_count: 0,
+            undo_steps_to_revert: Some(1),
+        }
+    );
+    assert_document_state_unchanged(
+        &retained,
+        retained_before.0,
+        &retained_before.1,
+        &retained_before.2,
+        &retained_before.3,
+        retained_before.4,
+        retained_before.5,
+    );
+    assert_eq!(
+        retained.editor.speculative_unproven_fold_summary_v1(),
+        SpeculativeUnprovenFoldSummaryV1::default()
+    );
+    assert_eq!(
+        retained
+            .editor
+            .inspect_speculative_unproven_fold_v1(&retained_binding),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound)
+    );
+
+    let mut redo = fixture();
+    let redo_binding = binding(
+        &redo,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let redo_ticket = apply_marked_with_ticket(&mut redo, redo_binding);
+    redo.editor
+        .undo(redo.editor.revision())
+        .expect("move to Redo");
+    let redo_revision = redo.editor.revision();
+    let redo_pattern = redo.editor.pattern().clone();
+    let redo_timeline = redo.editor.instruction_timeline().clone();
+    let redo_undo_len = redo.editor.undo_stack.len();
+    let redo_redo_len = redo.editor.redo_stack.len();
+    assert_eq!(
+        redo.editor
+            .resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(redo_ticket))
+            .expect("resolve Redo mark"),
+        SpeculativeUnprovenFoldResolutionReportV1 {
+            location: SpeculativeUnprovenFoldHistoryLocationV1::UnappliedRedo,
+            outcome: SpeculativeUnprovenFoldProofOutcomeV1::Certified,
+            subsequent_edit_count: 0,
+            undo_steps_to_revert: None,
+        }
+    );
+    assert_eq!(redo.editor.revision(), redo_revision);
+    assert_eq!(redo.editor.pattern(), &redo_pattern);
+    assert_eq!(redo.editor.instruction_timeline(), &redo_timeline);
+    assert_eq!(redo.editor.undo_stack.len(), redo_undo_len);
+    assert_eq!(redo.editor.redo_stack.len(), redo_redo_len);
+    assert_eq!(
+        redo.editor.speculative_unproven_fold_summary_v1(),
+        SpeculativeUnprovenFoldSummaryV1::default()
+    );
+
+    let mut trimmed = fixture();
+    trimmed
+        .editor
+        .set_history_entry_limit(1)
+        .expect("one-entry history");
+    let trimmed_binding = binding(
+        &trimmed,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let trimmed_ticket = apply_marked_with_ticket(&mut trimmed, trimmed_binding);
+    trimmed
+        .editor
+        .execute(
+            trimmed.editor.revision(),
+            Command::UpdateProjectMemo {
+                memo: "trim the speculative entry".to_owned(),
+            },
+        )
+        .expect("trim marked entry");
+    let trimmed_revision = trimmed.editor.revision();
+    let trimmed_pattern = trimmed.editor.pattern().clone();
+    let trimmed_undo_len = trimmed.editor.undo_stack.len();
+    assert_eq!(
+        trimmed
+            .editor
+            .resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(trimmed_ticket))
+            .expect("resolve applied-base mark"),
+        SpeculativeUnprovenFoldResolutionReportV1 {
+            location: SpeculativeUnprovenFoldHistoryLocationV1::AppliedTrimmedBase,
+            outcome: SpeculativeUnprovenFoldProofOutcomeV1::Certified,
+            subsequent_edit_count: 1,
+            undo_steps_to_revert: None,
+        }
+    );
+    assert_eq!(trimmed.editor.revision(), trimmed_revision);
+    assert_eq!(trimmed.editor.pattern(), &trimmed_pattern);
+    assert_eq!(trimmed.editor.undo_stack.len(), trimmed_undo_len);
+    assert_eq!(
+        trimmed.editor.speculative_unproven_fold_summary_v1(),
+        SpeculativeUnprovenFoldSummaryV1::default()
+    );
+}
+
+#[test]
+fn typed_certification_failures_leave_every_mark_unchanged() {
+    let mut foreign_source = fixture();
+    let foreign_binding = binding(
+        &foreign_source,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let foreign_ticket = apply_marked_with_ticket(&mut foreign_source, foreign_binding.clone());
+    let mut foreign_editor = EditorState::with_paper(
+        foreign_source.editor.pattern().clone(),
+        foreign_source.editor.paper().clone(),
+    );
+    let foreign_before = format!("{foreign_editor:?}");
+    assert_eq!(
+        foreign_editor
+            .resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(foreign_ticket)),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::ForeignEditor)
+    );
+    assert_eq!(format!("{foreign_editor:?}"), foreign_before);
+    assert_eq!(
+        foreign_source
+            .editor
+            .speculative_unproven_fold_summary_v1()
+            .applied
+            .awaiting_proof,
+        1
+    );
+
+    let mut missing = fixture();
+    let mut same_anchor_without_mark = missing.editor.clone();
+    let missing_binding = binding(
+        &missing,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let missing_ticket = apply_marked_with_ticket(&mut missing, missing_binding);
+    let missing_before = format!("{same_anchor_without_mark:?}");
+    assert_eq!(
+        same_anchor_without_mark
+            .resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(missing_ticket)),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound)
+    );
+    assert_eq!(format!("{same_anchor_without_mark:?}"), missing_before);
+
+    let mut terminal = fixture();
+    let terminal_binding = binding(
+        &terminal,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let terminal_ticket = apply_marked_with_ticket(&mut terminal, terminal_binding.clone());
+    terminal
+        .editor
+        .resolve_speculative_unproven_fold_v1(
+            &terminal_binding,
+            SpeculativeUnprovenFoldProofOutcomeV1::Blocked,
+        )
+        .expect("record terminal result");
+    let terminal_marker = terminal.editor.speculative_unproven_fold_state_marker_v1();
+    assert_eq!(
+        terminal
+            .editor
+            .resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(terminal_ticket)),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::AlreadyResolved)
+    );
+    assert_eq!(
+        terminal.editor.speculative_unproven_fold_state_marker_v1(),
+        terminal_marker
+    );
+
+    let mut duplicate = fixture();
+    let duplicate_binding = binding(
+        &duplicate,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let duplicate_ticket = apply_marked_with_ticket(&mut duplicate, duplicate_binding);
+    duplicate
+        .editor
+        .execute(
+            duplicate.editor.revision(),
+            Command::UpdateProjectMemo {
+                memo: "second history entry".to_owned(),
+            },
+        )
+        .expect("append history entry");
+    let duplicated_mark = duplicate.editor.undo_stack[0]
+        .speculative_unproven_fold
+        .clone();
+    duplicate.editor.undo_stack[1].speculative_unproven_fold = duplicated_mark;
+    let duplicate_marker = duplicate.editor.speculative_unproven_fold_state_marker_v1();
+    assert_eq!(
+        duplicate
+            .editor
+            .resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(duplicate_ticket)),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding)
+    );
+    assert_eq!(
+        duplicate.editor.speculative_unproven_fold_state_marker_v1(),
+        duplicate_marker
+    );
+
+    let mut metadata_drift = fixture();
+    let exact_binding = binding(
+        &metadata_drift,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    let metadata_ticket = apply_marked_with_ticket(&mut metadata_drift, exact_binding.clone());
+    let drifted_binding = SpeculativeUnprovenFoldBindingV1::new(
+        exact_binding.project_instance_id(),
+        exact_binding.project_id(),
+        exact_binding.source_revision(),
+        exact_binding
+            .source_geometry_fingerprint_sha256()
+            .to_owned(),
+        exact_binding.pose_generation() + 1,
+        exact_binding.request_generation_id(),
+        f64::from_bits(exact_binding.paper_thickness_bits()),
+        exact_binding.approximate_blocking_observation(),
+    )
+    .expect("well-formed metadata drift");
+    metadata_drift.editor.undo_stack[0]
+        .speculative_unproven_fold
+        .as_mut()
+        .expect("awaiting mark")
+        .binding = drifted_binding;
+    let metadata_marker = metadata_drift
+        .editor
+        .speculative_unproven_fold_state_marker_v1();
+    assert_eq!(
+        metadata_drift
+            .editor
+            .resolve_speculative_unproven_fold_certified_v1(proof_for_ticket(metadata_ticket)),
+        Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingMetadataMismatch)
+    );
+    assert_eq!(
+        metadata_drift
+            .editor
+            .speculative_unproven_fold_state_marker_v1(),
+        metadata_marker
+    );
+}
+
+#[test]
+fn every_speculative_commit_allocation_failpoint_is_atomic_and_retryable() {
+    for resource in [
+        SpeculativeUnprovenFoldApplyResourceV1::HistoryMarkBinding,
+        SpeculativeUnprovenFoldApplyResourceV1::TargetPattern,
+        SpeculativeUnprovenFoldApplyResourceV1::TargetPaper,
+        SpeculativeUnprovenFoldApplyResourceV1::TargetInstructionTimeline,
+        SpeculativeUnprovenFoldApplyResourceV1::TargetProjectLayers,
+        SpeculativeUnprovenFoldApplyResourceV1::TargetBeginnerDesignProfile,
+        SpeculativeUnprovenFoldApplyResourceV1::CurrentTargetPose,
+        SpeculativeUnprovenFoldApplyResourceV1::ResolutionTicketTargetPose,
+        SpeculativeUnprovenFoldApplyResourceV1::UndoHistoryEntries,
+    ] {
+        assert_speculative_apply_failpoint_is_atomic(&mut fixture(), resource);
+    }
+
+    let mut trimming = fixture();
+    trimming
+        .editor
+        .set_history_entry_limit(1)
+        .expect("one-entry history");
+    trimming
+        .editor
+        .execute(
+            0,
+            Command::UpdateProjectMemo {
+                memo: "entry carrying the pre-existing mark".to_owned(),
+            },
+        )
+        .expect("seed one history entry");
+    let retained_binding = binding(
+        &trimming,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    trimming.editor.undo_stack[0].speculative_unproven_fold =
+        Some(SpeculativeUnprovenFoldMarkV1::awaiting(retained_binding));
+    assert_speculative_apply_failpoint_is_atomic(
+        &mut trimming,
+        SpeculativeUnprovenFoldApplyResourceV1::RetainedBaseMarks,
+    );
+    assert_eq!(
+        trimming
+            .editor
+            .speculative_unproven_fold_summary_v1()
+            .applied
+            .awaiting_proof,
+        2
+    );
+}
+
+#[test]
+fn speculative_owned_commit_keeps_deep_profile_current_and_both_history_snapshots() {
+    let mut fixture = fixture();
+    let mut rich_profile = fixture.editor.beginner_design_profile().clone();
+    rich_profile.reference_surface_landmarks_tenths_mm =
+        Some(vec![[10, 20, 30], [40, 50, 60], [70, 80, 90]]);
+    fixture
+        .editor
+        .restore_beginner_design_profile(rich_profile.clone())
+        .expect("valid deep profile");
+
+    let target_revision = fixture.editor.revision() + 1;
+    let token = token_for_target(
+        &fixture,
+        target_revision,
+        &fixture.target_pattern,
+        &fixture.paper,
+        &fixture.applied_pose,
+    );
+    fixture
+        .editor
+        .execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1(token)
+        .expect("owned speculative commit");
+    assert_eq!(fixture.editor.beginner_design_profile(), &rich_profile);
+
+    fixture
+        .editor
+        .restore_beginner_design_profile(BeginnerDesignProfileV1::default())
+        .expect("replace only the live snapshot");
+    fixture
+        .editor
+        .undo(target_revision)
+        .expect("inverse owns its independent deep source snapshot");
+    assert_eq!(fixture.editor.beginner_design_profile(), &rich_profile);
+    fixture
+        .editor
+        .restore_beginner_design_profile(BeginnerDesignProfileV1::default())
+        .expect("replace the restored live snapshot");
+    fixture
+        .editor
+        .redo(target_revision + 1)
+        .expect("forward owns its independent deep target snapshot");
+    assert_eq!(fixture.editor.beginner_design_profile(), &rich_profile);
 }

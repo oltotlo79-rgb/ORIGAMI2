@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     sync::Arc,
@@ -45,12 +47,15 @@ use speculative_unproven::{
 pub use speculative_unproven::{
     MAX_PENDING_SPECULATIVE_UNPROVEN_FOLDS_V1, MAX_RETAINED_SPECULATIVE_UNPROVEN_BASE_MARKS_V1,
     SpeculativeApproximateBlockingObservationV1, SpeculativeUnprovenFoldApplyErrorV1,
-    SpeculativeUnprovenFoldBindingV1, SpeculativeUnprovenFoldHistoryLocationV1,
+    SpeculativeUnprovenFoldApplyResourceV1, SpeculativeUnprovenFoldBindingV1,
+    SpeculativeUnprovenFoldCertificationErrorV1, SpeculativeUnprovenFoldCertificationFailureV1,
+    SpeculativeUnprovenFoldCertifiedProofV1, SpeculativeUnprovenFoldHistoryLocationV1,
     SpeculativeUnprovenFoldMetadataErrorV1, SpeculativeUnprovenFoldProofOutcomeV1,
     SpeculativeUnprovenFoldResolutionErrorV1, SpeculativeUnprovenFoldResolutionReportV1,
-    SpeculativeUnprovenFoldStateMarkerV1, SpeculativeUnprovenFoldStatusCountsV1,
-    SpeculativeUnprovenFoldStatusV1, SpeculativeUnprovenFoldSummaryV1,
-    SpeculativeUnprovenFoldUnknownReasonV1,
+    SpeculativeUnprovenFoldResolutionTicketV1, SpeculativeUnprovenFoldStateMarkerV1,
+    SpeculativeUnprovenFoldStatusCountsV1, SpeculativeUnprovenFoldStatusV1,
+    SpeculativeUnprovenFoldSummaryV1, SpeculativeUnprovenFoldUnknownReasonV1,
+    bind_speculative_unproven_tree_continuous_proof_v1,
 };
 
 pub type Revision = u64;
@@ -389,6 +394,53 @@ impl StackedFoldDocumentCommandV1 {
     }
 }
 
+struct SpeculativeStackedFoldDocumentSnapshotV1 {
+    pattern: CreasePattern,
+    paper: Paper,
+    instruction_timeline: InstructionTimeline,
+    project_layers: ProjectLayerDocumentV1,
+    beginner_design_profile: Box<BeginnerDesignProfileV1>,
+}
+
+struct PreparedSpeculativeStackedFoldCommitV1 {
+    forward: StackedFoldDocumentCommandV1,
+    target: SpeculativeStackedFoldDocumentSnapshotV1,
+    current_applied_pose: AppliedPoseV1,
+    history_applied_pose: AppliedPoseV1,
+    ticket_applied_pose: AppliedPoseV1,
+    next_revision: Revision,
+    changes: Changes,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SPECULATIVE_STACKED_FOLD_ALLOCATION_FAILPOINT_V1:
+        Cell<Option<SpeculativeUnprovenFoldApplyResourceV1>> = const { Cell::new(None) };
+}
+
+fn speculative_stacked_fold_allocation_checkpoint_v1(
+    resource: SpeculativeUnprovenFoldApplyResourceV1,
+) -> Result<(), SpeculativeUnprovenFoldApplyErrorV1> {
+    #[cfg(test)]
+    if SPECULATIVE_STACKED_FOLD_ALLOCATION_FAILPOINT_V1
+        .with(|failpoint| failpoint.get() == Some(resource))
+    {
+        return Err(
+            SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit { resource },
+        );
+    }
+    #[cfg(not(test))]
+    let _ = resource;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn set_speculative_stacked_fold_allocation_failpoint_v1(
+    failpoint: Option<SpeculativeUnprovenFoldApplyResourceV1>,
+) {
+    SPECULATIVE_STACKED_FOLD_ALLOCATION_FAILPOINT_V1.with(|current| current.set(failpoint));
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RayToTargetPlan {
     before_fingerprint: String,
@@ -501,6 +553,8 @@ pub enum CommandError {
     },
     #[error("revision {revision} cannot advance beyond the maximum supported revision")]
     RevisionExhausted { revision: Revision },
+    #[error("the retained applied-history depth cannot advance beyond the supported maximum")]
+    AppliedHistoryDepthExhausted,
     #[error("vertex {0:?} already exists")]
     VertexAlreadyExists(VertexId),
     #[error("vertex {0:?} was not found")]
@@ -1892,9 +1946,10 @@ struct RectangularBoundary {
 fn document_element_ids_are_unique_and_non_nil(pattern: &CreasePattern) -> bool {
     let mut vertex_ids = HashSet::new();
     if vertex_ids.try_reserve(pattern.vertices.len()).is_err()
-        || pattern.vertices.iter().any(|vertex| {
-            vertex.id.canonical_bytes() == [0; 16] || !vertex_ids.insert(vertex.id)
-        })
+        || pattern
+            .vertices
+            .iter()
+            .any(|vertex| vertex.id.canonical_bytes() == [0; 16] || !vertex_ids.insert(vertex.id))
     {
         return false;
     }
@@ -2647,6 +2702,7 @@ impl EditorState {
     ) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
+        self.ensure_applied_history_depth_can_advance_v1()?;
         self.ensure_geometric_constraint_resource_admission(&command)?;
         let result = command.changes(&self.pattern, &self.paper);
         let geometry_before = command
@@ -2734,6 +2790,250 @@ impl EditorState {
             }
         }
         Ok(result)
+    }
+
+    fn prepare_speculative_stacked_fold_commit_v1(
+        &mut self,
+        expected_revision: Revision,
+        forward: StackedFoldDocumentCommandV1,
+        history_applied_pose: AppliedPoseV1,
+    ) -> Result<PreparedSpeculativeStackedFoldCommitV1, SpeculativeUnprovenFoldApplyErrorV1> {
+        self.ensure_revision(expected_revision)?;
+        let next_revision = self.next_revision()?;
+        let wrapped = Command::ApplyStackedFoldDocument(forward);
+        self.ensure_geometric_constraint_resource_admission(&wrapped)?;
+        self.ensure_project_layer_resource_admission(&wrapped)?;
+        self.ensure_project_layers_allow(&wrapped)?;
+        self.ensure_geometric_constraints_allow(&wrapped)?;
+        let changes = wrapped.changes(&self.pattern, &self.paper);
+        let Command::ApplyStackedFoldDocument(forward) = wrapped else {
+            unreachable!("the speculative commit wrapper has one exact variant");
+        };
+        self.validate_stacked_fold_document_replacement_v1(
+            &forward.pattern,
+            &forward.paper,
+            &forward.instruction_timeline,
+            &forward.project_layers,
+            &forward.beginner_design_profile,
+        )?;
+
+        speculative_stacked_fold_allocation_checkpoint_v1(
+            SpeculativeUnprovenFoldApplyResourceV1::TargetPattern,
+        )?;
+        let pattern =
+            crate::stacked_fold::try_clone_crease_pattern_v1(&forward.pattern).map_err(|_| {
+                SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                    resource: SpeculativeUnprovenFoldApplyResourceV1::TargetPattern,
+                }
+            })?;
+        speculative_stacked_fold_allocation_checkpoint_v1(
+            SpeculativeUnprovenFoldApplyResourceV1::TargetPaper,
+        )?;
+        let paper = crate::stacked_fold::try_clone_paper_v1(&forward.paper).map_err(|_| {
+            SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                resource: SpeculativeUnprovenFoldApplyResourceV1::TargetPaper,
+            }
+        })?;
+        speculative_stacked_fold_allocation_checkpoint_v1(
+            SpeculativeUnprovenFoldApplyResourceV1::TargetInstructionTimeline,
+        )?;
+        let instruction_timeline =
+            crate::stacked_fold::try_clone_instruction_timeline_v1(&forward.instruction_timeline)
+                .map_err(
+                |_| SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                    resource: SpeculativeUnprovenFoldApplyResourceV1::TargetInstructionTimeline,
+                },
+            )?;
+        speculative_stacked_fold_allocation_checkpoint_v1(
+            SpeculativeUnprovenFoldApplyResourceV1::TargetProjectLayers,
+        )?;
+        let project_layers =
+            crate::stacked_fold::try_clone_project_layer_document_v1(&forward.project_layers)
+                .map_err(|_| {
+                    SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                        resource: SpeculativeUnprovenFoldApplyResourceV1::TargetProjectLayers,
+                    }
+                })?;
+        speculative_stacked_fold_allocation_checkpoint_v1(
+            SpeculativeUnprovenFoldApplyResourceV1::TargetBeginnerDesignProfile,
+        )?;
+        let beginner_design_profile = crate::stacked_fold::try_clone_beginner_design_profile_v1(
+            &forward.beginner_design_profile,
+        )
+        .map_err(|_| {
+            SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                resource: SpeculativeUnprovenFoldApplyResourceV1::TargetBeginnerDesignProfile,
+            }
+        })?;
+        // Nested profile buffers were reserved fallibly above. This fixed-size
+        // box is allocated before mutation; stable Rust has no fallible Box
+        // constructor.
+        let beginner_design_profile = Box::new(beginner_design_profile);
+
+        speculative_stacked_fold_allocation_checkpoint_v1(
+            SpeculativeUnprovenFoldApplyResourceV1::CurrentTargetPose,
+        )?;
+        let current_applied_pose = history_applied_pose.try_clone().map_err(|_| {
+            SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                resource: SpeculativeUnprovenFoldApplyResourceV1::CurrentTargetPose,
+            }
+        })?;
+        speculative_stacked_fold_allocation_checkpoint_v1(
+            SpeculativeUnprovenFoldApplyResourceV1::ResolutionTicketTargetPose,
+        )?;
+        let ticket_applied_pose = history_applied_pose.try_clone().map_err(|_| {
+            SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                resource: SpeculativeUnprovenFoldApplyResourceV1::ResolutionTicketTargetPose,
+            }
+        })?;
+
+        let will_trim = self.undo_stack.len() == self.history_entry_limit;
+        if !will_trim {
+            speculative_stacked_fold_allocation_checkpoint_v1(
+                SpeculativeUnprovenFoldApplyResourceV1::UndoHistoryEntries,
+            )?;
+            self.undo_stack.try_reserve(1).map_err(|_| {
+                SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                    resource: SpeculativeUnprovenFoldApplyResourceV1::UndoHistoryEntries,
+                }
+            })?;
+        }
+        if will_trim
+            && self
+                .undo_stack
+                .first()
+                .is_some_and(|entry| entry.speculative_unproven_fold.is_some())
+        {
+            speculative_stacked_fold_allocation_checkpoint_v1(
+                SpeculativeUnprovenFoldApplyResourceV1::RetainedBaseMarks,
+            )?;
+            if !self.applied_base_unproven.try_reserve_one_trimmed_mark_v1() {
+                return Err(
+                    SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                        resource: SpeculativeUnprovenFoldApplyResourceV1::RetainedBaseMarks,
+                    },
+                );
+            }
+        }
+
+        Ok(PreparedSpeculativeStackedFoldCommitV1 {
+            forward,
+            target: SpeculativeStackedFoldDocumentSnapshotV1 {
+                pattern,
+                paper,
+                instruction_timeline,
+                project_layers,
+                beginner_design_profile,
+            },
+            current_applied_pose,
+            history_applied_pose,
+            ticket_applied_pose,
+            next_revision,
+            changes,
+        })
+    }
+
+    fn validate_stacked_fold_document_replacement_v1(
+        &self,
+        pattern: &CreasePattern,
+        paper: &Paper,
+        instruction_timeline: &InstructionTimeline,
+        project_layers: &ProjectLayerDocumentV1,
+        beginner_design_profile: &BeginnerDesignProfileV1,
+    ) -> Result<(), CommandError> {
+        if paper.thickness_mm.to_bits() != self.paper.thickness_mm.to_bits()
+            || paper.cutting_allowed != self.paper.cutting_allowed
+            || paper.length_display_unit != self.paper.length_display_unit
+            || paper.front != self.paper.front
+            || paper.back != self.paper.back
+            || !document_element_ids_are_unique_and_non_nil(pattern)
+            || !self.length_display_reference_survives_document_replacement(pattern, paper)
+            || instruction_timeline.steps.len() <= self.instruction_timeline.steps.len()
+            || instruction_timeline.steps.len()
+                > self.instruction_timeline.steps.len().saturating_add(31)
+            || self
+                .pattern
+                .vertices
+                .iter()
+                .any(|source| !pattern.vertices.iter().any(|target| target == source))
+            || !source_edges_preserved_by_exact_subdivision(&self.pattern, pattern)
+            || !validate_crease_pattern(pattern).is_valid()
+            || !validate_paper(paper, pattern).is_valid()
+            || !validate_beginner_design_profile_v1(beginner_design_profile)
+        {
+            return Err(CommandError::InvalidStackedFoldDocument);
+        }
+        validate_instruction_timeline(instruction_timeline)?;
+        validate_project_layer_document_against_pattern_v1(project_layers, pattern)?;
+        for record in &self.geometric_constraints.constraints {
+            validate_geometric_constraint_record_against_pattern_v1(pattern, record)
+                .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
+        }
+        Ok(())
+    }
+
+    fn commit_prepared_speculative_stacked_fold_v1(
+        &mut self,
+        prepared: PreparedSpeculativeStackedFoldCommitV1,
+        mark: SpeculativeUnprovenFoldMarkV1,
+    ) -> (CommandResult, AppliedPoseV1) {
+        let PreparedSpeculativeStackedFoldCommitV1 {
+            forward,
+            target,
+            current_applied_pose,
+            history_applied_pose,
+            ticket_applied_pose,
+            next_revision,
+            changes,
+        } = prepared;
+        let SpeculativeStackedFoldDocumentSnapshotV1 {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            mut beginner_design_profile,
+        } = target;
+
+        let source_pattern = std::mem::replace(&mut self.pattern, pattern);
+        let source_paper = std::mem::replace(&mut self.paper, paper);
+        let source_instruction_timeline =
+            std::mem::replace(&mut self.instruction_timeline, instruction_timeline);
+        let source_project_layers = std::mem::replace(&mut self.project_layers, project_layers);
+        std::mem::swap(
+            &mut self.beginner_design_profile,
+            beginner_design_profile.as_mut(),
+        );
+        let source_applied_pose = self.current_applied_pose.replace(current_applied_pose);
+        let inverse = Inverse::RestoreStackedFoldDocument {
+            pattern: source_pattern,
+            paper: source_paper,
+            instruction_timeline: source_instruction_timeline,
+            project_layers: source_project_layers,
+            beginner_design_profile,
+        };
+
+        self.applied_base_unproven.note_applied_entry();
+        let trimmed_mark = if self.undo_stack.len() == self.history_entry_limit {
+            let mut trimmed = self.undo_stack.remove(0);
+            trimmed.speculative_unproven_fold.take()
+        } else {
+            None
+        };
+        self.undo_stack.push(HistoryEntry {
+            forward: Command::ApplyStackedFoldDocument(forward),
+            inverse,
+            applied_pose: AppliedPoseHistoryTransition::Restore {
+                before: source_applied_pose,
+                after: Some(history_applied_pose),
+            },
+            speculative_unproven_fold: Some(mark),
+            persistence_provenance: HistoryEntryPersistenceProvenance::Canonical,
+        });
+        self.applied_base_unproven
+            .absorb_one_trimmed_applied_mark_v1(trimmed_mark, self.undo_stack.len());
+        self.redo_stack.clear();
+        self.revision = next_revision;
+        (self.result(changes), ticket_applied_pose)
     }
 
     /// Adds one authored edge and normalizes every non-boundary intersection
@@ -3934,6 +4234,7 @@ impl EditorState {
         let Some(mut entry) = self.redo_stack.last().cloned() else {
             return Ok(self.result(Changes::default()));
         };
+        self.ensure_applied_history_depth_can_advance_v1()?;
         entry
             .applied_pose
             .capture_before(&self.current_applied_pose);
@@ -5518,34 +5819,13 @@ impl EditorState {
                 ref project_layers,
                 ref beginner_design_profile,
             } => {
-                if paper.thickness_mm.to_bits() != self.paper.thickness_mm.to_bits()
-                    || paper.cutting_allowed != self.paper.cutting_allowed
-                    || paper.length_display_unit != self.paper.length_display_unit
-                    || paper.front != self.paper.front
-                    || paper.back != self.paper.back
-                    || !document_element_ids_are_unique_and_non_nil(pattern)
-                    || !self.length_display_reference_survives_document_replacement(pattern, paper)
-                    || instruction_timeline.steps.len() <= self.instruction_timeline.steps.len()
-                    || instruction_timeline.steps.len()
-                        > self.instruction_timeline.steps.len().saturating_add(31)
-                    || self
-                        .pattern
-                        .vertices
-                        .iter()
-                        .any(|source| !pattern.vertices.iter().any(|target| target == source))
-                    || !source_edges_preserved_by_exact_subdivision(&self.pattern, pattern)
-                    || !validate_crease_pattern(pattern).is_valid()
-                    || !validate_paper(paper, pattern).is_valid()
-                    || !validate_beginner_design_profile_v1(beginner_design_profile)
-                {
-                    return Err(CommandError::InvalidStackedFoldDocument);
-                }
-                validate_instruction_timeline(instruction_timeline)?;
-                validate_project_layer_document_against_pattern_v1(project_layers, pattern)?;
-                for record in &self.geometric_constraints.constraints {
-                    validate_geometric_constraint_record_against_pattern_v1(pattern, record)
-                        .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
-                }
+                self.validate_stacked_fold_document_replacement_v1(
+                    pattern,
+                    paper,
+                    instruction_timeline,
+                    project_layers,
+                    beginner_design_profile,
+                )?;
                 Ok(Inverse::RestoreStackedFoldDocument {
                     pattern: std::mem::replace(&mut self.pattern, pattern.clone()),
                     paper: std::mem::replace(&mut self.paper, paper.clone()),
@@ -8941,6 +9221,14 @@ impl EditorState {
             })
         } else {
             Ok(self.revision + 1)
+        }
+    }
+
+    fn ensure_applied_history_depth_can_advance_v1(&self) -> Result<(), CommandError> {
+        if self.applied_base_unproven.can_note_applied_entry_v1() {
+            Ok(())
+        } else {
+            Err(CommandError::AppliedHistoryDepthExhausted)
         }
     }
 
@@ -17507,17 +17795,15 @@ mod tests {
         assert!(!document_element_ids_are_unique_and_non_nil(
             &duplicate_edge_pattern,
         ));
-        let nil_vertex: VertexId =
-            serde_json::from_str("\"00000000-0000-0000-0000-000000000000\"")
-                .expect("nil vertex fixture");
+        let nil_vertex: VertexId = serde_json::from_str("\"00000000-0000-0000-0000-000000000000\"")
+            .expect("nil vertex fixture");
         let mut nil_vertex_pattern = source_pattern.clone();
         nil_vertex_pattern.vertices[0].id = nil_vertex;
         assert!(!document_element_ids_are_unique_and_non_nil(
             &nil_vertex_pattern,
         ));
-        let nil_edge: EdgeId =
-            serde_json::from_str("\"00000000-0000-0000-0000-000000000000\"")
-                .expect("nil edge fixture");
+        let nil_edge: EdgeId = serde_json::from_str("\"00000000-0000-0000-0000-000000000000\"")
+            .expect("nil edge fixture");
         let mut nil_edge_pattern = source_pattern.clone();
         nil_edge_pattern.edges[0].id = nil_edge;
         assert!(!document_element_ids_are_unique_and_non_nil(

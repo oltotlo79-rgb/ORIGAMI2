@@ -2,6 +2,42 @@ use serde_json::{Value, json};
 
 use super::{speculative_unproven_test_support::*, *};
 
+fn fixture_reopened_with_applied_base_depth(depth: Revision) -> SpeculativeFixture {
+    let mut fixture = fixture();
+    fixture
+        .editor
+        .set_history_entry_limit(1)
+        .expect("minimum history");
+    let first_binding = binding(
+        &fixture,
+        SpeculativeApproximateBlockingObservationV1::no_blocking_sample_observed(),
+    );
+    apply_marked(&mut fixture, first_binding);
+    fixture
+        .editor
+        .execute(
+            fixture.editor.revision(),
+            Command::UpdateProjectMemo {
+                memo: "trim the first speculative mark".to_owned(),
+            },
+        )
+        .expect("trim first speculative mark into the applied base");
+    let mut json = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("export applied-base history"),
+    )
+    .expect("history JSON");
+    json["speculative_unproven_applied_base_v1"]["retained_marks"][0]["subsequent_applied_entries"] =
+        json!(depth);
+    let history =
+        serde_json::from_value::<EditorHistoryV1>(json).expect("compatible applied-base history");
+    fixture.editor = reopen(&fixture.editor, history).expect("reopen applied-base history");
+    assert_eq!(fixture.editor.revision(), 0);
+    fixture
+}
+
 #[test]
 fn trimmed_applied_mark_survives_round_trip_with_terminal_reason() {
     let mut fixture = fixture();
@@ -59,6 +95,174 @@ fn trimmed_applied_mark_survives_round_trip_with_terminal_reason() {
             .applied
             .unknown_resource_limit,
         1
+    );
+}
+
+#[test]
+fn imported_applied_base_depth_one_below_limit_accepts_one_general_edit() {
+    let mut fixture = fixture_reopened_with_applied_base_depth(MAX_REVISION - 1);
+    let result = fixture
+        .editor
+        .execute(
+            0,
+            Command::UpdateProjectMemo {
+                memo: "final representable applied-base increment".to_owned(),
+            },
+        )
+        .expect("the final representable applied-base increment");
+    assert_eq!(result.revision, 1);
+    let exported = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("the boundary result remains exportable"),
+    )
+    .expect("boundary history JSON");
+    assert_eq!(
+        exported["speculative_unproven_applied_base_v1"]["retained_marks"][0]["subsequent_applied_entries"],
+        json!(MAX_REVISION)
+    );
+}
+
+#[test]
+fn imported_applied_base_depth_at_limit_rejects_general_edit_atomically() {
+    let mut fixture = fixture_reopened_with_applied_base_depth(MAX_REVISION);
+    let editor_before = format!("{:?}", fixture.editor);
+    let marker_before = fixture.editor.speculative_unproven_fold_state_marker_v1();
+    let history_before = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("preflight state is exportable"),
+    )
+    .expect("preflight history JSON");
+
+    assert_eq!(
+        fixture.editor.execute(
+            0,
+            Command::UpdateProjectMemo {
+                memo: "must not enter an unexportable state".to_owned(),
+            },
+        ),
+        Err(CommandError::AppliedHistoryDepthExhausted)
+    );
+    assert_eq!(fixture.editor.revision(), 0);
+    assert_eq!(format!("{:?}", fixture.editor), editor_before);
+    assert_eq!(
+        fixture.editor.speculative_unproven_fold_state_marker_v1(),
+        marker_before
+    );
+    let history_after = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("rejected state remains exportable"),
+    )
+    .expect("rejected history JSON");
+    assert_eq!(history_after, history_before);
+}
+
+#[test]
+fn specialized_speculative_apply_maps_applied_history_exhaustion() {
+    let mut fixture = fixture_reopened_with_applied_base_depth(MAX_REVISION);
+    let token = token_for_target(
+        &fixture,
+        1,
+        &fixture.target_pattern,
+        &fixture.paper,
+        &fixture.applied_pose,
+    );
+    let editor_before = format!("{:?}", fixture.editor);
+
+    assert!(matches!(
+        fixture
+            .editor
+            .execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1(token),
+        Err(SpeculativeUnprovenFoldApplyErrorV1::AppliedBaseHistoryDepthLimitReached)
+    ));
+    assert_eq!(format!("{:?}", fixture.editor), editor_before);
+}
+
+#[test]
+fn undo_below_the_applied_base_limit_allows_the_matching_redo() {
+    let mut fixture = fixture_reopened_with_applied_base_depth(MAX_REVISION);
+
+    let undo = fixture
+        .editor
+        .undo(0)
+        .expect("undo decrements applied depth");
+    assert_eq!(undo.revision, 1);
+    let after_undo = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("the decremented depth remains exportable"),
+    )
+    .expect("history after undo");
+    assert_eq!(
+        after_undo["speculative_unproven_applied_base_v1"]["retained_marks"][0]["subsequent_applied_entries"],
+        json!(MAX_REVISION - 1)
+    );
+
+    let redo = fixture
+        .editor
+        .redo(1)
+        .expect("redo may restore the maximum representable depth");
+    assert_eq!(redo.revision, 2);
+    let after_redo = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("the restored maximum remains exportable"),
+    )
+    .expect("history after redo");
+    assert_eq!(
+        after_redo["speculative_unproven_applied_base_v1"]["retained_marks"][0]["subsequent_applied_entries"],
+        json!(MAX_REVISION)
+    );
+}
+
+#[test]
+fn imported_redo_at_applied_base_limit_is_rejected_atomically() {
+    let mut fixture = fixture_reopened_with_applied_base_depth(MAX_REVISION);
+    fixture.editor.undo(0).expect("create one valid Redo entry");
+    let mut history_json = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("export the Redo fixture"),
+    )
+    .expect("Redo fixture JSON");
+    history_json["speculative_unproven_applied_base_v1"]["retained_marks"][0]["subsequent_applied_entries"] =
+        json!(MAX_REVISION);
+    let history = serde_json::from_value::<EditorHistoryV1>(history_json)
+        .expect("MAX-depth Redo history remains import-compatible");
+    fixture.editor = reopen(&fixture.editor, history).expect("reopen MAX-depth Redo history");
+    assert_eq!(fixture.editor.revision(), 0);
+    assert!(fixture.editor.can_redo());
+    let editor_before = format!("{:?}", fixture.editor);
+    let history_before = serde_json::to_value(
+        fixture
+            .editor
+            .export_history_v1(fixture.project_id)
+            .expect("MAX-depth Redo state is exportable"),
+    )
+    .expect("MAX-depth Redo state JSON");
+
+    assert_eq!(
+        fixture.editor.redo(0),
+        Err(CommandError::AppliedHistoryDepthExhausted)
+    );
+    assert_eq!(format!("{:?}", fixture.editor), editor_before);
+    assert_eq!(
+        serde_json::to_value(
+            fixture
+                .editor
+                .export_history_v1(fixture.project_id)
+                .expect("rejected Redo state remains exportable"),
+        )
+        .expect("rejected Redo state JSON"),
+        history_before
     );
 }
 

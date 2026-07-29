@@ -1,20 +1,25 @@
+use std::sync::Arc;
+
 use ori_domain::ProjectId;
 
 use crate::stacked_fold::{
-    PreparedStackedFoldRequestedPoseV1, SpeculativeUnprovenFoldTokenIssueErrorV1,
+    PreparedStackedFoldRequestedPoseV1, PreparedStackedFoldSourcePoseMatchErrorV1,
+    SpeculativeUnprovenFoldTokenIssueErrorV1, SpeculativeUnprovenFoldTokenIssueInputV1,
     SpeculativeUnprovenFoldTokenV1, StackedFoldInitialLayerOrderV1,
     issue_speculative_unproven_fold_token_v1,
     prepared_stacked_fold_request_matches_applied_source_pose_v1,
 };
 
 use super::{
-    super::{CommandResult, EditorState},
+    super::{CommandResult, EditorState, speculative_stacked_fold_allocation_checkpoint_v1},
     MAX_PENDING_SPECULATIVE_UNPROVEN_FOLDS_V1, SpeculativeApproximateBlockingObservationV1,
-    SpeculativeUnprovenFoldApplyErrorV1, SpeculativeUnprovenFoldBindingV1,
+    SpeculativeUnprovenFoldApplyErrorV1, SpeculativeUnprovenFoldApplyResourceV1,
+    SpeculativeUnprovenFoldBindingV1, SpeculativeUnprovenFoldCertifiedProofV1,
     SpeculativeUnprovenFoldHistoryLocationV1, SpeculativeUnprovenFoldMarkV1,
     SpeculativeUnprovenFoldProofOutcomeV1, SpeculativeUnprovenFoldResolutionErrorV1,
-    SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldStateMarkerV1,
-    SpeculativeUnprovenFoldStatusV1, SpeculativeUnprovenFoldSummaryV1,
+    SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionTicketV1,
+    SpeculativeUnprovenFoldStateMarkerV1, SpeculativeUnprovenFoldStatusV1,
+    SpeculativeUnprovenFoldSummaryV1,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -22,6 +27,13 @@ enum MarkLocation {
     AppliedBase(usize),
     Undo(usize),
     Redo(usize),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MarkLocationMatch {
+    Missing,
+    Unique(MarkLocation),
+    Duplicate,
 }
 
 impl EditorState {
@@ -44,7 +56,9 @@ impl EditorState {
         if lineage.source_revision() != self.revision() {
             return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::SourceRevisionMismatch);
         }
-        if lineage.source_fingerprint().to_hex() != self.fold_model_fingerprint_v1() {
+        if lineage.source_fingerprint()
+            != ori_foldability::fold_model_fingerprint_v1(self.pattern(), self.paper())
+        {
             return Err(
                 SpeculativeUnprovenFoldTokenIssueErrorV1::SourceGeometryFingerprintMismatch,
             );
@@ -69,29 +83,29 @@ impl EditorState {
                 SpeculativeUnprovenFoldTokenIssueErrorV1::TargetLengthDisplayReferenceInvalid,
             );
         }
-        if !self.current_applied_pose().is_some_and(|current| {
-            prepared_stacked_fold_request_matches_applied_source_pose_v1(
-                requested,
-                self.pattern(),
-                self.paper(),
-                current,
-            )
-        }) {
-            return Err(SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseMismatch);
-        }
-        issue_speculative_unproven_fold_token_v1(
-            self.runtime_instance_anchor.clone(),
-            self.current_applied_pose(),
-            self.instruction_timeline(),
-            self.project_layers(),
-            self.beginner_design_profile(),
+        let current_applied_pose = self
+            .current_applied_pose()
+            .ok_or(SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseMismatch)?;
+        prepared_stacked_fold_request_matches_applied_source_pose_v1(
+            requested,
+            self.pattern(),
+            self.paper(),
+            current_applied_pose,
+        )
+        .map_err(map_source_pose_match_error_v1)?;
+        issue_speculative_unproven_fold_token_v1(SpeculativeUnprovenFoldTokenIssueInputV1 {
+            editor_instance_anchor: self.runtime_instance_anchor.clone(),
+            source_applied_pose: self.current_applied_pose(),
+            source_instruction_timeline: self.instruction_timeline(),
+            source_project_layers: self.project_layers(),
+            source_beginner_design_profile: self.beginner_design_profile(),
             project_instance_id,
             requested,
             initial_layer_order,
             pose_generation,
             request_generation_id,
             paper_thickness_mm,
-        )
+        })
     }
 
     /// Applies a stacked-fold document and unproven metadata as one entry.
@@ -99,10 +113,33 @@ impl EditorState {
     /// Core consumes the opaque one-shot token and obtains the complete target
     /// command from it. No caller-supplied pattern, paper, timeline, layers, or
     /// pose can be substituted at Apply time.
+    ///
+    /// This compatibility entry point permanently discards the only runtime
+    /// resolution ticket produced by a successful Apply. Its awaiting-proof
+    /// mark therefore cannot later be removed as `Certified`; callers that
+    /// intend to run post-Apply certification must use
+    /// [`Self::execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1`].
     pub fn execute_stacked_fold_document_with_unproven_mark_v1(
         &mut self,
         token: SpeculativeUnprovenFoldTokenV1,
     ) -> Result<CommandResult, SpeculativeUnprovenFoldApplyErrorV1> {
+        self.execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1(token)
+            .map(|(result, _ticket)| result)
+    }
+
+    /// Applies one speculative stacked-fold document and returns the only
+    /// runtime ticket that can later bind a typed continuous proof.
+    ///
+    /// Ticket state is fully retained before the document mutation begins.
+    /// The successful command, awaiting-proof mark, and returned ticket
+    /// therefore describe one exact atomic Apply.
+    pub fn execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1(
+        &mut self,
+        token: SpeculativeUnprovenFoldTokenV1,
+    ) -> Result<
+        (CommandResult, SpeculativeUnprovenFoldResolutionTicketV1),
+        SpeculativeUnprovenFoldApplyErrorV1,
+    > {
         let (binding, command, applied_pose) = token
             .into_authorized_target_v1(
                 &self.runtime_instance_anchor,
@@ -115,7 +152,10 @@ impl EditorState {
         if self.revision() != expected_revision {
             return Err(SpeculativeUnprovenFoldApplyErrorV1::SourceRevisionMismatch);
         }
-        if binding.source_geometry_fingerprint_sha256() != self.fold_model_fingerprint_v1() {
+        if !lowercase_sha256_matches_v1(
+            ori_foldability::fold_model_fingerprint_v1(self.pattern(), self.paper()).0,
+            binding.source_geometry_fingerprint_sha256(),
+        ) {
             return Err(SpeculativeUnprovenFoldApplyErrorV1::SourceGeometryFingerprintMismatch);
         }
         if binding.paper_thickness_bits() != self.paper().thickness_mm.to_bits() {
@@ -127,7 +167,10 @@ impl EditorState {
         ) {
             return Err(SpeculativeUnprovenFoldApplyErrorV1::ApproximateBlockingSampleObserved);
         }
-        if !self.find_mark_locations(&binding).is_empty() {
+        if !matches!(
+            self.find_mark_location(&binding),
+            MarkLocationMatch::Missing
+        ) {
             return Err(SpeculativeUnprovenFoldApplyErrorV1::DuplicateBinding);
         }
         let pending_after_redo_discard = self.applied_base_unproven.pending_count()
@@ -146,17 +189,44 @@ impl EditorState {
         if pending_after_redo_discard >= MAX_PENDING_SPECULATIVE_UNPROVEN_FOLDS_V1 {
             return Err(SpeculativeUnprovenFoldApplyErrorV1::PendingMarkLimitReached);
         }
+        self.ensure_applied_history_depth_can_advance_v1()
+            .map_err(|_| {
+                SpeculativeUnprovenFoldApplyErrorV1::AppliedBaseHistoryDepthLimitReached
+            })?;
 
-        let result = self.execute_stacked_fold_document_command_v1(
+        let target_revision = expected_revision
+            .checked_add(1)
+            .filter(|revision| *revision <= crate::MAX_REVISION)
+            .ok_or(SpeculativeUnprovenFoldApplyErrorV1::InvalidTargetRevision)?;
+        let target_geometry_fingerprint =
+            ori_foldability::fold_model_fingerprint_v1(&command.pattern, &command.paper).0;
+        speculative_stacked_fold_allocation_checkpoint_v1(
+            SpeculativeUnprovenFoldApplyResourceV1::HistoryMarkBinding,
+        )?;
+        let mark_binding = binding.try_clone_for_runtime_commit_v1().ok_or(
+            SpeculativeUnprovenFoldApplyErrorV1::CommitPreparationResourceLimit {
+                resource: SpeculativeUnprovenFoldApplyResourceV1::HistoryMarkBinding,
+            },
+        )?;
+        let editor_instance_anchor = Arc::clone(&self.runtime_instance_anchor);
+        let prepared = self.prepare_speculative_stacked_fold_commit_v1(
             expected_revision,
             command,
             applied_pose,
         )?;
-        self.undo_stack
-            .last_mut()
-            .expect("successful stacked-fold Apply creates one history entry")
-            .speculative_unproven_fold = Some(SpeculativeUnprovenFoldMarkV1::awaiting(binding));
-        Ok(result)
+        let (result, target_applied_pose) = self.commit_prepared_speculative_stacked_fold_v1(
+            prepared,
+            SpeculativeUnprovenFoldMarkV1::awaiting(mark_binding),
+        );
+        let resolution_ticket = SpeculativeUnprovenFoldResolutionTicketV1::new(
+            editor_instance_anchor,
+            binding,
+            target_revision,
+            target_geometry_fingerprint,
+            target_applied_pose,
+        );
+        debug_assert_eq!(result.revision, target_revision);
+        Ok((result, resolution_ticket))
     }
 
     /// Inspects one speculative history binding without changing its status,
@@ -174,10 +244,14 @@ impl EditorState {
         SpeculativeUnprovenFoldResolutionErrorV1,
     > {
         binding.validate()?;
-        let location = match self.find_mark_locations(binding).as_slice() {
-            [] => return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound),
-            [location] => *location,
-            _ => return Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding),
+        let location = match self.find_mark_location(binding) {
+            MarkLocationMatch::Missing => {
+                return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound);
+            }
+            MarkLocationMatch::Unique(location) => location,
+            MarkLocationMatch::Duplicate => {
+                return Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding);
+            }
         };
         let located = self.mark_at(location).expect("located mark");
         if located.binding != *binding {
@@ -198,9 +272,9 @@ impl EditorState {
     /// Records a blocked or unknown result without Undo or document revision
     /// changes.
     ///
-    /// `Certified` is deliberately rejected here. Only a future resolver that
-    /// receives and revalidates an opaque typed proof may remove an unproven
-    /// mark.
+    /// `Certified` is deliberately rejected here. Only
+    /// [`Self::resolve_speculative_unproven_fold_certified_v1`], which consumes
+    /// an opaque typed proof, may remove an unproven mark.
     pub fn resolve_speculative_unproven_fold_v1(
         &mut self,
         binding: &SpeculativeUnprovenFoldBindingV1,
@@ -219,10 +293,14 @@ impl EditorState {
             }
         };
         binding.validate()?;
-        let location = match self.find_mark_locations(binding).as_slice() {
-            [] => return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound),
-            [location] => *location,
-            _ => return Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding),
+        let location = match self.find_mark_location(binding) {
+            MarkLocationMatch::Missing => {
+                return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound);
+            }
+            MarkLocationMatch::Unique(location) => location,
+            MarkLocationMatch::Duplicate => {
+                return Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding);
+            }
         };
         let located = self.mark_at(location).expect("located mark");
         if located.binding != *binding {
@@ -234,6 +312,72 @@ impl EditorState {
 
         let report = self.resolution_report(location, outcome);
         self.mark_at_mut(location).expect("located mark").status = terminal_status;
+        Ok(report)
+    }
+
+    /// Consumes a typed continuous proof and removes only its exact
+    /// awaiting-proof mark.
+    ///
+    /// The document, revision, applied pose, and Undo/Redo entry order are
+    /// unchanged. A foreign editor, metadata drift, duplicate location, or
+    /// terminal mark fails before any mutation.
+    pub fn resolve_speculative_unproven_fold_certified_v1(
+        &mut self,
+        proof: SpeculativeUnprovenFoldCertifiedProofV1,
+    ) -> Result<SpeculativeUnprovenFoldResolutionReportV1, SpeculativeUnprovenFoldResolutionErrorV1>
+    {
+        let (
+            editor_instance_anchor,
+            binding,
+            target_revision,
+            _target_geometry_fingerprint,
+            _target_applied_pose,
+        ) = proof.into_resolution_parts();
+        if !Arc::ptr_eq(&editor_instance_anchor, &self.runtime_instance_anchor) {
+            return Err(SpeculativeUnprovenFoldResolutionErrorV1::ForeignEditor);
+        }
+        binding.validate()?;
+        if binding
+            .source_revision()
+            .checked_add(1)
+            .filter(|revision| *revision <= crate::MAX_REVISION)
+            != Some(target_revision)
+        {
+            return Err(SpeculativeUnprovenFoldResolutionErrorV1::InvalidCertifiedProof);
+        }
+        let location = match self.find_mark_location(&binding) {
+            MarkLocationMatch::Missing => {
+                return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingNotFound);
+            }
+            MarkLocationMatch::Unique(location) => location,
+            MarkLocationMatch::Duplicate => {
+                return Err(SpeculativeUnprovenFoldResolutionErrorV1::DuplicateBinding);
+            }
+        };
+        let located = self.mark_at(location).expect("located mark");
+        if located.binding != binding {
+            return Err(SpeculativeUnprovenFoldResolutionErrorV1::BindingMetadataMismatch);
+        }
+        if located.status != SpeculativeUnprovenFoldStatusV1::AwaitingProof {
+            return Err(SpeculativeUnprovenFoldResolutionErrorV1::AlreadyResolved);
+        }
+
+        let report =
+            self.resolution_report(location, SpeculativeUnprovenFoldProofOutcomeV1::Certified);
+        let removed = match location {
+            MarkLocation::AppliedBase(index) => {
+                self.applied_base_unproven.retained_marks.remove(index).mark
+            }
+            MarkLocation::Undo(index) => self.undo_stack[index]
+                .speculative_unproven_fold
+                .take()
+                .expect("the validated Undo mark remains present"),
+            MarkLocation::Redo(index) => self.redo_stack[index]
+                .speculative_unproven_fold
+                .take()
+                .expect("the validated Redo mark remains present"),
+        };
+        debug_assert_eq!(removed.binding, binding);
         Ok(report)
     }
 
@@ -280,23 +424,36 @@ impl EditorState {
         }
     }
 
-    fn find_mark_locations(&self, binding: &SpeculativeUnprovenFoldBindingV1) -> Vec<MarkLocation> {
-        let mut locations = Vec::new();
-        locations.extend(
-            self.applied_base_unproven
-                .retained_marks
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| item.mark.binding.has_same_request_identity(binding))
-                .map(|(index, _)| MarkLocation::AppliedBase(index)),
-        );
+    fn find_mark_location(&self, binding: &SpeculativeUnprovenFoldBindingV1) -> MarkLocationMatch {
+        let mut found = None;
+        let mut observe = |location| {
+            if found.replace(location).is_some() {
+                MarkLocationMatch::Duplicate
+            } else {
+                MarkLocationMatch::Unique(location)
+            }
+        };
+        for (index, item) in self.applied_base_unproven.retained_marks.iter().enumerate() {
+            if item.mark.binding.has_same_request_identity(binding)
+                && matches!(
+                    observe(MarkLocation::AppliedBase(index)),
+                    MarkLocationMatch::Duplicate
+                )
+            {
+                return MarkLocationMatch::Duplicate;
+            }
+        }
         for (index, entry) in self.undo_stack.iter().enumerate() {
             if entry
                 .speculative_unproven_fold
                 .as_ref()
                 .is_some_and(|mark| mark.binding.has_same_request_identity(binding))
+                && matches!(
+                    observe(MarkLocation::Undo(index)),
+                    MarkLocationMatch::Duplicate
+                )
             {
-                locations.push(MarkLocation::Undo(index));
+                return MarkLocationMatch::Duplicate;
             }
         }
         for (index, entry) in self.redo_stack.iter().enumerate() {
@@ -304,11 +461,15 @@ impl EditorState {
                 .speculative_unproven_fold
                 .as_ref()
                 .is_some_and(|mark| mark.binding.has_same_request_identity(binding))
+                && matches!(
+                    observe(MarkLocation::Redo(index)),
+                    MarkLocationMatch::Duplicate
+                )
             {
-                locations.push(MarkLocation::Redo(index));
+                return MarkLocationMatch::Duplicate;
             }
         }
-        locations
+        found.map_or(MarkLocationMatch::Missing, MarkLocationMatch::Unique)
     }
 
     fn mark_at(&self, location: MarkLocation) -> Option<&SpeculativeUnprovenFoldMarkV1> {
@@ -383,5 +544,96 @@ impl EditorState {
                 undo_steps_to_revert: None,
             },
         }
+    }
+}
+
+fn map_source_pose_match_error_v1(
+    error: PreparedStackedFoldSourcePoseMatchErrorV1,
+) -> SpeculativeUnprovenFoldTokenIssueErrorV1 {
+    match error {
+        PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch => {
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseMismatch
+        }
+        PreparedStackedFoldSourcePoseMatchErrorV1::ReconstructionUnavailable => {
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseReconstructionUnavailable
+        }
+        PreparedStackedFoldSourcePoseMatchErrorV1::ResourceLimitExceeded {
+            resource,
+            actual,
+            maximum,
+        } => SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseResourceLimitExceeded {
+            resource,
+            actual,
+            maximum,
+        },
+        PreparedStackedFoldSourcePoseMatchErrorV1::ResourceCountOverflow { resource } => {
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseResourceCountOverflow {
+                resource,
+            }
+        }
+        PreparedStackedFoldSourcePoseMatchErrorV1::AllocationFailed { resource } => {
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseAllocationFailed { resource }
+        }
+    }
+}
+
+fn lowercase_sha256_matches_v1(bytes: [u8; 32], encoded: &str) -> bool {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    encoded.len() == 64
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            encoded.as_bytes()[index * 2] == DIGITS[usize::from(byte >> 4)]
+                && encoded.as_bytes()[index * 2 + 1] == DIGITS[usize::from(byte & 0x0f)]
+        })
+}
+
+#[cfg(test)]
+mod source_pose_error_mapping_tests {
+    use crate::stacked_fold::PreparedStackedFoldSourcePoseResourceV1;
+
+    use super::*;
+
+    #[test]
+    fn every_typed_source_pose_failure_keeps_its_category_and_resource() {
+        let resource = PreparedStackedFoldSourcePoseResourceV1::TargetEdgeMappingRecords;
+        assert_eq!(
+            map_source_pose_match_error_v1(PreparedStackedFoldSourcePoseMatchErrorV1::Mismatch),
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseMismatch
+        );
+        assert_eq!(
+            map_source_pose_match_error_v1(
+                PreparedStackedFoldSourcePoseMatchErrorV1::ReconstructionUnavailable
+            ),
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseReconstructionUnavailable
+        );
+        assert_eq!(
+            map_source_pose_match_error_v1(
+                PreparedStackedFoldSourcePoseMatchErrorV1::ResourceLimitExceeded {
+                    resource,
+                    actual: 11,
+                    maximum: 10,
+                }
+            ),
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseResourceLimitExceeded {
+                resource,
+                actual: 11,
+                maximum: 10,
+            }
+        );
+        assert_eq!(
+            map_source_pose_match_error_v1(
+                PreparedStackedFoldSourcePoseMatchErrorV1::ResourceCountOverflow { resource }
+            ),
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseResourceCountOverflow {
+                resource,
+            }
+        );
+        assert_eq!(
+            map_source_pose_match_error_v1(
+                PreparedStackedFoldSourcePoseMatchErrorV1::AllocationFailed { resource }
+            ),
+            SpeculativeUnprovenFoldTokenIssueErrorV1::SourceAppliedPoseAllocationFailed {
+                resource,
+            }
+        );
     }
 }

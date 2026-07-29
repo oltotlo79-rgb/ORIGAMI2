@@ -130,6 +130,24 @@ impl SpeculativeUnprovenFoldBindingV1 {
             && self.request_generation_id == other.request_generation_id
     }
 
+    pub(crate) fn try_clone_for_runtime_commit_v1(&self) -> Option<Self> {
+        let mut source_geometry_fingerprint_sha256 = String::new();
+        source_geometry_fingerprint_sha256
+            .try_reserve_exact(self.source_geometry_fingerprint_sha256.len())
+            .ok()?;
+        source_geometry_fingerprint_sha256.push_str(&self.source_geometry_fingerprint_sha256);
+        Some(Self {
+            project_instance_id: self.project_instance_id,
+            project_id: self.project_id,
+            source_revision: self.source_revision,
+            source_geometry_fingerprint_sha256,
+            pose_generation: self.pose_generation,
+            request_generation_id: self.request_generation_id,
+            paper_thickness_bits: self.paper_thickness_bits,
+            approximate_blocking_observation: self.approximate_blocking_observation,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_exact_parts(
         project_instance_id: ProjectId,

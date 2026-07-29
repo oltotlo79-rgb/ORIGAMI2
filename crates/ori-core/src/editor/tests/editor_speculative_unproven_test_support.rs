@@ -107,15 +107,17 @@ pub(super) fn token_for_binding_target(
 ) -> crate::SpeculativeUnprovenFoldTokenV1 {
     crate::stacked_fold::issue_speculative_unproven_fold_token_for_test_v1(
         binding,
-        fixture.editor.runtime_instance_anchor.clone(),
-        fixture.editor.current_applied_pose(),
-        target_revision,
-        target_pattern,
-        target_paper,
-        &fixture.timeline,
-        &ProjectLayerDocumentV1::default(),
-        fixture.editor.beginner_design_profile(),
-        target_pose,
+        crate::stacked_fold::SpeculativeUnprovenFoldAppliedTargetInputV1 {
+            editor_instance_anchor: fixture.editor.runtime_instance_anchor.clone(),
+            source_applied_pose: fixture.editor.current_applied_pose(),
+            target_revision,
+            pattern: target_pattern,
+            paper: target_paper,
+            instruction_timeline: &fixture.timeline,
+            project_layers: &ProjectLayerDocumentV1::default(),
+            beginner_design_profile: fixture.editor.beginner_design_profile(),
+            applied_pose: target_pose,
+        },
     )
     .expect("valid target-bound speculative token")
 }
@@ -124,6 +126,13 @@ pub(super) fn apply_marked(
     fixture: &mut SpeculativeFixture,
     binding: SpeculativeUnprovenFoldBindingV1,
 ) {
+    let _ticket = apply_marked_with_ticket(fixture, binding);
+}
+
+pub(super) fn apply_marked_with_ticket(
+    fixture: &mut SpeculativeFixture,
+    binding: SpeculativeUnprovenFoldBindingV1,
+) -> SpeculativeUnprovenFoldResolutionTicketV1 {
     let expected_revision = fixture.editor.revision();
     let target_revision = expected_revision
         .checked_add(1)
@@ -136,10 +145,17 @@ pub(super) fn apply_marked(
         &fixture.paper,
         &fixture.applied_pose,
     );
-    fixture
+    let (_result, ticket) = fixture
         .editor
-        .execute_stacked_fold_document_with_unproven_mark_v1(token)
+        .execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1(token)
         .expect("atomic speculative Apply");
+    ticket
+}
+
+pub(super) fn proof_for_ticket(
+    ticket: SpeculativeUnprovenFoldResolutionTicketV1,
+) -> SpeculativeUnprovenFoldCertifiedProofV1 {
+    super::super::speculative_unproven::bind_resolution_ticket_for_test_v1(ticket)
 }
 
 pub(super) fn reopen(

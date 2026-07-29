@@ -670,3 +670,189 @@ fn oversized_exact_source_fails_during_the_single_capture() {
     ));
     assert_eq!(source.calls.get(), 383);
 }
+
+fn canonical_face_pair_array_v1(first: FaceId, second: FaceId) -> [FaceId; 2] {
+    let (first, second) = initial_layer_canonical_pair_v1(first, second);
+    [first, second]
+}
+
+fn three_stationary_transport_authority_v1() -> (
+    [(EdgeId, [FaceId; 2]); 3],
+    [PersistentFlatHingeAdmissionV1; 3],
+    [NonFlatFacePairOrderStructuralV1; 3],
+) {
+    let pairs = [
+        canonical_face_pair_array_v1(FaceId::new(), FaceId::new()),
+        canonical_face_pair_array_v1(FaceId::new(), FaceId::new()),
+        canonical_face_pair_array_v1(FaceId::new(), FaceId::new()),
+    ];
+    let expected = [
+        (EdgeId::new(), pairs[0]),
+        (EdgeId::new(), pairs[1]),
+        (EdgeId::new(), pairs[2]),
+    ];
+    let persistent = expected.map(|(hinge, pair)| PersistentFlatHingeAdmissionV1 {
+        first_face: pair[0],
+        second_face: pair[1],
+        hinge,
+    });
+    let directed = pairs.map(|pair| NonFlatFacePairOrderStructuralV1 {
+        lower_face: pair[0],
+        upper_face: pair[1],
+    });
+    (expected, persistent, directed)
+}
+
+fn bind_three_stationary_authorities_v1(
+    persistent: &[PersistentFlatHingeAdmissionV1],
+    directed: &[NonFlatFacePairOrderStructuralV1],
+    expected: &[(EdgeId, [FaceId; 2])],
+) -> Result<
+    Option<Vec<StationaryFlatStackTransportBindingV1>>,
+    StationaryFlatStackTransportBindingErrorV1,
+> {
+    stationary_flat_stack_transport_bindings_from_authority_with_control_v1(
+        persistent,
+        directed,
+        expected,
+        3,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+#[test]
+fn three_stationary_transport_requires_exact_missing_and_extra_authority_coverage() {
+    let (expected, persistent, directed) = three_stationary_transport_authority_v1();
+    let bindings = bind_three_stationary_authorities_v1(&persistent, &directed, &expected)
+        .expect("bounded authority matching")
+        .expect("complete three-stationary authority");
+    assert_eq!(bindings.len(), 3);
+
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&persistent[..2], &directed, &expected),
+        Ok(None),
+        "a missing retained hinge must fail closed"
+    );
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&persistent, &directed[..2], &expected),
+        Ok(None),
+        "a missing directed order must fail closed"
+    );
+
+    let mut extra_persistent = persistent.to_vec();
+    extra_persistent.push(PersistentFlatHingeAdmissionV1 {
+        first_face: FaceId::new(),
+        second_face: FaceId::new(),
+        hinge: EdgeId::new(),
+    });
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&extra_persistent, &directed, &expected),
+        Ok(None),
+        "an unbound retained hinge must fail closed"
+    );
+    let mut extra_directed = directed.to_vec();
+    extra_directed.push(NonFlatFacePairOrderStructuralV1 {
+        lower_face: FaceId::new(),
+        upper_face: FaceId::new(),
+    });
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&persistent, &extra_directed, &expected),
+        Ok(None),
+        "an unbound directed order must fail closed"
+    );
+}
+
+#[test]
+fn three_stationary_transport_rejects_duplicate_and_foreign_authorities() {
+    let (expected, persistent, directed) = three_stationary_transport_authority_v1();
+
+    let mut duplicate_expected = expected;
+    duplicate_expected[1] = duplicate_expected[0];
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&persistent, &directed, &duplicate_expected),
+        Ok(None)
+    );
+    let mut duplicate_persistent = persistent;
+    duplicate_persistent[1] = duplicate_persistent[0];
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&duplicate_persistent, &directed, &expected),
+        Ok(None)
+    );
+    let mut duplicate_directed = directed;
+    duplicate_directed[1] = duplicate_directed[0];
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&persistent, &duplicate_directed, &expected),
+        Ok(None)
+    );
+
+    let mut foreign_persistent = persistent;
+    foreign_persistent[1].hinge = EdgeId::new();
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&foreign_persistent, &directed, &expected),
+        Ok(None)
+    );
+    let mut foreign_directed = directed;
+    foreign_directed[1] = NonFlatFacePairOrderStructuralV1 {
+        lower_face: FaceId::new(),
+        upper_face: FaceId::new(),
+    };
+    assert_eq!(
+        bind_three_stationary_authorities_v1(&persistent, &foreign_directed, &expected),
+        Ok(None)
+    );
+}
+
+#[test]
+fn three_stationary_transport_preserves_reversed_directional_authority() {
+    let (expected, persistent, mut directed) = three_stationary_transport_authority_v1();
+    directed[1] = NonFlatFacePairOrderStructuralV1 {
+        lower_face: expected[1].1[1],
+        upper_face: expected[1].1[0],
+    };
+    let bindings = bind_three_stationary_authorities_v1(&persistent, &directed, &expected)
+        .expect("bounded authority matching")
+        .expect("reversed source direction remains authenticated");
+    assert_eq!(bindings[1].pair, expected[1].1);
+    assert_eq!(bindings[1].lower_face, expected[1].1[1]);
+    assert_eq!(bindings[1].upper_face, expected[1].1[0]);
+}
+
+#[test]
+fn three_stationary_transport_preserves_resource_and_stop_causes() {
+    let (expected, persistent, directed) = three_stationary_transport_authority_v1();
+    assert_eq!(
+        stationary_flat_stack_transport_bindings_from_authority_with_control_v1(
+            &persistent,
+            &directed,
+            &expected,
+            2,
+            &CooperativeOperationControlV1::unbounded(),
+        ),
+        Err(StationaryFlatStackTransportBindingErrorV1::ResourceLimit)
+    );
+
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        stationary_flat_stack_transport_bindings_from_authority_with_control_v1(
+            &persistent,
+            &directed,
+            &expected,
+            3,
+            &CooperativeOperationControlV1::new(
+                Some(&cancelled),
+                Instant::now() + Duration::from_secs(1),
+            ),
+        ),
+        Err(StationaryFlatStackTransportBindingErrorV1::Cancelled)
+    );
+    assert_eq!(
+        stationary_flat_stack_transport_bindings_from_authority_with_control_v1(
+            &persistent,
+            &directed,
+            &expected,
+            3,
+            &CooperativeOperationControlV1::new(None, Instant::now()),
+        ),
+        Err(StationaryFlatStackTransportBindingErrorV1::DeadlineExceeded)
+    );
+}

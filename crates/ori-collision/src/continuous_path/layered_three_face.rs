@@ -10,10 +10,12 @@ use std::{
 };
 
 use ori_domain::{EdgeId, FaceId};
+#[cfg(test)]
+use ori_kinematics::OutwardIntervalV1;
 use ori_kinematics::{
     CanonicalHingeAngles, MaterialTreeDyadicFaceIntervalRegistryV1,
     MaterialTreeDyadicIntervalErrorV1, MaterialTreeDyadicIntervalLimitsV1,
-    MaterialTreeKinematicsModel, MaterialTreePose, OutwardIntervalV1,
+    MaterialTreeKinematicsModel, MaterialTreePose,
 };
 use thiserror::Error;
 
@@ -26,7 +28,21 @@ use super::{
     NativeStackedFoldInitialSampleLayerAdmissionV1, StackedFoldInitialLayerOrderSourceV1,
     initial_sample_layer_admission_has_issuer_v1,
     initial_sample_layer_admission_matches_snapshot_v1,
+    layered_chain_common::{
+        LayeredChainIntervalCheckpointPhaseV1, LayeredChainIntervalErrorV1,
+        bounded_face_boundaries_v1, canonical_pair_v1,
+        layered_continuous_resource_limits_within_hard_caps_v1,
+        layered_leaf_count_v1 as leaf_count_v1, validate_linear_chain_hinges_v1,
+        validate_single_moving_flat_chain_schedule_v1,
+        verify_layered_chain_nonadjacent_registry_gaps_with_checkpoint_v1,
+    },
     retain_initial_sample_layer_admission_issuer_v1,
+};
+
+#[cfg(test)]
+pub(super) use super::layered_chain_common::{
+    LAYERED_CONTINUOUS_STATIC_LIMIT_HARD_CAPS_V1, MAX_LAYERED_CONTINUOUS_INTERVAL_VERTICES_V1,
+    MAX_LAYERED_CONTINUOUS_INTERVAL_WORK_V1, MAX_LAYERED_CONTINUOUS_TOTAL_INTERVAL_WORK_V1,
 };
 
 pub const LAYERED_THREE_FACE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
@@ -36,39 +52,6 @@ pub const LAYERED_THREE_FACE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
 /// limits may only narrow these values.
 const MAX_LAYERED_THREE_FACE_INTERVAL_FACES_V1: usize = 3;
 const MAX_LAYERED_THREE_FACE_INTERVAL_HINGES_V1: usize = 2;
-pub(super) const MAX_LAYERED_CONTINUOUS_INTERVAL_VERTICES_V1: usize = 64;
-pub(super) const MAX_LAYERED_CONTINUOUS_INTERVAL_WORK_V1: usize = 100_000;
-pub(super) const MAX_LAYERED_CONTINUOUS_TOTAL_INTERVAL_WORK_V1: usize = 10_000;
-pub(super) const LAYERED_CONTINUOUS_STATIC_LIMIT_HARD_CAPS_V1: StaticCollisionLimits =
-    StaticCollisionLimits {
-        max_faces: 10_001,
-        max_unordered_face_pairs: crate::NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1,
-        max_boundary_vertices_per_face: 4_096,
-        max_total_boundary_vertices: 50_000,
-        max_triangles_per_face: 4_094,
-        max_total_triangles: 50_000,
-        max_triangulation_work_per_face: 100_000_000,
-        max_total_triangulation_work: 500_000_000,
-        max_registry_authentication_work: 10_000_000,
-        max_triangle_pairs_per_face_pair: 250_000,
-        max_total_triangle_pairs: 1_000_000,
-        max_boundary_relation_work_per_face_pair: 10_000_000,
-        max_total_boundary_relation_work: 40_000_000,
-        max_rational_input_bits: 4_096,
-        max_total_rational_input_storage_bits: 536_870_912,
-        max_total_rational_retained_clone_bits: 4_294_967_296,
-        max_rational_operations: 1_000_000_000,
-        max_rational_intermediate_bits: 32_768,
-        max_rational_gcd_fallback_calls: 1_000_000,
-        max_rational_gcd_fallback_input_bits: 8_589_934_592,
-        max_rational_allocations: 1_000_000,
-        max_rational_allocation_bits: 65_536,
-        max_total_rational_allocation_bits: 1_073_741_824,
-        max_rational_output_bits: 32_768,
-        max_total_rational_output_bits: 1_073_741_824,
-        max_shared_hinge_boundary_diagnostics: 10_000,
-        max_shared_hinge_solid_diagnostics: 120,
-    };
 
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -543,76 +526,50 @@ fn matches_three_face_schedule_v1(
     {
         return None;
     }
-    let mut moving = None;
-    let mut stationary = None;
-    for (source, target) in source_pose.hinge_angles().iter().zip(target.as_slice()) {
-        if source.edge() != target.edge() {
-            return None;
-        }
-        let source_bits = source.angle_degrees().to_bits();
-        let target_bits = target.angle_degrees().to_bits();
-        if source_bits == 0.0_f64.to_bits()
-            && target.angle_degrees().is_finite()
-            && target.angle_degrees() > 0.0
-            && target.angle_degrees() < 180.0
-        {
-            moving = Some(source.edge());
-        } else if source_bits == 180.0_f64.to_bits() && target_bits == 180.0_f64.to_bits() {
-            stationary = Some(source.edge());
-        } else {
-            return None;
-        }
-    }
-    let (moving_hinge, stationary_hinge) = moving.zip(stationary)?;
-    let moving_tree_hinge = model
-        .hinges()
+    let direct_hinges = [&model.hinges()[0], &model.hinges()[1]].map(|hinge| {
+        (
+            hinge.edge(),
+            canonical_pair_v1(hinge.left_face(), hinge.right_face()),
+        )
+    });
+    let partition = validate_linear_chain_hinges_v1(
+        model.face_ids(),
+        &direct_hinges,
+        MAX_LAYERED_THREE_FACE_INTERVAL_FACES_V1,
+        3,
+    )
+    .ok()??;
+    let source = [
+        &source_pose.hinge_angles()[0],
+        &source_pose.hinge_angles()[1],
+    ]
+    .map(|angle| (angle.edge(), angle.angle_degrees()));
+    let target = [&target.as_slice()[0], &target.as_slice()[1]]
+        .map(|angle| (angle.edge(), angle.angle_degrees()));
+    let schedule = validate_single_moving_flat_chain_schedule_v1(
+        &direct_hinges,
+        &source,
+        &target,
+        MAX_LAYERED_THREE_FACE_INTERVAL_HINGES_V1,
+        MAX_LAYERED_THREE_FACE_INTERVAL_HINGES_V1,
+    )
+    .ok()??;
+    if schedule
         .iter()
-        .find(|hinge| hinge.edge() == moving_hinge)?;
-    let stationary_tree_hinge = model
-        .hinges()
-        .iter()
-        .find(|hinge| hinge.edge() == stationary_hinge)?;
-    let moving_pair = canonical_pair_v1(
-        moving_tree_hinge.left_face(),
-        moving_tree_hinge.right_face(),
-    );
-    let stationary_pair = canonical_pair_v1(
-        stationary_tree_hinge.left_face(),
-        stationary_tree_hinge.right_face(),
-    );
-    if moving_pair == stationary_pair {
-        return None;
-    }
-    let all_faces = model.face_ids();
-    let shared = moving_pair
-        .into_iter()
-        .find(|face| stationary_pair.contains(face))?;
-    let moving_outer = moving_pair.into_iter().find(|face| *face != shared)?;
-    let stationary_outer = stationary_pair.into_iter().find(|face| *face != shared)?;
-    if !all_faces.contains(&shared)
-        || !all_faces.contains(&moving_outer)
-        || !all_faces.contains(&stationary_outer)
-        || moving_outer == stationary_outer
+        .map(|hinge| hinge.pair)
+        .ne(partition.direct_pairs.iter().copied())
+        || partition.nonadjacent_pairs.len() != 1
     {
         return None;
     }
-    let nonadjacent_pair = canonical_pair_v1(moving_outer, stationary_outer);
-    let mut actual = [stationary_pair, moving_pair, nonadjacent_pair];
-    actual.sort_unstable_by_key(|pair| (pair[0].canonical_bytes(), pair[1].canonical_bytes()));
-    let expected = [
-        canonical_pair_v1(all_faces[0], all_faces[1]),
-        canonical_pair_v1(all_faces[0], all_faces[2]),
-        canonical_pair_v1(all_faces[1], all_faces[2]),
-    ];
-    if actual != expected {
-        return None;
-    }
+    let moving = schedule.iter().find(|hinge| hinge.moving)?;
+    let stationary = schedule.iter().find(|hinge| !hinge.moving)?;
     Some(ThreeFacePairPartitionV1 {
-        moving_hinge,
-        stationary_hinge,
-        stationary_pair,
-        moving_pair,
-        nonadjacent_pair,
+        moving_hinge: moving.edge,
+        stationary_hinge: stationary.edge,
+        stationary_pair: stationary.pair,
+        moving_pair: moving.pair,
+        nonadjacent_pair: partition.nonadjacent_pairs[0],
     })
 }
 
@@ -757,140 +714,6 @@ fn boundary_checkpoint_v1(
     })
 }
 
-fn bounded_face_boundaries_v1(model: &MaterialTreeKinematicsModel, maximum: usize) -> bool {
-    model.face_ids().iter().all(|face| {
-        model
-            .face_boundary(*face)
-            .is_some_and(|boundary| boundary.vertices().len() <= maximum)
-    })
-}
-
-pub(super) fn layered_continuous_resource_limits_within_hard_caps_v1(
-    interval: MaterialTreeDyadicIntervalLimitsV1,
-    required_faces: usize,
-    required_hinges: usize,
-    static_collision: StaticCollisionLimits,
-) -> bool {
-    if interval.max_faces != required_faces
-        || interval.max_hinges != required_hinges
-        || interval.max_vertices > MAX_LAYERED_CONTINUOUS_INTERVAL_VERTICES_V1
-        || interval.max_interval_work > MAX_LAYERED_CONTINUOUS_INTERVAL_WORK_V1
-        || interval.max_total_interval_work > MAX_LAYERED_CONTINUOUS_TOTAL_INTERVAL_WORK_V1
-    {
-        return false;
-    }
-    let hard = LAYERED_CONTINUOUS_STATIC_LIMIT_HARD_CAPS_V1;
-    [
-        (static_collision.max_faces, hard.max_faces),
-        (
-            static_collision.max_unordered_face_pairs,
-            hard.max_unordered_face_pairs,
-        ),
-        (
-            static_collision.max_boundary_vertices_per_face,
-            hard.max_boundary_vertices_per_face,
-        ),
-        (
-            static_collision.max_total_boundary_vertices,
-            hard.max_total_boundary_vertices,
-        ),
-        (
-            static_collision.max_triangles_per_face,
-            hard.max_triangles_per_face,
-        ),
-        (
-            static_collision.max_total_triangles,
-            hard.max_total_triangles,
-        ),
-        (
-            static_collision.max_triangulation_work_per_face,
-            hard.max_triangulation_work_per_face,
-        ),
-        (
-            static_collision.max_total_triangulation_work,
-            hard.max_total_triangulation_work,
-        ),
-        (
-            static_collision.max_registry_authentication_work,
-            hard.max_registry_authentication_work,
-        ),
-        (
-            static_collision.max_triangle_pairs_per_face_pair,
-            hard.max_triangle_pairs_per_face_pair,
-        ),
-        (
-            static_collision.max_total_triangle_pairs,
-            hard.max_total_triangle_pairs,
-        ),
-        (
-            static_collision.max_boundary_relation_work_per_face_pair,
-            hard.max_boundary_relation_work_per_face_pair,
-        ),
-        (
-            static_collision.max_total_boundary_relation_work,
-            hard.max_total_boundary_relation_work,
-        ),
-        (
-            static_collision.max_rational_input_bits,
-            hard.max_rational_input_bits,
-        ),
-        (
-            static_collision.max_total_rational_input_storage_bits,
-            hard.max_total_rational_input_storage_bits,
-        ),
-        (
-            static_collision.max_total_rational_retained_clone_bits,
-            hard.max_total_rational_retained_clone_bits,
-        ),
-        (
-            static_collision.max_rational_operations,
-            hard.max_rational_operations,
-        ),
-        (
-            static_collision.max_rational_intermediate_bits,
-            hard.max_rational_intermediate_bits,
-        ),
-        (
-            static_collision.max_rational_gcd_fallback_calls,
-            hard.max_rational_gcd_fallback_calls,
-        ),
-        (
-            static_collision.max_rational_gcd_fallback_input_bits,
-            hard.max_rational_gcd_fallback_input_bits,
-        ),
-        (
-            static_collision.max_rational_allocations,
-            hard.max_rational_allocations,
-        ),
-        (
-            static_collision.max_rational_allocation_bits,
-            hard.max_rational_allocation_bits,
-        ),
-        (
-            static_collision.max_total_rational_allocation_bits,
-            hard.max_total_rational_allocation_bits,
-        ),
-        (
-            static_collision.max_rational_output_bits,
-            hard.max_rational_output_bits,
-        ),
-        (
-            static_collision.max_total_rational_output_bits,
-            hard.max_total_rational_output_bits,
-        ),
-        (
-            static_collision.max_shared_hinge_boundary_diagnostics,
-            hard.max_shared_hinge_boundary_diagnostics,
-        ),
-        (
-            static_collision.max_shared_hinge_solid_diagnostics,
-            hard.max_shared_hinge_solid_diagnostics,
-        ),
-    ]
-    .into_iter()
-    .all(|(configured, maximum)| configured <= maximum)
-}
-
 fn point_is_not_on_axis_v1(
     point: ori_kinematics::Point3,
     endpoints: [ori_kinematics::Point3; 2],
@@ -934,77 +757,71 @@ fn strictly_separated_registry_pair_with_control_v1(
     pair: [FaceId; 2],
     control: &CooperativeOperationControlV1<'_>,
 ) -> Result<bool, LayeredThreeFaceContinuousErrorV1> {
-    checkpoint_v1(control)?;
-    let (Some(first), Some(second)) = (
-        registry.face_vertices(pair[0]),
-        registry.face_vertices(pair[1]),
-    ) else {
-        return Ok(false);
-    };
-    for axis in 0..3 {
-        checkpoint_v1(control)?;
-        #[cfg(test)]
-        run_layered_three_face_test_checkpoint_hook_v1(
-            LayeredThreeFaceTestCheckpointPhaseV1::NonadjacentAxis,
-        );
-        checkpoint_v1(control)?;
-        if strict_axis_gap_with_control_v1(first, second, axis, control)? {
-            return Ok(true);
-        }
+    match verify_layered_chain_nonadjacent_registry_gaps_with_checkpoint_v1(
+        registry,
+        &[pair],
+        1,
+        1,
+        |phase| {
+            checkpoint_v1(control).map_err(map_three_face_checkpoint_to_common_v1)?;
+            match phase {
+                LayeredChainIntervalCheckpointPhaseV1::Axis => {
+                    #[cfg(test)]
+                    run_layered_three_face_test_checkpoint_hook_v1(
+                        LayeredThreeFaceTestCheckpointPhaseV1::NonadjacentAxis,
+                    );
+                }
+                LayeredChainIntervalCheckpointPhaseV1::Vertex => {
+                    #[cfg(test)]
+                    run_layered_three_face_test_checkpoint_hook_v1(
+                        LayeredThreeFaceTestCheckpointPhaseV1::NonadjacentVertex,
+                    );
+                }
+                LayeredChainIntervalCheckpointPhaseV1::Pair
+                | LayeredChainIntervalCheckpointPhaseV1::Final => {}
+            }
+            checkpoint_v1(control).map_err(map_three_face_checkpoint_to_common_v1)
+        },
+    ) {
+        Ok(()) => Ok(true),
+        Err(
+            LayeredChainIntervalErrorV1::IntervalUnavailable
+            | LayeredChainIntervalErrorV1::IntervalOverlap,
+        ) => Ok(false),
+        Err(error) => Err(map_layered_chain_interval_error_v1(error)),
     }
-    Ok(false)
 }
 
-fn strict_axis_gap_with_control_v1(
-    first: &[(ori_domain::VertexId, [OutwardIntervalV1; 3])],
-    second: &[(ori_domain::VertexId, [OutwardIntervalV1; 3])],
-    axis: usize,
-    control: &CooperativeOperationControlV1<'_>,
-) -> Result<bool, LayeredThreeFaceContinuousErrorV1> {
-    checkpoint_v1(control)?;
-    #[cfg(test)]
-    run_layered_three_face_test_checkpoint_hook_v1(
-        LayeredThreeFaceTestCheckpointPhaseV1::NonadjacentVertex,
-    );
-    checkpoint_v1(control)?;
-    let Some((_, first_point)) = first.first() else {
-        return Ok(false);
-    };
-    let mut first_lower = first_point[axis].lower();
-    let mut first_upper = first_point[axis].upper();
-    for (_, point) in &first[1..] {
-        checkpoint_v1(control)?;
-        #[cfg(test)]
-        run_layered_three_face_test_checkpoint_hook_v1(
-            LayeredThreeFaceTestCheckpointPhaseV1::NonadjacentVertex,
-        );
-        checkpoint_v1(control)?;
-        first_lower = first_lower.min(point[axis].lower());
-        first_upper = first_upper.max(point[axis].upper());
+fn map_three_face_checkpoint_to_common_v1(
+    error: LayeredThreeFaceContinuousErrorV1,
+) -> LayeredChainIntervalErrorV1 {
+    match error {
+        LayeredThreeFaceContinuousErrorV1::Cancelled => LayeredChainIntervalErrorV1::Cancelled,
+        LayeredThreeFaceContinuousErrorV1::DeadlineExceeded => {
+            LayeredChainIntervalErrorV1::DeadlineExceeded
+        }
+        _ => LayeredChainIntervalErrorV1::ResourceLimit,
     }
-    checkpoint_v1(control)?;
-    #[cfg(test)]
-    run_layered_three_face_test_checkpoint_hook_v1(
-        LayeredThreeFaceTestCheckpointPhaseV1::NonadjacentVertex,
-    );
-    checkpoint_v1(control)?;
-    let Some((_, second_point)) = second.first() else {
-        return Ok(false);
-    };
-    let mut second_lower = second_point[axis].lower();
-    let mut second_upper = second_point[axis].upper();
-    for (_, point) in &second[1..] {
-        checkpoint_v1(control)?;
-        #[cfg(test)]
-        run_layered_three_face_test_checkpoint_hook_v1(
-            LayeredThreeFaceTestCheckpointPhaseV1::NonadjacentVertex,
-        );
-        checkpoint_v1(control)?;
-        second_lower = second_lower.min(point[axis].lower());
-        second_upper = second_upper.max(point[axis].upper());
+}
+
+fn map_layered_chain_interval_error_v1(
+    error: LayeredChainIntervalErrorV1,
+) -> LayeredThreeFaceContinuousErrorV1 {
+    match error {
+        LayeredChainIntervalErrorV1::ResourceLimit => {
+            LayeredThreeFaceContinuousErrorV1::ResourceLimit
+        }
+        LayeredChainIntervalErrorV1::Cancelled => LayeredThreeFaceContinuousErrorV1::Cancelled,
+        LayeredChainIntervalErrorV1::DeadlineExceeded => {
+            LayeredThreeFaceContinuousErrorV1::DeadlineExceeded
+        }
+        LayeredChainIntervalErrorV1::IntervalUnavailable => {
+            LayeredThreeFaceContinuousErrorV1::PairPartitionUnavailable
+        }
+        LayeredChainIntervalErrorV1::IntervalOverlap => {
+            LayeredThreeFaceContinuousErrorV1::NonadjacentIntervalOverlap
+        }
     }
-    checkpoint_v1(control)?;
-    Ok(first_upper < second_lower || second_upper < first_lower)
 }
 
 #[cfg(test)]
@@ -1042,20 +859,6 @@ fn strict_axis_gap_v1(
         return false;
     };
     first_upper < second_lower || second_upper < first_lower
-}
-
-fn canonical_pair_v1(first: FaceId, second: FaceId) -> [FaceId; 2] {
-    if first.canonical_bytes() < second.canonical_bytes() {
-        [first, second]
-    } else {
-        [second, first]
-    }
-}
-
-fn leaf_count_v1(depth: u8, maximum: usize) -> Option<usize> {
-    let count = 1_usize.checked_shl(u32::from(depth))?;
-    (depth <= 52 && count <= maximum && maximum <= super::MAX_DYADIC_FACE_TRANSFORM_LEAVES_V1)
-        .then_some(count)
 }
 
 fn checkpoint_v1(

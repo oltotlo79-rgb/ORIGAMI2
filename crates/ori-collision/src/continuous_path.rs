@@ -36,6 +36,7 @@ use crate::{
 };
 
 mod initial_sample_layer_admission;
+mod layered_chain_common;
 mod layered_four_face_chain;
 mod layered_three_face;
 mod multi_hinge_union;

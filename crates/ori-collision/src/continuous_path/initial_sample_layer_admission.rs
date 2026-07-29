@@ -221,6 +221,13 @@ pub(super) struct StationaryFlatStackTransportBindingV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StationaryFlatStackTransportBindingErrorV1 {
+    ResourceLimit,
+    Cancelled,
+    DeadlineExceeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InitialLayerPairAdmissionKindV1 {
     UnorderedNonblocking,
     InitialOnlyFlatStack,
@@ -410,51 +417,167 @@ pub(super) fn stationary_flat_stack_transport_bindings_v1<T>(
     source_pose: &MaterialTreePose,
     expected: &[(EdgeId, [FaceId; 2]); 2],
 ) -> Option<[StationaryFlatStackTransportBindingV1; 2]> {
+    stationary_flat_stack_transport_bindings_bounded_v1(
+        admission,
+        model,
+        source_pose,
+        expected,
+        2,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+    .ok()
+    .flatten()?
+    .try_into()
+    .ok()
+}
+
+/// Bounded generic form used by wider linear-chain certificates.
+///
+/// The retained authority must be an exact cover: every expected stationary
+/// hinge has exactly one authenticated flat hinge and exactly one directed
+/// order, and no retained hinge or order may remain unbound.
+pub(super) fn stationary_flat_stack_transport_bindings_bounded_v1<T>(
+    admission: &NativeStackedFoldInitialSampleLayerAdmissionV1<T>,
+    model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+    expected: &[(EdgeId, [FaceId; 2])],
+    maximum_bindings: usize,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<
+    Option<Vec<StationaryFlatStackTransportBindingV1>>,
+    StationaryFlatStackTransportBindingErrorV1,
+> {
+    stationary_flat_stack_transport_binding_checkpoint_v1(control)?;
+    if expected.is_empty()
+        || expected.len() > maximum_bindings
+        || maximum_bindings > NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1
+    {
+        return Err(StationaryFlatStackTransportBindingErrorV1::ResourceLimit);
+    }
     if admission.proof.model != *model
         || !model.owns_pose(source_pose)
         || !admission.proof.pose.same_instance(source_pose)
-        || admission.proof.persistent_flat_hinges.len() != 2
-        || admission.proof.directed_orders.len() != 2
     {
-        return None;
+        return Ok(None);
     }
-    let bind = |(hinge, pair): (EdgeId, [FaceId; 2])| {
+    stationary_flat_stack_transport_bindings_from_authority_with_control_v1(
+        &admission.proof.persistent_flat_hinges,
+        &admission.proof.directed_orders,
+        expected,
+        maximum_bindings,
+        control,
+    )
+}
+
+fn stationary_flat_stack_transport_bindings_from_authority_with_control_v1(
+    persistent_flat_hinges: &[PersistentFlatHingeAdmissionV1],
+    directed_orders: &[NonFlatFacePairOrderStructuralV1],
+    expected: &[(EdgeId, [FaceId; 2])],
+    maximum_bindings: usize,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<
+    Option<Vec<StationaryFlatStackTransportBindingV1>>,
+    StationaryFlatStackTransportBindingErrorV1,
+> {
+    if expected.is_empty()
+        || expected.len() > maximum_bindings
+        || maximum_bindings > NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1
+    {
+        return Err(StationaryFlatStackTransportBindingErrorV1::ResourceLimit);
+    }
+    if persistent_flat_hinges.len() != expected.len() || directed_orders.len() != expected.len() {
+        return Ok(None);
+    }
+
+    let mut bindings: Vec<StationaryFlatStackTransportBindingV1> = Vec::new();
+    bindings
+        .try_reserve_exact(expected.len())
+        .map_err(|_| StationaryFlatStackTransportBindingErrorV1::ResourceLimit)?;
+    for &(hinge, pair) in expected {
+        stationary_flat_stack_transport_binding_checkpoint_v1(control)?;
         let (first_face, second_face) = initial_layer_canonical_pair_v1(pair[0], pair[1]);
-        let authenticated_hinge = admission
-            .proof
-            .persistent_flat_hinges
-            .iter()
-            .find(|entry| {
-                entry.first_face == first_face
-                    && entry.second_face == second_face
-                    && entry.hinge == hinge
-            })?;
-        let directed = admission.proof.directed_orders.iter().find(|order| {
+        if first_face == second_face
+            || bindings
+                .iter()
+                .any(|binding| binding.hinge == hinge || binding.pair == [first_face, second_face])
+        {
+            return Ok(None);
+        }
+        let mut authenticated_hinges = persistent_flat_hinges.iter().filter(|entry| {
+            entry.first_face == first_face
+                && entry.second_face == second_face
+                && entry.hinge == hinge
+        });
+        let Some(authenticated_hinge) = authenticated_hinges.next() else {
+            return Ok(None);
+        };
+        if authenticated_hinges.next().is_some() {
+            return Ok(None);
+        }
+        let mut directed_matches = directed_orders.iter().filter(|order| {
             initial_layer_canonical_pair_v1(order.lower_face, order.upper_face)
                 == (
                     authenticated_hinge.first_face,
                     authenticated_hinge.second_face,
                 )
-        })?;
-        (directed.lower_face != directed.upper_face).then_some(
-            StationaryFlatStackTransportBindingV1 {
-                hinge,
-                pair: [first_face, second_face],
-                lower_face: directed.lower_face,
-                upper_face: directed.upper_face,
-            },
-        )
-    };
-    let bindings = [bind(expected[0])?, bind(expected[1])?];
-    (bindings[0].pair != bindings[1].pair
-        && bindings[0].hinge != bindings[1].hinge
-        && admission.proof.persistent_flat_hinges.iter().all(|entry| {
-            bindings.iter().any(|binding| {
-                binding.hinge == entry.hinge
-                    && binding.pair == [entry.first_face, entry.second_face]
+        });
+        let Some(directed) = directed_matches.next() else {
+            return Ok(None);
+        };
+        if directed_matches.next().is_some()
+            || directed.lower_face == directed.upper_face
+            || ![first_face, second_face].contains(&directed.lower_face)
+            || ![first_face, second_face].contains(&directed.upper_face)
+        {
+            return Ok(None);
+        }
+        bindings.push(StationaryFlatStackTransportBindingV1 {
+            hinge,
+            pair: [first_face, second_face],
+            lower_face: directed.lower_face,
+            upper_face: directed.upper_face,
+        });
+    }
+
+    stationary_flat_stack_transport_binding_checkpoint_v1(control)?;
+    if !persistent_flat_hinges.iter().all(|entry| {
+        entry.first_face != entry.second_face
+            && initial_layer_canonical_pair_v1(entry.first_face, entry.second_face)
+                == (entry.first_face, entry.second_face)
+            && bindings
+                .iter()
+                .filter(|binding| {
+                    binding.hinge == entry.hinge
+                        && binding.pair == [entry.first_face, entry.second_face]
+                })
+                .count()
+                == 1
+    }) || !directed_orders.iter().all(|order| {
+        bindings
+            .iter()
+            .filter(|binding| {
+                binding.lower_face == order.lower_face && binding.upper_face == order.upper_face
             })
-        }))
-    .then_some(bindings)
+            .count()
+            == 1
+    }) {
+        return Ok(None);
+    }
+    stationary_flat_stack_transport_binding_checkpoint_v1(control)?;
+    Ok(Some(bindings))
+}
+
+fn stationary_flat_stack_transport_binding_checkpoint_v1(
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<(), StationaryFlatStackTransportBindingErrorV1> {
+    control.checkpoint().map_err(|stop| match stop {
+        CooperativeOperationStopV1::Cancelled => {
+            StationaryFlatStackTransportBindingErrorV1::Cancelled
+        }
+        CooperativeOperationStopV1::DeadlineExceeded => {
+            StationaryFlatStackTransportBindingErrorV1::DeadlineExceeded
+        }
+    })
 }
 
 impl<T> NativeStackedFoldInitialSampleLayerAdmissionV1<T> {

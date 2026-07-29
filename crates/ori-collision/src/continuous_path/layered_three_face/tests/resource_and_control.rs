@@ -42,6 +42,57 @@ fn three_face_leaf_count_cannot_exceed_the_global_dyadic_hard_cap() {
 }
 
 #[test]
+fn missing_three_face_registry_pair_yields_to_typed_stop_only_when_stopped() {
+    let LayeredThreeFaceFixtureV1 {
+        model,
+        source_pose,
+        target_angles,
+        limits,
+        ..
+    } = layered_three_face_fixture_v1();
+    let registry = model
+        .prepare_dyadic_face_vertex_intervals_v1(
+            &source_pose,
+            &target_angles,
+            limits.dyadic_depth,
+            0,
+            limits.interval_limits,
+        )
+        .expect("bounded three-face registry");
+    let missing_pair = [FaceId::new(), FaceId::new()];
+    assert_eq!(
+        super::super::strictly_separated_registry_pair_with_control_v1(
+            &registry,
+            missing_pair,
+            &CooperativeOperationControlV1::unbounded(),
+        ),
+        Ok(false),
+        "an unstopped missing registry pair remains unavailable"
+    );
+
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        super::super::strictly_separated_registry_pair_with_control_v1(
+            &registry,
+            missing_pair,
+            &CooperativeOperationControlV1::new(
+                Some(&cancelled),
+                Instant::now() + Duration::from_secs(1),
+            ),
+        ),
+        Err(LayeredThreeFaceContinuousErrorV1::Cancelled)
+    );
+    assert_eq!(
+        super::super::strictly_separated_registry_pair_with_control_v1(
+            &registry,
+            missing_pair,
+            &CooperativeOperationControlV1::new(None, Instant::now()),
+        ),
+        Err(LayeredThreeFaceContinuousErrorV1::DeadlineExceeded)
+    );
+}
+
+#[test]
 fn layered_resource_preflight_accepts_exact_caps_and_rejects_every_one_over() {
     let interval = MaterialTreeDyadicIntervalLimitsV1 {
         max_faces: 3,

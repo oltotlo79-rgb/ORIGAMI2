@@ -381,6 +381,56 @@ fn minimum_nonadjacent_gap_depth_v1(
     None
 }
 
+#[test]
+fn missing_four_face_registry_pair_yields_to_typed_stop_only_when_stopped() {
+    let fixture = fixture_v1();
+    let registry = fixture
+        .model
+        .prepare_dyadic_face_vertex_intervals_v1(
+            &fixture.source_pose,
+            &fixture.target_angles,
+            fixture.limits.dyadic_depth,
+            0,
+            fixture.limits.interval_limits,
+        )
+        .expect("bounded four-face registry");
+    let missing_pair = [FaceId::new(), FaceId::new()];
+    let missing_pairs = [missing_pair; 3];
+    assert_eq!(
+        verify_four_face_chain_nonadjacent_registry_gaps_with_control_v1(
+            &registry,
+            &missing_pairs,
+            3,
+            &CooperativeOperationControlV1::unbounded(),
+        ),
+        Err(FourFaceChainIntervalErrorV1::IntervalUnavailable),
+        "an unstopped missing registry pair remains unavailable"
+    );
+
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        verify_four_face_chain_nonadjacent_registry_gaps_with_control_v1(
+            &registry,
+            &missing_pairs,
+            3,
+            &CooperativeOperationControlV1::new(
+                Some(&cancelled),
+                Instant::now() + Duration::from_secs(1),
+            ),
+        ),
+        Err(FourFaceChainIntervalErrorV1::Cancelled)
+    );
+    assert_eq!(
+        verify_four_face_chain_nonadjacent_registry_gaps_with_control_v1(
+            &registry,
+            &missing_pairs,
+            3,
+            &CooperativeOperationControlV1::new(None, Instant::now()),
+        ),
+        Err(FourFaceChainIntervalErrorV1::DeadlineExceeded)
+    );
+}
+
 fn exact_integer_v1(value: u8) -> ExactRationalValue {
     ExactRationalValue {
         sign: if value == 0 {

@@ -1772,6 +1772,26 @@ pub fn generate_beginner_plans_v1(
     Ok(plans)
 }
 
+fn protrusion_local_outline_within_bounds_v1(
+    target: &BeginnerProtrusionTargetV1,
+    bounds: (i32, i32, i32, i32),
+) -> bool {
+    let (minimum_x, maximum_x, minimum_y, maximum_y) = bounds;
+    target
+        .local_outline_tenths_mm
+        .as_deref()
+        .is_none_or(|outline| {
+            outline.iter().all(|point| {
+                target.position_tenths_mm[0]
+                    .checked_add(point[0])
+                    .is_some_and(|x| (minimum_x..=maximum_x).contains(&x))
+                    && target.position_tenths_mm[1]
+                        .checked_add(point[1])
+                        .is_some_and(|y| (minimum_y..=maximum_y).contains(&y))
+            })
+        })
+}
+
 fn parameterized_center_axis_endpoint(
     constraints: &BeginnerGenerationConstraintsV1,
     vertical: bool,
@@ -1790,7 +1810,11 @@ fn parameterized_center_axis_endpoint_for_target(
     if target.count != 1 || target.symmetry != BeginnerProtrusionSymmetryV1::None {
         return None;
     }
-    let (minimum_x, maximum_x, minimum_y, maximum_y) = skeleton_bounds(skeleton_segments)?;
+    let bounds = skeleton_bounds(skeleton_segments)?;
+    if !protrusion_local_outline_within_bounds_v1(target, bounds) {
+        return None;
+    }
+    let (minimum_x, maximum_x, minimum_y, maximum_y) = bounds;
     let span_x = maximum_x.checked_sub(minimum_x)?;
     let span_y = maximum_y.checked_sub(minimum_y)?;
     if span_x <= 0
@@ -2503,21 +2527,10 @@ fn bounded_generic_composite_endpoints(
         if tip_width == 0 || tip_width > root_width || root_width > body[0].min(body[1]) {
             return None;
         }
-        if target
-            .local_outline_tenths_mm
-            .as_ref()
-            .is_some_and(|outline| {
-                outline.iter().any(|point| {
-                    let Some(x) = target.position_tenths_mm[0].checked_add(point[0]) else {
-                        return true;
-                    };
-                    let Some(y) = target.position_tenths_mm[1].checked_add(point[1]) else {
-                        return true;
-                    };
-                    !(minimum_x..=maximum_x).contains(&x) || !(minimum_y..=maximum_y).contains(&y)
-                })
-            })
-        {
+        if !protrusion_local_outline_within_bounds_v1(
+            target,
+            (minimum_x, maximum_x, minimum_y, maximum_y),
+        ) {
             return None;
         }
         let candidates = match (target.count, target.symmetry) {
@@ -4065,6 +4078,34 @@ mod tests {
                 expected_kind
             );
 
+            let mut contained_outline = constraints.clone();
+            contained_outline.protrusions[0].local_outline_tenths_mm =
+                Some(vec![[-1, -1], [1, -1], [0, 2]]);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &contained_outline
+            ));
+            assert_eq!(
+                beginner_target_approximation_score_v1(&contained_outline),
+                92
+            );
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &contained_outline).unwrap()
+                    [0]
+                .kind,
+                expected_kind
+            );
+            let mut outside_outline = constraints.clone();
+            outside_outline.protrusions[0].local_outline_tenths_mm =
+                Some(vec![[-1, -1], [11, -1], [0, 2]]);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &outside_outline
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&outside_outline), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &outside_outline),
+                Err(expected_error)
+            );
+
             let mut extra = target;
             extra.id = 2;
             extra.priority = 100;
@@ -4091,6 +4132,13 @@ mod tests {
                 Err(expected_error)
             );
         }
+        let mut overflow = bilateral_protrusion(1, 1);
+        overflow.position_tenths_mm[0] = i32::MAX;
+        overflow.local_outline_tenths_mm = Some(vec![[1, 0], [0, 1], [-1, 0]]);
+        assert!(!protrusion_local_outline_within_bounds_v1(
+            &overflow,
+            (i32::MIN, i32::MAX, i32::MIN, i32::MAX)
+        ));
     }
 
     #[test]

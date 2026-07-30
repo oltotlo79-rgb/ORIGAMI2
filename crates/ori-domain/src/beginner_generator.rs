@@ -2160,6 +2160,27 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                                 && target.symmetry == BeginnerProtrusionSymmetryV1::None
                         })
                     })
+                } else if part_count(BeginnerTargetPartKindV1::Leg) == 6 {
+                    insect_three_pair_bindings_v1(constraints).and_then(|bindings| {
+                        let target = validated_isolated_symmetric_target_v1(
+                            constraints,
+                            bindings[0].protrusion_id,
+                            2,
+                            false,
+                        )?;
+                        bindings[1..]
+                            .iter()
+                            .all(|binding| {
+                                validated_isolated_symmetric_target_v1(
+                                    constraints,
+                                    binding.protrusion_id,
+                                    2,
+                                    false,
+                                )
+                                .is_some()
+                            })
+                            .then_some(target)
+                    })
                 } else {
                     parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
                         constraints
@@ -4711,6 +4732,7 @@ mod tests {
                 },
             ])
         );
+        assert_eq!(beginner_target_approximation_score_v1(&complete_legs), 92);
         let complete_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &complete_legs).unwrap();
         assert_eq!(
@@ -4719,8 +4741,40 @@ mod tests {
         );
         assert_eq!(complete_plans[0].crease_pattern.vertices.len(), 13);
         assert_eq!(complete_plans[0].crease_pattern.edges.len(), 12);
+
+        let mut priority_order = complete_legs.clone();
+        for (target, priority) in priority_order.protrusions.iter_mut().zip([40, 70, 100]) {
+            target.priority = priority;
+        }
+        assert_eq!(beginner_target_approximation_score_v1(&priority_order), 76);
+        let priority_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &priority_order).unwrap();
+        priority_order.protrusions.reverse();
+        assert_eq!(beginner_target_approximation_score_v1(&priority_order), 76);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &priority_order).unwrap(),
+            priority_plans
+        );
+
+        let mut invalid_third_pair = complete_legs.clone();
+        invalid_third_pair.protrusions[2].length_tenths_mm = 10;
+        assert!(insect_three_pair_bindings_v1(&invalid_third_pair).is_some());
+        assert_eq!(
+            beginner_target_approximation_score_v1(&invalid_third_pair),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_third_pair),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
+
         complete_legs.protrusions[2].position_tenths_mm[1] = 5;
         assert_eq!(insect_three_pair_bindings_v1(&complete_legs), None);
+        assert_eq!(beginner_target_approximation_score_v1(&complete_legs), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &complete_legs),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
         constraints.skeleton_segments[1].end.y_tenths_mm = 11;
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &constraints),

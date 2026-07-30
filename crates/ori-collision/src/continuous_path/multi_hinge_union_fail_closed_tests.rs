@@ -16,20 +16,24 @@ fn two_and_three_shared_hinges_stay_resource_bounded_and_non_authorizing() {
         assert_eq!(registry.entries().len(), 1);
         assert_eq!(
             registry.entries()[0].kind(),
-            ContinuousPairCoverageKindV1::Unsupported
+            ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
         );
         assert!(!registry.authorizes_continuous_motion());
         assert!(!registry.authorizes_project_mutation());
 
-        // The V1 corridor is defined for exactly one shared hinge. It must
-        // neither absorb this pair nor turn an empty gap set into authority.
-        let single_hinge_gaps = crate::diagnose_shared_hinge_continuous_corridor_gaps_v1(
+        // V1 now binds the complete canonical hinge set, but the report stays
+        // diagnostic-only and cannot become collision or mutation authority.
+        let shared_hinge_gaps = crate::diagnose_shared_hinge_continuous_corridor_gaps_v1(
             &registry, &geometry, &audit, fixed, &schedule, 0.1,
         )
         .expect("bound diagnostic-only gap report");
-        assert!(single_hinge_gaps.gaps().is_empty());
-        assert!(!single_hinge_gaps.authorizes_continuous_motion());
-        assert!(!single_hinge_gaps.authorizes_project_mutation());
+        assert_eq!(shared_hinge_gaps.gaps().len(), hinge_count);
+        assert!(shared_hinge_gaps.gaps().windows(2).all(|pair| {
+            pair[0].pair() == pair[1].pair()
+                && pair[0].hinge().canonical_bytes() < pair[1].hinge().canonical_bytes()
+        }));
+        assert!(!shared_hinge_gaps.authorizes_continuous_motion());
+        assert!(!shared_hinge_gaps.authorizes_project_mutation());
 
         let limits = MultiHingeReliefUnionLimitsV2::default();
         let gaps = diagnose_multi_hinge_relief_union_gaps_v2(

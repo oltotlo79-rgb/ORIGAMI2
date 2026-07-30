@@ -192,6 +192,7 @@ const MAX_STACKED_FOLD_INTERVAL_DEPTH_V1: usize = 7;
 const MAX_STACKED_FOLD_INTERVAL_WORK_V1: usize =
     MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 * MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1;
 pub const MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1: usize = 2_080;
+const MAX_SHARED_HINGES_PER_CONTINUOUS_PAIR_V1: usize = MAX_MULTI_HINGES_PER_FACE_PAIR_V2;
 pub const MAX_DYADIC_FACE_TRANSFORM_LEAVES_V1: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -956,6 +957,10 @@ impl SharedHingeContinuousCorridorGapV1 {
 }
 
 /// Exact inputs still lacking an open-interval Cayley corridor theorem.
+///
+/// Records are ordered canonically by `(face pair, hinge)`. A face pair with
+/// multiple shared hinges occupies one non-empty contiguous record group;
+/// every member must be covered before that pair is removed from `remaining`.
 /// Endpoint static capabilities are intentionally not accepted as a substitute.
 #[derive(Debug, Clone)]
 pub struct SharedHingeContinuousCorridorGapReportV1 {
@@ -1022,6 +1027,10 @@ impl SharedVertexContinuousCorridorGapReportV1 {
     }
 }
 
+/// One certified member of a face pair's canonical shared-hinge set.
+///
+/// Multiple entries with the same pair are required coverage, not duplicate
+/// pair claims. Their hinge IDs remain strictly canonical and unique.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReliefCoveredSharedHingePairV1 {
     pair: [FaceId; 2],
@@ -1096,6 +1105,12 @@ pub enum SharedHingeReliefCoverageErrorV1 {
     #[error("shared hinge relief pair coverage is incomplete or duplicated")]
     IncompleteCoverage,
     #[error("shared hinge relief coverage exceeds its hard bound")]
+    ResourceLimit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SharedHingeCorridorGapErrorV1 {
+    InvalidBinding,
     ResourceLimit,
 }
 
@@ -2518,9 +2533,9 @@ fn classify_continuous_pair_v1(
     shared_vertex: Option<bool>,
     group_membership: Option<(Option<usize>, Option<usize>)>,
 ) -> ContinuousPairCoverageKindV1 {
-    if shared_hinges == 1 {
+    if shared_hinges > 0 {
         ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
-    } else if shared_hinges > 1 || shared_vertex.is_none() {
+    } else if shared_vertex.is_none() {
         ContinuousPairCoverageKindV1::Unsupported
     } else if shared_vertex == Some(true) {
         ContinuousPairCoverageKindV1::SharedVertexNeedsCorridor
@@ -5868,48 +5883,132 @@ pub fn diagnose_shared_hinge_continuous_corridor_gaps_v1(
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
     paper_thickness_mm: f64,
 ) -> Option<SharedHingeContinuousCorridorGapReportV1> {
+    diagnose_shared_hinge_continuous_corridor_gaps_checked_v1(
+        registry,
+        geometry,
+        audit,
+        fixed_face,
+        schedule,
+        paper_thickness_mm,
+    )
+    .ok()
+}
+
+fn diagnose_shared_hinge_continuous_corridor_gaps_checked_v1(
+    registry: &ContinuousPairCoverageRegistryV1,
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    paper_thickness_mm: f64,
+) -> Result<SharedHingeContinuousCorridorGapReportV1, SharedHingeCorridorGapErrorV1> {
     if !registry.is_for(geometry, audit, fixed_face, schedule)
         || !paper_thickness_mm.is_finite()
         || paper_thickness_mm <= 0.0
     {
-        return None;
+        return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
     }
-    let source = schedule.evaluate(0.0)?;
-    let target = schedule.evaluate(1.0)?;
+    if geometry.hinges().len() > crate::MAX_HINGE_RELIEF_RECORDS_V1 {
+        return Err(SharedHingeCorridorGapErrorV1::ResourceLimit);
+    }
+    let source = schedule
+        .evaluate(0.0)
+        .ok_or(SharedHingeCorridorGapErrorV1::InvalidBinding)?;
+    let target = schedule
+        .evaluate(1.0)
+        .ok_or(SharedHingeCorridorGapErrorV1::InvalidBinding)?;
+    if source.as_slice().len() != geometry.hinges().len()
+        || target.as_slice().len() != geometry.hinges().len()
+    {
+        return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
+    }
     let mut source_by_edge = HashMap::new();
-    source_by_edge.try_reserve(source.as_slice().len()).ok()?;
+    source_by_edge
+        .try_reserve(source.as_slice().len())
+        .map_err(|_| SharedHingeCorridorGapErrorV1::ResourceLimit)?;
     for angle in source.as_slice() {
-        source_by_edge.insert(angle.edge(), angle.angle_degrees().to_bits());
+        if !angle.angle_degrees().is_finite()
+            || source_by_edge
+                .insert(angle.edge(), angle.angle_degrees().to_bits())
+                .is_some()
+        {
+            return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
+        }
     }
     let mut target_by_edge = HashMap::new();
-    target_by_edge.try_reserve(target.as_slice().len()).ok()?;
+    target_by_edge
+        .try_reserve(target.as_slice().len())
+        .map_err(|_| SharedHingeCorridorGapErrorV1::ResourceLimit)?;
     for angle in target.as_slice() {
-        target_by_edge.insert(angle.edge(), angle.angle_degrees().to_bits());
+        if !angle.angle_degrees().is_finite()
+            || target_by_edge
+                .insert(angle.edge(), angle.angle_degrees().to_bits())
+                .is_some()
+        {
+            return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
+        }
     }
-    let expected = registry
+    let expected_pairs = registry
         .entries
         .iter()
         .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
         .count();
-    if expected > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1 {
-        return None;
+    if expected_pairs > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1 {
+        return Err(SharedHingeCorridorGapErrorV1::ResourceLimit);
     }
-    let mut gaps = Vec::new();
-    gaps.try_reserve_exact(expected).ok()?;
+    let mut expected_hinges = 0_usize;
     for entry in registry
         .entries
         .iter()
         .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
     {
-        let mut hinges = geometry.hinges().iter().filter(|hinge| {
+        let hinge_count = geometry
+            .hinges()
+            .iter()
+            .filter(|hinge| {
+                (hinge.left_face() == entry.pair[0] && hinge.right_face() == entry.pair[1])
+                    || (hinge.left_face() == entry.pair[1] && hinge.right_face() == entry.pair[0])
+            })
+            .count();
+        if hinge_count == 0 {
+            return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
+        }
+        if hinge_count > MAX_SHARED_HINGES_PER_CONTINUOUS_PAIR_V1 {
+            return Err(SharedHingeCorridorGapErrorV1::ResourceLimit);
+        }
+        expected_hinges = expected_hinges
+            .checked_add(hinge_count)
+            .filter(|count| *count <= crate::MAX_HINGE_RELIEF_RECORDS_V1)
+            .ok_or(SharedHingeCorridorGapErrorV1::ResourceLimit)?;
+    }
+    let mut gaps = Vec::new();
+    gaps.try_reserve_exact(expected_hinges)
+        .map_err(|_| SharedHingeCorridorGapErrorV1::ResourceLimit)?;
+    for entry in registry
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
+    {
+        let mut hinges = Vec::new();
+        hinges
+            .try_reserve_exact(MAX_SHARED_HINGES_PER_CONTINUOUS_PAIR_V1)
+            .map_err(|_| SharedHingeCorridorGapErrorV1::ResourceLimit)?;
+        hinges.extend(geometry.hinges().iter().filter(|hinge| {
             (hinge.left_face() == entry.pair[0] && hinge.right_face() == entry.pair[1])
                 || (hinge.left_face() == entry.pair[1] && hinge.right_face() == entry.pair[0])
-        });
-        let Some(hinge) = hinges.next() else {
-            return None;
-        };
-        if hinges.next().is_some() {
-            return None;
+        }));
+        if hinges.is_empty() {
+            return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
+        }
+        if hinges.len() > MAX_SHARED_HINGES_PER_CONTINUOUS_PAIR_V1 {
+            return Err(SharedHingeCorridorGapErrorV1::ResourceLimit);
+        }
+        hinges.sort_unstable_by_key(|hinge| hinge.edge().canonical_bytes());
+        if hinges
+            .windows(2)
+            .any(|pair| pair[0].edge() == pair[1].edge())
+        {
+            return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
         }
         let triangular_prerequisite = geometry
             .face_boundary_vertices(entry.pair[0])
@@ -5917,20 +6016,31 @@ pub fn diagnose_shared_hinge_continuous_corridor_gaps_v1(
             && geometry
                 .face_boundary_vertices(entry.pair[1])
                 .is_some_and(|v| v.len() == 3);
-        let derivative = schedule.derivative_bound(hinge.edge())?;
-        if !derivative.is_finite() || derivative < 0.0 {
-            return None;
+        for hinge in hinges {
+            let derivative = schedule
+                .derivative_bound(hinge.edge())
+                .ok_or(SharedHingeCorridorGapErrorV1::InvalidBinding)?;
+            if !derivative.is_finite() || derivative < 0.0 {
+                return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
+            }
+            gaps.push(SharedHingeContinuousCorridorGapV1 {
+                pair: entry.pair,
+                hinge: hinge.edge(),
+                source_angle_bits: *source_by_edge
+                    .get(&hinge.edge())
+                    .ok_or(SharedHingeCorridorGapErrorV1::InvalidBinding)?,
+                target_angle_bits: *target_by_edge
+                    .get(&hinge.edge())
+                    .ok_or(SharedHingeCorridorGapErrorV1::InvalidBinding)?,
+                derivative_bound_bits: derivative.to_bits(),
+                triangular_prerequisite,
+            });
         }
-        gaps.push(SharedHingeContinuousCorridorGapV1 {
-            pair: entry.pair,
-            hinge: hinge.edge(),
-            source_angle_bits: *source_by_edge.get(&hinge.edge())?,
-            target_angle_bits: *target_by_edge.get(&hinge.edge())?,
-            derivative_bound_bits: derivative.to_bits(),
-            triangular_prerequisite,
-        });
     }
-    (gaps.len() == expected).then(|| SharedHingeContinuousCorridorGapReportV1 {
+    if gaps.len() != expected_hinges {
+        return Err(SharedHingeCorridorGapErrorV1::InvalidBinding);
+    }
+    Ok(SharedHingeContinuousCorridorGapReportV1 {
         issuer: geometry.instance_anchor_v1(),
         fixed_face,
         schedule_hash: schedule.certificate_binding_fingerprint_v2(),
@@ -6018,7 +6128,7 @@ pub fn compose_shared_hinge_relief_coverage_v1(
     if !registry.is_for(geometry, audit, fixed_face, schedule) {
         return Err(SharedHingeReliefCoverageErrorV1::ForeignCoverage);
     }
-    let gaps = diagnose_shared_hinge_continuous_corridor_gaps_v1(
+    let gaps = diagnose_shared_hinge_continuous_corridor_gaps_checked_v1(
         registry,
         geometry,
         audit,
@@ -6026,7 +6136,14 @@ pub fn compose_shared_hinge_relief_coverage_v1(
         schedule,
         paper_thickness_mm,
     )
-    .ok_or(SharedHingeReliefCoverageErrorV1::ForeignCoverage)?;
+    .map_err(|error| match error {
+        SharedHingeCorridorGapErrorV1::InvalidBinding => {
+            SharedHingeReliefCoverageErrorV1::ForeignCoverage
+        }
+        SharedHingeCorridorGapErrorV1::ResourceLimit => {
+            SharedHingeReliefCoverageErrorV1::ResourceLimit
+        }
+    })?;
     revalidate_hinge_relief_local_intervals_v1(
         local,
         prerequisite,
@@ -6036,7 +6153,12 @@ pub fn compose_shared_hinge_relief_coverage_v1(
         local_schedules,
         limits,
     )
-    .map_err(|_| SharedHingeReliefCoverageErrorV1::ForeignRelief)?;
+    .map_err(|error| match error {
+        crate::HingeReliefPolicyErrorV1::ResourceLimit => {
+            SharedHingeReliefCoverageErrorV1::ResourceLimit
+        }
+        _ => SharedHingeReliefCoverageErrorV1::ForeignRelief,
+    })?;
     if gaps.gaps.len() > crate::MAX_HINGE_RELIEF_RECORDS_V1 {
         return Err(SharedHingeReliefCoverageErrorV1::ResourceLimit);
     }
@@ -6063,9 +6185,15 @@ pub fn compose_shared_hinge_relief_coverage_v1(
         (
             item.pair[0].canonical_bytes(),
             item.pair[1].canonical_bytes(),
+            item.hinge.canonical_bytes(),
         )
     });
-    if covered.windows(2).any(|pair| pair[0].pair == pair[1].pair) {
+    if covered.len() != gaps.gaps.len()
+        || covered
+            .iter()
+            .zip(&gaps.gaps)
+            .any(|(covered, gap)| covered.pair != gap.pair || covered.hinge != gap.hinge)
+    {
         return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
     }
     let remaining_count = registry
@@ -6099,7 +6227,25 @@ fn match_relief_gap_schedules(
     local_schedules: &[HingeReliefLinearAngleScheduleV1],
     is_exact_constant: impl Fn(EdgeId) -> bool,
 ) -> Result<Vec<ReliefCoveredSharedHingePairV1>, SharedHingeReliefCoverageErrorV1> {
-    if gaps.len() != local_schedules.len() || gaps.len() > crate::MAX_HINGE_RELIEF_RECORDS_V1 {
+    if gaps.len() > crate::MAX_HINGE_RELIEF_RECORDS_V1
+        || local_schedules.len() > crate::MAX_HINGE_RELIEF_RECORDS_V1
+    {
+        return Err(SharedHingeReliefCoverageErrorV1::ResourceLimit);
+    }
+    if gaps.len() != local_schedules.len() {
+        return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
+    }
+    if gaps.windows(2).any(|pair| {
+        (
+            pair[0].pair[0].canonical_bytes(),
+            pair[0].pair[1].canonical_bytes(),
+            pair[0].hinge.canonical_bytes(),
+        ) >= (
+            pair[1].pair[0].canonical_bytes(),
+            pair[1].pair[1].canonical_bytes(),
+            pair[1].hinge.canonical_bytes(),
+        )
+    }) {
         return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
     }
     let mut covered = Vec::new();
@@ -6127,6 +6273,13 @@ fn match_relief_gap_schedules(
             pair: gap.pair,
             hinge: gap.hinge,
         });
+    }
+    // Every local certificate is valid on the same complete path parameter
+    // domain. Returning a pair only after all of its canonical hinge records
+    // have matched therefore publishes the intersection of those domains,
+    // never a partial per-pair corridor.
+    if covered.len() != gaps.len() {
+        return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
     }
     Ok(covered)
 }

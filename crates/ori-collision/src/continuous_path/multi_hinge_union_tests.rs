@@ -27,7 +27,7 @@ fn id<T: DeserializeOwned>(prefix: &str, suffix: u64) -> T {
 /// three collinear edge records. Both material faces therefore share the
 /// complete canonical edge list; no test-only graph constructor is used.
 pub(super) fn segmented_crease(hinge_count: usize, revision: u64) -> Fixture {
-    assert!((2..=3).contains(&hinge_count));
+    assert!((1..=4).contains(&hinge_count));
     let boundary_points = [
         (0.0, 0.0),
         (5.0, 0.0),
@@ -193,16 +193,67 @@ fn production_two_and_three_segment_creases_certify_the_complete_local_union_onl
         );
         assert!(gaps.is_for(&geometry, &audit, fixed, &schedule, 0.1, limits));
 
-        // The old classifier remains fail-closed. V2 does not claim the
-        // still-missing union-exterior interval-separation primitive.
+        // V1 now routes the exact same production pair through one atomic
+        // set of local corridors. Neither V1 nor V2 claims the still-missing
+        // general union-exterior interval-separation primitive.
         let v1 = crate::diagnose_continuous_pair_coverage_v1(&geometry, &audit, fixed, &schedule)
             .unwrap();
         assert_eq!(
             v1.entries()[0].kind(),
-            crate::ContinuousPairCoverageKindV1::Unsupported
+            crate::ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
         );
+        let v1_gaps = crate::diagnose_shared_hinge_continuous_corridor_gaps_v1(
+            &v1, &geometry, &audit, fixed, &schedule, 0.1,
+        )
+        .expect("bounded canonical V1 shared-hinge set");
+        assert_eq!(v1_gaps.gaps().len(), hinge_count);
+        assert!(v1_gaps.gaps().windows(2).all(|pair| {
+            pair[0].pair() == pair[1].pair()
+                && pair[0].hinge().canonical_bytes() < pair[1].hinge().canonical_bytes()
+        }));
 
         let (policies, schedules, prerequisite, local, policy_limits) = relief(&gaps, &geometry);
+        let v1_coverage = crate::compose_shared_hinge_relief_coverage_v1(
+            &v1,
+            &geometry,
+            &audit,
+            fixed,
+            &schedule,
+            0.1,
+            &prerequisite,
+            &local,
+            &policies,
+            &schedules,
+            policy_limits,
+        )
+        .expect("every hinge in the pair has current local relief");
+        assert_eq!(v1_coverage.covered().len(), hinge_count);
+        assert!(v1_coverage.remaining().is_empty());
+        assert!(v1_coverage.covered().windows(2).all(|pair| {
+            pair[0].pair() == pair[1].pair()
+                && pair[0].hinge().canonical_bytes() < pair[1].hinge().canonical_bytes()
+        }));
+        if hinge_count == 3 {
+            let mut foreign_policies = policies.clone();
+            foreign_policies[1].cutout_width_mm =
+                f64::from_bits(foreign_policies[1].cutout_width_mm.to_bits() + 1);
+            assert!(matches!(
+                crate::compose_shared_hinge_relief_coverage_v1(
+                    &v1,
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &schedule,
+                    0.1,
+                    &prerequisite,
+                    &local,
+                    &foreign_policies,
+                    &schedules,
+                    policy_limits,
+                ),
+                Err(crate::SharedHingeReliefCoverageErrorV1::ForeignRelief)
+            ));
+        }
         let certificate = certify_multi_hinge_relief_union_v2(
             &gaps,
             &geometry,
@@ -254,6 +305,243 @@ fn production_two_and_three_segment_creases_certify_the_complete_local_union_onl
         hashes.push(certificate.content_hash_v2());
     }
     assert_ne!(hashes[0], hashes[1]);
+}
+
+#[test]
+fn v1_single_hinge_result_and_bit_bindings_remain_compatible() {
+    let (geometry, audit, schedule, fixed) = segmented_crease(1, 1);
+    let registry =
+        crate::diagnose_continuous_pair_coverage_v1(&geometry, &audit, fixed, &schedule).unwrap();
+    assert_eq!(registry.entries().len(), 1);
+    assert_eq!(
+        registry.entries()[0].kind(),
+        crate::ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
+    );
+    let gaps = crate::diagnose_shared_hinge_continuous_corridor_gaps_v1(
+        &registry, &geometry, &audit, fixed, &schedule, 0.1,
+    )
+    .expect("legacy single-hinge gap");
+    assert_eq!(gaps.gaps().len(), 1);
+    let gap = gaps.gaps()[0];
+    let hinge = geometry.hinges()[0].edge();
+    assert_eq!(gap.hinge(), hinge);
+    assert_eq!(
+        gap.source_angle_bits(),
+        schedule
+            .evaluate(0.0)
+            .unwrap()
+            .as_slice()
+            .iter()
+            .find(|angle| angle.edge() == hinge)
+            .unwrap()
+            .angle_degrees()
+            .to_bits()
+    );
+    assert_eq!(
+        gap.target_angle_bits(),
+        schedule
+            .evaluate(1.0)
+            .unwrap()
+            .as_slice()
+            .iter()
+            .find(|angle| angle.edge() == hinge)
+            .unwrap()
+            .angle_degrees()
+            .to_bits()
+    );
+    assert_eq!(
+        gap.derivative_bound_bits(),
+        schedule.derivative_bound(hinge).unwrap().to_bits()
+    );
+
+    let policies = vec![HingeReliefPolicyRecordV1 {
+        edge: hinge,
+        cutout_width_mm: 7.0,
+        bevel_angle_degrees: 1.0,
+        material_thickness_mm: 0.1,
+    }];
+    let schedules = vec![HingeReliefLinearAngleScheduleV1 {
+        edge: hinge,
+        source_angle_degrees: f64::from_bits(gap.source_angle_bits()),
+        target_angle_degrees: f64::from_bits(gap.target_angle_bits()),
+    }];
+    let limits = HingeReliefPolicyLimitsV1::default();
+    let prerequisite =
+        crate::prepare_hinge_relief_prerequisite_v1(&geometry, 0.1, &policies, limits).unwrap();
+    let local = crate::certify_hinge_relief_local_intervals_v1(
+        &prerequisite,
+        &geometry,
+        0.1,
+        &policies,
+        &schedules,
+        limits,
+    )
+    .unwrap();
+    let coverage = crate::compose_shared_hinge_relief_coverage_v1(
+        &registry,
+        &geometry,
+        &audit,
+        fixed,
+        &schedule,
+        0.1,
+        &prerequisite,
+        &local,
+        &policies,
+        &schedules,
+        limits,
+    )
+    .expect("legacy singleton remains exactly coverable");
+    assert_eq!(coverage.covered().len(), 1);
+    assert_eq!(coverage.covered()[0].pair(), gap.pair());
+    assert_eq!(coverage.covered()[0].hinge(), gap.hinge());
+    assert!(coverage.remaining().is_empty());
+}
+
+#[test]
+fn v1_multi_hinge_sets_are_atomic_and_fail_closed_on_set_or_binding_tamper() {
+    let (geometry, audit, schedule, fixed) = segmented_crease(3, 1);
+    let registry =
+        crate::diagnose_continuous_pair_coverage_v1(&geometry, &audit, fixed, &schedule).unwrap();
+    let gaps = crate::diagnose_shared_hinge_continuous_corridor_gaps_v1(
+        &registry, &geometry, &audit, fixed, &schedule, 0.1,
+    )
+    .unwrap();
+    let schedules = gaps
+        .gaps()
+        .iter()
+        .map(|gap| HingeReliefLinearAngleScheduleV1 {
+            edge: gap.hinge(),
+            source_angle_degrees: f64::from_bits(gap.source_angle_bits()),
+            target_angle_degrees: f64::from_bits(gap.target_angle_bits()),
+        })
+        .collect::<Vec<_>>();
+    let match_gaps = |gaps: &[crate::SharedHingeContinuousCorridorGapV1],
+                      schedules: &[HingeReliefLinearAngleScheduleV1]| {
+        super::super::match_relief_gap_schedules(gaps, schedules, |_| false)
+    };
+    let covered = match_gaps(gaps.gaps(), &schedules).expect("complete canonical hinge set");
+    assert_eq!(covered.len(), 3);
+    assert!(
+        covered
+            .iter()
+            .all(|item| item.pair() == gaps.gaps()[0].pair())
+    );
+
+    assert_eq!(
+        match_gaps(gaps.gaps(), &schedules[..2]),
+        Err(crate::SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+    );
+    let mut extra = schedules.clone();
+    extra.push(schedules[0]);
+    assert_eq!(
+        match_gaps(gaps.gaps(), &extra),
+        Err(crate::SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+    );
+    let mut duplicate = schedules.clone();
+    duplicate[1].edge = duplicate[0].edge;
+    assert_eq!(
+        match_gaps(gaps.gaps(), &duplicate),
+        Err(crate::SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+    );
+    let mut binding_tamper = schedules.clone();
+    binding_tamper[0].source_angle_degrees =
+        f64::from_bits(binding_tamper[0].source_angle_degrees.to_bits() + 1);
+    assert_eq!(
+        match_gaps(gaps.gaps(), &binding_tamper),
+        Err(crate::SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+    );
+    let mut derivative_tamper = gaps.gaps().to_vec();
+    derivative_tamper[0].derivative_bound_bits ^= 1;
+    assert_eq!(
+        match_gaps(&derivative_tamper, &schedules),
+        Err(crate::SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+    );
+    let mut noncanonical = gaps.gaps().to_vec();
+    noncanonical.swap(0, 1);
+    assert_eq!(
+        match_gaps(&noncanonical, &schedules),
+        Err(crate::SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+    );
+}
+
+#[test]
+fn v1_shared_hinges_accept_exact_pair_cap_and_report_one_over_as_resource() {
+    let exact_count = super::super::MAX_SHARED_HINGES_PER_CONTINUOUS_PAIR_V1;
+    assert_eq!(exact_count, 3);
+    let (geometry, audit, schedule, fixed) = segmented_crease(exact_count, 1);
+    let registry =
+        crate::diagnose_continuous_pair_coverage_v1(&geometry, &audit, fixed, &schedule).unwrap();
+    assert!(
+        super::super::diagnose_shared_hinge_continuous_corridor_gaps_checked_v1(
+            &registry, &geometry, &audit, fixed, &schedule, 0.1,
+        )
+        .is_ok()
+    );
+    let exact_union_gaps = diagnose_multi_hinge_relief_union_gaps_v2(
+        &geometry,
+        &audit,
+        fixed,
+        &schedule,
+        0.1,
+        MultiHingeReliefUnionLimitsV2::default(),
+    )
+    .unwrap();
+    let (policies, schedules, prerequisite, local, policy_limits) =
+        relief(&exact_union_gaps, &geometry);
+
+    let (over_geometry, over_audit, over_schedule, over_fixed) =
+        segmented_crease(exact_count + 1, 1);
+    let over_registry = crate::diagnose_continuous_pair_coverage_v1(
+        &over_geometry,
+        &over_audit,
+        over_fixed,
+        &over_schedule,
+    )
+    .unwrap();
+    assert_eq!(
+        over_registry.entries()[0].kind(),
+        crate::ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor,
+        "cap exhaustion remains distinct from unsupported geometry"
+    );
+    assert!(matches!(
+        super::super::diagnose_shared_hinge_continuous_corridor_gaps_checked_v1(
+            &over_registry,
+            &over_geometry,
+            &over_audit,
+            over_fixed,
+            &over_schedule,
+            0.1,
+        ),
+        Err(super::super::SharedHingeCorridorGapErrorV1::ResourceLimit)
+    ));
+    assert!(matches!(
+        crate::compose_shared_hinge_relief_coverage_v1(
+            &over_registry,
+            &over_geometry,
+            &over_audit,
+            over_fixed,
+            &over_schedule,
+            0.1,
+            &prerequisite,
+            &local,
+            &policies,
+            &schedules,
+            policy_limits,
+        ),
+        Err(crate::SharedHingeReliefCoverageErrorV1::ResourceLimit)
+    ));
+    assert!(
+        crate::diagnose_shared_hinge_continuous_corridor_gaps_v1(
+            &over_registry,
+            &over_geometry,
+            &over_audit,
+            over_fixed,
+            &over_schedule,
+            0.1,
+        )
+        .is_none(),
+        "the compatibility Option wrapper remains fail closed"
+    );
 }
 
 #[test]

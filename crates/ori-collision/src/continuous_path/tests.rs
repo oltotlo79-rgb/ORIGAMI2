@@ -1317,6 +1317,14 @@ fn positive_constant_actual_registries_compose_all_shared_hinge_relief_gaps() {
 #[test]
 fn continuous_pair_gap_classifier_fails_closed_without_metadata_and_at_cap() {
     assert_eq!(
+        classify_continuous_pair_v1(1, None, None),
+        ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
+    );
+    assert_eq!(
+        classify_continuous_pair_v1(MAX_SHARED_HINGES_PER_CONTINUOUS_PAIR_V1, None, None),
+        ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
+    );
+    assert_eq!(
         classify_continuous_pair_v1(0, Some(false), None),
         ContinuousPairCoverageKindV1::MetadataMissing
     );
@@ -1381,6 +1389,51 @@ fn relief_gap_schedule_matching_is_complete_at_four_eight_sixteen() {
             Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
         );
     }
+}
+
+#[test]
+fn relief_gap_schedule_matching_accepts_exact_total_cap_and_resource_limits_one_over() {
+    let gap = |index: usize| SharedHingeContinuousCorridorGapV1 {
+        pair: [
+            fixed_id("b602", index as u64 * 2 + 1),
+            fixed_id("b602", index as u64 * 2 + 2),
+        ],
+        hinge: fixed_id("9602", index as u64 + 1),
+        source_angle_bits: 90.0_f64.to_bits(),
+        target_angle_bits: 120.0_f64.to_bits(),
+        derivative_bound_bits: 30.0_f64.to_bits(),
+        triangular_prerequisite: true,
+    };
+    let gaps = (0..crate::MAX_HINGE_RELIEF_RECORDS_V1)
+        .map(gap)
+        .collect::<Vec<_>>();
+    let schedules = gaps
+        .iter()
+        .map(|gap| HingeReliefLinearAngleScheduleV1 {
+            edge: gap.hinge,
+            source_angle_degrees: 90.0,
+            target_angle_degrees: 120.0,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        match_relief_gap_schedules(&gaps, &schedules, |_| false)
+            .expect("the exact total hinge limit remains covered")
+            .len(),
+        crate::MAX_HINGE_RELIEF_RECORDS_V1
+    );
+
+    let mut over_gaps = gaps;
+    over_gaps.push(gap(crate::MAX_HINGE_RELIEF_RECORDS_V1));
+    let mut over_schedules = schedules;
+    over_schedules.push(HingeReliefLinearAngleScheduleV1 {
+        edge: over_gaps.last().expect("one-over gap").hinge,
+        source_angle_degrees: 90.0,
+        target_angle_degrees: 120.0,
+    });
+    assert_eq!(
+        match_relief_gap_schedules(&over_gaps, &over_schedules, |_| false),
+        Err(SharedHingeReliefCoverageErrorV1::ResourceLimit)
+    );
 }
 
 #[test]

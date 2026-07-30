@@ -1,10 +1,11 @@
 //! Bounded evidence for unions of multiple shared-hinge relief corridors.
 //!
-//! The V1 corridor contract accepts exactly one shared hinge per face pair.
-//! This V2 slice keeps that contract intact and proves a narrower fact for a
-//! pair sharing two or three hinges: every canonical hinge-local relief
-//! neighbourhood is present in one complete union. It is not a whole-path CCD
-//! proof and grants no collision-free or mutation authority.
+//! The V1 corridor contract accepts a bounded canonical non-empty hinge set
+//! per face pair and atomically checks every hinge-local schedule. This V2
+//! slice proves the additional narrower fact for a pair sharing two or three
+//! collinear segments: every canonical hinge-local relief neighbourhood is
+//! present in one complete geometric union. It is not a whole-path CCD proof
+//! and grants no collision-free or mutation authority.
 //! A private Phase-A preflight additionally normalizes an exact, contiguous
 //! collinear split into one logical corridor. That internal evidence remains
 //! disconnected from every admission and apply path.

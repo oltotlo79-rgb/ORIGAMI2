@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
+import { readDesktopRustUnitTestSources } from './testRustSource.ts'
+
 const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const app = [
   readFileSync('src/App.tsx', 'utf8'),
@@ -12,7 +14,7 @@ const app = [
 ].join('\n')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const beginnerDesignNative = readFileSync('src-tauri/src/beginner_design_commands.rs', 'utf8')
-const nativeTests = readFileSync('src-tauri/src/tests.rs', 'utf8')
+const nativeTests = readDesktopRustUnitTestSources()
 const browser = readFileSync('scripts/generic-target-browser-e2e.mjs', 'utf8')
 const browserHarness = readFileSync('scripts/generic-target-browser-harness.tsx', 'utf8')
 const generator = readFileSync('../../crates/ori-domain/src/beginner_generator.rs', 'utf8')

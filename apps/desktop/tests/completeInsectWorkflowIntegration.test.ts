@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { readDesktopRustUnitTestSources } from './testRustSource.ts'
+
 const app = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url), 'utf8'),
@@ -9,7 +11,7 @@ const app = [
 const component = readFileSync(new URL('../src/components/CompleteInsectBindingList.tsx', import.meta.url), 'utf8')
 const componentText = readFileSync(new URL('../src/lib/completeInsectBindingListText.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
-const nativeTests = readFileSync(new URL('../src-tauri/src/tests.rs', import.meta.url), 'utf8')
+const nativeTests = readDesktopRustUnitTestSources()
 const recognition = readFileSync(new URL('../src-tauri/src/beginner_recognition.rs', import.meta.url), 'utf8')
 
 test('complete insect recognition and candidate UI share five canonical pair bindings', () => {

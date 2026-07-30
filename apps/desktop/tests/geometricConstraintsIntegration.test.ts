@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   GEOMETRIC_CONSTRAINT_PANEL_TEXT,
 } from '../src/lib/geometricConstraintPanelText.ts'
+import { readDesktopRustUnitTestSources } from './testRustSource.ts'
 
 const app = source('../src/App.tsx')
 const panel = source('../src/components/GeometricConstraintPanel.tsx')
@@ -16,7 +17,7 @@ const client = source('../src/lib/coreClient.ts')
 const nativeRoot = source('../src-tauri/src/lib.rs')
 const nativeAnalysis = source('../src-tauri/src/geometric_constraint_analysis.rs')
 const nativeCommands = source('../src-tauri/src/geometric_constraint_commands.rs')
-const nativeTests = source('../src-tauri/src/tests.rs')
+const nativeTests = readDesktopRustUnitTestSources()
 const editor = source('../../../crates/ori-core/src/editor.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 const ori2 = source('../../../crates/ori-formats/src/ori2.rs')

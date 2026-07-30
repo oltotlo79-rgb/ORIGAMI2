@@ -39,8 +39,10 @@ test('AUT-106 candidate reads bind instance, project, and revision without mutat
   assert.match(native, /fn evaluate_beginner_candidates/)
   assert.match(
     native,
-    /ensure_project_expectation\(\s*&project,\s*ProjectExpectation::new\(\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\),\s*\)\?/u,
+    /capture_beginner_candidate_analysis_snapshot_with_control_v1\(\s*&project,\s*expectation,\s*&control,\s*\)\?/u,
   )
+  assert.match(native, /control\.checkpoint\(\)\?/u)
+  assert.match(native, /beginner_candidate_snapshot_is_current_v1\(&current, &snapshot\)\?/u)
   assert.match(client, /invoke<unknown>\('evaluate_beginner_candidates'/)
   assert.match(client, /response\.candidates\.length > 3/)
 })

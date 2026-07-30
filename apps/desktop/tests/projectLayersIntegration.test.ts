@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { readDesktopRustUnitTestSources } from './testRustSource.ts'
+
 const client = source('../src/lib/coreClient.ts')
 const recovery = source('../src/lib/recoveryClient.ts')
 const native = source('../src-tauri/src/lib.rs')
-const nativeTests = source('../src-tauri/src/tests.rs')
+const nativeTests = readDesktopRustUnitTestSources()
 const editor = source('../../../crates/ori-core/src/editor.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 const ori2 = source('../../../crates/ori-formats/src/ori2.rs')

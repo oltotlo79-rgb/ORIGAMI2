@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
+import { readDesktopRustUnitTestSources } from './testRustSource.ts'
+
 const status = readFileSync('../../docs/requirements-status.md', 'utf8')
 const progress = readFileSync('../../docs/progress.md', 'utf8')
 const evidenceManifest = JSON.parse(
@@ -13,7 +15,7 @@ const history = readFileSync('../../crates/ori-core/src/editor/history_persisten
 const constraints = readFileSync('../../crates/ori-core/src/constraints.rs', 'utf8')
 const semanticMus = readFileSync('../../crates/ori-core/src/constraint_semantic_mus.rs', 'utf8')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
-const nativeTests = readFileSync('src-tauri/src/tests.rs', 'utf8')
+const nativeTests = readDesktopRustUnitTestSources()
 const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const panel = readFileSync('src/components/InstructionTimelinePanel.tsx', 'utf8')
 

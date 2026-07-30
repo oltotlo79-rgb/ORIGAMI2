@@ -14,6 +14,7 @@ const KEYS = [
   'bindingSummary',
   'symmetryNone',
   'symmetryBilateral',
+  'symmetryRadial',
   'partKind',
   'symmetry',
   'rootWidth',
@@ -77,6 +78,8 @@ test('protrusion dimension catalog is closed and deeply frozen', () => {
   )
   assert.equal(selectLocalizedText('ja', TEXT.sideEither), 'どちらでも可')
   assert.equal(selectLocalizedText('en', TEXT.sideEither), 'Either')
+  assert.equal(selectLocalizedText('ja', TEXT.symmetryRadial), '放射対称')
+  assert.equal(selectLocalizedText('en', TEXT.symmetryRadial), 'Radial')
 })
 
 test('protrusion dimension placeholders are locale-equivalent', () => {
@@ -107,6 +110,14 @@ test('protrusion dimension summary and ARIA names stay byte-exact', () => {
       count: 1,
     }),
     'Binding 1 · Asymmetric single · count 1',
+  )
+  assert.equal(
+    formatLocalizedText('en', TEXT.bindingSummary, {
+      id: 3,
+      symmetry: selectLocalizedText('en', TEXT.symmetryRadial),
+      count: 3,
+    }),
+    'Binding 3 · Radial · count 3',
   )
   assert.equal(bindingName('en', TEXT.ariaBinding, TEXT.symmetry, 1),
     'Symmetry binding 1')

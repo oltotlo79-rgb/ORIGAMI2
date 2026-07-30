@@ -28,6 +28,47 @@ describe('ProtrusionDimensionEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '削除' }))
     expect(remove).toHaveBeenCalledOnce()
   })
+  it('renders and preserves domain-supported radial symmetry', () => {
+    const change = vi.fn()
+    const radial = { ...target, id: 3, count: 3, symmetry: 'radial' as const }
+    render(<ul><ProtrusionDimensionEditor locale="en" target={radial}
+      onChange={change} onRemove={() => {}} /></ul>)
+    expect(screen.getByText('Binding 3 · Radial · count 3')).toBeTruthy()
+    expect((screen.getByLabelText('Symmetry binding 3') as HTMLSelectElement).value)
+      .toBe('radial')
+    expect(screen.getByLabelText('Thickness binding 3 (mm)')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Symmetry binding 3'), {
+      target: { value: 'bilateral' },
+    })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({
+      symmetry: 'bilateral',
+      count: 2,
+    }))
+  })
+  it('enters radial symmetry with a valid count and preserves valid group counts', () => {
+    const change = vi.fn()
+    const { rerender } = render(<ul><ProtrusionDimensionEditor locale="en"
+      target={target} onChange={change} onRemove={() => {}} /></ul>)
+    fireEvent.change(screen.getByLabelText('Symmetry binding 1'), {
+      target: { value: 'radial' },
+    })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({
+      symmetry: 'radial',
+      count: 2,
+    }))
+
+    rerender(<ul><ProtrusionDimensionEditor locale="en"
+      target={{ ...target, count: 6, symmetry: 'radial' }} onChange={change}
+      onRemove={() => {}} /></ul>)
+    fireEvent.change(screen.getByLabelText('Symmetry binding 1'), {
+      target: { value: 'bilateral' },
+    })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({
+      symmetry: 'bilateral',
+      count: 6,
+    }))
+  })
   it('exposes bounded reorder controls', () => {
     const moveUp = vi.fn()
     const moveDown = vi.fn()

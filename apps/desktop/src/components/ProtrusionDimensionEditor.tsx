@@ -70,7 +70,10 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
   const bindingLabel = (template: LocalizedText, name: LocalizedText) =>
     formatLocalizedText(locale, template, { name: label(name), id: target.id })
   const symmetry = label(target.symmetry === 'none'
-    ? TEXT.symmetryNone : TEXT.symmetryBilateral)
+    ? TEXT.symmetryNone
+    : target.symmetry === 'bilateral'
+      ? TEXT.symmetryBilateral
+      : TEXT.symmetryRadial)
   return <li>
     <span>{formatLocalizedText(locale, TEXT.bindingSummary, {
       id: target.id, symmetry, count: target.count,
@@ -85,11 +88,17 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
       <select aria-label={bindingLabel(TEXT.ariaBinding, TEXT.symmetry)}
         value={target.symmetry}
         onChange={(event) => {
-          const next = event.currentTarget.value as 'none' | 'bilateral'
-          onChange({ ...target, symmetry: next, count: next === 'none' ? 1 : 2 })
+          const next = event.currentTarget.value as Protrusion['symmetry']
+          const count = next === 'none'
+            ? 1
+            : next === 'bilateral'
+              ? [2, 4, 6, 8].includes(target.count) ? target.count : 2
+              : target.count >= 2 && target.count <= 8 ? target.count : 2
+          onChange({ ...target, symmetry: next, count })
         }}>
         <option value="none">{label(TEXT.symmetryNone)}</option>
         <option value="bilateral">{label(TEXT.symmetryBilateral)}</option>
+        <option value="radial">{label(TEXT.symmetryRadial)}</option>
       </select>
     </label>
     <label>{label(TEXT.rootWidthLabel)}

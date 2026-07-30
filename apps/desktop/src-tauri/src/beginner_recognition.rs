@@ -257,6 +257,46 @@ pub(crate) struct BeginnerPartSuggestionsResponse {
     suggestions: Vec<BeginnerPartSuggestionV1>,
 }
 
+fn requested_bilateral_part_kind_v1(
+    target_category: Option<ori_domain::BeginnerTargetCategoryV1>,
+    target_parts: &[ori_domain::BeginnerTargetPartRecordV1],
+) -> ori_domain::BeginnerTargetPartKindV1 {
+    if target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
+    {
+        ori_domain::BeginnerTargetPartKindV1::Wing
+    } else if target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Fin && part.count == 2)
+    {
+        ori_domain::BeginnerTargetPartKindV1::Fin
+    } else if target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2)
+    {
+        ori_domain::BeginnerTargetPartKindV1::Ear
+    } else if target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 2)
+    {
+        ori_domain::BeginnerTargetPartKindV1::Horn
+    } else if target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2)
+    {
+        ori_domain::BeginnerTargetPartKindV1::Antenna
+    } else if target_parts.iter().any(|part| {
+        part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && matches!(part.count, 2 | 6)
+    }) {
+        ori_domain::BeginnerTargetPartKindV1::Leg
+    } else if target_category == Some(ori_domain::BeginnerTargetCategoryV1::Insect) {
+        ori_domain::BeginnerTargetPartKindV1::Wing
+    } else {
+        ori_domain::BeginnerTargetPartKindV1::Leg
+    }
+}
+
 #[tauri::command]
 pub(crate) fn recognize_beginner_outline_candidates(
     state: State<'_, AppState>,
@@ -378,41 +418,7 @@ pub(crate) fn recognize_beginner_part_suggestions(
             }
         }
     }
-    let requested_bilateral_kind = if target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
-    {
-        ori_domain::BeginnerTargetPartKindV1::Wing
-    } else if target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Fin && part.count == 2)
-    {
-        ori_domain::BeginnerTargetPartKindV1::Fin
-    } else if target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2)
-    {
-        ori_domain::BeginnerTargetPartKindV1::Ear
-    } else if target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 2)
-    {
-        ori_domain::BeginnerTargetPartKindV1::Horn
-    } else if target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2)
-    {
-        ori_domain::BeginnerTargetPartKindV1::Antenna
-    } else if target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 2)
-    {
-        ori_domain::BeginnerTargetPartKindV1::Leg
-    } else if target_category == Some(ori_domain::BeginnerTargetCategoryV1::Insect) {
-        ori_domain::BeginnerTargetPartKindV1::Wing
-    } else {
-        ori_domain::BeginnerTargetPartKindV1::Leg
-    };
+    let requested_bilateral_kind = requested_bilateral_part_kind_v1(target_category, &target_parts);
     for (index, candidate) in others.into_iter().enumerate() {
         suggestions.push(BeginnerPartSuggestionV1 {
             candidate_id: candidate.id,
@@ -1798,7 +1804,48 @@ fn decode_general_jpeg(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 mod tests {
     use super::{
         candidate_pair_is_symmetric, decode_general_image, decode_general_png, decode_marker_png,
+        requested_bilateral_part_kind_v1,
     };
+
+    #[test]
+    fn standalone_six_leg_recognition_requests_leg_pair_semantics() {
+        let part = |kind, count| ori_domain::BeginnerTargetPartRecordV1 { kind, count };
+        let six_legs = [part(ori_domain::BeginnerTargetPartKindV1::Leg, 6)];
+        assert_eq!(
+            requested_bilateral_part_kind_v1(
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+                &six_legs,
+            ),
+            ori_domain::BeginnerTargetPartKindV1::Leg
+        );
+        assert_eq!(
+            requested_bilateral_part_kind_v1(
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+                &[
+                    part(ori_domain::BeginnerTargetPartKindV1::Leg, 6),
+                    part(ori_domain::BeginnerTargetPartKindV1::Wing, 2),
+                ],
+            ),
+            ori_domain::BeginnerTargetPartKindV1::Wing
+        );
+        assert_eq!(
+            requested_bilateral_part_kind_v1(
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+                &[
+                    part(ori_domain::BeginnerTargetPartKindV1::Leg, 6),
+                    part(ori_domain::BeginnerTargetPartKindV1::Antenna, 2),
+                ],
+            ),
+            ori_domain::BeginnerTargetPartKindV1::Antenna
+        );
+        assert_eq!(
+            requested_bilateral_part_kind_v1(
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+                &[],
+            ),
+            ori_domain::BeginnerTargetPartKindV1::Wing
+        );
+    }
 
     #[test]
     fn complete_insect_image_pairs_require_both_equal_mirrored_sides() {

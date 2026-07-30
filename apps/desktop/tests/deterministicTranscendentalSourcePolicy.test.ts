@@ -70,7 +70,9 @@ function listWorkspaceRustSources(): string[] {
     ...listRustSources('crates')
       .filter((relativePath) => relativePath.includes('/src/')),
     ...listRustSources('apps/desktop/src-tauri/src'),
-  ].sort()
+  ]
+    .filter((relativePath) => !relativePath.includes('/tests/'))
+    .sort()
 }
 
 function withoutInlineTests(source: string): string {

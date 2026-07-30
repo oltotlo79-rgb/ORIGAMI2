@@ -25,30 +25,64 @@ pub enum DeterministicTranscendentalError {
 /// Whether this build target is covered by the v1 cross-runtime replay claim.
 ///
 /// V1 covers the continuously tested release/CI triples with a golden-bit
-/// corpus: x86-64 Windows/MSVC, x86-64 Linux/GNU, and AArch64 macOS. The
-/// frozen pure-Rust kernel also compiles on other targets, but proof DTOs must
-/// remain fail-closed until their target receives equivalent release and CI
-/// evidence.
+/// corpus: x86-64 Windows/MSVC, x86-64 Linux/GNU, and AArch64 release macOS.
+/// The frozen pure-Rust kernel also compiles on other targets, but proof DTOs
+/// must remain fail-closed until their target receives equivalent release and
+/// CI evidence.
 #[must_use]
 pub const fn deterministic_transcendental_model_supported_v1() -> bool {
-    cfg!(all(
-        target_pointer_width = "64",
-        target_endian = "little",
-        any(
-            all(
-                target_arch = "x86_64",
-                target_os = "windows",
-                target_env = "msvc"
-            ),
-            all(
-                target_arch = "x86_64",
-                target_os = "linux",
-                target_env = "gnu"
-            ),
-            all(target_arch = "aarch64", target_os = "macos")
-        )
-    ))
+    deterministic_transcendental_target_facts_supported_v1([
+        cfg!(target_pointer_width = "64"),
+        cfg!(target_endian = "little"),
+        cfg!(target_arch = "x86_64"),
+        cfg!(target_arch = "aarch64"),
+        cfg!(target_os = "windows"),
+        cfg!(target_os = "linux"),
+        cfg!(target_os = "macos"),
+        cfg!(target_env = "msvc"),
+        cfg!(target_env = "gnu"),
+    ])
 }
+
+const fn deterministic_transcendental_target_facts_supported_v1(
+    [
+        pointer_width_64,
+        little_endian,
+        x86_64,
+        aarch64,
+        windows,
+        linux,
+        macos,
+        msvc,
+        gnu,
+    ]: [bool; 9],
+) -> bool {
+    pointer_width_64
+        && little_endian
+        && ((x86_64 && windows && msvc) || (x86_64 && linux && gnu) || (aarch64 && macos))
+}
+
+#[cfg(all(
+    target_pointer_width = "64",
+    target_endian = "little",
+    any(
+        all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"),
+        all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"),
+        all(target_arch = "aarch64", target_os = "macos")
+    )
+))]
+const _: () = assert!(deterministic_transcendental_model_supported_v1());
+
+#[cfg(not(all(
+    target_pointer_width = "64",
+    target_endian = "little",
+    any(
+        all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"),
+        all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"),
+        all(target_arch = "aarch64", target_os = "macos")
+    )
+)))]
+const _: () = assert!(!deterministic_transcendental_model_supported_v1());
 
 pub fn deterministic_sin_v1(radians: f64) -> Result<f64, DeterministicTranscendentalError> {
     finite_unary(radians, libm::sin)
@@ -506,6 +540,72 @@ mod tests {
                 )
                 .map(|(x, y)| (x.to_bits(), y.to_bits())),
                 Ok((expected_x, expected_y))
+            );
+        }
+    }
+
+    #[test]
+    fn v1_supported_target_matrix_is_explicit_and_closed() {
+        for (name, facts) in [
+            (
+                "x86_64-pc-windows-msvc",
+                [true, true, true, false, true, false, false, true, false],
+            ),
+            (
+                "x86_64-unknown-linux-gnu",
+                [true, true, true, false, false, true, false, false, true],
+            ),
+            (
+                "aarch64-apple-darwin",
+                [true, true, false, true, false, false, true, false, false],
+            ),
+        ] {
+            assert!(
+                deterministic_transcendental_target_facts_supported_v1(facts),
+                "{name} must remain covered by v1"
+            );
+        }
+        for (name, facts) in [
+            (
+                "32-bit x86 macOS",
+                [false, true, true, false, false, false, true, false, false],
+            ),
+            (
+                "big-endian AArch64 macOS",
+                [true, false, false, true, false, false, true, false, false],
+            ),
+            (
+                "other-architecture macOS",
+                [true, true, false, false, false, false, true, false, false],
+            ),
+            (
+                "x86-64 macOS without a native release evidence gate",
+                [true, true, true, false, false, false, true, false, false],
+            ),
+            (
+                "AArch64 Linux/GNU",
+                [true, true, false, true, false, true, false, false, true],
+            ),
+            (
+                "x86-64 Linux without GNU",
+                [true, true, true, false, false, true, false, false, false],
+            ),
+            (
+                "x86-64 Windows/GNU",
+                [true, true, true, false, true, false, false, false, true],
+            ),
+            (
+                "AArch64 Windows/MSVC",
+                [true, true, false, true, true, false, false, true, false],
+            ),
+            (
+                "x86-64 unsupported operating system",
+                [true, true, true, false, false, false, false, false, false],
+            ),
+        ] {
+            assert!(
+                !deterministic_transcendental_target_facts_supported_v1(facts),
+                "{name} must remain fail-closed"
             );
         }
     }

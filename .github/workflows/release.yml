@@ -132,8 +132,10 @@ jobs:
         include:
           - os: windows-latest
             platform: windows-x64
+            rust_host: x86_64-pc-windows-msvc
           - os: macos-14
             platform: macos-arm64
+            rust_host: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     environment: ${{ needs.validate.outputs.mode != 'dry-run' && 'formal-release-signing' || '' }}
@@ -147,6 +149,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: 1.90.0
+      - name: Verify Rust host matches the release platform
+        shell: bash
+        env:
+          EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
+        run: |
+          set -euo pipefail
+          actual_rust_host="$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
+          test -n "$actual_rust_host"
+          test "$actual_rust_host" = "$EXPECTED_RUST_HOST"
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.11.1

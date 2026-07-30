@@ -575,7 +575,7 @@ Schema
 
 数値solverの反復previewは証明権威ではないためplatformの`sin`、`cos`、`atan2`、`hypot`を維持する。exact satisfaction、構成的SAT証人、direct conflictおよびsemantic MUSの再認証だけを決定論モデルへ分離し、previewの収束値、tolerance、rankを証明へ昇格しない。非有限入力・結果、未対応model、未検証targetでは肯定証拠を発行しない。
 
-`replayable_across_runtimes`は、同じ凍結modelのgolden bit corpusを継続実行するx86-64 Windows/MSVC、x86-64 Linux/GNU、AArch64 macOSでだけtrueとする。それ以外のtargetは同じkernelがcompileできてもfalseへ閉じる。WindowsとmacOSのrelease matrix、およびLinux CIは、release build前に`ori-numeric`のbit-exact回帰を必須gateとして実行する。ここでいう再現性は同じ入力を同じmodelで再認証できることを意味し、process-local opaque証人そのもののserialize・移送可能性は主張しない。
+`replayable_across_runtimes`は、同じ凍結modelのgolden bit corpusを継続実行するx86-64 Windows/MSVC、x86-64 Linux/GNU、AArch64 macOSでだけtrueとする。それ以外のtargetは同じkernelがcompileできてもfalseへ閉じ、native release evidence gateがないx86-64 macOSも対象外とする。WindowsとmacOSのrelease matrixは`rustc -vV`のhost tripleがそれぞれ`x86_64-pc-windows-msvc`と`aarch64-apple-darwin`であることを先に検証し、Linux CIとともにrelease build前に`ori-numeric`のbit-exact回帰を必須gateとして実行する。ここでいう再現性は同じ入力を同じmodelで再認証できることを意味し、process-local opaque証人そのもののserialize・移送可能性は主張しない。
 
 同じ頂点・同じunordered edge pairに複数の`FixedAngle`がある場合、保存degreeのbit差だけを矛盾証拠にしない。各degreeを凍結換算し、`actual - expected`、`+ π`、`rem_euclid(2π)`、`- π`のbinary64演算順について、残差がexact zeroとなり得るactual angleをπの隣接値間隔から外向きに包囲する。二つの包囲区間が厳密に分離する場合だけ`DifferentFixedAngles`を肯定し、最小subnormalの換算collapse、signed zero、隣接degree、包囲区間の接触・重複は`Unknown`へ閉じる。肯定した2制約coreは各1件削除後に別々の構成的SAT証人を再認証できた場合だけsemantic MUSへ昇格する。
 

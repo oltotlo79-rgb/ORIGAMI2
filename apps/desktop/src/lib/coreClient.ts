@@ -3143,7 +3143,7 @@ export async function getBeginnerSymmetricParameterEstimate(
       || !Number.isInteger(item.scale_percent) || Number(item.scale_percent) < 10 || Number(item.scale_percent) > 45
       || !Number.isInteger(item.spacing_percent) || Number(item.spacing_percent) < 20 || Number(item.spacing_percent) > 80
       || !Number.isInteger(item.approximation_score) || Number(item.approximation_score) < 0 || Number(item.approximation_score) > 100
-      || !Number.isInteger(item.complexity_score) || Number(item.complexity_score) < 0 || Number(item.complexity_score) > 100) throw new Error('invalid symmetric parameter candidates')
+      || !Number.isInteger(item.complexity_score) || Number(item.complexity_score) < 0 || Number(item.complexity_score) > 255) throw new Error('invalid symmetric parameter candidates')
     return Object.freeze(item)
   })
   return Object.freeze({ ...record, estimate: Object.freeze(estimate), candidates: Object.freeze(candidates) }) as BeginnerSymmetricParameterEstimateResponse

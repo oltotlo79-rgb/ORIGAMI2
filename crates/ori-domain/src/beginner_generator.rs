@@ -303,6 +303,9 @@ pub struct BeginnerCompleteInsectBindingV1 {
 pub fn insect_complete_bindings_v1(
     constraints: &BeginnerGenerationConstraintsV1,
 ) -> Option<BeginnerCompleteInsectBindingV1> {
+    if constraints.protrusions.len() != 5 {
+        return None;
+    }
     let count = |kind| {
         constraints
             .target_parts
@@ -391,6 +394,7 @@ pub fn insect_wing_antenna_bindings_v1(
     if constraints.target_category != Some(BeginnerTargetCategoryV1::Insect)
         || count(BeginnerTargetPartKindV1::Wing) != 2
         || count(BeginnerTargetPartKindV1::Antenna) != 2
+        || constraints.protrusions.len() != 2
     {
         return None;
     }
@@ -456,6 +460,14 @@ pub fn animal_horn_tail_ear_bindings_v1(
         tail_protrusion_id: tail.id,
         ear_pair_protrusion_id: ears.id,
     })
+}
+
+fn animal_standalone_horn_tail_ear_bindings_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerHornTailEarBindingV1> {
+    (constraints.protrusions.len() == 3)
+        .then(|| animal_horn_tail_ear_bindings_v1(constraints))
+        .flatten()
 }
 
 #[must_use]
@@ -553,6 +565,7 @@ pub fn animal_horn_tail_bindings_v1(
     if constraints.target_category != Some(BeginnerTargetCategoryV1::Animal)
         || count(BeginnerTargetPartKindV1::Horn) != 1
         || count(BeginnerTargetPartKindV1::Tail) != 1
+        || constraints.protrusions.len() != 2
     {
         return None;
     }
@@ -590,6 +603,7 @@ pub fn animal_horn_ear_bindings_v1(
     if constraints.target_category != Some(BeginnerTargetCategoryV1::Animal)
         || count(BeginnerTargetPartKindV1::Horn) != 1
         || count(BeginnerTargetPartKindV1::Ear) != 2
+        || constraints.protrusions.len() != 2
     {
         return None;
     }
@@ -627,6 +641,7 @@ pub fn animal_tail_ear_bindings_v1(
     if constraints.target_category != Some(BeginnerTargetCategoryV1::Animal)
         || count(BeginnerTargetPartKindV1::Tail) != 1
         || count(BeginnerTargetPartKindV1::Ear) != 2
+        || constraints.protrusions.len() != 2
     {
         return None;
     }
@@ -655,6 +670,7 @@ pub fn insect_three_pair_bindings_v1(
     constraints: &BeginnerGenerationConstraintsV1,
 ) -> Option<[BeginnerBilateralPairBindingV1; 3]> {
     if constraints.target_category != Some(BeginnerTargetCategoryV1::Insect)
+        || constraints.protrusions.len() != 3
         || constraints
             .target_parts
             .iter()
@@ -1084,8 +1100,14 @@ pub fn generate_beginner_plans_v1(
             {
                 let complete = animal_complete_bindings_v1(constraints);
                 let winged_complete = animal_complete_winged_bindings_v1(constraints);
-                let bindings = animal_horn_tail_ear_bindings_v1(constraints)
-                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                let bindings = if complete.is_some() || winged_complete.is_some() {
+                    animal_horn_tail_ear_bindings_v1(constraints)
+                } else if part_count(BeginnerTargetPartKindV1::Leg) == 0 {
+                    animal_standalone_horn_tail_ear_bindings_v1(constraints)
+                } else {
+                    None
+                }
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
                 let mut horn_only = constraints.clone();
                 horn_only
                     .protrusions
@@ -1978,7 +2000,15 @@ fn animal_target_approximation_score_target_v1(
     let tail = part_count(BeginnerTargetPartKindV1::Tail) == 1;
     let ears = part_count(BeginnerTargetPartKindV1::Ear) == 2;
     if horn && tail && ears {
-        let bindings = animal_horn_tail_ear_bindings_v1(constraints)?;
+        let complete = animal_complete_bindings_v1(constraints);
+        let winged_complete = animal_complete_winged_bindings_v1(constraints);
+        let bindings = if complete.is_some() || winged_complete.is_some() {
+            animal_horn_tail_ear_bindings_v1(constraints)
+        } else if part_count(BeginnerTargetPartKindV1::Leg) == 0 {
+            animal_standalone_horn_tail_ear_bindings_v1(constraints)
+        } else {
+            None
+        }?;
         let horn_target = validated_isolated_center_axis_target_v1(
             constraints,
             bindings.horn_protrusion_id,
@@ -1992,8 +2022,6 @@ fn animal_target_approximation_score_target_v1(
             false,
         )?;
 
-        let complete = animal_complete_bindings_v1(constraints);
-        let winged_complete = animal_complete_winged_bindings_v1(constraints);
         if let Some(binding) = complete.or(winged_complete.map(|winged| winged.animal)) {
             validated_isolated_symmetric_target_v1(
                 constraints,
@@ -2174,52 +2202,61 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                         })
                         .count()
                         >= 7;
+                let declared_complete = part_count(BeginnerTargetPartKindV1::Wing) == 2
+                    && part_count(BeginnerTargetPartKindV1::Antenna) == 2
+                    && part_count(BeginnerTargetPartKindV1::Leg) == 6;
+                let declared_wing_antenna = part_count(BeginnerTargetPartKindV1::Wing) == 2
+                    && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
                 if asymmetric_landmark_insect {
                     constraints
                         .protrusions
                         .iter()
                         .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
-                } else if let Some(bindings) = insect_complete_bindings_v1(constraints) {
-                    let ordered = [
-                        (bindings.wing_pair_protrusion_id, false),
-                        (bindings.antenna_pair_protrusion_id, true),
-                        (bindings.leg_pair_protrusion_ids[0], false),
-                        (bindings.leg_pair_protrusion_ids[1], false),
-                        (bindings.leg_pair_protrusion_ids[2], false),
-                    ];
-                    ordered
-                        .into_iter()
-                        .all(|(id, vertical)| {
-                            let mut isolated = constraints.clone();
-                            isolated.protrusions.retain(|target| target.id == id);
-                            parameterized_symmetric_endpoints(&isolated, 2, vertical).is_some()
-                        })
-                        .then(|| {
-                            constraints
-                                .protrusions
-                                .iter()
-                                .find(|target| target.id == bindings.wing_pair_protrusion_id)
-                        })
-                        .flatten()
-                } else if let Some(bindings) = insect_wing_antenna_bindings_v1(constraints) {
-                    let ordered = [
-                        (bindings.wing_pair_protrusion_id, false),
-                        (bindings.antenna_pair_protrusion_id, true),
-                    ];
-                    ordered
-                        .into_iter()
-                        .all(|(id, vertical)| {
-                            let mut isolated = constraints.clone();
-                            isolated.protrusions.retain(|target| target.id == id);
-                            parameterized_symmetric_endpoints(&isolated, 2, vertical).is_some()
-                        })
-                        .then(|| {
-                            constraints
-                                .protrusions
-                                .iter()
-                                .find(|target| target.id == bindings.wing_pair_protrusion_id)
-                        })
-                        .flatten()
+                } else if declared_complete {
+                    insect_complete_bindings_v1(constraints).and_then(|bindings| {
+                        let ordered = [
+                            (bindings.wing_pair_protrusion_id, false),
+                            (bindings.antenna_pair_protrusion_id, true),
+                            (bindings.leg_pair_protrusion_ids[0], false),
+                            (bindings.leg_pair_protrusion_ids[1], false),
+                            (bindings.leg_pair_protrusion_ids[2], false),
+                        ];
+                        ordered
+                            .into_iter()
+                            .all(|(id, vertical)| {
+                                let mut isolated = constraints.clone();
+                                isolated.protrusions.retain(|target| target.id == id);
+                                parameterized_symmetric_endpoints(&isolated, 2, vertical).is_some()
+                            })
+                            .then(|| {
+                                constraints
+                                    .protrusions
+                                    .iter()
+                                    .find(|target| target.id == bindings.wing_pair_protrusion_id)
+                            })
+                            .flatten()
+                    })
+                } else if declared_wing_antenna {
+                    insect_wing_antenna_bindings_v1(constraints).and_then(|bindings| {
+                        let ordered = [
+                            (bindings.wing_pair_protrusion_id, false),
+                            (bindings.antenna_pair_protrusion_id, true),
+                        ];
+                        ordered
+                            .into_iter()
+                            .all(|(id, vertical)| {
+                                let mut isolated = constraints.clone();
+                                isolated.protrusions.retain(|target| target.id == id);
+                                parameterized_symmetric_endpoints(&isolated, 2, vertical).is_some()
+                            })
+                            .then(|| {
+                                constraints
+                                    .protrusions
+                                    .iter()
+                                    .find(|target| target.id == bindings.wing_pair_protrusion_id)
+                            })
+                            .flatten()
+                    })
                 } else if constraints
                     .target_parts
                     .iter()
@@ -4361,6 +4398,19 @@ mod tests {
             })
         );
         assert_eq!(beginner_target_approximation_score_v1(&composite), 92);
+        let mut oversized_tail_ears = composite.clone();
+        oversized_tail_ears
+            .protrusions
+            .push(bilateral_protrusion(3, 4));
+        assert_eq!(animal_tail_ear_bindings_v1(&oversized_tail_ears), None);
+        assert_eq!(
+            beginner_target_approximation_score_v1(&oversized_tail_ears),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &oversized_tail_ears),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut invalid_tail_ears = composite.clone();
         invalid_tail_ears.protrusions[1].position_tenths_mm[0] = 1;
         assert!(animal_tail_ear_bindings_v1(&invalid_tail_ears).is_some());
@@ -4416,6 +4466,19 @@ mod tests {
             })
         );
         assert_eq!(beginner_target_approximation_score_v1(&horn_tail), 92);
+        let mut oversized_horn_tail = horn_tail.clone();
+        oversized_horn_tail
+            .protrusions
+            .push(bilateral_protrusion(3, 4));
+        assert_eq!(animal_horn_tail_bindings_v1(&oversized_horn_tail), None);
+        assert_eq!(
+            beginner_target_approximation_score_v1(&oversized_horn_tail),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &oversized_horn_tail),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut reversed_horn_tail = horn_tail.clone();
         reversed_horn_tail.protrusions.reverse();
         assert_eq!(
@@ -4461,6 +4524,20 @@ mod tests {
             })
         );
         assert_eq!(beginner_target_approximation_score_v1(&triple), 92);
+        let mut oversized_triple = triple.clone();
+        oversized_triple
+            .protrusions
+            .push(bilateral_protrusion(4, 4));
+        assert!(animal_horn_tail_ear_bindings_v1(&oversized_triple).is_some());
+        assert_eq!(
+            animal_standalone_horn_tail_ear_bindings_v1(&oversized_triple),
+            None
+        );
+        assert_eq!(beginner_target_approximation_score_v1(&oversized_triple), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &oversized_triple),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut invalid_ears = triple.clone();
         invalid_ears.protrusions[2].position_tenths_mm[0] = 1;
         assert!(animal_horn_tail_ear_bindings_v1(&invalid_ears).is_some());
@@ -4508,6 +4585,11 @@ mod tests {
         let mut duplicate_leg = complete_animal.clone();
         duplicate_leg.protrusions.push(legs);
         assert_eq!(animal_complete_bindings_v1(&duplicate_leg), None);
+        assert_eq!(beginner_target_approximation_score_v1(&duplicate_leg), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &duplicate_leg),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut missing_leg = complete_animal.clone();
         missing_leg.protrusions.retain(|target| target.id != 4);
         assert_eq!(animal_complete_bindings_v1(&missing_leg), None);
@@ -4573,6 +4655,19 @@ mod tests {
             })
         );
         assert_eq!(beginner_target_approximation_score_v1(&horn_ear), 92);
+        let mut oversized_horn_ears = horn_ear.clone();
+        oversized_horn_ears
+            .protrusions
+            .push(bilateral_protrusion(3, 4));
+        assert_eq!(animal_horn_ear_bindings_v1(&oversized_horn_ears), None);
+        assert_eq!(
+            beginner_target_approximation_score_v1(&oversized_horn_ears),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &oversized_horn_ears),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut invalid_horn_ears = horn_ear.clone();
         invalid_horn_ears.protrusions[1].position_tenths_mm[0] = 1;
         assert!(animal_horn_ear_bindings_v1(&invalid_horn_ears).is_some());
@@ -4998,6 +5093,39 @@ mod tests {
                 antenna_pair_protrusion_id: 2,
             })
         );
+        let mut oversized_wing_antenna = wing_antenna.clone();
+        oversized_wing_antenna
+            .protrusions
+            .push(bilateral_protrusion(3, 4));
+        assert_eq!(
+            insect_wing_antenna_bindings_v1(&oversized_wing_antenna),
+            None
+        );
+        assert_eq!(
+            beginner_target_approximation_score_v1(&oversized_wing_antenna),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &oversized_wing_antenna),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
+        let mut incomplete_wing_antenna = wing_antenna.clone();
+        incomplete_wing_antenna.protrusions.truncate(1);
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &incomplete_wing_antenna
+        ));
+        assert_eq!(
+            insect_wing_antenna_bindings_v1(&incomplete_wing_antenna),
+            None
+        );
+        assert_eq!(
+            beginner_target_approximation_score_v1(&incomplete_wing_antenna),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &incomplete_wing_antenna),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
         for invalid_target_index in 0..2 {
             let mut invalid_composite = wing_antenna.clone();
             invalid_composite.protrusions[invalid_target_index].position_tenths_mm[0] = 1;
@@ -5065,6 +5193,23 @@ mod tests {
         extra_leg.position_tenths_mm[1] = 9;
         oversized.protrusions.push(extra_leg);
         assert_eq!(insect_complete_bindings_v1(&oversized), None);
+        assert_eq!(beginner_target_approximation_score_v1(&oversized), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &oversized),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
+        let mut incomplete = complete.clone();
+        incomplete.protrusions.retain(|target| target.id >= 3);
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &incomplete
+        ));
+        assert_eq!(insect_complete_bindings_v1(&incomplete), None);
+        assert!(insect_three_pair_bindings_v1(&incomplete).is_some());
+        assert_eq!(beginner_target_approximation_score_v1(&incomplete), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &incomplete),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
         let mut ambiguous_priority = complete.clone();
         ambiguous_priority.protrusions[2].priority = 60;
         assert_eq!(insect_complete_bindings_v1(&ambiguous_priority), None);
@@ -5132,6 +5277,22 @@ mod tests {
             ])
         );
         assert_eq!(beginner_target_approximation_score_v1(&complete_legs), 92);
+        let mut oversized_complete_legs = complete_legs.clone();
+        oversized_complete_legs
+            .protrusions
+            .push(bilateral_protrusion(4, 4));
+        assert_eq!(
+            insect_three_pair_bindings_v1(&oversized_complete_legs),
+            None
+        );
+        assert_eq!(
+            beginner_target_approximation_score_v1(&oversized_complete_legs),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &oversized_complete_legs),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
         let complete_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &complete_legs).unwrap();
         assert_eq!(

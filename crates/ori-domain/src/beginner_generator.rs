@@ -1352,14 +1352,9 @@ pub fn generate_beginner_plans_v1(
                     BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
                         | BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
                 );
-                if constraints.skeleton_segments.len() < if vertical { 3 } else { 2 }
-                    || (!asymmetric && !has_bilateral_skeleton(constraints))
-                    || (!asymmetric && !has_bilateral_protrusion_count(constraints, required_count))
-                {
-                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
-                }
                 let endpoints = if asymmetric {
-                    if constraints.protrusions.len() != usize::from(required_count)
+                    if constraints.skeleton_segments.len() < if vertical { 3 } else { 2 }
+                        || constraints.protrusions.len() != usize::from(required_count)
                         || constraints
                             .protrusions
                             .windows(2)
@@ -1374,9 +1369,14 @@ pub fn generate_beginner_plans_v1(
                     }
                     vec![(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)]
                 } else {
-                    parameterized_symmetric_endpoints(constraints, required_count, vertical)
-                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
-                        .to_vec()
+                    exact_single_bilateral_template_target_and_endpoints_v1(
+                        constraints,
+                        required_count,
+                        vertical,
+                        if vertical { 3 } else { 2 },
+                    )
+                    .map(|(_, endpoints)| endpoints.to_vec())
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
                 };
                 symmetric_template(
                     namespace,
@@ -1607,14 +1607,14 @@ pub fn generate_beginner_plans_v1(
                 } else {
                     return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
                 };
-                if constraints.skeleton_segments.len() < 2
-                    || !has_bilateral_skeleton(constraints)
-                    || !has_bilateral_protrusion_count(constraints, 2)
-                {
-                    return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
-                }
-                let endpoints = parameterized_symmetric_endpoints(constraints, 2, false)
-                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                let endpoints = exact_single_bilateral_template_target_and_endpoints_v1(
+                    constraints,
+                    2,
+                    false,
+                    2,
+                )
+                .map(|(_, endpoints)| endpoints)
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
                 symmetric_template(
                     namespace,
                     source,
@@ -1811,6 +1811,29 @@ fn exact_single_center_axis_target_and_endpoint_v1(
         vertical,
     )?;
     Some((target, endpoint))
+}
+
+fn exact_single_bilateral_template_target_and_endpoints_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+    count: u8,
+    vertical: bool,
+    minimum_skeleton_segments: usize,
+) -> Option<(&BeginnerProtrusionTargetV1, [(f64, f64); 4])> {
+    if constraints.skeleton_segments.len() < minimum_skeleton_segments
+        || !has_bilateral_skeleton(constraints)
+    {
+        return None;
+    }
+    let [target] = constraints.protrusions.as_slice() else {
+        return None;
+    };
+    let endpoints = parameterized_symmetric_endpoints_for_target(
+        target,
+        &constraints.skeleton_segments,
+        count,
+        vertical,
+    )?;
+    Some((target, endpoints))
 }
 
 fn uses_bounded_generic_target_base_v1(constraints: &BeginnerGenerationConstraintsV1) -> bool {
@@ -2070,19 +2093,13 @@ fn animal_target_approximation_score_target_v1(
         } else {
             return None;
         };
-    if constraints.skeleton_segments.len() < minimum_skeleton_segments
-        || !has_bilateral_skeleton(constraints)
-        || !has_bilateral_protrusion_count(constraints, count)
-    {
-        None
-    } else {
-        parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
-            constraints
-                .protrusions
-                .iter()
-                .find(|target| target.count == count)
-        })
-    }
+    exact_single_bilateral_template_target_and_endpoints_v1(
+        constraints,
+        count,
+        vertical,
+        minimum_skeleton_segments,
+    )
+    .map(|(target, _)| target)
 }
 
 #[must_use]
@@ -2239,19 +2256,16 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                     ]
                     .into_iter()
                     .any(|kind| part_count(kind) == 2);
-                    if !supported_pair
-                        || constraints.skeleton_segments.len() < 2
-                        || !has_bilateral_skeleton(constraints)
-                        || !has_bilateral_protrusion_count(constraints, 2)
-                    {
+                    if !supported_pair {
                         None
                     } else {
-                        parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
-                            constraints
-                                .protrusions
-                                .iter()
-                                .find(|target| target.count == 2)
-                        })
+                        exact_single_bilateral_template_target_and_endpoints_v1(
+                            constraints,
+                            2,
+                            false,
+                            2,
+                        )
+                        .map(|(target, _)| target)
                     }
                 }
             }
@@ -2298,15 +2312,6 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
     base.saturating_add(contour_bonus)
         .saturating_add(surface_bulge_bonus)
         .min(100)
-}
-
-fn has_bilateral_protrusion_count(
-    constraints: &BeginnerGenerationConstraintsV1,
-    count: u8,
-) -> bool {
-    constraints.protrusions.iter().any(|target| {
-        target.count == count && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
-    })
 }
 
 fn has_bilateral_skeleton(constraints: &BeginnerGenerationConstraintsV1) -> bool {
@@ -4026,6 +4031,141 @@ mod tests {
 
             constraints.protrusions.clear();
             assert_eq!(beginner_target_approximation_score_v1(&constraints), 75);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
+                Err(expected_error)
+            );
+        }
+    }
+
+    #[test]
+    fn bilateral_single_templates_require_exactly_one_target() {
+        let namespace = ProjectId::schema_namespace([0x6d; 16]);
+        let (ids, source) = square_source(namespace);
+        for (category, part_kind, count, expected_kind, expected_error, expected_empty_score) in [
+            (
+                BeginnerTargetCategoryV1::Animal,
+                BeginnerTargetPartKindV1::Leg,
+                4,
+                BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
+                72,
+            ),
+            (
+                BeginnerTargetCategoryV1::Animal,
+                BeginnerTargetPartKindV1::Wing,
+                2,
+                BeginnerGeneratedPlanKindV1::SymmetricBirdBase,
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
+                75,
+            ),
+            (
+                BeginnerTargetCategoryV1::Animal,
+                BeginnerTargetPartKindV1::Fin,
+                2,
+                BeginnerGeneratedPlanKindV1::SymmetricFishBase,
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
+                75,
+            ),
+            (
+                BeginnerTargetCategoryV1::Animal,
+                BeginnerTargetPartKindV1::Ear,
+                2,
+                BeginnerGeneratedPlanKindV1::SymmetricEarBase,
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
+                75,
+            ),
+            (
+                BeginnerTargetCategoryV1::Animal,
+                BeginnerTargetPartKindV1::Horn,
+                2,
+                BeginnerGeneratedPlanKindV1::SymmetricHornBase,
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
+                75,
+            ),
+            (
+                BeginnerTargetCategoryV1::Insect,
+                BeginnerTargetPartKindV1::Wing,
+                2,
+                BeginnerGeneratedPlanKindV1::SymmetricWingBase,
+                BeginnerGeneratorErrorV1::UnsupportedInsectTemplate,
+                75,
+            ),
+            (
+                BeginnerTargetCategoryV1::Insect,
+                BeginnerTargetPartKindV1::Antenna,
+                2,
+                BeginnerGeneratedPlanKindV1::SymmetricAntennaBase,
+                BeginnerGeneratorErrorV1::UnsupportedInsectTemplate,
+                75,
+            ),
+            (
+                BeginnerTargetCategoryV1::Insect,
+                BeginnerTargetPartKindV1::Leg,
+                2,
+                BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase,
+                BeginnerGeneratorErrorV1::UnsupportedInsectTemplate,
+                75,
+            ),
+        ] {
+            let target = bilateral_protrusion(1, count);
+            let mut constraints = BeginnerGenerationConstraintsV1 {
+                target_category: Some(category),
+                target_parts: vec![
+                    BeginnerTargetPartRecordV1 {
+                        kind: BeginnerTargetPartKindV1::Head,
+                        count: 1,
+                    },
+                    BeginnerTargetPartRecordV1 {
+                        kind: BeginnerTargetPartKindV1::Torso,
+                        count: 1,
+                    },
+                    BeginnerTargetPartRecordV1 {
+                        kind: part_kind,
+                        count,
+                    },
+                ],
+                skeleton_segments: vec![
+                    skeleton(1, -10, 0, 0, 10),
+                    skeleton(2, 10, 0, 0, 10),
+                    skeleton(3, 0, -10, 0, 10),
+                ],
+                protrusions: vec![target.clone()],
+                ..BeginnerGenerationConstraintsV1::default()
+            };
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &constraints
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&constraints), 92);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap()[0].kind,
+                expected_kind
+            );
+
+            let mut extra = target;
+            extra.id = 2;
+            extra.priority = 100;
+            constraints.protrusions.push(extra);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &constraints
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&constraints), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
+                Err(expected_error)
+            );
+            constraints.protrusions.reverse();
+            assert_eq!(beginner_target_approximation_score_v1(&constraints), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
+                Err(expected_error)
+            );
+
+            constraints.protrusions.clear();
+            assert_eq!(
+                beginner_target_approximation_score_v1(&constraints),
+                expected_empty_score
+            );
             assert_eq!(
                 generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
                 Err(expected_error)

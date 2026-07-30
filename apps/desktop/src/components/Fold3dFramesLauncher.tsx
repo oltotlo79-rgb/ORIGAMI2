@@ -125,10 +125,12 @@ export function Fold3dFramesLauncher({
   async function choose(index: number) {
     if (!preview || busy) return
     setBusy(true); setError(null)
+    setConfirmed(false); setApplied(false); setCompatibility(null)
     try {
-      setSelection(await selectFold3dFrame(preview, index))
-      setCompatibility(await prepareFold3dAppliedPose(preview, index))
-      setConfirmed(false); setApplied(false)
+      const nextSelection = await selectFold3dFrame(preview, index)
+      const nextCompatibility = await prepareFold3dAppliedPose(preview, index)
+      setSelection(nextSelection)
+      setCompatibility(nextCompatibility)
     }
     catch { setError('selectionError') }
     finally { setBusy(false) }

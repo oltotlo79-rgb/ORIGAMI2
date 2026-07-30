@@ -71,6 +71,13 @@ const SELECTION = Object.freeze({
   authorizesInstructionTimeline: false as const,
 })
 
+const SECOND_SELECTION = Object.freeze({
+  ...SELECTION,
+  frameIndex: 1,
+  vertexCount: 6,
+  previewImageDataUrl: 'data:image/png;base64,AQ==',
+})
+
 const COMPATIBILITY = Object.freeze({
   token: PREVIEW.token,
   frameIndex: 0,
@@ -270,6 +277,53 @@ it('keeps the preview open when the OCC runner rejects the timeline result', asy
   })
   expect(screen.getByRole('dialog')).toBe(dialog)
   expect(api.applyTimeline).toHaveBeenCalledTimes(1)
+})
+
+it('invalidates the accepted pose when compatibility preparation fails during a frame switch', async () => {
+  const runNativeEdit = nativeEditRunner()
+  render(
+    <Fold3dFramesLauncher
+      disabled={false}
+      runNativeEdit={runNativeEdit}
+      localeStore={localeFixture('en')}
+    />,
+  )
+
+  fireEvent.click(screen.getByRole('button', {
+    name: 'Preview FOLD 3D frames',
+  }))
+  await screen.findByRole('dialog', {
+    name: 'FOLD 3D frame preview',
+  })
+  const poseConfirmation = await screen.findByRole('checkbox', {
+    name: /Replace only the current 3D pose/u,
+  })
+  fireEvent.click(poseConfirmation)
+
+  api.select.mockResolvedValueOnce(SECOND_SELECTION)
+  api.preparePose.mockRejectedValueOnce(new Error('stale preview'))
+  fireEvent.change(screen.getByRole('combobox', {
+    name: 'Frame',
+  }), { target: { value: '1' } })
+
+  await waitFor(() => {
+    expect(screen.getByRole('alert').textContent).toBe(
+      'This preview is stale. Close and retry.',
+    )
+  })
+  expect((screen.getByRole('combobox', {
+    name: 'Frame',
+  }) as HTMLSelectElement).value).toBe('0')
+  expect(screen.queryByRole('checkbox', {
+    name: /Replace only the current 3D pose/u,
+  })).toBeNull()
+  expect(screen.queryByRole('button', {
+    name: 'Apply current 3D pose',
+  })).toBeNull()
+  expect(api.applyPose).not.toHaveBeenCalled()
+  expect(api.select).toHaveBeenCalledTimes(2)
+  expect(api.preparePose).toHaveBeenCalledTimes(2)
+  expect(runNativeEdit).not.toHaveBeenCalled()
 })
 
 it('requires fresh confirmations after a preview is closed and reopened', async () => {

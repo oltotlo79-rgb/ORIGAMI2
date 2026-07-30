@@ -1,4 +1,95 @@
 #[test]
+fn asymmetric_fish_live_estimate_configures_three_ordered_landmarks() {
+    let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+    profile.generation_constraints.target_category =
+        Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+    profile.generation_constraints.target_parts = [
+        (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Fin, 2),
+    ]
+    .into_iter()
+    .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+    .collect();
+    let estimate =
+        ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints).unwrap();
+    assert_eq!(estimate.protrusion_count, 3);
+    configure_symmetric_profile(
+        &mut profile,
+        estimate,
+        estimate.scale_percent,
+        estimate.spacing_percent,
+    );
+    let configured = profile.clone();
+    configure_symmetric_profile(
+        &mut profile,
+        estimate,
+        estimate.scale_percent,
+        estimate.spacing_percent,
+    );
+    assert_eq!(profile, configured);
+    assert_eq!(
+        profile
+            .generation_constraints
+            .protrusions
+            .iter()
+            .map(|target| (
+                target.id,
+                target.count,
+                target.position_tenths_mm,
+                target.direction_milli,
+                target.symmetry,
+                target.priority,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                1,
+                1,
+                [-4, 0, 0],
+                [-1000, 200, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+            (
+                2,
+                1,
+                [5, 1, 0],
+                [1000, -100, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+            (
+                3,
+                1,
+                [0, -5, 0],
+                [100, -1000, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+        ]
+    );
+    assert_eq!(
+        ori_domain::beginner_target_approximation_score_v1(&profile.generation_constraints),
+        92
+    );
+    let project = initial_project_state();
+    let plans = ori_domain::generate_beginner_plans_v1(
+        project.project_id,
+        project.editor.pattern(),
+        &project.editor.paper().boundary_vertices,
+        &profile.generation_constraints,
+    )
+    .unwrap();
+    assert_eq!(
+        plans[0].kind,
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase
+    );
+    assert_eq!(plans[0].crease_pattern.edges.len(), 4);
+}
+
+#[test]
 fn asymmetric_landmark_native_apply_undo_redo_and_archive_round_trip() {
     let _serial = serial_beginner_grid_test();
     for (plan_kind, target_kind, target_count, archive_name, semantic_binding_count) in [
@@ -119,14 +210,12 @@ fn asymmetric_landmark_native_apply_undo_redo_and_archive_round_trip() {
         right.position_tenths_mm = [5, 1, 0];
         right.direction_milli = [1_000, -100, 0];
         profile.generation_constraints.protrusions = if insect_landmarks {
-            right.count = 2;
-            right.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
-            let mut targets = vec![left.clone(), right];
+            let mut targets = vec![left.clone()];
             let leg_positions: [(i16, i16); 6] =
                 [(-5, 4), (5, 4), (-6, 0), (6, 0), (-5, -4), (5, -4)];
             for (offset, (x, y)) in leg_positions.into_iter().enumerate() {
                 let mut leg = left.clone();
-                leg.id = u16::try_from(offset + 3).unwrap();
+                leg.id = u16::try_from(offset + 2).unwrap();
                 leg.position_tenths_mm = [i32::from(x), i32::from(y), 0];
                 leg.direction_milli = [x.signum() * 1_000, y * 50, 0];
                 targets.push(leg);

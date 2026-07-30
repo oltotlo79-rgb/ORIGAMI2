@@ -764,6 +764,16 @@ pub fn estimate_symmetric_parameters_v1(
     if count(BeginnerTargetPartKindV1::Head) != 1 || count(BeginnerTargetPartKindV1::Torso) != 1 {
         return None;
     }
+    let feature_records = constraints
+        .target_parts
+        .iter()
+        .filter(|part| {
+            !matches!(
+                part.kind,
+                BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
+            )
+        })
+        .count();
     let protrusion_count = match constraints.target_category? {
         BeginnerTargetCategoryV1::Animal
             if count(BeginnerTargetPartKindV1::Leg) == 4
@@ -782,36 +792,47 @@ pub fn estimate_symmetric_parameters_v1(
         {
             8
         }
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Leg) == 4 => 4,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Fin) == 2 => 2,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Ear) == 2 => 2,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 2 => 2,
         BeginnerTargetCategoryV1::Animal
-            if count(BeginnerTargetPartKindV1::Horn) == 1
+            if feature_records == 3
+                && count(BeginnerTargetPartKindV1::Horn) == 1
                 && count(BeginnerTargetPartKindV1::Tail) == 1
                 && count(BeginnerTargetPartKindV1::Ear) == 2 =>
         {
             4
         }
         BeginnerTargetCategoryV1::Animal
-            if count(BeginnerTargetPartKindV1::Tail) == 1
+            if feature_records == 2
+                && count(BeginnerTargetPartKindV1::Tail) == 1
                 && count(BeginnerTargetPartKindV1::Ear) == 2 =>
         {
             3
         }
         BeginnerTargetCategoryV1::Animal
-            if count(BeginnerTargetPartKindV1::Horn) == 1
+            if feature_records == 2
+                && count(BeginnerTargetPartKindV1::Horn) == 1
                 && count(BeginnerTargetPartKindV1::Ear) == 2 =>
         {
             3
         }
         BeginnerTargetCategoryV1::Animal
-            if count(BeginnerTargetPartKindV1::Horn) == 1
+            if feature_records == 2
+                && count(BeginnerTargetPartKindV1::Horn) == 1
                 && count(BeginnerTargetPartKindV1::Tail) == 1 =>
         {
             2
         }
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Leg) == 4 => 4,
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
+        BeginnerTargetCategoryV1::Animal
+            if feature_records == 2
+                && count(BeginnerTargetPartKindV1::Tail) == 1
+                && count(BeginnerTargetPartKindV1::Fin) == 2 =>
+        {
+            3
+        }
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Fin) == 2 => 2,
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Ear) == 2 => 2,
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Tail) == 1 => 1,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 1 => 1,
         BeginnerTargetCategoryV1::Insect
@@ -5866,6 +5887,83 @@ mod tests {
             symmetric_parameter_candidates_v1(winged)
                 .iter()
                 .all(|candidate| candidate.required_protrusion_count == 10)
+        );
+    }
+
+    #[test]
+    fn asymmetric_fish_estimate_counts_three_ordered_landmarks() {
+        let parts = |features: &[(BeginnerTargetPartKindV1, u8)]| {
+            [
+                &[
+                    (BeginnerTargetPartKindV1::Head, 1),
+                    (BeginnerTargetPartKindV1::Torso, 1),
+                ][..],
+                features,
+            ]
+            .concat()
+            .into_iter()
+            .map(|(kind, count)| BeginnerTargetPartRecordV1 { kind, count })
+            .collect::<Vec<_>>()
+        };
+        let estimate = |features: &[(BeginnerTargetPartKindV1, u8)]| {
+            estimate_symmetric_parameters_v1(&BeginnerGenerationConstraintsV1 {
+                target_category: Some(BeginnerTargetCategoryV1::Animal),
+                target_parts: parts(features),
+                ..BeginnerGenerationConstraintsV1::default()
+            })
+            .unwrap()
+        };
+
+        let fish = estimate(&[
+            (BeginnerTargetPartKindV1::Tail, 1),
+            (BeginnerTargetPartKindV1::Fin, 2),
+        ]);
+        assert_eq!(fish.protrusion_count, 3);
+        assert!(
+            symmetric_parameter_candidates_v1(fish)
+                .iter()
+                .all(|candidate| candidate.required_protrusion_count == 3)
+        );
+        assert_eq!(
+            estimate(&[(BeginnerTargetPartKindV1::Fin, 2)]).protrusion_count,
+            2
+        );
+        assert_eq!(
+            estimate(&[(BeginnerTargetPartKindV1::Tail, 1)]).protrusion_count,
+            1
+        );
+        assert_eq!(
+            estimate(&[
+                (BeginnerTargetPartKindV1::Horn, 1),
+                (BeginnerTargetPartKindV1::Ear, 2),
+            ])
+            .protrusion_count,
+            3
+        );
+        assert_eq!(
+            estimate(&[
+                (BeginnerTargetPartKindV1::Tail, 1),
+                (BeginnerTargetPartKindV1::Ear, 2),
+            ])
+            .protrusion_count,
+            3
+        );
+        assert_eq!(
+            estimate(&[
+                (BeginnerTargetPartKindV1::Horn, 1),
+                (BeginnerTargetPartKindV1::Tail, 1),
+            ])
+            .protrusion_count,
+            2
+        );
+        assert_eq!(
+            estimate(&[
+                (BeginnerTargetPartKindV1::Horn, 1),
+                (BeginnerTargetPartKindV1::Tail, 1),
+                (BeginnerTargetPartKindV1::Ear, 2),
+            ])
+            .protrusion_count,
+            4
         );
     }
 

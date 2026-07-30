@@ -3771,6 +3771,28 @@ pub(super) fn configure_symmetric_profile(
                             | ori_domain::BeginnerTargetPartKindV1::Horn
                     )
             });
+    let asymmetric_fish_landmarks = profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+        && estimate.protrusion_count == 3
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .filter(|part| {
+                !matches!(
+                    part.kind,
+                    ori_domain::BeginnerTargetPartKindV1::Head
+                        | ori_domain::BeginnerTargetPartKindV1::Torso
+                )
+            })
+            .count()
+            == 2
+        && single_tail
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Fin && part.count == 2);
     let standalone_six_leg_insect = insect
         && estimate.protrusion_count == 6
         && profile
@@ -3840,12 +3862,33 @@ pub(super) fn configure_symmetric_profile(
         joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
         motion_degrees: [0, 0],
         side: ori_domain::BeginnerProtrusionSideV1::Either,
-        priority: if standalone_animal_lateral_pair {
+        priority: if standalone_animal_lateral_pair || asymmetric_fish_landmarks {
             80
         } else {
             50
         },
     }];
+    if asymmetric_fish_landmarks {
+        let prototype = profile.generation_constraints.protrusions[0].clone();
+        profile.generation_constraints.protrusions = [
+            ([-4, 0, 0], [-1000, 200, 0]),
+            ([5, 1, 0], [1000, -100, 0]),
+            ([0, -5, 0], [100, -1000, 0]),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (position_tenths_mm, direction_milli))| {
+            let mut landmark = prototype.clone();
+            landmark.id = index as u16 + 1;
+            landmark.count = 1;
+            landmark.position_tenths_mm = position_tenths_mm;
+            landmark.direction_milli = direction_milli;
+            landmark.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::None;
+            landmark.priority = 80;
+            landmark
+        })
+        .collect();
+    }
     if standalone_six_leg_insect {
         let prototype = profile.generation_constraints.protrusions[0].clone();
         profile.generation_constraints.protrusions = [-250, 0, 250]

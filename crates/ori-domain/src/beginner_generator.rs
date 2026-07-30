@@ -2964,7 +2964,11 @@ fn parameterized_landmark_endpoint_for_target(
     let (minimum_x, maximum_x, minimum_y, maximum_y) = skeleton_bounds(skeleton_segments)?;
     let span_x = maximum_x.checked_sub(minimum_x)?;
     let span_y = maximum_y.checked_sub(minimum_y)?;
-    if span_x <= 0 || span_y <= 0 {
+    if span_x <= 0
+        || span_y <= 0
+        || !(minimum_x..=maximum_x).contains(&target.position_tenths_mm[0])
+        || !(minimum_y..=maximum_y).contains(&target.position_tenths_mm[1])
+    {
         return None;
     }
     let vertical =
@@ -4960,6 +4964,45 @@ mod tests {
         );
         assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 13);
         assert_eq!(generic_plans[0].crease_pattern.edges.len(), 11);
+        for (position, direction) in [([10, 0, 0], [-1_000, 0, 0]), ([1, 10, 0], [0, -1_000, 0])] {
+            let mut boundary_landmark_root = generic.clone();
+            boundary_landmark_root.protrusions[0].count = 1;
+            boundary_landmark_root.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::None;
+            boundary_landmark_root.protrusions[0].position_tenths_mm = position;
+            boundary_landmark_root.protrusions[0].direction_milli = direction;
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &boundary_landmark_root
+            ));
+            assert_eq!(
+                beginner_target_approximation_score_v1(&boundary_landmark_root),
+                92
+            );
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &boundary_landmark_root)
+                    .unwrap()[0]
+                    .kind,
+                BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+            );
+        }
+        for (position, direction) in [([11, 0, 0], [-1_000, 0, 0]), ([1, 11, 0], [0, -1_000, 0])] {
+            let mut outside_landmark_root = generic.clone();
+            outside_landmark_root.protrusions[0].count = 1;
+            outside_landmark_root.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::None;
+            outside_landmark_root.protrusions[0].position_tenths_mm = position;
+            outside_landmark_root.protrusions[0].direction_milli = direction;
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &outside_landmark_root
+            ));
+            assert!(uses_bounded_generic_target_base_v1(&outside_landmark_root));
+            assert_eq!(
+                beginner_target_approximation_score_v1(&outside_landmark_root),
+                0
+            );
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &outside_landmark_root),
+                Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+            );
+        }
         let mut reversed_skeleton = generic.clone();
         reversed_skeleton.skeleton_segments.reverse();
         assert_eq!(

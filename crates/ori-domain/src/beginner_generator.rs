@@ -1861,6 +1861,200 @@ fn uses_bounded_generic_target_base_v1(constraints: &BeginnerGenerationConstrain
     }
 }
 
+fn target_by_id_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+    id: u16,
+) -> Option<&BeginnerProtrusionTargetV1> {
+    constraints
+        .protrusions
+        .iter()
+        .find(|target| target.id == id)
+}
+
+fn validated_isolated_center_axis_target_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+    id: u16,
+    vertical: bool,
+) -> Option<&BeginnerProtrusionTargetV1> {
+    let target = target_by_id_v1(constraints, id)?;
+    let mut isolated = constraints.clone();
+    isolated.protrusions.retain(|candidate| candidate.id == id);
+    parameterized_center_axis_endpoint(&isolated, vertical).map(|_| target)
+}
+
+fn validated_isolated_symmetric_target_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+    id: u16,
+    count: u8,
+    vertical: bool,
+) -> Option<&BeginnerProtrusionTargetV1> {
+    let target = target_by_id_v1(constraints, id)?;
+    let mut isolated = constraints.clone();
+    isolated.protrusions.retain(|candidate| candidate.id == id);
+    parameterized_symmetric_endpoints(&isolated, count, vertical).map(|_| target)
+}
+
+fn highest_priority_target_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<&BeginnerProtrusionTargetV1> {
+    constraints
+        .protrusions
+        .iter()
+        .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
+}
+
+fn animal_target_approximation_score_target_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<&BeginnerProtrusionTargetV1> {
+    let part_count = |kind| {
+        constraints
+            .target_parts
+            .iter()
+            .find(|part| part.kind == kind)
+            .map_or(0, |part| part.count)
+    };
+    let single_landmarks = constraints
+        .protrusions
+        .iter()
+        .filter(|target| target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None)
+        .count();
+    let asymmetric_landmark_fish = part_count(BeginnerTargetPartKindV1::Tail) == 1
+        && part_count(BeginnerTargetPartKindV1::Fin) == 2
+        && single_landmarks >= 3;
+    let asymmetric_count =
+        if part_count(BeginnerTargetPartKindV1::Leg) == 4 && single_landmarks == 4 {
+            Some((4_u8, 3_usize))
+        } else if part_count(BeginnerTargetPartKindV1::Wing) == 2 && single_landmarks == 2 {
+            Some((2, 2))
+        } else {
+            None
+        };
+    if asymmetric_landmark_fish {
+        return highest_priority_target_v1(constraints);
+    }
+
+    let horn = part_count(BeginnerTargetPartKindV1::Horn) == 1;
+    let tail = part_count(BeginnerTargetPartKindV1::Tail) == 1;
+    let ears = part_count(BeginnerTargetPartKindV1::Ear) == 2;
+    if horn && tail && ears {
+        let bindings = animal_horn_tail_ear_bindings_v1(constraints)?;
+        let horn_target = validated_isolated_center_axis_target_v1(
+            constraints,
+            bindings.horn_protrusion_id,
+            true,
+        )?;
+        validated_isolated_center_axis_target_v1(constraints, bindings.tail_protrusion_id, false)?;
+        validated_isolated_symmetric_target_v1(
+            constraints,
+            bindings.ear_pair_protrusion_id,
+            2,
+            false,
+        )?;
+
+        let complete = animal_complete_bindings_v1(constraints);
+        let winged_complete = animal_complete_winged_bindings_v1(constraints);
+        if let Some(binding) = complete.or(winged_complete.map(|winged| winged.animal)) {
+            validated_isolated_symmetric_target_v1(
+                constraints,
+                binding.leg_protrusion_id,
+                4,
+                true,
+            )?;
+            if let Some(winged) = winged_complete {
+                validated_isolated_symmetric_target_v1(
+                    constraints,
+                    winged.wing_pair_protrusion_id,
+                    2,
+                    false,
+                )?;
+            }
+        } else if part_count(BeginnerTargetPartKindV1::Leg) != 0 {
+            return None;
+        }
+        return Some(horn_target);
+    }
+    if horn && tail {
+        let bindings = animal_horn_tail_bindings_v1(constraints)?;
+        let horn_target = validated_isolated_center_axis_target_v1(
+            constraints,
+            bindings.horn_protrusion_id,
+            true,
+        )?;
+        validated_isolated_center_axis_target_v1(constraints, bindings.tail_protrusion_id, false)?;
+        return Some(horn_target);
+    }
+    if horn && ears {
+        let bindings = animal_horn_ear_bindings_v1(constraints)?;
+        let horn_target = validated_isolated_center_axis_target_v1(
+            constraints,
+            bindings.horn_protrusion_id,
+            true,
+        )?;
+        validated_isolated_symmetric_target_v1(
+            constraints,
+            bindings.ear_pair_protrusion_id,
+            2,
+            false,
+        )?;
+        return Some(horn_target);
+    }
+    if tail && ears {
+        let bindings = animal_tail_ear_bindings_v1(constraints)?;
+        let tail_target = validated_isolated_center_axis_target_v1(
+            constraints,
+            bindings.tail_protrusion_id,
+            false,
+        )?;
+        validated_isolated_symmetric_target_v1(
+            constraints,
+            bindings.ear_pair_protrusion_id,
+            2,
+            false,
+        )?;
+        return Some(tail_target);
+    }
+    if horn {
+        return parameterized_center_axis_endpoint(constraints, true).and_then(|_| {
+            constraints.protrusions.iter().find(|target| {
+                target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+            })
+        });
+    }
+    if tail {
+        return parameterized_center_axis_endpoint(constraints, false).and_then(|_| {
+            constraints.protrusions.iter().find(|target| {
+                target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+            })
+        });
+    }
+    if let Some((required_count, minimum_skeleton_segments)) = asymmetric_count {
+        return (constraints.skeleton_segments.len() >= minimum_skeleton_segments
+            && constraints.protrusions.len() == usize::from(required_count)
+            && !constraints
+                .protrusions
+                .windows(2)
+                .any(|pair| pair[0].id >= pair[1].id)
+            && constraints.protrusions.iter().all(|target| {
+                target.count == 1
+                    && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                    && target.direction_milli != [0, 0, 0]
+            }))
+        .then(|| highest_priority_target_v1(constraints))
+        .flatten();
+    }
+    let (count, vertical) = if part_count(BeginnerTargetPartKindV1::Leg) == 4 {
+        (4, true)
+    } else {
+        (2, false)
+    };
+    parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
+        constraints
+            .protrusions
+            .iter()
+            .find(|target| target.count == count)
+    })
+}
+
 #[must_use]
 pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationConstraintsV1) -> u8 {
     if !crate::validate_beginner_generation_constraints_v1(constraints) {
@@ -1887,94 +2081,7 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
     } else {
         match constraints.target_category {
             Some(BeginnerTargetCategoryV1::Animal) => {
-                let part_count = |kind| {
-                    constraints
-                        .target_parts
-                        .iter()
-                        .find(|part| part.kind == kind)
-                        .map_or(0, |part| part.count)
-                };
-                let single_landmarks = constraints
-                    .protrusions
-                    .iter()
-                    .filter(|target| {
-                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                    })
-                    .count();
-                let asymmetric_landmark_fish = part_count(BeginnerTargetPartKindV1::Tail) == 1
-                    && part_count(BeginnerTargetPartKindV1::Fin) == 2
-                    && single_landmarks >= 3;
-                let asymmetric_count = if part_count(BeginnerTargetPartKindV1::Leg) == 4
-                    && single_landmarks == 4
-                {
-                    Some((4_u8, 3_usize))
-                } else if part_count(BeginnerTargetPartKindV1::Wing) == 2 && single_landmarks == 2 {
-                    Some((2, 2))
-                } else {
-                    None
-                };
-                if asymmetric_landmark_fish {
-                    constraints
-                        .protrusions
-                        .iter()
-                        .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
-                } else if let Some((required_count, minimum_skeleton_segments)) = asymmetric_count {
-                    (constraints.skeleton_segments.len() >= minimum_skeleton_segments
-                        && constraints.protrusions.len() == usize::from(required_count)
-                        && !constraints
-                            .protrusions
-                            .windows(2)
-                            .any(|pair| pair[0].id >= pair[1].id)
-                        && constraints.protrusions.iter().all(|target| {
-                            target.count == 1
-                                && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                                && target.direction_milli != [0, 0, 0]
-                        }))
-                    .then(|| {
-                        constraints
-                            .protrusions
-                            .iter()
-                            .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
-                    })
-                    .flatten()
-                } else if constraints
-                    .target_parts
-                    .iter()
-                    .any(|part| part.kind == BeginnerTargetPartKindV1::Horn && part.count == 1)
-                {
-                    parameterized_center_axis_endpoint(constraints, true).and_then(|_| {
-                        constraints.protrusions.iter().find(|target| {
-                            target.count == 1
-                                && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                        })
-                    })
-                } else if constraints
-                    .target_parts
-                    .iter()
-                    .any(|part| part.kind == BeginnerTargetPartKindV1::Tail && part.count == 1)
-                {
-                    parameterized_center_axis_endpoint(constraints, false).and_then(|_| {
-                        constraints.protrusions.iter().find(|target| {
-                            target.count == 1
-                                && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                        })
-                    })
-                } else {
-                    let (count, vertical) =
-                        if constraints.target_parts.iter().any(|part| {
-                            part.kind == BeginnerTargetPartKindV1::Leg && part.count == 4
-                        }) {
-                            (4, true)
-                        } else {
-                            (2, false)
-                        };
-                    parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
-                        constraints
-                            .protrusions
-                            .iter()
-                            .find(|target| target.count == count)
-                    })
-                }
+                animal_target_approximation_score_target_v1(constraints)
             }
             Some(BeginnerTargetCategoryV1::Insect) => {
                 let part_count = |kind| {
@@ -2066,6 +2173,9 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
             None => None,
         }
     };
+    if target.is_none() && !constraints.protrusions.is_empty() {
+        return 0;
+    }
     let base = target.map_or_else(
         || {
             if constraints.protrusions.is_empty() {
@@ -3846,6 +3956,18 @@ mod tests {
                 ear_pair_protrusion_id: 2
             })
         );
+        assert_eq!(beginner_target_approximation_score_v1(&composite), 92);
+        let mut invalid_tail_ears = composite.clone();
+        invalid_tail_ears.protrusions[1].position_tenths_mm[0] = 1;
+        assert!(animal_tail_ear_bindings_v1(&invalid_tail_ears).is_some());
+        assert_eq!(
+            beginner_target_approximation_score_v1(&invalid_tail_ears),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_tail_ears),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         tail.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::Bilateral;
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &tail),
@@ -3889,6 +4011,30 @@ mod tests {
                 tail_protrusion_id: 2,
             })
         );
+        assert_eq!(beginner_target_approximation_score_v1(&horn_tail), 92);
+        let mut reversed_horn_tail = horn_tail.clone();
+        reversed_horn_tail.protrusions.reverse();
+        assert_eq!(
+            beginner_target_approximation_score_v1(&reversed_horn_tail),
+            92
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &reversed_horn_tail).unwrap(),
+            horn_tail_plans
+        );
+        let mut invalid_tail = horn_tail.clone();
+        invalid_tail.protrusions[1].position_tenths_mm[0] = 1;
+        invalid_tail.protrusions[1].local_outline_tenths_mm =
+            Some(vec![[-1, -1], [1, -1], [1, 1], [-1, 1]]);
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &invalid_tail
+        ));
+        assert!(animal_horn_tail_bindings_v1(&invalid_tail).is_some());
+        assert_eq!(beginner_target_approximation_score_v1(&invalid_tail), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_tail),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut triple = horn_tail.clone();
         triple.target_parts.push(BeginnerTargetPartRecordV1 {
             kind: BeginnerTargetPartKindV1::Ear,
@@ -3909,6 +4055,15 @@ mod tests {
                 tail_protrusion_id: 2,
                 ear_pair_protrusion_id: 3,
             })
+        );
+        assert_eq!(beginner_target_approximation_score_v1(&triple), 92);
+        let mut invalid_ears = triple.clone();
+        invalid_ears.protrusions[2].position_tenths_mm[0] = 1;
+        assert!(animal_horn_tail_ear_bindings_v1(&invalid_ears).is_some());
+        assert_eq!(beginner_target_approximation_score_v1(&invalid_ears), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_ears),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
         let mut complete_animal = triple.clone();
         complete_animal
@@ -3936,6 +4091,15 @@ mod tests {
                 ear_pair_protrusion_id: 3,
                 leg_protrusion_id: 4,
             })
+        );
+        assert_eq!(beginner_target_approximation_score_v1(&complete_animal), 92);
+        let mut invalid_legs = complete_animal.clone();
+        invalid_legs.protrusions[3].position_tenths_mm[0] = 1;
+        assert!(animal_complete_bindings_v1(&invalid_legs).is_some());
+        assert_eq!(beginner_target_approximation_score_v1(&invalid_legs), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_legs),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
         let mut duplicate_leg = complete_animal.clone();
         duplicate_leg.protrusions.push(legs);
@@ -3971,6 +4135,15 @@ mod tests {
                 wing_pair_protrusion_id: 5,
             })
         );
+        assert_eq!(beginner_target_approximation_score_v1(&winged_animal), 92);
+        let mut invalid_wings = winged_animal.clone();
+        invalid_wings.protrusions[4].position_tenths_mm[0] = 1;
+        assert!(animal_complete_winged_bindings_v1(&invalid_wings).is_some());
+        assert_eq!(beginner_target_approximation_score_v1(&invalid_wings), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_wings),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         assert_eq!(animal_complete_bindings_v1(&winged_animal), None);
         let mut forged_wing = winged_animal.clone();
         forged_wing.protrusions[4].id = 4;
@@ -3994,6 +4167,18 @@ mod tests {
                 horn_protrusion_id: 1,
                 ear_pair_protrusion_id: 2,
             })
+        );
+        assert_eq!(beginner_target_approximation_score_v1(&horn_ear), 92);
+        let mut invalid_horn_ears = horn_ear.clone();
+        invalid_horn_ears.protrusions[1].position_tenths_mm[0] = 1;
+        assert!(animal_horn_ear_bindings_v1(&invalid_horn_ears).is_some());
+        assert_eq!(
+            beginner_target_approximation_score_v1(&invalid_horn_ears),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_horn_ears),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
         let mut generic = constraints.clone();
         generic.target_parts.push(BeginnerTargetPartRecordV1 {

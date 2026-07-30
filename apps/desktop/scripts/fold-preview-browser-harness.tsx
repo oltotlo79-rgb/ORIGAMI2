@@ -2,15 +2,65 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { FoldPreview } from '../src/components/FoldPreview.tsx'
 import { FoldPreviewCollisionBadge } from '../src/components/FoldPreviewCollisionBadge.tsx'
+import {
+  MAX_FOLD_PREVIEW_WORLD_SIZE,
+  type SingleFoldPreviewModel,
+} from '../src/lib/foldPreviewModel.ts'
 import { localeStore } from '../src/lib/i18n.ts'
 import '../src/App.css'
 
 localeStore.initialize(); localeStore.setLocale('en')
-const hinge = { edgeId: 'hinge-main', start: { vertexId: 'b', x: 0, z: -40 }, end: { vertexId: 'c', x: 0, z: 40 }, axis: { x: 0, z: 1 }, assignment: 'mountain' as const, rotationSign: 1 as const }
-const left = { id: 'left', polygon: [{ vertexId: 'a', x: -40, z: -40 }, hinge.start, hinge.end, { vertexId: 'd', x: -40, z: 40 }] }
-const right = { id: 'right', polygon: [hinge.start, { vertexId: 'e', x: 40, z: -40 }, { vertexId: 'f', x: 40, z: 40 }, hinge.end] }
-const model = { kind: 'single_fold' as const, projectId: 'browser-fixture', revision: 1, worldUnitsPerMillimetre: 1, paperCenter: { x: 0, y: 0 }, worldBounds: { minX: -40, minZ: -40, maxX: 40, maxZ: 40 }, faces: [left, right], fixedFace: left, movingFace: right, hinge }
-const evidence = { hingeSelections: [] as (string | null)[], angleRequests: [] as number[] }
+const PROJECT = '018f47a2-4b7a-7cc1-8abc-000000000001'
+const LEFT_FACE = '018f47a2-4b7a-7cc1-8abc-000000000002'
+const RIGHT_FACE = '018f47a2-4b7a-7cc1-8abc-000000000003'
+const HINGE = '018f47a2-4b7a-7cc1-8abc-000000000004'
+const HALF_WORLD_SIZE = MAX_FOLD_PREVIEW_WORLD_SIZE / 2
+const hinge = {
+  edgeId: HINGE,
+  leftFaceId: LEFT_FACE,
+  rightFaceId: RIGHT_FACE,
+  start: { vertexId: '018f47a2-4b7a-7cc1-8abc-000000000005', x: 0, z: -HALF_WORLD_SIZE },
+  end: { vertexId: '018f47a2-4b7a-7cc1-8abc-000000000006', x: 0, z: HALF_WORLD_SIZE },
+  axis: { x: 0, z: 1 },
+  assignment: 'mountain' as const,
+  rotationSign: 1 as const,
+}
+const left = {
+  id: LEFT_FACE,
+  polygon: [
+    { vertexId: '018f47a2-4b7a-7cc1-8abc-000000000007', x: -HALF_WORLD_SIZE, z: -HALF_WORLD_SIZE },
+    hinge.start,
+    hinge.end,
+    { vertexId: '018f47a2-4b7a-7cc1-8abc-000000000008', x: -HALF_WORLD_SIZE, z: HALF_WORLD_SIZE },
+  ],
+}
+const right = {
+  id: RIGHT_FACE,
+  polygon: [
+    hinge.start,
+    { vertexId: '018f47a2-4b7a-7cc1-8abc-000000000009', x: HALF_WORLD_SIZE, z: -HALF_WORLD_SIZE },
+    { vertexId: '018f47a2-4b7a-7cc1-8abc-000000000010', x: HALF_WORLD_SIZE, z: HALF_WORLD_SIZE },
+    hinge.end,
+  ],
+}
+const model = {
+  kind: 'single_fold',
+  projectId: PROJECT,
+  revision: 1,
+  worldUnitsPerMillimetre: MAX_FOLD_PREVIEW_WORLD_SIZE / 80,
+  paperCenter: { x: 0, y: 0 },
+  worldBounds: {
+    minX: -HALF_WORLD_SIZE,
+    minZ: -HALF_WORLD_SIZE,
+    maxX: HALF_WORLD_SIZE,
+    maxZ: HALF_WORLD_SIZE,
+  },
+  faces: [left, right] as const,
+  fixedFace: left,
+  movingFace: right,
+  hinge,
+} satisfies SingleFoldPreviewModel
+const evidence = { expectedHingeId: HINGE, hingeSelections: [] as (string | null)[], angleRequests: [] as number[] }
 Object.assign(window, { __ORIGAMI2_FOLD_PREVIEW_EVIDENCE__: evidence })
 
 function Harness() {

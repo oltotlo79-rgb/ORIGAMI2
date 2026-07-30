@@ -7,7 +7,8 @@ try {
   const shortcuts = await viewport.getAttribute('aria-keyshortcuts'); for (const token of ['ArrowUp', 'Shift+ArrowLeft', '+', '-', 'Home', '0', 'H', 'Escape']) if (!shortcuts?.includes(token)) throw new Error(`missing ARIA shortcut ${token}`)
   for (const key of ['ArrowUp', 'Shift+ArrowLeft', '+', '-', 'Home', '0']) { await page.keyboard.press(key); if (!await viewport.evaluate(n => n === document.activeElement)) throw new Error(`focus lost after ${key}`) }
   await page.keyboard.press('h'); await page.waitForTimeout(100)
-  if (!(await page.evaluate(() => window.__ORIGAMI2_FOLD_PREVIEW_EVIDENCE__.hingeSelections)).includes('hinge-main')) throw new Error('keyboard hinge selection did not reach production callback')
+  const selectionEvidence = await page.evaluate(() => window.__ORIGAMI2_FOLD_PREVIEW_EVIDENCE__)
+  if (!selectionEvidence.hingeSelections.includes(selectionEvidence.expectedHingeId)) throw new Error('keyboard hinge selection did not reach production callback')
   await page.keyboard.press('Escape')
   const canvas = group.locator('canvas'); await canvas.waitFor(); const box = await canvas.boundingBox(); if (!box) throw new Error('canvas has no layout box')
   for (const pointerType of ['mouse', 'pen', 'touch']) await canvas.dispatchEvent('pointerdown', { pointerId: pointerType === 'mouse' ? 1 : pointerType === 'pen' ? 2 : 3, pointerType, button: 0, buttons: 1, clientX: box.x + box.width / 2, clientY: box.y + box.height / 2, isPrimary: true })

@@ -1,35 +1,85 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import type { InstructionStep, InstructionVisual } from '../src/lib/coreClient.ts'
+import {
+  createInstructionTimelinePresentation,
+  INSTRUCTION_POSE_MODEL,
+} from '../src/lib/instructionTimeline.ts'
 
 const hinges = Array.from({ length: 6 }, (_, index) =>
   `018f47a2-4b7a-7cc1-8abc-00000000000${index}`)
+const fixedFace = '018f47a2-4b7a-7cc1-8abc-000000000100'
+const sourceModelFingerprint = 'a'.repeat(64)
+const canonicalUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+const CYCLE_LAYER_ORDER_PROOF_MODEL_ID =
+  'native_continuous_layer_transport_certificate_v1' as const
 const proof = {
   version: 1,
-  model_id: 'native_continuous_layer_transport_certificate_v1',
-  target_order_sha256: Array(32).fill(0xab),
+  model_id: CYCLE_LAYER_ORDER_PROOF_MODEL_ID,
+  target_order_sha256: Array<number>(32).fill(0xab),
   transition_count: 5,
   pairs: [{ lower_face: hinges[0], upper_face: hinges[3] }],
-}
+} satisfies NonNullable<InstructionVisual['cycle_layer_order_proof_v1']>
 const appliedStep = {
   id: '018f47a2-4b7a-7cc1-8abc-778899aabbcc',
   title: 'C6 balloon opposite-axis fold',
+  description: 'Apply the certified opposite-axis cycle pose.',
+  caution: 'Keep the fixed face stationary.',
+  duration_ms: 1_500,
   pose: {
-    model: 'absolute_hinge_angles_v1',
+    model: INSTRUCTION_POSE_MODEL,
+    source_model_fingerprint: sourceModelFingerprint,
+    fixed_face: fixedFace,
     hinge_angles: hinges.map((edge, index) => ({ edge, angle_degrees: index === 0 || index === 3 ? 10 : 0 })),
   },
-  visual: { cycle_layer_order_proof_v1: proof },
-}
+  visual: {
+    camera: null,
+    arrows: [],
+    focus_points: [],
+    hand_guides: [],
+    cycle_layer_order_proof_v1: proof,
+  },
+} satisfies InstructionStep
 type Document = { instruction_timeline: { steps: typeof appliedStep[] } }
 const evidence = { saves: 0, reopens: 0, undos: 0, redos: 0, tamperRejects: 0 }
 let saved: Document | null = null
 let redoStep: typeof appliedStep | null = null
 
 function validate(document: Document) {
+  const presentation = createInstructionTimelinePresentation(
+    document.instruction_timeline,
+    sourceModelFingerprint,
+  )
+  if (presentation.kind !== 'ready') {
+    throw new Error('persisted cycle instruction violated the current timeline wire schema')
+  }
   const step = document.instruction_timeline.steps[0]
   if (!step) return
   const angles = step.pose.hinge_angles
   if (angles.length !== 6 || angles[0]?.angle_degrees !== angles[3]?.angle_degrees) {
     throw new Error('persisted cycle pose is not cycle-closing')
+  }
+  const layerProof = step.visual.cycle_layer_order_proof_v1
+  if (
+    Object.keys(layerProof).sort().join(',') !==
+      'model_id,pairs,target_order_sha256,transition_count,version'
+    || layerProof.version !== 1
+    || layerProof.model_id !== CYCLE_LAYER_ORDER_PROOF_MODEL_ID
+    || layerProof.target_order_sha256.length !== 32
+    || layerProof.target_order_sha256.some((byte) =>
+      !Number.isInteger(byte) || byte < 0 || byte > 255)
+    || !Number.isSafeInteger(layerProof.transition_count)
+    || layerProof.transition_count < 1
+    || layerProof.pairs.length > 50_000
+    || layerProof.pairs.some((pair, index, pairs) =>
+      Object.keys(pair).sort().join(',') !== 'lower_face,upper_face'
+      || !canonicalUuid.test(pair.lower_face)
+      || !canonicalUuid.test(pair.upper_face)
+      || pair.lower_face === pair.upper_face
+      || (index > 0 && `${pairs[index - 1]!.lower_face}:${pairs[index - 1]!.upper_face}`
+        >= `${pair.lower_face}:${pair.upper_face}`))
+  ) {
+    throw new Error('persisted cycle proof violated the current bounded proof wire schema')
   }
 }
 

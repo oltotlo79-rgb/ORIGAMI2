@@ -19,7 +19,7 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
   target: Protrusion
   onChange: (target: Protrusion) => void
   onRemove: () => void
-  kind?: PartKind
+  kind?: PartKind | undefined
   onKindChange?: (kind: PartKind) => void
   onMoveUp?: () => void
   onMoveDown?: () => void
@@ -83,9 +83,13 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
     <span>{formatLocalizedText(locale, TEXT.bindingSummary, {
       id: target.id, symmetry, count: target.count,
     })}</span>
-    {kind && onKindChange && <label>{label(TEXT.partKind)}
+    {onKindChange && <label>{label(TEXT.partKind)}
       <select aria-label={bindingLabel(TEXT.ariaBinding, TEXT.partKind)}
-        value={kind} onChange={(event) => onKindChange(event.currentTarget.value as PartKind)}>
+        value={kind ?? ''} onChange={(event) => {
+          const next = event.currentTarget.value as PartKind
+          if (partKinds.includes(next)) onKindChange(next)
+        }}>
+        <option value="" disabled>{label(TEXT.unassigned)}</option>
         {partKinds.map((partKind) => <option key={partKind} value={partKind}>{partKind}</option>)}
       </select>
     </label>}

@@ -36,6 +36,7 @@ import {
   type GeometricConstraintKindV1,
   type GeometricConstraintPreflightResponseV1,
   type GeometricConstraintPreflightResultV1,
+  type GeometricConstraintSatisfactionEvidenceKindV1,
   type GeometricConstraintSemanticMusV1,
 } from './geometricConstraints.ts'
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
@@ -79,6 +80,47 @@ import {
   unprovenHistorySummaryFromSnapshotV1,
 } from './speculativeUnprovenWire.ts'
 import { resolveCompleteAnimalBindings } from './completeAnimalBindings.ts'
+import {
+  beginnerGeneratedPlanInstructionsAreCanonicalV1,
+  beginnerGeneratedPlanSizeIsAdmissibleV1,
+  beginnerGeneratedPlanTargetPartsAreCompatibleV1,
+  beginnerTargetPartRecordCountIsAdmissibleV1,
+  MAX_BEGINNER_GENERAL_FEATURE_ENDPOINTS_V1,
+  MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1,
+  MAX_BEGINNER_GENERIC_PLAN_EDGES_V1,
+  MAX_BEGINNER_GENERIC_PLAN_VERTICES_V1,
+  MAX_BEGINNER_TARGET_PART_RECORDS_V1,
+  MIN_BEGINNER_GENERAL_FEATURE_ENDPOINTS_V1,
+  type BeginnerGeneratedPlanInstructionContextV1,
+  type BeginnerGeneratedPlanKindV1,
+} from './beginnerGeneratedPlanContract.ts'
+import {
+  normalizeBeginnerGridEvaluationResponseV1,
+} from './beginnerGridResponse.ts'
+import {
+  beginnerGeneratedPlanTopologyMatchesProfileV1,
+} from './beginnerGeneratedPlanTopologyContract.ts'
+import {
+  beginnerExpectedTargetApproximationScoreV1,
+  beginnerReferenceConsensusPairDigestV1,
+} from './beginnerCandidateScoreContract.ts'
+export {
+  beginnerGeneratedPlanInstructionsAreCanonicalV1,
+  beginnerGeneratedPlanSizeIsAdmissibleV1,
+  beginnerGeneratedPlanTargetPartsAreCompatibleV1,
+  beginnerGenericFeatureBindingIdentityIsCanonicalV1,
+  beginnerTargetPartRecordCountIsAdmissibleV1,
+  MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1,
+  MAX_BEGINNER_GENERAL_FEATURE_ENDPOINTS_V1,
+  MAX_BEGINNER_GENERIC_PLAN_EDGES_V1,
+  MAX_BEGINNER_GENERIC_PLAN_VERTICES_V1,
+  MAX_BEGINNER_SPECIALIZED_PLAN_EDGES_V1,
+  MAX_BEGINNER_SPECIALIZED_PLAN_VERTICES_V1,
+  MAX_BEGINNER_TARGET_PART_RECORDS_V1,
+  MIN_BEGINNER_GENERAL_FEATURE_ENDPOINTS_V1,
+  type BeginnerGeneratedPlanInstructionContextV1,
+  type BeginnerGeneratedPlanKindV1,
+} from './beginnerGeneratedPlanContract.ts'
 export {
   applySpeculativeStackedFoldTransaction,
   normalizeSpeculativeStackedFoldApplyRequestV1,
@@ -195,6 +237,8 @@ export type GeometricConstraintKind = GeometricConstraintKindV1
 export type GeometricConstraintDocument = GeometricConstraintDocumentV1
 export type GeometricConstraintPreflightResult = GeometricConstraintPreflightResultV1
 export type GeometricConstraintPreflightResponse = GeometricConstraintPreflightResponseV1
+export type GeometricConstraintSatisfactionEvidenceKind =
+  GeometricConstraintSatisfactionEvidenceKindV1
 export type GeometricConstraintSemanticMus = GeometricConstraintSemanticMusV1
 
 export type ProjectSnapshot = {
@@ -304,8 +348,16 @@ export type BeginnerDesignProfileV1 = {
   generation_constraints: BeginnerGenerationConstraintsV1
   generation_provenance?: Readonly<{
     schema_version: 1; topology_authority_sha256: ReadonlyArray<number>
-    fold_path_certificate_sha256?: ReadonlyArray<number>; confidence_score: number
+    fold_path_certificate_sha256?: ReadonlyArray<number>
+    document_authority_sha256?: ReadonlyArray<number>; confidence_score: number
     confidence_reasons: ReadonlyArray<string>; explicit_override: boolean; source_asset_fingerprint: string
+    semantic_landmark_provenance?: Readonly<{
+      schema_version: 1
+      ordered_bindings: ReadonlyArray<Readonly<{
+        ordinal: number; role: string; physical_ray: number
+      }>>
+      physical_ray_group_sha256: ReadonlyArray<ReadonlyArray<number>>
+    }>
     generic_tree?: Readonly<{
       schema_version: 1; source: 'image_silhouette' | 'glb_geometry' | 'manual_skeleton'
       target_category?: 'custom_object'
@@ -471,17 +523,78 @@ function isBoundedIntegerTuple(
   length: number,
   absoluteMaximum: number,
 ): value is number[] {
-  return Array.isArray(value) && value.length === length
-    && value.every((item) => Number.isInteger(item) && Math.abs(item) <= absoluteMaximum)
+  const snapshot = snapshotCoreDataArray(value, length)
+  return snapshot?.length === length
+    && snapshot.every((item) =>
+      Number.isInteger(item)
+      && Math.abs(Number(item)) <= absoluteMaximum)
+}
+
+function isI32Tuple(
+  value: unknown,
+  length: number,
+): value is number[] {
+  const snapshot = snapshotCoreDataArray(value, length)
+  return snapshot?.length === length
+    && snapshot.every((item) =>
+      Number.isInteger(item)
+      && Number(item) >= -2_147_483_648
+      && Number(item) <= 2_147_483_647)
+}
+
+function snapshotSha256Bytes(value: unknown): ReadonlyArray<number> | null {
+  const snapshot = snapshotCoreDataArray(value, 32)
+  if (
+    snapshot?.length !== 32
+    || snapshot.some((byte) =>
+      !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
+  ) return null
+  return Object.freeze(snapshot.map(Number))
+}
+
+function isNonEmptyUtf8StringWithin(
+  value: unknown,
+  maximumBytes: number,
+): value is string {
+  if (typeof value !== 'string' || value.length === 0) return false
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false
+    }
+  }
+  try {
+    return new TextEncoder().encode(value).byteLength <= maximumBytes
+  } catch {
+    return false
+  }
+}
+
+function compareUtf8Strings(left: string, right: string): number {
+  const leftBytes = new TextEncoder().encode(left)
+  const rightBytes = new TextEncoder().encode(right)
+  const sharedLength = Math.min(leftBytes.length, rightBytes.length)
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) {
+      return Number(leftBytes[index]) - Number(rightBytes[index])
+    }
+  }
+  return leftBytes.length - rightBytes.length
 }
 
 function isCanonicalGenericBodyOutline(
   value: unknown, mode: 'symmetric' | 'symmetric_ccw' | 'general', minimum = 4, maximum = 16,
   coordinateMaximum = 100_000,
 ): value is Array<[number, number]> {
-  if (!Array.isArray(value) || value.length < minimum || value.length > maximum
-    || value.some((point) => !isBoundedIntegerTuple(point, 2, coordinateMaximum))) return false
-  const points = value as Array<[number, number]>
+  const snapshot = snapshotCoreDataArray(value, maximum)
+  if (!snapshot || snapshot.length < minimum
+    || snapshot.some((point) =>
+      !isBoundedIntegerTuple(point, 2, coordinateMaximum))) return false
+  const points = snapshot as Array<[number, number]>
   const keys = points.map(([x, y]) => `${x},${y}`)
   if (new Set(keys).size !== points.length
     || keys[0] !== [...keys].sort((left, right) => {
@@ -528,8 +641,9 @@ function isCustomObjectDisplayName(value: unknown): value is string {
   return typeof value === 'string' && normalizeCustomObjectDisplayName(value) === value
 }
 
-function normalizeBeginnerGenerationConstraints(
+export function normalizeBeginnerGenerationConstraints(
   value: unknown,
+  options: Readonly<{ requireCanonicalGenericIds?: boolean }> = {},
 ): BeginnerGenerationConstraintsV1 | null {
   const currentKeys = [
     'schema_version',
@@ -571,10 +685,40 @@ function normalizeBeginnerGenerationConstraints(
     || requiredKeys.some((key) => !Object.hasOwn(snapshot, key))) {
     return null
   }
+  const targetPartsInput = snapshotCoreDataArray(
+    snapshot.target_parts,
+    MAX_BEGINNER_TARGET_PART_RECORDS_V1,
+  )
+  const skeletonSegmentsInput = snapshotCoreDataArray(
+    snapshot.skeleton_segments,
+    64,
+  )
+  const protrusionsInput = snapshotCoreDataArray(
+    Object.hasOwn(snapshot, 'protrusions') ? snapshot.protrusions : [],
+    32,
+  )
+  const bulgeTargetsInput = snapshotCoreDataArray(
+    Object.hasOwn(snapshot, 'bulge_targets') ? snapshot.bulge_targets : [],
+    32,
+  )
+  const allowedTechniquesInput = snapshotCoreDataArray(
+    snapshot.allowed_techniques,
+    8,
+  )
+  if (
+    !targetPartsInput
+    || !skeletonSegmentsInput
+    || !protrusionsInput
+    || !bulgeTargetsInput
+    || !allowedTechniquesInput
+  ) return null
   const record: Record<string, unknown> = {
     ...snapshot,
-    protrusions: Object.hasOwn(snapshot, 'protrusions') ? snapshot.protrusions : [],
-    bulge_targets: Object.hasOwn(snapshot, 'bulge_targets') ? snapshot.bulge_targets : [],
+    target_parts: targetPartsInput,
+    skeleton_segments: skeletonSegmentsInput,
+    protrusions: protrusionsInput,
+    bulge_targets: bulgeTargetsInput,
+    allowed_techniques: allowedTechniquesInput,
   }
   if (
     !record
@@ -595,7 +739,7 @@ function normalizeBeginnerGenerationConstraints(
       && (record.target_category !== 'custom_object'
         || !isCustomObjectDisplayName(record.custom_object_display_name)))
     || !Array.isArray(record.target_parts)
-    || record.target_parts.length > 8
+    || !beginnerTargetPartRecordCountIsAdmissibleV1(record.target_parts)
     || (record.generic_body_size_tenths_mm !== undefined
       && (!isBoundedIntegerTuple(record.generic_body_size_tenths_mm, 2, 1_000_000)
         || record.generic_body_size_tenths_mm.some((axis) => axis < 1)))
@@ -671,7 +815,31 @@ function normalizeBeginnerGenerationConstraints(
     const snapshot = snapshotCoreDataRecord(value)
     const item = snapshot && Object.keys(snapshot).every((key) => newKeys.includes(key as typeof newKeys[number]))
       && oldKeys.every((key) => Object.hasOwn(snapshot, key)) ? snapshot : null
+    const position = item
+      ? snapshotCoreDataArray(item.position_tenths_mm, 3)
+      : null
+    const direction = item
+      ? snapshotCoreDataArray(item.direction_milli, 3)
+      : null
+    const motion = item
+      ? snapshotCoreDataArray(item.motion_degrees, 2)
+      : null
+    const hasLocalOutline =
+      item?.local_outline_tenths_mm !== undefined
+    const localOutlineInputs = hasLocalOutline
+      ? snapshotCoreDataArray(item.local_outline_tenths_mm, 8)
+      : null
+    const localOutline = localOutlineInputs?.map((point) => {
+      const coordinates = snapshotCoreDataArray(point, 2)
+      return coordinates?.length === 2
+        ? [Number(coordinates[0]), Number(coordinates[1])] as [
+            number,
+            number,
+          ]
+        : null
+    }) ?? null
     if (!item || !Number.isInteger(item.id) || Number(item.id) < 0
+      || Number(item.id) > 65_535
       || protrusionIds.has(Number(item.id))
       || !Number.isInteger(item.count) || Number(item.count) < 1 || Number(item.count) > 8
       || !Number.isInteger(item.length_tenths_mm) || Number(item.length_tenths_mm) < 1
@@ -684,26 +852,64 @@ function normalizeBeginnerGenerationConstraints(
       || (item.tip_width_tenths_mm !== undefined
         && (!Number.isInteger(item.tip_width_tenths_mm)
           || Number(item.tip_width_tenths_mm) < 1 || Number(item.tip_width_tenths_mm) > 10_000))
-      || (item.local_outline_tenths_mm !== undefined
-        && !isCanonicalGenericBodyOutline(item.local_outline_tenths_mm,
+      || (hasLocalOutline
+        && (
+          localOutlineInputs === null
+          || localOutline === null
+          || localOutline.some((point) => point === null)
+          || !isCanonicalGenericBodyOutline(localOutline,
           item.symmetry === 'bilateral' ? 'symmetric_ccw' : 'general', 3, 8, 10_000))
-      || !isBoundedIntegerTuple(item.position_tenths_mm, 3, 100_000)
-      || !isBoundedIntegerTuple(item.direction_milli, 3, 1_000)
-      || item.direction_milli.every((axis) => axis === 0)
+        )
+      || !isBoundedIntegerTuple(position, 3, 100_000)
+      || !isBoundedIntegerTuple(direction, 3, 1_000)
+      || direction.every((axis) => axis === 0)
       || !['none', 'bilateral', 'radial'].includes(String(item.symmetry))
       || !Number.isInteger(item.curvature_degrees) || Math.abs(Number(item.curvature_degrees)) > 360
       || !['fixed', 'hinge', 'ball'].includes(String(item.joint))
-      || !isBoundedIntegerTuple(item.motion_degrees, 2, 360)
-      || item.motion_degrees[0] > item.motion_degrees[1]
+      || !isBoundedIntegerTuple(motion, 2, 360)
+      || motion[0] > motion[1]
       || !['front', 'back', 'either'].includes(String(item.side))
       || !Number.isInteger(item.priority) || Number(item.priority) < 1 || Number(item.priority) > 100
     ) return null
     protrusionIds.add(Number(item.id))
-    return { ...item } as NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
+    return Object.freeze({
+      id: Number(item.id),
+      count: Number(item.count),
+      length_tenths_mm: Number(item.length_tenths_mm),
+      thickness_tenths_mm: Number(item.thickness_tenths_mm),
+      ...(item.root_width_tenths_mm === undefined ? {} : {
+        root_width_tenths_mm: Number(item.root_width_tenths_mm),
+      }),
+      ...(item.tip_width_tenths_mm === undefined ? {} : {
+        tip_width_tenths_mm: Number(item.tip_width_tenths_mm),
+      }),
+      ...(localOutline === null ? {} : {
+        local_outline_tenths_mm: Object.freeze(
+          localOutline.map((point) => Object.freeze(point!)),
+        ),
+      }),
+      position_tenths_mm: Object.freeze(position.map(Number)),
+      direction_milli: Object.freeze(direction.map(Number)),
+      symmetry: item.symmetry,
+      curvature_degrees: Number(item.curvature_degrees),
+      joint: item.joint,
+      motion_degrees: Object.freeze(motion.map(Number)),
+      side: item.side,
+      priority: Number(item.priority),
+    }) as NonNullable<
+      BeginnerGenerationConstraintsV1['protrusions']
+    >[number]
   })
   if (protrusions.some((target) => target === null)) return null
   const validProtrusions =
     protrusions as NonNullable<BeginnerGenerationConstraintsV1['protrusions']>
+  if (options.requireCanonicalGenericIds
+    && (skeletonSegments.some((segment, index) => index > 0
+      && Number(skeletonSegments[index - 1]?.id) >= Number(segment?.id))
+      || validProtrusions.some((target, index) => index > 0
+        && Number(validProtrusions[index - 1]?.id) >= Number(target.id)))) {
+    return null
+  }
   const completeAnimal = record.target_category === 'animal'
     && targetParts.some((part) => part?.kind === 'horn' && part.count === 1)
     && targetParts.some((part) => part?.kind === 'tail' && part.count === 1)
@@ -713,7 +919,8 @@ function normalizeBeginnerGenerationConstraints(
   const completeAnimalHasWings = animalWingParts.length === 1 && animalWingParts[0]?.count === 2
   if (completeAnimal && (animalWingParts.length > 1
     || (animalWingParts.length === 1 && !completeAnimalHasWings)
-    || resolveCompleteAnimalBindings(validProtrusions, completeAnimalHasWings) === null)) return null
+    || (validProtrusions.length > 0
+      && resolveCompleteAnimalBindings(validProtrusions, completeAnimalHasWings) === null))) return null
   const bulgeIds = new Set<number>()
   const bulgeTargets = record.bulge_targets.map((value) => {
     const item = exactCoreDataRecord(value, [
@@ -721,13 +928,25 @@ function normalizeBeginnerGenerationConstraints(
       'direction_milli', 'amount_tenths_mm', 'source_fold_model_fingerprint',
       'reference_surface_binding',
     ] as const)
+    const faceIds = item
+      ? snapshotCoreDataArray(item.face_ids, 32)
+      : null
+    const minimum = item
+      ? snapshotCoreDataArray(item.range_min_tenths_mm, 3)
+      : null
+    const maximum = item
+      ? snapshotCoreDataArray(item.range_max_tenths_mm, 3)
+      : null
+    const direction = item
+      ? snapshotCoreDataArray(item.direction_milli, 3)
+      : null
     if (!item || !Number.isInteger(item.id) || Number(item.id) < 0 || bulgeIds.has(Number(item.id))
-      || !Array.isArray(item.face_ids) || item.face_ids.length < 1 || item.face_ids.length > 32
-      || item.face_ids.some((id) => !isCanonicalNonNilUuid(id))
-      || new Set(item.face_ids).size !== item.face_ids.length
-      || !isBoundedIntegerTuple(item.range_min_tenths_mm, 3, 100_000)
-      || !isBoundedIntegerTuple(item.range_max_tenths_mm, 3, 100_000)
-      || !isBoundedIntegerTuple(item.direction_milli, 3, 1_000)
+      || !faceIds || faceIds.length < 1
+      || faceIds.some((id) => !isCanonicalNonNilUuid(id))
+      || new Set(faceIds).size !== faceIds.length
+      || !isBoundedIntegerTuple(minimum, 3, 100_000)
+      || !isBoundedIntegerTuple(maximum, 3, 100_000)
+      || !isBoundedIntegerTuple(direction, 3, 1_000)
       || !Number.isInteger(item.amount_tenths_mm) || Number(item.amount_tenths_mm) < 1
       || Number(item.amount_tenths_mm) > 1_000_000
       || typeof item.source_fold_model_fingerprint !== 'string'
@@ -736,24 +955,50 @@ function normalizeBeginnerGenerationConstraints(
       : exactCoreDataRecord(item.reference_surface_binding, [
           'asset_id', 'range_id', 'protrusion_id', 'triangle_indices', 'range_digest_sha256',
         ] as const)
+    const surfaceTriangleIndices = surface
+      ? snapshotCoreDataArray(surface.triangle_indices, 40_000)
+      : null
+    const surfaceRangeDigest = surface
+      ? snapshotSha256Bytes(surface.range_digest_sha256)
+      : null
     if (item.reference_surface_binding !== undefined && (!surface
       || !isCanonicalNonNilUuid(surface.asset_id)
       || !Number.isInteger(surface.range_id) || Number(surface.range_id) < 1
       || !Number.isInteger(surface.protrusion_id) || Number(surface.protrusion_id) < 1
-      || !Array.isArray(surface.triangle_indices) || surface.triangle_indices.length < 1
-      || surface.triangle_indices.length > 40_000
-      || surface.triangle_indices.some((triangle) => !Number.isInteger(triangle) || triangle < 0)
-      || new Set(surface.triangle_indices).size !== surface.triangle_indices.length
-      || !isBoundedIntegerTuple(surface.range_digest_sha256, 32, 255))) return null
-    const minimum = item.range_min_tenths_mm
-    const maximum = item.range_max_tenths_mm
-    const direction = item.direction_milli
+      || !surfaceTriangleIndices
+      || surfaceTriangleIndices.length < 1
+      || surfaceTriangleIndices.some((triangle) =>
+        !Number.isInteger(triangle) || Number(triangle) < 0)
+      || new Set(surfaceTriangleIndices).size
+        !== surfaceTriangleIndices.length
+      || !surfaceRangeDigest)) return null
     if (minimum.some((value, index) => value > maximum[index])
       || minimum.every((value, index) => value === maximum[index])
       || direction.every((axis) => axis === 0)) return null
     bulgeIds.add(Number(item.id))
-    return { ...item, ...(surface === null ? {} : { reference_surface_binding: { ...surface } })
-    } as NonNullable<BeginnerGenerationConstraintsV1['bulge_targets']>[number]
+    return Object.freeze({
+      id: Number(item.id),
+      face_ids: Object.freeze(faceIds.map(String)),
+      range_min_tenths_mm: Object.freeze(minimum.map(Number)),
+      range_max_tenths_mm: Object.freeze(maximum.map(Number)),
+      direction_milli: Object.freeze(direction.map(Number)),
+      amount_tenths_mm: Number(item.amount_tenths_mm),
+      source_fold_model_fingerprint:
+        String(item.source_fold_model_fingerprint),
+      ...(surface === null ? {} : {
+        reference_surface_binding: Object.freeze({
+          asset_id: String(surface.asset_id),
+          range_id: Number(surface.range_id),
+          protrusion_id: Number(surface.protrusion_id),
+          triangle_indices: Object.freeze(
+            surfaceTriangleIndices!.map(Number),
+          ),
+          range_digest_sha256: surfaceRangeDigest!,
+        }),
+      }),
+    }) as NonNullable<
+      BeginnerGenerationConstraintsV1['bulge_targets']
+    >[number]
   })
   if (bulgeTargets.some((target) => target === null)) return null
   let targetAsset: BeginnerGenerationConstraintsV1['target_asset'] = null
@@ -763,19 +1008,19 @@ function normalizeBeginnerGenerationConstraints(
       const asset = exactCoreDataRecord(candidate, ['kind', 'underlay_id', 'asset_id'] as const)
       if (!asset || !isCanonicalNonNilUuid(asset.underlay_id)
         || !isCanonicalNonNilUuid(asset.asset_id)) return null
-      targetAsset = {
+      targetAsset = Object.freeze({
         kind: 'reference_image',
         underlay_id: asset.underlay_id,
         asset_id: asset.asset_id,
-      }
+      })
     } else {
       const asset = exactCoreDataRecord(candidate, ['kind', 'asset_id'] as const)
       if (!asset || asset.kind !== 'reference_model'
         || !isCanonicalNonNilUuid(asset.asset_id)) return null
-      targetAsset = {
+      targetAsset = Object.freeze({
         kind: 'reference_model',
         asset_id: asset.asset_id,
-      }
+      })
     }
   }
   let componentBridgeOverride: BeginnerGenerationConstraintsV1['component_bridge_override']
@@ -783,7 +1028,10 @@ function normalizeBeginnerGenerationConstraints(
     const document = exactCoreDataRecord(record.component_bridge_override, [
       'schema_version', 'source_asset_sha256', 'component_count', 'reviewed', 'bridges',
     ] as const)
-    if (!document || document.schema_version !== 1 || !isBoundedIntegerTuple(document.source_asset_sha256, 32, 255)
+    const sourceAssetDigest = document
+      ? snapshotSha256Bytes(document.source_asset_sha256)
+      : null
+    if (!document || document.schema_version !== 1 || !sourceAssetDigest
       || !Number.isInteger(document.component_count) || Number(document.component_count) < 2 || Number(document.component_count) > 8
       || typeof document.reviewed !== 'boolean' || !Array.isArray(document.bridges) || document.bridges.length > 7) return null
     const bridges = document.bridges.map((value, index) => {
@@ -796,7 +1044,15 @@ function normalizeBeginnerGenerationConstraints(
       return { id: index, start_component_id: Number(bridge.start_component_id), end_component_id: Number(bridge.end_component_id), accepted: bridge.accepted }
     })
     if (bridges.some((bridge) => bridge === null)) return null
-    componentBridgeOverride = { schema_version: 1, source_asset_sha256: document.source_asset_sha256.slice(), component_count: Number(document.component_count), reviewed: document.reviewed, bridges: bridges as NonNullable<typeof componentBridgeOverride>['bridges'] }
+    componentBridgeOverride = {
+      schema_version: 1,
+      source_asset_sha256: sourceAssetDigest.slice(),
+      component_count: Number(document.component_count),
+      reviewed: document.reviewed,
+      bridges: bridges as NonNullable<
+        typeof componentBridgeOverride
+      >['bridges'],
+    }
   }
   let silhouetteThresholds: BeginnerGenerationConstraintsV1['silhouette_thresholds']
   if (record.silhouette_thresholds !== undefined) {
@@ -806,7 +1062,7 @@ function normalizeBeginnerGenerationConstraints(
       || !Number.isInteger(thresholds.alpha) || Number(thresholds.alpha) < 0 || Number(thresholds.alpha) > 255
       || !Number.isInteger(thresholds.luma) || Number(thresholds.luma) < 0 || Number(thresholds.luma) > 255
       || !['dark_on_light', 'light_on_dark', 'alpha_only'].includes(String(thresholds.polarity ?? 'dark_on_light'))) return null
-    silhouetteThresholds = { schema_version: 1, alpha: Number(thresholds.alpha), luma: Number(thresholds.luma), polarity: (thresholds.polarity ?? 'dark_on_light') as 'dark_on_light' | 'light_on_dark' | 'alpha_only' }
+    silhouetteThresholds = Object.freeze({ schema_version: 1, alpha: Number(thresholds.alpha), luma: Number(thresholds.luma), polarity: (thresholds.polarity ?? 'dark_on_light') as 'dark_on_light' | 'light_on_dark' | 'alpha_only' })
   }
   let silhouetteCropRoi: BeginnerGenerationConstraintsV1['silhouette_crop_roi']
   if (record.silhouette_crop_roi !== undefined) {
@@ -816,7 +1072,7 @@ function normalizeBeginnerGenerationConstraints(
       || Number(roi.width_millionths) < 1 || Number(roi.height_millionths) < 1
       || Number(roi.x_millionths) + Number(roi.width_millionths) > 1_000_000
       || Number(roi.y_millionths) + Number(roi.height_millionths) > 1_000_000) return null
-    silhouetteCropRoi = { schema_version: 1, x_millionths: Number(roi.x_millionths), y_millionths: Number(roi.y_millionths), width_millionths: Number(roi.width_millionths), height_millionths: Number(roi.height_millionths) }
+    silhouetteCropRoi = Object.freeze({ schema_version: 1, x_millionths: Number(roi.x_millionths), y_millionths: Number(roi.y_millionths), width_millionths: Number(roi.width_millionths), height_millionths: Number(roi.height_millionths) })
   }
   const silhouetteOrientation = record.silhouette_orientation_degrees
   if (silhouetteOrientation !== undefined && ![0, 90, 180, 270].includes(Number(silhouetteOrientation))) return null
@@ -825,33 +1081,60 @@ function normalizeBeginnerGenerationConstraints(
     const mirror = exactCoreDataRecord(record.silhouette_mirror, ['schema_version', 'mirror_x', 'mirror_y'] as const)
     if (!mirror || mirror.schema_version !== 1 || typeof mirror.mirror_x !== 'boolean'
       || typeof mirror.mirror_y !== 'boolean') return null
-    silhouetteMirror = { schema_version: 1, mirror_x: mirror.mirror_x, mirror_y: mirror.mirror_y }
+    silhouetteMirror = Object.freeze({ schema_version: 1, mirror_x: mirror.mirror_x, mirror_y: mirror.mirror_y })
   }
   return Object.freeze({
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
     detail_level: record.detail_level,
     ...(record.generic_body_size_tenths_mm === undefined ? {} : {
-      generic_body_size_tenths_mm: record.generic_body_size_tenths_mm as [number, number],
+      generic_body_size_tenths_mm: Object.freeze(
+        (record.generic_body_size_tenths_mm as number[]).map(Number),
+      ),
     }),
     ...(record.generic_body_outline_tenths_mm === undefined ? {} : {
-      generic_body_outline_tenths_mm: (record.generic_body_outline_tenths_mm as Array<[number, number]>)
-        .map((point) => [...point] as [number, number]),
+      generic_body_outline_tenths_mm: Object.freeze(
+        (record.generic_body_outline_tenths_mm as Array<[number, number]>)
+          .map((point) => Object.freeze([...point] as [number, number])),
+      ),
     }),
     generic_body_outline_mode: record.generic_body_outline_mode === 'general' ? 'general' : 'symmetric',
     target_category: record.target_category,
     ...(record.custom_object_display_name === undefined ? {} : {
       custom_object_display_name: record.custom_object_display_name,
     }),
-    target_parts: targetParts,
-    skeleton_segments: skeletonSegments,
-    ...(componentBridgeOverride ? { component_bridge_override: componentBridgeOverride } : {}),
+    target_parts: Object.freeze(
+      targetParts.map((part) => Object.freeze(part!)),
+    ),
+    skeleton_segments: Object.freeze(
+      skeletonSegments.map((segment) => Object.freeze({
+        ...segment!,
+        start: Object.freeze({ ...segment!.start }),
+        end: Object.freeze({ ...segment!.end }),
+      })),
+    ),
+    ...(componentBridgeOverride ? {
+      component_bridge_override: Object.freeze({
+        ...componentBridgeOverride,
+        source_asset_sha256: Object.freeze(
+          componentBridgeOverride.source_asset_sha256.slice(),
+        ),
+        bridges: Object.freeze(
+          componentBridgeOverride.bridges.map((bridge) =>
+            Object.freeze({ ...bridge })),
+        ),
+      }),
+    } : {}),
     ...(silhouetteThresholds ? { silhouette_thresholds: silhouetteThresholds } : {}),
     ...(silhouetteCropRoi ? { silhouette_crop_roi: silhouetteCropRoi } : {}),
     ...(silhouetteOrientation === undefined ? {} : { silhouette_orientation_degrees: Number(silhouetteOrientation) as 0 | 90 | 180 | 270 }),
     ...(silhouetteMirror ? { silhouette_mirror: silhouetteMirror } : {}),
-    ...(hadProtrusions ? { protrusions: validProtrusions } : {}),
-    ...(hadBulgeTargets ? { bulge_targets: bulgeTargets } : {}),
+    ...(hadProtrusions ? {
+      protrusions: Object.freeze(validProtrusions.slice()),
+    } : {}),
+    ...(hadBulgeTargets ? {
+      bulge_targets: Object.freeze(bulgeTargets.slice()),
+    } : {}),
     target_asset: targetAsset,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
   }) as BeginnerGenerationConstraintsV1
@@ -870,13 +1153,15 @@ function normalizeBeginnerRecognitionProposal(
   ] as const
   const optionalKeys = ['generic_body_outline_tenths_mm', 'generic_body_outline_mode', 'protrusions', 'contour_confidence', 'skeleton_quality'] as const
   const record = snapshotCoreDataRecord(value)
+  const sourceSha256 = record
+    ? snapshotSha256Bytes(record.source_sha256)
+    : null
   if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
     || Object.keys(record).some((key) => ![...requiredKeys, ...optionalKeys].includes(key as never))) return null
   if (!record || record.schema_version !== 1 || record.format !== expectedFormat
     || record.source_underlay_id !== expectedUnderlayId
     || record.source_asset_id !== expectedAssetId
-    || !Array.isArray(record.source_sha256) || record.source_sha256.length !== 32
-    || record.source_sha256.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+    || !sourceSha256
     || !Number.isInteger(record.width) || Number(record.width) < 1 || Number(record.width) > 4096
     || !Number.isInteger(record.height) || Number(record.height) < 1 || Number(record.height) > 4096
     || Number(record.width) * Number(record.height) > 4_000_000) return null
@@ -943,7 +1228,7 @@ function normalizeBeginnerRecognitionProposal(
     format: expectedFormat,
     source_underlay_id: expectedUnderlayId,
     source_asset_id: expectedAssetId,
-    source_sha256: Object.freeze(record.source_sha256.slice()),
+    source_sha256: sourceSha256,
     width: Number(record.width),
     height: Number(record.height),
     shape_bounds: Object.freeze({
@@ -1009,7 +1294,7 @@ export type BeginnerCandidateResponseV1 = {
   plan_assessments: BeginnerGeneratedPlanAssessmentV1[]
   candidates: BeginnerCandidateScoreV1[]
   multi_reference_fusion: null | {
-    revision: number; image_sha256: number[]; reference_sha256: number[]; source_count: 2
+    revision: number; image_sha256: readonly number[]; reference_sha256: readonly number[]; source_count: 2
     image_component_count: number; reference_component_count: number
     image_branch_count: number; reference_branch_count: number
     normalized_extent_error: number; agreement_score: number; apply_allowed: boolean
@@ -1019,11 +1304,11 @@ export type BeginnerCandidateResponseV1 = {
     schema_version: 1; revision: number; source_count: number; excluded_asset_id: string | null
     pair_count: number; disagreement_count: number; agreement_score: number; apply_allowed: boolean
     reason: 'reference_consensus_agreement_v1' | 'reference_consensus_multiple_disagreements_v1'
-    pairs: Array<{ left_asset_id: string; right_asset_id: string; component_error: number
+    pairs: ReadonlyArray<Readonly<{ left_asset_id: string; right_asset_id: string; component_error: number
       normalized_extent_error: number; branch_error: number; agreement_score: number
-      disagrees: boolean; pair_digest_sha256: number[]; left_component_count: number
-      right_component_count: number; left_normalized_extents: [number, number]
-      right_normalized_extents: [number, number]; left_branch_count: number; right_branch_count: number }>
+      disagrees: boolean; pair_digest_sha256: readonly number[]; left_component_count: number
+      right_component_count: number; left_normalized_extents: readonly [number, number]
+      right_normalized_extents: readonly [number, number]; left_branch_count: number; right_branch_count: number }>>
   }
 }
 
@@ -1033,7 +1318,12 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
   proof_scope: 'necessary' | 'sufficient' | 'indeterminate'
   apply_allowed: boolean
   shape_approximation_score: number | null
-  shape_difference_reason: 'crease_preview_has_no_surface_mesh' | 'certified_flat_surface_v1' | 'component_aware_quantized_shape_v1' | null
+  shape_difference_reason:
+    | 'crease_preview_has_no_surface_mesh'
+    | 'certified_flat_surface_v1'
+    | 'component_aware_quantized_shape_v1'
+    | 'bounded_folded_pose_landmarks_v1'
+    | null
   component_shape_comparison: {
     component_count: number
     matched_branch_count: number
@@ -1058,6 +1348,7 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
     | 'local_analysis_blocked'
     | 'local_theorem_not_applicable'
     | 'local_analysis_indeterminate'
+    | 'native_fold_path_certified'
     | 'global_flat_foldability_proven'
     | 'global_flat_foldability_impossible'
     | 'global_resource_limit'
@@ -1067,40 +1358,464 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
     | 'multi_reference_disagreement'
 }
 
+export function beginnerGeneratedPlanAssessmentAllowsApplyV1(
+  assessment: Readonly<Pick<
+    BeginnerGeneratedPlanAssessmentV1,
+    'proof_scope' | 'apply_allowed'
+  >>,
+): boolean {
+  return assessment.proof_scope === 'sufficient'
+    && assessment.apply_allowed
+}
+
+const ANIMAL_SPECIALIZED_TARGET_PART_KINDS_V1: ReadonlyArray<
+  BeginnerGeneratedPlanKindV1
+> = Object.freeze([
+  'composite_complete_winged_animal_base',
+  'composite_complete_animal_base',
+  'composite_horn_tail_ear_base',
+  'composite_tail_ear_base',
+  'composite_horn_ear_base',
+  'composite_horn_tail_base',
+  'symmetric_four_leg_base',
+  'asymmetric_four_leg_landmark_base',
+  'symmetric_bird_base',
+  'asymmetric_bird_landmark_base',
+  'asymmetric_fish_landmark_base',
+  'symmetric_fish_base',
+  'symmetric_ear_base',
+  'symmetric_horn_base',
+  'center_axis_tail_base',
+  'center_axis_horn_base',
+])
+
+const INSECT_SPECIALIZED_TARGET_PART_KINDS_V1: ReadonlyArray<
+  BeginnerGeneratedPlanKindV1
+> = Object.freeze([
+  'composite_complete_insect_base',
+  'composite_wing_antenna_base',
+  'asymmetric_insect_landmark_base',
+  'symmetric_wing_base',
+  'symmetric_antenna_base',
+  'center_axis_antenna_base',
+  'symmetric_insect_leg_pair_base',
+  'symmetric_six_leg_base',
+])
+
+const ANIMAL_FOLD_VARIANT_KINDS_V1: ReadonlyArray<
+  BeginnerGeneratedPlanKindV1
+> = Object.freeze([
+  'vertical_book_fold',
+  'horizontal_book_fold',
+])
+
+const INSECT_FOLD_VARIANT_KINDS_V1: ReadonlyArray<
+  BeginnerGeneratedPlanKindV1
+> = Object.freeze([
+  'diagonal_fold',
+  'vertical_book_fold',
+])
+
+function sameBeginnerTargetPartsInOrderV1(
+  actual: BeginnerGenerationConstraintsV1['target_parts'],
+  expected: BeginnerGenerationConstraintsV1['target_parts'],
+): boolean {
+  return actual.length === expected.length
+    && actual.every((part, index) =>
+      part.kind === expected[index]?.kind
+      && part.count === expected[index]?.count)
+}
+
+function sameBeginnerTargetAssetV1(
+  actual: BeginnerGenerationConstraintsV1['target_asset'],
+  expected: BeginnerGenerationConstraintsV1['target_asset'],
+): boolean {
+  if (actual === null || expected === null) return actual === expected
+  return actual.kind === expected.kind
+    && actual.asset_id === expected.asset_id
+    && (
+      actual.kind !== 'reference_image'
+      || (
+        expected.kind === 'reference_image'
+        && actual.underlay_id === expected.underlay_id
+      )
+    )
+}
+
+function sameBeginnerSkeletonSegmentsInOrderV1(
+  actual: BeginnerGenerationConstraintsV1['skeleton_segments'],
+  expected: BeginnerGenerationConstraintsV1['skeleton_segments'],
+): boolean {
+  return actual.length === expected.length
+    && actual.every((segment, index) => {
+      const expectedSegment = expected[index]
+      return segment.id === expectedSegment?.id
+        && segment.thickness_tenths_mm
+          === expectedSegment.thickness_tenths_mm
+        && segment.start.x_tenths_mm
+          === expectedSegment.start.x_tenths_mm
+        && segment.start.y_tenths_mm
+          === expectedSegment.start.y_tenths_mm
+        && segment.end.x_tenths_mm
+          === expectedSegment.end.x_tenths_mm
+        && segment.end.y_tenths_mm
+          === expectedSegment.end.y_tenths_mm
+    })
+}
+
+function canonicalBeginnerGenericSkeletonSegmentsV1(
+  segments: BeginnerGenerationConstraintsV1['skeleton_segments'],
+): BeginnerGenerationConstraintsV1['skeleton_segments'] {
+  return segments
+    .map((segment) => ({
+      ...segment,
+      start: { ...segment.start },
+      end: { ...segment.end },
+    }))
+    .sort((left, right) => left.id - right.id)
+    .map((segment) => {
+      const start = [
+        segment.start.x_tenths_mm,
+        segment.start.y_tenths_mm,
+      ] as const
+      const end = [
+        segment.end.x_tenths_mm,
+        segment.end.y_tenths_mm,
+      ] as const
+      return end[0] < start[0]
+        || (end[0] === start[0] && end[1] < start[1])
+        ? { ...segment, start: segment.end, end: segment.start }
+        : segment
+    })
+}
+
+function expectedProfileSelectsGenericCandidatePlanV1(
+  expectedProfile: BeginnerDesignProfileV1,
+): boolean {
+  const constraints = expectedProfile.generation_constraints
+  const category = constraints.target_category
+  if (
+    category !== 'animal'
+    && category !== 'insect'
+    && category !== 'custom_object'
+  ) return false
+  const parts = constraints.target_parts
+  if (new Set(parts.map((part) => part.kind)).size !== parts.length) {
+    return false
+  }
+  const semanticEndpointCount = parts.reduce(
+    (sum, part) =>
+      part.kind === 'head' || part.kind === 'torso'
+        ? sum
+        : sum + part.count,
+    0,
+  )
+  const protrusions = constraints.protrusions ?? []
+  const physicalEndpointCount = protrusions.reduce(
+    (sum, protrusion) => sum + protrusion.count,
+    0,
+  )
+  const physicalBindingsAreBounded = protrusions.length >= 1
+    && protrusions.length <= MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1
+    && physicalEndpointCount >= 1
+    && physicalEndpointCount <= 32
+    && protrusions.every((protrusion, index) =>
+      index === 0 || protrusions[index - 1]!.id < protrusion.id)
+  if (!physicalBindingsAreBounded) return false
+  if (category === 'custom_object') {
+    return semanticEndpointCount === 0
+      || semanticEndpointCount === physicalEndpointCount
+  }
+  const hasExactBody = parts.filter((part) =>
+    part.kind === 'head' && part.count === 1).length === 1
+    && parts.filter((part) =>
+      part.kind === 'torso' && part.count === 1).length === 1
+  const specializedKinds = category === 'animal'
+    ? ANIMAL_SPECIALIZED_TARGET_PART_KINDS_V1
+    : INSECT_SPECIALIZED_TARGET_PART_KINDS_V1
+  return hasExactBody
+    && semanticEndpointCount >= MIN_BEGINNER_GENERAL_FEATURE_ENDPOINTS_V1
+    && semanticEndpointCount <= MAX_BEGINNER_GENERAL_FEATURE_ENDPOINTS_V1
+    && semanticEndpointCount === physicalEndpointCount
+    && !specializedKinds.some((kind) =>
+      beginnerGeneratedPlanTargetPartsAreCompatibleV1(kind, parts))
+}
+
+const BEGINNER_SPECIALIZED_BASE_PHYSICAL_EDGE_COUNT_V1 =
+  Object.freeze({
+    symmetric_four_leg_base: 4,
+    asymmetric_four_leg_landmark_base: 4,
+    symmetric_wing_base: 4,
+    symmetric_bird_base: 4,
+    asymmetric_bird_landmark_base: 4,
+    asymmetric_insect_landmark_base: 4,
+    asymmetric_fish_landmark_base: 4,
+    symmetric_fish_base: 4,
+    symmetric_ear_base: 4,
+    symmetric_horn_base: 4,
+    symmetric_antenna_base: 4,
+    symmetric_insect_leg_pair_base: 4,
+    symmetric_six_leg_base: 12,
+    center_axis_tail_base: 1,
+    center_axis_horn_base: 1,
+    center_axis_antenna_base: 1,
+    composite_tail_ear_base: 5,
+    composite_horn_ear_base: 5,
+    composite_horn_tail_base: 2,
+    composite_horn_tail_ear_base: 6,
+    composite_wing_antenna_base: 8,
+    composite_complete_insect_base: 20,
+    composite_complete_animal_base: 10,
+    composite_complete_winged_animal_base: 10,
+  } satisfies Partial<Record<BeginnerGeneratedPlanKindV1, number>>)
+
+const BEGINNER_SPECIALIZED_RADIAL_SUPPORT_KINDS_V1 =
+  new Set<BeginnerGeneratedPlanKindV1>([
+    'symmetric_four_leg_base',
+    'symmetric_six_leg_base',
+    'composite_horn_tail_ear_base',
+    'composite_wing_antenna_base',
+    'composite_complete_insect_base',
+    'composite_complete_animal_base',
+    'composite_complete_winged_animal_base',
+  ])
+
+function beginnerPlanRadialSupportAddedV1(
+  plan: BeginnerGeneratedPlanV1,
+): number | null | undefined {
+  const supportCodes = plan.instruction_codes.filter((code) =>
+    code.startsWith('bounded_radial_corner_support_v1:'))
+  if (supportCodes.length === 0) return null
+  if (supportCodes.length !== 1) return undefined
+  const match =
+    /^bounded_radial_corner_support_v1:added=([0-5]):covered=4$/u
+      .exec(supportCodes[0]!)
+  return match ? Number(match[1]) : undefined
+}
+
+function physicalBeginnerPlanEdgeCountV1(
+  plan: BeginnerGeneratedPlanV1,
+): number {
+  return plan.crease_pattern.edges.filter((edge) =>
+    edge.kind === 'mountain' || edge.kind === 'valley').length
+}
+
+function genericCandidatePhysicalEdgesMatchProfileV1(
+  plan: BeginnerGeneratedPlanV1,
+  expectedProfile: BeginnerDesignProfileV1,
+): boolean {
+  const physicalEndpointCount = (
+    expectedProfile.generation_constraints.protrusions ?? []
+  ).reduce((sum, protrusion) => sum + protrusion.count, 0)
+  const supportAdded = beginnerPlanRadialSupportAddedV1(plan)
+  const supportIsRequired =
+    physicalEndpointCount === 2
+    || physicalEndpointCount === 4
+    || (physicalEndpointCount >= 6 && physicalEndpointCount % 2 === 0)
+    || [3, 5, 7, 9, 11, 13].includes(physicalEndpointCount)
+  return supportAdded !== undefined
+    && (supportAdded !== null) === supportIsRequired
+    && (
+      physicalEndpointCount === 2
+        ? supportAdded === 4
+        : physicalEndpointCount === 4
+          ? supportAdded === 2 || supportAdded === 4
+          : true
+    )
+    && (
+      physicalEndpointCount !== 4
+      || (
+        physicalEndpointCount + Number(supportAdded) >= 6
+        && (physicalEndpointCount + Number(supportAdded)) % 2 === 0
+      )
+    )
+    && physicalBeginnerPlanEdgeCountV1(plan)
+      === physicalEndpointCount + (supportAdded ?? 0)
+}
+
+function specializedCandidatePhysicalEdgesMatchKindV1(
+  plan: BeginnerGeneratedPlanV1,
+): boolean {
+  const basePhysicalEdgeCount =
+    BEGINNER_SPECIALIZED_BASE_PHYSICAL_EDGE_COUNT_V1[
+      plan.kind as keyof typeof BEGINNER_SPECIALIZED_BASE_PHYSICAL_EDGE_COUNT_V1
+    ]
+  if (basePhysicalEdgeCount === undefined) return false
+  const supportAdded = beginnerPlanRadialSupportAddedV1(plan)
+  const supportIsRequired =
+    BEGINNER_SPECIALIZED_RADIAL_SUPPORT_KINDS_V1.has(plan.kind)
+  return supportAdded !== undefined
+    && (supportAdded === null || supportAdded <= 4)
+    && (supportAdded !== null) === supportIsRequired
+    && (
+      plan.kind !== 'symmetric_four_leg_base'
+      || supportAdded === 2
+      || supportAdded === 4
+    )
+    && physicalBeginnerPlanEdgeCountV1(plan)
+      === basePhysicalEdgeCount + (supportAdded ?? 0)
+}
+
+function protrusionLocalOutlinesFitSkeletonV1(
+  constraints: BeginnerGenerationConstraintsV1,
+): boolean {
+  const outlined = (constraints.protrusions ?? []).filter(
+    (protrusion) => protrusion.local_outline_tenths_mm !== undefined,
+  )
+  if (outlined.length === 0) return true
+  const coordinates = constraints.skeleton_segments.flatMap((segment) => [
+    segment.start,
+    segment.end,
+  ])
+  if (coordinates.length === 0) return false
+  const minimumX = Math.min(...coordinates.map((point) =>
+    point.x_tenths_mm))
+  const maximumX = Math.max(...coordinates.map((point) =>
+    point.x_tenths_mm))
+  const minimumY = Math.min(...coordinates.map((point) =>
+    point.y_tenths_mm))
+  const maximumY = Math.max(...coordinates.map((point) =>
+    point.y_tenths_mm))
+  return outlined.every((protrusion) =>
+    protrusion.local_outline_tenths_mm?.every(([localX, localY]) => {
+      const x = protrusion.position_tenths_mm[0] + localX
+      const y = protrusion.position_tenths_mm[1] + localY
+      return x >= minimumX && x <= maximumX
+        && y >= minimumY && y <= maximumY
+    }) === true)
+}
+
+function hasExactOrderedAsymmetricLandmarksV1(
+  constraints: BeginnerGenerationConstraintsV1,
+  requiredCount: number,
+  minimumSkeletonSegments: number,
+): boolean {
+  const protrusions = constraints.protrusions ?? []
+  return constraints.skeleton_segments.length >= minimumSkeletonSegments
+    && protrusions.length === requiredCount
+    && protrusions.every((protrusion, index) =>
+      (index === 0 || protrusions[index - 1]!.id < protrusion.id)
+      && protrusion.count === 1
+      && protrusion.symmetry === 'none'
+      && protrusion.direction_milli.some((coordinate) => coordinate !== 0))
+    && protrusionLocalOutlinesFitSkeletonV1(constraints)
+}
+
+function expectedSpecializedPrimaryKindV1(
+  expectedProfile: BeginnerDesignProfileV1,
+): BeginnerGeneratedPlanKindV1 | null {
+  const constraints = expectedProfile.generation_constraints
+  const parts = constraints.target_parts
+  const categoryKinds = constraints.target_category === 'animal'
+    ? ANIMAL_SPECIALIZED_TARGET_PART_KINDS_V1
+    : constraints.target_category === 'insect'
+      ? INSECT_SPECIALIZED_TARGET_PART_KINDS_V1
+      : []
+  const compatible = categoryKinds.filter((kind) =>
+    beginnerGeneratedPlanTargetPartsAreCompatibleV1(kind, parts))
+  if (compatible.length === 0) return null
+  if (compatible.includes('symmetric_four_leg_base')) {
+    return hasExactOrderedAsymmetricLandmarksV1(constraints, 4, 3)
+      ? 'asymmetric_four_leg_landmark_base'
+      : 'symmetric_four_leg_base'
+  }
+  if (compatible.includes('symmetric_bird_base')) {
+    return hasExactOrderedAsymmetricLandmarksV1(constraints, 2, 2)
+      ? 'asymmetric_bird_landmark_base'
+      : 'symmetric_bird_base'
+  }
+  if (compatible.includes('asymmetric_insect_landmark_base')) {
+    return hasExactOrderedAsymmetricLandmarksV1(constraints, 7, 0)
+      ? 'asymmetric_insect_landmark_base'
+      : null
+  }
+  if (compatible.includes('asymmetric_fish_landmark_base')) {
+    return hasExactOrderedAsymmetricLandmarksV1(constraints, 3, 0)
+      ? 'asymmetric_fish_landmark_base'
+      : null
+  }
+  return compatible[0] ?? null
+}
+
+function expectedProfileAuthorizesCandidatePlanV1(
+  plan: BeginnerGeneratedPlanV1,
+  expectedProfile: BeginnerDesignProfileV1,
+  planIndex: number,
+  instructionContext: BeginnerGeneratedPlanInstructionContextV1,
+): boolean {
+  const constraints = expectedProfile.generation_constraints
+  if (
+    !sameBeginnerTargetPartsInOrderV1(
+      plan.target_parts,
+      constraints.target_parts,
+    )
+    || !sameBeginnerTargetAssetV1(
+      plan.target_asset,
+      constraints.target_asset,
+    )
+  ) return false
+  const primaryIsGeneric =
+    expectedProfileSelectsGenericCandidatePlanV1(expectedProfile)
+  const expectedSkeleton = primaryIsGeneric
+    ? canonicalBeginnerGenericSkeletonSegmentsV1(
+        constraints.skeleton_segments,
+      )
+    : constraints.skeleton_segments
+  if (!sameBeginnerSkeletonSegmentsInOrderV1(
+    plan.skeleton_segments,
+    expectedSkeleton,
+  )) return false
+  if (planIndex > 0) {
+    const foldVariants = constraints.target_category === 'animal'
+      ? ANIMAL_FOLD_VARIANT_KINDS_V1
+      : constraints.target_category === 'insect'
+        ? INSECT_FOLD_VARIANT_KINDS_V1
+        : []
+    return plan.kind === foldVariants[planIndex - 1]
+      && (
+        instructionContext === 'grid'
+        || beginnerGeneratedPlanTopologyMatchesProfileV1(
+          plan,
+          expectedProfile,
+          planIndex,
+        )
+      )
+  }
+  if (plan.kind === 'composite_generic_target_base') {
+    return primaryIsGeneric
+      && genericCandidatePhysicalEdgesMatchProfileV1(plan, expectedProfile)
+      && (
+        instructionContext === 'grid'
+        || beginnerGeneratedPlanTopologyMatchesProfileV1(
+          plan,
+          expectedProfile,
+          planIndex,
+        )
+      )
+  }
+  return plan.kind === expectedSpecializedPrimaryKindV1(expectedProfile)
+    && specializedCandidatePhysicalEdgesMatchKindV1(plan)
+    && (
+      instructionContext === 'grid'
+      || beginnerGeneratedPlanTopologyMatchesProfileV1(
+        plan,
+        expectedProfile,
+        planIndex,
+      )
+    )
+}
+
 export type BeginnerGeneratedPlanV1 = {
   schema_version: 1
-  kind:
-    | 'symmetric_four_leg_base'
-    | 'symmetric_wing_base'
-    | 'symmetric_bird_base'
-    | 'asymmetric_bird_landmark_base'
-    | 'asymmetric_four_leg_landmark_base'
-    | 'asymmetric_insect_landmark_base'
-    | 'asymmetric_fish_landmark_base'
-    | 'symmetric_fish_base'
-    | 'symmetric_ear_base'
-    | 'symmetric_horn_base'
-    | 'symmetric_antenna_base'
-    | 'symmetric_insect_leg_pair_base'
-    | 'symmetric_six_leg_base'
-    | 'center_axis_tail_base'
-    | 'center_axis_horn_base'
-    | 'center_axis_antenna_base'
-    | 'composite_tail_ear_base'
-    | 'composite_horn_ear_base'
-    | 'composite_horn_tail_base'
-    | 'composite_horn_tail_ear_base'
-    | 'composite_wing_antenna_base'
-    | 'composite_complete_insect_base'
-    | 'composite_complete_animal_base'
-    | 'composite_complete_winged_animal_base'
-    | 'composite_generic_target_base'
-    | 'vertical_book_fold'
-    | 'horizontal_book_fold'
-    | 'diagonal_fold'
+  kind: BeginnerGeneratedPlanKindV1
   crease_pattern: {
     vertices: Array<{ id: string; position: { x: number; y: number } }>
-    edges: Array<{ id: string; start: string; end: string; kind: 'mountain' | 'valley' }>
+    edges: Array<{
+      id: string
+      start: string
+      end: string
+      kind: 'mountain' | 'valley' | 'auxiliary'
+    }>
   }
   instruction_codes: string[]
   target_parts: BeginnerGenerationConstraintsV1['target_parts']
@@ -1108,9 +1823,137 @@ export type BeginnerGeneratedPlanV1 = {
   target_asset: BeginnerGenerationConstraintsV1['target_asset']
   semantic_landmark_provenance?: {
     schema_version: 1
-    ordered_bindings: Array<{ ordinal: number; role: string; physical_ray: number }>
-    physical_ray_group_sha256: number[][]
+    ordered_bindings: ReadonlyArray<Readonly<{
+      ordinal: number
+      role: string
+      physical_ray: number
+    }>>
+    physical_ray_group_sha256: ReadonlyArray<ReadonlyArray<number>>
   }
+}
+
+const BEGINNER_ASYMMETRIC_INSECT_SEMANTIC_ROLES_V1 =
+  Object.freeze([
+    'head', 'tail', 'wing_left', 'wing_right', 'leg_front_left',
+    'leg_front_right', 'leg_middle_left', 'leg_middle_right',
+    'leg_rear_left', 'leg_rear_right',
+  ])
+
+const BEGINNER_ASYMMETRIC_FISH_SEMANTIC_ROLES_V1 =
+  Object.freeze(['head', 'tail', 'fin_left', 'fin_right'])
+
+const BEGINNER_ASYMMETRIC_INSECT_RAY_DIGESTS_V1 =
+  Object.freeze([
+    Object.freeze([213, 100, 5, 8, 192, 66, 152, 160, 194, 233, 1, 213, 122, 93, 223, 98, 40, 90, 120, 82, 11, 67, 162, 155, 111, 87, 115, 210, 17, 24, 20, 214]),
+    Object.freeze([129, 45, 3, 220, 103, 100, 168, 77, 239, 198, 183, 47, 163, 199, 110, 178, 201, 166, 66, 26, 155, 17, 241, 21, 87, 84, 107, 98, 136, 35, 51, 92]),
+    Object.freeze([23, 164, 6, 77, 87, 18, 29, 42, 246, 60, 210, 220, 59, 34, 167, 44, 157, 174, 12, 81, 10, 0, 226, 138, 153, 54, 51, 73, 94, 193, 23, 250]),
+    Object.freeze([229, 127, 126, 18, 52, 160, 111, 196, 175, 230, 97, 142, 9, 79, 197, 232, 238, 88, 70, 214, 0, 195, 94, 118, 124, 163, 45, 91, 174, 243, 198, 219]),
+  ])
+
+const BEGINNER_ASYMMETRIC_FISH_RAY_DIGESTS_V1 =
+  Object.freeze([
+    Object.freeze([75, 41, 210, 152, 136, 151, 46, 106, 24, 123, 23, 184, 30, 114, 42, 135, 137, 104, 245, 152, 132, 24, 91, 70, 94, 24, 236, 17, 27, 2, 50, 160]),
+    Object.freeze([161, 248, 204, 0, 96, 167, 32, 29, 69, 192, 109, 11, 216, 173, 136, 184, 254, 168, 75, 149, 4, 228, 224, 106, 4, 131, 187, 25, 183, 13, 1, 159]),
+    Object.freeze([202, 241, 97, 235, 226, 126, 156, 158, 161, 24, 8, 56, 7, 121, 174, 191, 34, 49, 180, 97, 195, 114, 200, 217, 150, 23, 163, 150, 142, 77, 176, 173]),
+    Object.freeze([244, 237, 179, 47, 153, 216, 77, 228, 12, 216, 247, 224, 124, 44, 111, 86, 85, 226, 67, 79, 22, 1, 187, 119, 64, 146, 75, 8, 53, 62, 112, 224]),
+  ])
+
+function beginnerSemanticContractV1(
+  kindOrBindingCount: BeginnerGeneratedPlanV1['kind'] | number,
+): Readonly<{
+  roles: ReadonlyArray<string>
+  rayDigests: ReadonlyArray<ReadonlyArray<number>>
+}> | null {
+  if (
+    kindOrBindingCount === 'asymmetric_insect_landmark_base'
+    || kindOrBindingCount === 10
+  ) {
+    return {
+      roles: BEGINNER_ASYMMETRIC_INSECT_SEMANTIC_ROLES_V1,
+      rayDigests: BEGINNER_ASYMMETRIC_INSECT_RAY_DIGESTS_V1,
+    }
+  }
+  if (
+    kindOrBindingCount === 'asymmetric_fish_landmark_base'
+    || kindOrBindingCount === 4
+  ) {
+    return {
+      roles: BEGINNER_ASYMMETRIC_FISH_SEMANTIC_ROLES_V1,
+      rayDigests: BEGINNER_ASYMMETRIC_FISH_RAY_DIGESTS_V1,
+    }
+  }
+  return null
+}
+
+function sameBeginnerDigestBytesV1(
+  actual: ReadonlyArray<number> | null | undefined,
+  expected: ReadonlyArray<number>,
+): boolean {
+  return actual?.length === expected.length
+    && actual.every((byte, index) => byte === expected[index])
+}
+
+const BEGINNER_ASSESSMENT_OUTCOME_TUPLES_V1 =
+  Object.freeze({
+    geometry_invalid: ['necessary', false],
+    folded_pose_simulation_failed: ['indeterminate', false],
+    fold_path_certificate_unavailable: ['necessary', false],
+    manufacturability_missing_vertex: ['necessary', false],
+    manufacturability_minimum_crease_spacing: ['necessary', false],
+    manufacturability_minimum_face_area: ['necessary', false],
+    manufacturability_paper_boundary_margin: ['necessary', false],
+    necessary_conditions_satisfied: ['necessary', true],
+    necessary_conditions_violated: ['necessary', false],
+    local_analysis_blocked: ['necessary', false],
+    local_theorem_not_applicable: ['indeterminate', true],
+    local_analysis_indeterminate: ['indeterminate', true],
+    native_fold_path_certified: ['sufficient', true],
+    global_flat_foldability_proven: ['sufficient', true],
+    global_flat_foldability_impossible: ['necessary', false],
+    global_resource_limit: ['indeterminate', true],
+    global_timeout: ['indeterminate', true],
+    deadline_exceeded: ['indeterminate', false],
+    global_indeterminate: ['indeterminate', true],
+    multi_reference_disagreement: ['indeterminate', false],
+  } as const)
+
+function beginnerAssessmentOutcomeTupleIsCanonicalV1(
+  reason: unknown,
+  proofScope: unknown,
+  applyAllowed: unknown,
+): boolean {
+  if (
+    typeof reason !== 'string'
+    || !Object.hasOwn(BEGINNER_ASSESSMENT_OUTCOME_TUPLES_V1, reason)
+  ) return false
+  const tuple = BEGINNER_ASSESSMENT_OUTCOME_TUPLES_V1[
+    reason as keyof typeof BEGINNER_ASSESSMENT_OUTCOME_TUPLES_V1
+  ]
+  return proofScope === tuple[0] && applyAllowed === tuple[1]
+}
+
+function beginnerReferenceDescriptorBranchIsCanonicalV1(
+  kind: unknown,
+  componentCount: unknown,
+  branchCount: unknown,
+): boolean {
+  if (
+    !Number.isInteger(componentCount)
+    || !Number.isInteger(branchCount)
+  ) return false
+  const components = Number(componentCount)
+  const branches = Number(branchCount)
+  if (kind === 'image') {
+    return components >= 1
+      && components <= 16
+      && branches === components * 2 - 1
+  }
+  if (kind === 'reference_model') {
+    return components >= 1
+      && components <= 8
+      && branches === (components === 1 ? 3 : components * 2 - 1)
+  }
+  return false
 }
 
 function normalizeBeginnerCandidateResponse(
@@ -1119,6 +1962,8 @@ function normalizeBeginnerCandidateResponse(
   expectedProjectId: string,
   expectedRevision: number,
   requestedCandidateCount: number,
+  instructionContext: BeginnerGeneratedPlanInstructionContextV1,
+  expectedProfile: BeginnerDesignProfileV1 | null = null,
 ): BeginnerCandidateResponseV1 | null {
   const response = exactCoreDataRecord(value, [
     'schema_version',
@@ -1135,22 +1980,48 @@ function normalizeBeginnerCandidateResponse(
     'multi_reference_fusion',
     'reference_consensus_analysis',
   ] as const)
-  const fusion = response && response.multi_reference_fusion === null ? null
+  const fusionInputIsNull = response?.multi_reference_fusion === null
+  const fusion = fusionInputIsNull ? null
     : exactCoreDataRecord(response?.multi_reference_fusion, [
       'revision', 'image_sha256', 'reference_sha256', 'source_count', 'image_component_count',
       'reference_component_count', 'image_branch_count', 'reference_branch_count',
       'normalized_extent_error', 'agreement_score', 'apply_allowed', 'reason',
     ] as const)
-  const consensus = response && response.reference_consensus_analysis === null ? null
+  const fusionImageSha256 = fusion
+    ? snapshotSha256Bytes(fusion.image_sha256)
+    : null
+  const fusionReferenceSha256 = fusion
+    ? snapshotSha256Bytes(fusion.reference_sha256)
+    : null
+  const consensusInputIsNull = response?.reference_consensus_analysis === null
+  const consensus = consensusInputIsNull ? null
     : exactCoreDataRecord(response?.reference_consensus_analysis, [
       'schema_version', 'revision', 'source_count', 'excluded_asset_id', 'pair_count',
       'disagreement_count', 'agreement_score', 'apply_allowed', 'reason', 'pairs',
     ] as const)
-  const consensusPairs = consensus && Array.isArray(consensus.pairs) ? consensus.pairs.map((raw) =>
+  const generatedPlanInputs = snapshotCoreDataArray(
+    response?.generated_plans,
+    3,
+  )
+  const planAssessmentInputs = snapshotCoreDataArray(
+    response?.plan_assessments,
+    3,
+  )
+  const candidateInputs = snapshotCoreDataArray(response?.candidates, 3)
+  const consensusPairInputs = consensus === null
+    ? []
+    : snapshotCoreDataArray(consensus?.pairs, 6)
+  const consensusPairs = consensusPairInputs ? consensusPairInputs.map((raw) =>
     exactCoreDataRecord(raw, ['left_asset_id', 'right_asset_id', 'component_error',
       'normalized_extent_error', 'branch_error', 'agreement_score', 'disagrees', 'pair_digest_sha256',
-      'left_component_count', 'right_component_count', 'left_normalized_extents', 'right_normalized_extents',
-      'left_branch_count', 'right_branch_count'] as const)) : []
+      'left_component_count', 'right_component_count', 'left_normalized_extents',
+      'right_normalized_extents', 'left_branch_count', 'right_branch_count'] as const)) : []
+  const consensusPairDigests = consensusPairs.map((pair) =>
+    pair ? snapshotSha256Bytes(pair.pair_digest_sha256) : null)
+  const consensusPairLeftExtents = consensusPairs.map((pair) =>
+    pair ? snapshotCoreDataArray(pair.left_normalized_extents, 2) : null)
+  const consensusPairRightExtents = consensusPairs.map((pair) =>
+    pair ? snapshotCoreDataArray(pair.right_normalized_extents, 2) : null)
   if (
     !response
     || response.schema_version !== 1
@@ -1168,44 +2039,231 @@ function normalizeBeginnerCandidateResponse(
     || response.elasticity_model !== 'not_computed'
     || !['ready', 'resource_limit', 'unsupported_paper', 'unsupported_techniques', 'missing_target_category', 'missing_required_parts', 'missing_target_asset', 'unsupported_animal_template', 'unsupported_insect_template']
       .includes(String(response.generation_status))
-    || !Array.isArray(response.generated_plans)
-    || response.generated_plans.length > 3
-    || !Array.isArray(response.plan_assessments)
-    || response.plan_assessments.length !== response.generated_plans.length
-    || !Array.isArray(response.candidates)
-    || response.candidates.length < 1
-    || response.candidates.length > 3
-    || response.candidates.length !== requestedCandidateCount
-    || (fusion !== null && (!fusion || fusion.revision !== expectedRevision || fusion.source_count !== 2
-      || !isBoundedIntegerTuple(fusion.image_sha256, 32, 255) || !isBoundedIntegerTuple(fusion.reference_sha256, 32, 255)
-      || [fusion.image_component_count, fusion.reference_component_count].some((count) => !Number.isInteger(count) || Number(count) < 1 || Number(count) > 8)
-      || [fusion.image_branch_count, fusion.reference_branch_count].some((count) => !Number.isInteger(count) || Number(count) < 1 || Number(count) > 16)
+    || !generatedPlanInputs
+    || !planAssessmentInputs
+    || planAssessmentInputs.length !== generatedPlanInputs.length
+    || !candidateInputs
+    || candidateInputs.length < 1
+    || candidateInputs.length !== requestedCandidateCount
+    || (!fusionInputIsNull && !fusion)
+    || (fusion !== null && (fusion.revision !== expectedRevision || fusion.source_count !== 2
+      || expectedProfile?.generation_constraints.target_asset?.kind
+        !== 'reference_model'
+      || !fusionImageSha256 || !fusionReferenceSha256
+      || !Number.isInteger(fusion.image_component_count)
+      || Number(fusion.image_component_count) < 1
+      || Number(fusion.image_component_count) > 8
+      || !Number.isInteger(fusion.reference_component_count)
+      || Number(fusion.reference_component_count) < 1
+      || Number(fusion.reference_component_count) > 8
+      || !Number.isInteger(fusion.image_branch_count)
+      || Number(fusion.image_branch_count) < 1
+      || Number(fusion.image_branch_count) > 15
+      || !Number.isInteger(fusion.reference_branch_count)
+      || Number(fusion.reference_branch_count) < 1
+      || Number(fusion.reference_branch_count) > 15
+      || Number(fusion.image_branch_count)
+        !== Number(fusion.image_component_count) * 2 - 1
+      || Number(fusion.reference_branch_count) !== (
+        Number(fusion.reference_component_count) === 1
+          ? 3
+          : Number(fusion.reference_component_count) * 2 - 1
+      )
       || !Number.isInteger(fusion.normalized_extent_error) || Number(fusion.normalized_extent_error) < 0 || Number(fusion.normalized_extent_error) > 100
       || !Number.isInteger(fusion.agreement_score) || Number(fusion.agreement_score) < 0 || Number(fusion.agreement_score) > 100
+      || Number(fusion.agreement_score) !== Math.max(
+        0,
+        100 - Math.min(
+          100,
+          Number(fusion.normalized_extent_error) * 2
+            + Math.abs(
+              Number(fusion.image_component_count)
+                - Number(fusion.reference_component_count),
+            ) * 20
+            + Math.abs(
+              Number(fusion.image_branch_count)
+                - Number(fusion.reference_branch_count),
+            ) * 10,
+        ),
+      )
       || typeof fusion.apply_allowed !== 'boolean'
+      || fusion.apply_allowed !== (
+        Number(fusion.normalized_extent_error) <= 20
+        && Math.abs(
+          Number(fusion.image_component_count)
+            - Number(fusion.reference_component_count),
+        ) <= 1
+        && Math.abs(
+          Number(fusion.image_branch_count)
+            - Number(fusion.reference_branch_count),
+        ) <= 2
+      )
       || !['image_glb_agreement_v1', 'image_glb_disagreement_v1'].includes(String(fusion.reason))
       || (fusion.reason === 'image_glb_agreement_v1') !== fusion.apply_allowed))
-    || (consensus !== null && (!consensus || consensus.schema_version !== 1 || consensus.revision !== expectedRevision
+    || (!consensusInputIsNull && !consensus)
+    || (consensus !== null && (consensus.schema_version !== 1 || consensus.revision !== expectedRevision
       || !Number.isInteger(consensus.source_count) || Number(consensus.source_count) < 2 || Number(consensus.source_count) > 4
       || (consensus.excluded_asset_id !== null && !isCanonicalNonNilUuid(consensus.excluded_asset_id))
       || !Number.isInteger(consensus.pair_count) || Number(consensus.pair_count) < 1 || Number(consensus.pair_count) > 6
+      || !consensusPairInputs
       || consensusPairs.length !== consensus.pair_count || !Number.isInteger(consensus.disagreement_count)
       || Number(consensus.disagreement_count) < 0 || Number(consensus.disagreement_count) > Number(consensus.pair_count)
       || !Number.isInteger(consensus.agreement_score) || Number(consensus.agreement_score) < 0 || Number(consensus.agreement_score) > 100
       || typeof consensus.apply_allowed !== 'boolean'
       || !['reference_consensus_agreement_v1', 'reference_consensus_multiple_disagreements_v1'].includes(String(consensus.reason))
       || (Number(consensus.disagreement_count) < 2) !== consensus.apply_allowed
-      || consensusPairs.some((pair) => !pair || !isCanonicalNonNilUuid(pair.left_asset_id) || !isCanonicalNonNilUuid(pair.right_asset_id)
-        || pair.left_asset_id === pair.right_asset_id || !isBoundedIntegerTuple(pair.pair_digest_sha256, 32, 255)
+      || consensusPairs.some((pair, index) => !pair || !isCanonicalNonNilUuid(pair.left_asset_id) || !isCanonicalNonNilUuid(pair.right_asset_id)
+        || pair.left_asset_id === pair.right_asset_id || !consensusPairDigests[index]
         || [pair.component_error, pair.normalized_extent_error, pair.branch_error, pair.agreement_score]
           .some((metric) => !Number.isInteger(metric) || Number(metric) < 0 || Number(metric) > 100)
-        || [pair.left_component_count, pair.right_component_count, pair.left_branch_count, pair.right_branch_count]
-          .some((metric) => !Number.isInteger(metric) || Number(metric) < 1 || Number(metric) > 16)
-        || !isBoundedIntegerTuple(pair.left_normalized_extents, 2, 100)
-        || !isBoundedIntegerTuple(pair.right_normalized_extents, 2, 100)
-        || typeof pair.disagrees !== 'boolean')))
+        || [pair.left_component_count, pair.right_component_count]
+          .some((metric) =>
+            !Number.isInteger(metric)
+            || Number(metric) < 1
+            || Number(metric) > 16)
+        || [pair.left_branch_count, pair.right_branch_count]
+          .some((metric) =>
+            !Number.isInteger(metric)
+            || Number(metric) < 1
+            || Number(metric) > 31)
+        || consensusPairLeftExtents[index]?.length !== 2
+        || consensusPairLeftExtents[index]?.some((extent) =>
+          !Number.isInteger(extent)
+          || Number(extent) < 0
+          || Number(extent) > 100)
+        || consensusPairRightExtents[index]?.length !== 2
+        || consensusPairRightExtents[index]?.some((extent) =>
+          !Number.isInteger(extent)
+          || Number(extent) < 0
+          || Number(extent) > 100)
+        || Math.max(
+          ...consensusPairLeftExtents[index]!.map(Number),
+        ) !== 100
+        || Math.max(
+          ...consensusPairRightExtents[index]!.map(Number),
+        ) !== 100
+        || Number(pair.component_error) !== Math.abs(
+          Number(pair.left_component_count)
+            - Number(pair.right_component_count),
+        )
+        || Number(pair.branch_error) !== Math.abs(
+          Number(pair.left_branch_count)
+            - Number(pair.right_branch_count),
+        )
+        || Number(pair.normalized_extent_error) !== Math.max(
+          Math.abs(
+            Number(consensusPairLeftExtents[index]![0])
+              - Number(consensusPairRightExtents[index]![0]),
+          ),
+          Math.abs(
+            Number(consensusPairLeftExtents[index]![1])
+              - Number(consensusPairRightExtents[index]![1]),
+          ),
+        )
+        || Number(pair.agreement_score) !== Math.max(
+          0,
+          100 - Math.min(
+            100,
+            Number(pair.normalized_extent_error) * 2
+              + Number(pair.component_error) * 20
+              + Number(pair.branch_error) * 10,
+          ),
+        )
+      || typeof pair.disagrees !== 'boolean'
+        || pair.disagrees !== (
+          Number(pair.component_error) > 1
+          || Number(pair.branch_error) > 2
+          || Number(pair.normalized_extent_error) > 20
+        ))))
+    || (response.generation_status === 'missing_target_asset'
+      && (fusion !== null || consensus !== null))
   ) return null
-  const candidates = response.candidates.map((candidate, index) => {
+  if (consensus !== null) {
+    const expectedConsensus =
+      expectedProfile?.reference_consensus_v1
+    const expectedExcludedAssetId =
+      expectedConsensus?.excluded_asset_id ?? null
+    const activeBindings = (expectedConsensus?.bindings ?? []).filter(
+      (binding) => binding.asset_id !== expectedExcludedAssetId,
+    )
+    const expectedPairs: Array<readonly [string, string]> = []
+    for (let left = 0; left < activeBindings.length; left += 1) {
+      for (
+        let right = left + 1;
+        right < activeBindings.length;
+        right += 1
+      ) {
+        expectedPairs.push([
+          activeBindings[left]!.asset_id,
+          activeBindings[right]!.asset_id,
+        ])
+      }
+    }
+    const disagreementCount = consensusPairs.reduce(
+      (count, pair) => count + Number(pair?.disagrees === true),
+      0,
+    )
+    const agreementScore = consensusPairs.reduce(
+      (sum, pair) => sum + Number(pair?.agreement_score),
+      0,
+    ) / consensusPairs.length
+    const applyAllowed = disagreementCount < 2
+    if (
+      !expectedConsensus
+      || activeBindings.length < 2
+      || consensus.excluded_asset_id !== expectedExcludedAssetId
+      || consensus.source_count !== activeBindings.length
+      || consensus.pair_count !== expectedPairs.length
+      || consensusPairs.length !== expectedPairs.length
+      || consensusPairs.some((pair, index) => {
+        const leftBinding = activeBindings.find((binding) =>
+          binding.asset_id === pair?.left_asset_id)
+        const rightBinding = activeBindings.find((binding) =>
+          binding.asset_id === pair?.right_asset_id)
+        const expectedDigest = pair && leftBinding && rightBinding
+          ? beginnerReferenceConsensusPairDigestV1(
+              leftBinding.asset_id,
+              leftBinding.sha256,
+              rightBinding.asset_id,
+              rightBinding.sha256,
+              {
+                componentError: Number(pair.component_error),
+                normalizedExtentError:
+                  Number(pair.normalized_extent_error),
+                branchError: Number(pair.branch_error),
+                agreementScore: Number(pair.agreement_score),
+                disagrees: pair.disagrees === true,
+              },
+            )
+          : null
+        return pair?.left_asset_id !== expectedPairs[index]?.[0]
+          || pair?.right_asset_id !== expectedPairs[index]?.[1]
+          || !beginnerReferenceDescriptorBranchIsCanonicalV1(
+            leftBinding?.kind,
+            pair?.left_component_count,
+            pair?.left_branch_count,
+          )
+          || !beginnerReferenceDescriptorBranchIsCanonicalV1(
+            rightBinding?.kind,
+            pair?.right_component_count,
+            pair?.right_branch_count,
+          )
+          || !expectedDigest
+          || !consensusPairDigests[index]?.every(
+            (byte, digestIndex) => byte === expectedDigest[digestIndex],
+          )
+      })
+      || consensus.disagreement_count !== disagreementCount
+      || consensus.agreement_score !== Math.floor(agreementScore)
+      || consensus.apply_allowed !== applyAllowed
+      || consensus.reason !== (
+        applyAllowed
+          ? 'reference_consensus_agreement_v1'
+          : 'reference_consensus_multiple_disagreements_v1'
+      )
+    ) return null
+  }
+  const candidates = candidateInputs.map((candidate, index) => {
     const record = exactCoreDataRecord(candidate, [
       'schema_version',
       'kind',
@@ -1250,74 +2308,127 @@ function normalizeBeginnerCandidateResponse(
     }) as BeginnerCandidateScoreV1
   })
   if (candidates.some((candidate) => candidate === null)) return null
-  const generatedPlans = response.generated_plans.map((plan) => {
-    const record = exactCoreDataRecord(plan, [
+  const generatedPlans = generatedPlanInputs.map((plan) => {
+    const basePlanKeys = [
       'schema_version', 'kind', 'crease_pattern', 'instruction_codes', 'target_parts',
-      'skeleton_segments',
-      'target_asset',
+      'skeleton_segments', 'target_asset',
+    ] as const
+    const recordWithoutSemantic = exactCoreDataRecord(plan, basePlanKeys)
+    const recordWithSemantic = exactCoreDataRecord(plan, [
+      ...basePlanKeys,
       'semantic_landmark_provenance',
     ] as const)
+    const record = recordWithSemantic ?? recordWithoutSemantic
+    const semanticInput =
+      recordWithSemantic?.semantic_landmark_provenance
     const pattern = record && exactCoreDataRecord(record.crease_pattern, ['vertices', 'edges'] as const)
+    const verticesInput = pattern
+      ? snapshotCoreDataArray(
+          pattern.vertices,
+          MAX_BEGINNER_GENERIC_PLAN_VERTICES_V1,
+        )
+      : null
+    const edgesInput = pattern
+      ? snapshotCoreDataArray(
+          pattern.edges,
+          MAX_BEGINNER_GENERIC_PLAN_EDGES_V1,
+        )
+      : null
+    const instructionCodes = record
+      ? snapshotCoreDataArray(record.instruction_codes, 4)
+      : null
+    const targetPartsInput = record
+      ? snapshotCoreDataArray(
+          record.target_parts,
+          MAX_BEGINNER_TARGET_PART_RECORDS_V1,
+        )
+      : null
+    const skeletonSegmentsInput = record
+      ? snapshotCoreDataArray(record.skeleton_segments, 64)
+      : null
     if (
       !record
       || record.schema_version !== 1
-      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'asymmetric_fish_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || typeof record.kind !== 'string'
       || !pattern
-      || !Array.isArray(pattern.vertices)
-      || pattern.vertices.length < 2
-      || pattern.vertices.length > (record.kind === 'composite_generic_target_base' ? 33 : record.kind === 'composite_complete_insect_base' ? 21 : record.kind === 'composite_complete_winged_animal_base' ? 15 : record.kind === 'composite_complete_animal_base' ? 11 : record.kind === 'symmetric_six_leg_base' ? 13 : record.kind === 'composite_wing_antenna_base' ? 9 : record.kind === 'composite_horn_tail_ear_base' ? 7 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 6 : 5)
-      || !Array.isArray(pattern.edges)
-      || pattern.edges.length < 1
-      || pattern.edges.length > (record.kind === 'composite_generic_target_base' ? 32 : record.kind === 'composite_complete_insect_base' ? 20 : record.kind === 'composite_complete_winged_animal_base' ? 14 : record.kind === 'composite_complete_animal_base' ? 10 : record.kind === 'symmetric_six_leg_base' ? 12 : record.kind === 'composite_wing_antenna_base' ? 8 : record.kind === 'composite_horn_tail_ear_base' ? 6 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 5 : 4)
-      || !Array.isArray(record.instruction_codes)
-      || record.instruction_codes.length !== 1
-      || !record.instruction_codes.every((code) =>
-        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'asymmetric_fish_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+      || !verticesInput
+      || !edgesInput
+      || !instructionCodes
+      || instructionCodes.length < 1
+      || !targetPartsInput
+      || !skeletonSegmentsInput
+      || (recordWithSemantic !== null
+        && semanticInput === undefined)
     ) return null
-    const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
-      schema_version: 1,
-      maximum_steps: 1,
-      detail_level: 'simple',
-      target_category: record.kind === 'composite_generic_target_base'
-        ? 'custom_object'
-        : record.kind === 'asymmetric_insect_landmark_base' ? 'insect' : 'animal',
-      target_parts: record.target_parts,
-      skeleton_segments: record.skeleton_segments,
-      target_asset: record.target_asset,
-      allowed_techniques: ['valley_fold'],
-    })
+    const kind = record.kind as BeginnerGeneratedPlanV1['kind']
+    if (!beginnerGeneratedPlanSizeIsAdmissibleV1(
+      kind,
+      verticesInput.length,
+      edgesInput.length,
+    )) return null
+    const normalizedPlanInputs = normalizeBeginnerGenerationConstraints(
+      {
+        schema_version: 1,
+        maximum_steps: 1,
+        detail_level: 'simple',
+        target_category: record.kind === 'composite_generic_target_base'
+          ? 'custom_object'
+          : record.kind === 'asymmetric_insect_landmark_base' ? 'insect' : 'animal',
+        target_parts: targetPartsInput,
+        skeleton_segments: skeletonSegmentsInput,
+        target_asset: record.target_asset,
+        allowed_techniques: ['valley_fold'],
+      },
+      {
+        requireCanonicalGenericIds:
+          record.kind === 'composite_generic_target_base',
+      },
+    )
     if (!normalizedPlanInputs) return null
-    const semantic = record.semantic_landmark_provenance === undefined ? null
-      : exactCoreDataRecord(record.semantic_landmark_provenance, [
+    if (!beginnerGeneratedPlanTargetPartsAreCompatibleV1(
+      kind,
+      normalizedPlanInputs.target_parts,
+    )) return null
+    if (!beginnerGeneratedPlanInstructionsAreCanonicalV1(
+      kind,
+      instructionCodes as string[],
+      normalizedPlanInputs.skeleton_segments,
+      instructionContext,
+    )) return null
+    const semantic = semanticInput === undefined ? null
+      : exactCoreDataRecord(semanticInput, [
         'schema_version', 'ordered_bindings', 'physical_ray_group_sha256',
       ] as const)
-    const semanticRoles = record.kind === 'asymmetric_insect_landmark_base'
-      ? [
-        'head', 'tail', 'wing_left', 'wing_right', 'leg_front_left', 'leg_front_right',
-        'leg_middle_left', 'leg_middle_right', 'leg_rear_left', 'leg_rear_right',
-      ]
-      : record.kind === 'asymmetric_fish_landmark_base'
-        ? ['head', 'tail', 'fin_left', 'fin_right']
-        : null
-    const semanticBindings = semantic && Array.isArray(semantic.ordered_bindings)
-      ? semantic.ordered_bindings.map((value, index) => {
+    const semanticContract = beginnerSemanticContractV1(kind)
+    const semanticRoles = semanticContract?.roles ?? null
+    const semanticBindingInputs = semantic
+      ? snapshotCoreDataArray(semantic.ordered_bindings, 10)
+      : null
+    const semanticBindings = semanticBindingInputs
+      ? semanticBindingInputs.map((value, index) => {
         const binding = exactCoreDataRecord(value, ['ordinal', 'role', 'physical_ray'] as const)
         return binding && binding.ordinal === index && binding.role === semanticRoles?.[index]
-          && Number.isInteger(binding.physical_ray) && Number(binding.physical_ray) >= 0
-          && Number(binding.physical_ray) < 4
+          && binding.physical_ray === index % 4
           ? { ordinal: index, role: String(binding.role), physical_ray: Number(binding.physical_ray) }
           : null
       }) : null
-    const rayDigests = semantic && Array.isArray(semantic.physical_ray_group_sha256)
-      ? semantic.physical_ray_group_sha256 : null
+    const rayDigestInputs = semantic
+      ? snapshotCoreDataArray(semantic.physical_ray_group_sha256, 4)
+      : null
+    const rayDigests = rayDigestInputs
+      ? rayDigestInputs.map(snapshotSha256Bytes)
+      : null
     if ((semanticRoles !== null) !== (semantic !== null)
       || (semantic && (semantic.schema_version !== 1 || !semanticBindings
         || semanticBindings.length !== semanticRoles?.length
         || semanticBindings.some((binding) => binding === null)
         || rayDigests?.length !== 4
-        || rayDigests.some((digest) => !Array.isArray(digest) || digest.length !== 32
-          || digest.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255))))) return null
-    const vertices = pattern.vertices.map((vertex) => {
+        || rayDigests.some((digest, index) =>
+          !sameBeginnerDigestBytesV1(
+            digest,
+            semanticContract?.rayDigests[index] ?? [],
+          ))))) return null
+    const vertices = verticesInput.map((vertex) => {
       const item = exactCoreDataRecord(vertex, ['id', 'position'] as const)
       const position = item && exactCoreDataRecord(item.position, ['x', 'y'] as const)
       if (!item || !isCanonicalNonNilUuid(item.id) || !position
@@ -1328,13 +2439,15 @@ function normalizeBeginnerCandidateResponse(
     const admittedVertices = vertices as BeginnerGeneratedPlanV1['crease_pattern']['vertices']
     const vertexIds = new Set(admittedVertices.map((vertex) => vertex.id))
     if (vertexIds.size !== admittedVertices.length) return null
-    const edges = pattern.edges.map((value) => {
+    const edges = edgesInput.map((value) => {
       const edge = exactCoreDataRecord(value, ['id', 'start', 'end', 'kind'] as const)
       if (!edge
         || !isCanonicalNonNilUuid(edge.id) || !isCanonicalNonNilUuid(edge.start)
         || !isCanonicalNonNilUuid(edge.end) || edge.start === edge.end
         || !vertexIds.has(edge.start) || !vertexIds.has(edge.end)
-        || !['mountain', 'valley'].includes(String(edge.kind))) return null
+        || !['mountain', 'valley', 'auxiliary'].includes(String(edge.kind))) {
+        return null
+      }
       return {
         id: edge.id,
         start: edge.start,
@@ -1344,26 +2457,64 @@ function normalizeBeginnerCandidateResponse(
     })
     if (edges.some((edge) => edge === null)) return null
     const admittedEdges = edges as BeginnerGeneratedPlanV1['crease_pattern']['edges']
-    if (new Set(admittedEdges.map((edge) => edge.id)).size !== admittedEdges.length) return null
+    if (
+      new Set(admittedEdges.map((edge) => edge.id)).size
+        !== admittedEdges.length
+      || admittedVertices.some((vertex) =>
+        !admittedEdges.some((edge) =>
+          edge.start === vertex.id || edge.end === vertex.id))
+    ) return null
     return {
       schema_version: 1,
       kind: record.kind,
       crease_pattern: { vertices: admittedVertices, edges: admittedEdges },
-      instruction_codes: record.instruction_codes.slice(),
+      instruction_codes: instructionCodes.slice() as string[],
       target_parts: normalizedPlanInputs.target_parts,
       skeleton_segments: normalizedPlanInputs.skeleton_segments,
       target_asset: normalizedPlanInputs.target_asset,
-      ...(semantic && semanticBindings && rayDigests ? { semantic_landmark_provenance: {
+      ...(semantic && semanticBindings && rayDigests ? { semantic_landmark_provenance: Object.freeze({
         schema_version: 1 as const,
-        ordered_bindings: semanticBindings as Array<{ ordinal: number; role: string; physical_ray: number }>,
-        physical_ray_group_sha256: rayDigests as number[][],
-      } } : {}),
+        ordered_bindings: Object.freeze(semanticBindings.map((binding) =>
+          Object.freeze({ ...binding! }))),
+        physical_ray_group_sha256: Object.freeze(rayDigests.map(
+          (digest) => Object.freeze(Array.from(digest!)),
+        )),
+      }) } : {}),
     } as BeginnerGeneratedPlanV1
   })
   if (generatedPlans.some((plan) => plan === null)
     || (response.generation_status === 'ready') !== (generatedPlans.length > 0)) return null
   const admittedPlans = generatedPlans as BeginnerGeneratedPlanV1[]
-  const planAssessments = response.plan_assessments.map((assessment, index) => {
+  if (instructionContext === 'candidate' && (
+    expectedProfile === null
+    || (
+      response.generation_status === 'ready'
+      && admittedPlans.length !== (
+        expectedProfile.generation_constraints.target_category
+          === 'custom_object'
+          ? 1
+          : requestedCandidateCount
+      )
+    )
+    || admittedPlans.some((plan, planIndex) =>
+      !expectedProfileAuthorizesCandidatePlanV1(
+        plan,
+        expectedProfile,
+        planIndex,
+        instructionContext,
+      ))
+  )) return null
+  if (instructionContext === 'grid' && (
+    expectedProfile === null
+    || admittedPlans.some((plan) =>
+      !expectedProfileAuthorizesCandidatePlanV1(
+        plan,
+        expectedProfile,
+        0,
+        instructionContext,
+      ))
+  )) return null
+  const planAssessments = planAssessmentInputs.map((assessment, index) => {
     const record = exactCoreDataRecord(assessment, [
       'kind', 'expected_candidate_edge_id', 'proof_scope', 'apply_allowed', 'reason',
       'shape_approximation_score', 'shape_difference_reason',
@@ -1377,6 +2528,24 @@ function normalizeBeginnerCandidateResponse(
     const componentScores = componentComparison && [componentComparison.extent_score,
       componentComparison.branch_score, componentComparison.bridge_score]
     const plan = admittedPlans[index]
+    const skeletonBranchCount = plan?.skeleton_segments.length ?? 0
+    const componentCount = Number(componentComparison?.component_count)
+    const matchedBranchCount = Math.min(
+      componentCount,
+      skeletonBranchCount,
+    )
+    const expectedComponentWork =
+      matchedBranchCount * skeletonBranchCount
+      - matchedBranchCount * (matchedBranchCount - 1) / 2
+    const targetBridgeCount = componentCount - 1
+    const candidateBridgeCount = Math.max(
+      0,
+      skeletonBranchCount - componentCount,
+    )
+    const expectedBridgeScore = 100 - Math.floor(
+      Math.abs(targetBridgeCount - candidateBridgeCount) * 100
+        / Math.max(targetBridgeCount, candidateBridgeCount, 1),
+    )
     if (!record || !plan
       || record.kind !== plan.kind
       || record.expected_candidate_edge_id !== plan.crease_pattern.edges[0]?.id
@@ -1387,50 +2556,74 @@ function normalizeBeginnerCandidateResponse(
         && (!Number.isInteger(record.shape_approximation_score)
           || Number(record.shape_approximation_score) < 0
           || Number(record.shape_approximation_score) > 100))
-      || ![null, 'crease_preview_has_no_surface_mesh', 'certified_flat_surface_v1', 'component_aware_quantized_shape_v1'].includes(
+      || ![
+        null,
+        'crease_preview_has_no_surface_mesh',
+        'certified_flat_surface_v1',
+        'component_aware_quantized_shape_v1',
+        'bounded_folded_pose_landmarks_v1',
+      ].includes(
         record.shape_difference_reason as null | string,
       )
       || (componentComparison !== null && (!componentComparison
         || !Number.isInteger(componentComparison.component_count)
         || Number(componentComparison.component_count) < 2 || Number(componentComparison.component_count) > 8
+        || skeletonBranchCount < 1
+        || skeletonBranchCount > 16
         || !Number.isInteger(componentComparison.matched_branch_count)
-        || Number(componentComparison.matched_branch_count) < 0
-        || Number(componentComparison.matched_branch_count) > Number(componentComparison.component_count)
-        || !Number.isInteger(componentComparison.work_units) || Number(componentComparison.work_units) > 64
+        || Number(componentComparison.matched_branch_count)
+          !== matchedBranchCount
+        || !Number.isInteger(componentComparison.work_units)
+        || Number(componentComparison.work_units)
+          !== expectedComponentWork
+        || expectedComponentWork < 1
+        || expectedComponentWork > 64
         || !componentScores || componentScores.some((score) => !Number.isInteger(score) || Number(score) < 0 || Number(score) > 100)
+        || Number(componentComparison.bridge_score)
+          !== expectedBridgeScore
         || componentComparison.extent_weight !== 45 || componentComparison.branch_weight !== 35
         || componentComparison.bridge_weight !== 20))
       || ((record.shape_difference_reason === 'component_aware_quantized_shape_v1') !== (componentComparison !== null))
       || ((record.shape_approximation_score === null)
         !== (record.shape_difference_reason === null))
-      || ![
-        'geometry_invalid', 'folded_pose_simulation_failed', 'fold_path_certificate_unavailable',
-        'manufacturability_missing_vertex',
-        'manufacturability_minimum_crease_spacing', 'manufacturability_minimum_face_area',
-        'manufacturability_paper_boundary_margin', 'necessary_conditions_satisfied',
-        'necessary_conditions_violated', 'local_analysis_blocked',
-        'local_theorem_not_applicable', 'local_analysis_indeterminate',
-        'global_flat_foldability_proven', 'global_flat_foldability_impossible',
-        'global_resource_limit', 'global_timeout', 'deadline_exceeded', 'global_indeterminate',
-        'multi_reference_disagreement',
-      ].includes(String(record.reason))
-      || (record.apply_allowed === false
-        && !['geometry_invalid', 'folded_pose_simulation_failed', 'fold_path_certificate_unavailable',
-          'manufacturability_missing_vertex',
-          'manufacturability_minimum_crease_spacing', 'manufacturability_minimum_face_area',
-          'manufacturability_paper_boundary_margin', 'necessary_conditions_violated', 'local_analysis_blocked',
-          'global_flat_foldability_impossible', 'deadline_exceeded']
-          .concat('multi_reference_disagreement')
-          .includes(String(record.reason)))
-      || (record.proof_scope === 'indeterminate' && record.apply_allowed !== true
-        && !['multi_reference_disagreement', 'deadline_exceeded'].includes(String(record.reason)))
-      || (record.reason === 'global_flat_foldability_proven'
-        && (record.proof_scope !== 'sufficient' || record.apply_allowed !== true))
-      || (record.reason === 'global_flat_foldability_impossible'
-        && (record.proof_scope !== 'necessary' || record.apply_allowed !== false))
-      || (['global_resource_limit', 'global_timeout', 'deadline_exceeded', 'global_indeterminate']
-        .includes(String(record.reason))
-        && record.proof_scope !== 'indeterminate')
+      || (
+        expectedProfile?.generation_constraints.target_asset?.kind
+          !== 'reference_model'
+        && (
+          record.shape_approximation_score !== null
+          || record.shape_difference_reason !== null
+          || componentComparison !== null
+        )
+      )
+      || !beginnerAssessmentOutcomeTupleIsCanonicalV1(
+        record.reason,
+        record.proof_scope,
+        record.apply_allowed,
+      )
+      || (
+        record.reason === 'folded_pose_simulation_failed'
+        && (
+          record.shape_difference_reason
+            !== 'bounded_folded_pose_landmarks_v1'
+          || componentComparison !== null
+        )
+      )
+      || (
+        record.shape_difference_reason === 'certified_flat_surface_v1'
+        && ![
+          'global_flat_foldability_proven',
+          'fold_path_certificate_unavailable',
+          'multi_reference_disagreement',
+        ].includes(String(record.reason))
+      )
+      || (componentComparison !== null
+        && record.shape_approximation_score !== Math.floor(
+          (
+            Number(componentComparison.extent_score) * 45
+            + Number(componentComparison.branch_score) * 35
+            + Number(componentComparison.bridge_score) * 20
+          ) / 100,
+        ))
     ) return null
     return Object.freeze({
       kind: record.kind,
@@ -1445,9 +2638,91 @@ function normalizeBeginnerCandidateResponse(
   })
   if (planAssessments.some((assessment) => assessment === null)) return null
   const admitted = candidates as BeginnerCandidateScoreV1[]
-  if (admitted.some((candidate, index) =>
-    index > 0 && admitted[index - 1].total_score < candidate.total_score
-  )) return null
+  const scoreKindPriority = Object.freeze({
+    recommended: 0,
+    shape_focused: 1,
+    foldability_focused: 2,
+  } as const)
+  const expectedScorePrimaryKind = admittedPlans[0]?.kind ?? (
+    expectedProfile
+      && expectedProfileSelectsGenericCandidatePlanV1(expectedProfile)
+      ? 'composite_generic_target_base'
+      : expectedProfile
+        ? expectedSpecializedPrimaryKindV1(expectedProfile)
+        : null
+  )
+  const expectedTargetApproximationScore =
+    expectedProfile && expectedScorePrimaryKind
+      ? beginnerExpectedTargetApproximationScoreV1(
+          expectedProfile,
+          expectedScorePrimaryKind,
+        )
+      : 0
+  const multiReferenceBlocksApply =
+    fusion?.apply_allowed === false
+    || consensus?.apply_allowed === false
+  const candidateScoresAreCanonical =
+    instructionContext !== 'candidate'
+    || (
+      expectedProfile !== null
+      && admitted.length >= 1
+      && admitted.every((candidate) =>
+        candidate.target_approximation_score
+          === expectedTargetApproximationScore
+        && candidate.step_count_score
+          === admitted[0]!.step_count_score
+        && candidate.paper_efficiency_score
+          === admitted[0]!.paper_efficiency_score
+        && candidate.paper_efficiency_score >= 50
+        && candidate.total_score === Math.floor(
+          (
+            candidate.shape_score
+              * expectedProfile.shape_fidelity_weight
+            + candidate.foldability_score
+              * expectedProfile.foldability_weight
+            + candidate.step_count_score
+              * expectedProfile.step_count_weight
+            + candidate.paper_efficiency_score
+              * expectedProfile.paper_efficiency_weight
+          ) / 100,
+        )
+        && candidate.foldability_score === (
+          candidate.kind === 'recommended'
+            ? candidate.step_count_score
+            : candidate.kind === 'shape_focused'
+              ? Math.max(0, candidate.step_count_score - 10)
+              : Math.min(100, candidate.step_count_score + 15)
+        ))
+      && Array.from({ length: 101 }, (_, base) => base).some(
+        (base) => admitted.every((candidate) =>
+          candidate.shape_score === (
+            candidate.kind === 'recommended'
+              ? base
+              : candidate.kind === 'shape_focused'
+                ? Math.min(100, base + 15)
+                : Math.max(0, base - 10)
+          )),
+      )
+    )
+  if (
+    !candidateScoresAreCanonical
+    || new Set(admitted.map((candidate) => candidate.kind)).size
+      !== admitted.length
+    || admitted.some((candidate, index) => {
+      const previous = admitted[index - 1]
+      return index > 0 && (
+        previous!.total_score < candidate.total_score
+        || (
+          previous!.total_score === candidate.total_score
+          && scoreKindPriority[previous!.kind]
+            >= scoreKindPriority[candidate.kind]
+        )
+      )
+    })
+    || planAssessments.some((assessment) =>
+      (assessment?.reason === 'multi_reference_disagreement')
+        !== multiReferenceBlocksApply)
+  ) return null
   return Object.freeze({
     schema_version: 1,
     project_instance_id: expectedProjectInstanceId,
@@ -1460,9 +2735,56 @@ function normalizeBeginnerCandidateResponse(
     generated_plans: admittedPlans,
     plan_assessments: planAssessments as BeginnerGeneratedPlanAssessmentV1[],
     candidates: admitted.slice(),
-    multi_reference_fusion: fusion as BeginnerCandidateResponseV1['multi_reference_fusion'],
+    multi_reference_fusion: fusion === null ? null : Object.freeze({
+      revision: Number(fusion.revision),
+      image_sha256: Object.freeze(Array.from(fusionImageSha256!)),
+      reference_sha256: Object.freeze(Array.from(fusionReferenceSha256!)),
+      source_count: 2 as const,
+      image_component_count: Number(fusion.image_component_count),
+      reference_component_count: Number(fusion.reference_component_count),
+      image_branch_count: Number(fusion.image_branch_count),
+      reference_branch_count: Number(fusion.reference_branch_count),
+      normalized_extent_error: Number(fusion.normalized_extent_error),
+      agreement_score: Number(fusion.agreement_score),
+      apply_allowed: fusion.apply_allowed as boolean,
+      reason: fusion.reason as 'image_glb_agreement_v1' | 'image_glb_disagreement_v1',
+    }) as BeginnerCandidateResponseV1['multi_reference_fusion'],
     reference_consensus_analysis: consensus === null ? null : Object.freeze({
-      ...consensus, pairs: Object.freeze(consensusPairs.map((pair) => Object.freeze({ ...pair }))),
+      schema_version: 1 as const,
+      revision: Number(consensus.revision),
+      source_count: Number(consensus.source_count),
+      excluded_asset_id: consensus.excluded_asset_id as string | null,
+      pair_count: Number(consensus.pair_count),
+      disagreement_count: Number(consensus.disagreement_count),
+      agreement_score: Number(consensus.agreement_score),
+      apply_allowed: consensus.apply_allowed as boolean,
+      reason: consensus.reason as
+        | 'reference_consensus_agreement_v1'
+        | 'reference_consensus_multiple_disagreements_v1',
+      pairs: Object.freeze(consensusPairs.map((pair, index) => Object.freeze({
+        left_asset_id: String(pair!.left_asset_id),
+        right_asset_id: String(pair!.right_asset_id),
+        component_error: Number(pair!.component_error),
+        normalized_extent_error: Number(pair!.normalized_extent_error),
+        branch_error: Number(pair!.branch_error),
+        agreement_score: Number(pair!.agreement_score),
+        disagrees: pair!.disagrees as boolean,
+        pair_digest_sha256: Object.freeze(
+          Array.from(consensusPairDigests[index]!),
+        ),
+        left_component_count: Number(pair!.left_component_count),
+        right_component_count: Number(pair!.right_component_count),
+        left_normalized_extents: Object.freeze([
+          Number(consensusPairLeftExtents[index]![0]),
+          Number(consensusPairLeftExtents[index]![1]),
+        ] as [number, number]),
+        right_normalized_extents: Object.freeze([
+          Number(consensusPairRightExtents[index]![0]),
+          Number(consensusPairRightExtents[index]![1]),
+        ] as [number, number]),
+        left_branch_count: Number(pair!.left_branch_count),
+        right_branch_count: Number(pair!.right_branch_count),
+      }))),
     }) as BeginnerCandidateResponseV1['reference_consensus_analysis'],
   }) as BeginnerCandidateResponseV1
 }
@@ -1479,11 +2801,19 @@ export function normalizeBeginnerDesignProfile(
     'paper_efficiency_weight',
     'generation_constraints',
   ] as const
+  const optionalKeys = [
+    'generation_provenance',
+    'reference_surface_landmarks_tenths_mm',
+    'outline_edit_authority',
+    'archived_reference_model_asset_ids',
+    'reference_consensus_v1',
+  ] as const
   const record = snapshotCoreDataRecord(value)
   if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
-    || Object.keys(record).some((key) => ![...requiredKeys, 'generation_provenance',
-      'reference_surface_landmarks_tenths_mm', 'outline_edit_authority',
-      'archived_reference_model_asset_ids', 'reference_consensus_v1'].includes(key as never))) return null
+    || optionalKeys.some((key) =>
+      Object.hasOwn(record, key) && record[key] === undefined)
+    || Object.keys(record).some((key) =>
+      ![...requiredKeys, ...optionalKeys].includes(key as never))) return null
   if (!record || record.schema_version !== 1 || (
     record.preset !== 'balanced'
     && record.preset !== 'shape_priority'
@@ -1502,98 +2832,447 @@ export function normalizeBeginnerDesignProfile(
   ) return null
   const generationConstraints = normalizeBeginnerGenerationConstraints(record.generation_constraints)
   if (!generationConstraints) return null
-  const provenance = record.generation_provenance === undefined ? null : exactCoreDataRecord(
-    record.generation_provenance, ['schema_version', 'topology_authority_sha256', 'fold_path_certificate_sha256', 'confidence_score',
-      'confidence_reasons', 'explicit_override', 'source_asset_fingerprint', 'generic_tree', 'reference_consensus', 'reference_consensus_summary'] as const)
-  const exportedConsensusSummary = provenance?.reference_consensus_summary === undefined ? null : exactCoreDataRecord(
-    provenance.reference_consensus_summary, ['schema_version', 'model', 'source_count', 'excluded_count', 'agreement_score', 'component_subscore', 'extent_subscore', 'branch_subscore'] as const)
-  const provenanceConsensus = provenance?.reference_consensus === undefined ? null : exactCoreDataRecord(
-    provenance.reference_consensus, ['schema_version', 'source_revision', 'bindings', 'excluded_asset_id', 'pair_digests_sha256', 'summary'] as const)
-  const provenanceConsensusSummary = provenanceConsensus === null ? null : exactCoreDataRecord(provenanceConsensus.summary,
-    ['schema_version', 'model', 'source_count', 'excluded_count', 'agreement_score', 'component_subscore', 'extent_subscore', 'branch_subscore'] as const)
-  const genericTree = provenance?.generic_tree === undefined ? null : exactCoreDataRecord(
-    provenance.generic_tree, ['schema_version', 'target_category', 'source', 'asset_content_sha256', 'tree_topology_sha256',
-      'normalized_length_ratios', 'orientation', 'generator_version', 'authorizes_apply', 'instruction_proposal'] as const)
+  const provenance = record.generation_provenance === undefined ? null
+    : coreDataRecordWithOptionalKeys(
+        record.generation_provenance,
+        ['schema_version', 'topology_authority_sha256', 'confidence_score',
+          'confidence_reasons', 'explicit_override', 'source_asset_fingerprint'] as const,
+        ['fold_path_certificate_sha256', 'document_authority_sha256',
+          'semantic_landmark_provenance', 'generic_tree', 'reference_consensus',
+          'reference_consensus_summary'] as const,
+      )
+  const consensusSummaryKeys = [
+    'schema_version', 'model', 'source_count', 'excluded_count',
+    'agreement_score', 'component_subscore', 'extent_subscore',
+    'branch_subscore',
+  ] as const
+  const exportedConsensusSummary =
+    provenance?.reference_consensus_summary === undefined
+      ? null
+      : exactCoreDataRecord(
+          provenance.reference_consensus_summary,
+          consensusSummaryKeys,
+        )
+  const provenanceConsensus = provenance?.reference_consensus === undefined ? null
+    : coreDataRecordWithOptionalKeys(
+        provenance.reference_consensus,
+        ['schema_version', 'source_revision', 'bindings',
+          'pair_digests_sha256', 'summary'] as const,
+        ['excluded_asset_id'] as const,
+      )
+  const provenanceConsensusSummary = provenanceConsensus === null
+    ? null
+    : exactCoreDataRecord(provenanceConsensus.summary, consensusSummaryKeys)
+  const provenanceConsensusBindingInputs = provenanceConsensus === null
+    ? null
+    : snapshotCoreDataArray(provenanceConsensus.bindings, 4)
+  const normalizedProvenanceConsensusBindings =
+    provenanceConsensusBindingInputs === null
+      ? null
+      : provenanceConsensusBindingInputs.map((raw) => {
+          const binding = exactCoreDataRecord(
+            raw,
+            ['kind', 'asset_id', 'sha256', 'quality'] as const,
+          )
+          const digest = binding ? snapshotSha256Bytes(binding.sha256) : null
+          if (
+            !binding
+            || (
+              binding.kind !== 'image'
+              && binding.kind !== 'reference_model'
+            )
+            || !isCanonicalNonNilUuid(binding.asset_id)
+            || !digest
+            || !Number.isInteger(binding.quality)
+            || Number(binding.quality) < 0
+            || Number(binding.quality) > 100
+          ) return null
+          return Object.freeze({
+            kind: binding.kind as 'image' | 'reference_model',
+            asset_id: String(binding.asset_id),
+            sha256: digest,
+            quality: Number(binding.quality),
+          })
+        })
+  const provenanceConsensusPairDigestInputs = provenanceConsensus === null
+    ? null
+    : snapshotCoreDataArray(provenanceConsensus.pair_digests_sha256, 6)
+  const normalizedProvenanceConsensusPairDigests =
+    provenanceConsensusPairDigestInputs === null
+      ? null
+      : provenanceConsensusPairDigestInputs.map(snapshotSha256Bytes)
+  const genericTree = provenance?.generic_tree === undefined ? null
+    : coreDataRecordWithOptionalKeys(
+        provenance.generic_tree,
+        ['schema_version', 'source', 'tree_topology_sha256',
+          'normalized_length_ratios', 'orientation', 'generator_version',
+          'authorizes_apply'] as const,
+        ['target_category', 'asset_content_sha256', 'instruction_proposal'] as const,
+      )
   const treeProposal = genericTree?.instruction_proposal === undefined ? null : exactCoreDataRecord(
     genericTree.instruction_proposal, ['schema_version', 'topology_sha256', 'generator_version', 'authorizes_apply',
       'physical_motion_proof', 'steps'] as const)
-  if (record.generation_provenance !== undefined && (!provenance || provenance.schema_version !== 1
-    || !Array.isArray(provenance.topology_authority_sha256) || provenance.topology_authority_sha256.length !== 32
-    || provenance.topology_authority_sha256.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
-    || (provenance.fold_path_certificate_sha256 !== undefined
-      && (!Array.isArray(provenance.fold_path_certificate_sha256) || provenance.fold_path_certificate_sha256.length !== 32
-        || provenance.fold_path_certificate_sha256.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)))
-    || !Number.isInteger(provenance.confidence_score) || Number(provenance.confidence_score) < 0 || Number(provenance.confidence_score) > 100
-    || !Array.isArray(provenance.confidence_reasons) || provenance.confidence_reasons.length > 8
-    || provenance.confidence_reasons.some((reason) => typeof reason !== 'string' || reason.length < 1 || reason.length > 64)
-    || typeof provenance.explicit_override !== 'boolean' || typeof provenance.source_asset_fingerprint !== 'string'
-    || provenance.source_asset_fingerprint.length < 1 || provenance.source_asset_fingerprint.length > 128
-    || (provenance.reference_consensus !== undefined && (!provenanceConsensus || provenanceConsensus.schema_version !== 1
-      || !Number.isSafeInteger(provenanceConsensus.source_revision) || Number(provenanceConsensus.source_revision) < 0
-      || !Array.isArray(provenanceConsensus.bindings) || provenanceConsensus.bindings.length < 2 || provenanceConsensus.bindings.length > 4
-      || provenanceConsensus.bindings.some((raw) => { const binding = exactCoreDataRecord(raw, ['kind', 'asset_id', 'sha256', 'quality'] as const); return !binding
-        || !['image', 'reference_model'].includes(String(binding.kind)) || !isCanonicalNonNilUuid(binding.asset_id)
-        || !isBoundedIntegerTuple(binding.sha256, 32, 255) || !Number.isInteger(binding.quality)
-        || Number(binding.quality) < 0 || Number(binding.quality) > 100 })
-      || (provenanceConsensus.excluded_asset_id !== undefined && (!isCanonicalNonNilUuid(provenanceConsensus.excluded_asset_id)
-        || !(provenanceConsensus.bindings as Array<Record<string, unknown>>).some((binding) => binding.asset_id === provenanceConsensus.excluded_asset_id)))
-      || !Array.isArray(provenanceConsensus.pair_digests_sha256) || provenanceConsensus.pair_digests_sha256.length < 1
-      || provenanceConsensus.pair_digests_sha256.length > 6
-      || provenanceConsensus.pair_digests_sha256.some((digest) => !isBoundedIntegerTuple(digest, 32, 255))
-      || !provenanceConsensusSummary || provenanceConsensusSummary.schema_version !== 1
-      || provenanceConsensusSummary.model !== 'component_extent_branch_v1'
-      || provenanceConsensusSummary.source_count !== provenanceConsensus.bindings.length
-      || provenanceConsensusSummary.excluded_count !== (provenanceConsensus.excluded_asset_id === undefined ? 0 : 1)
-      || [provenanceConsensusSummary.agreement_score, provenanceConsensusSummary.component_subscore,
-        provenanceConsensusSummary.extent_subscore, provenanceConsensusSummary.branch_subscore]
-        .some((score) => !Number.isInteger(score) || Number(score) < 0 || Number(score) > 100)))
-    || (provenance.reference_consensus_summary !== undefined && (!exportedConsensusSummary
-      || exportedConsensusSummary.schema_version !== 1 || exportedConsensusSummary.model !== 'component_extent_branch_v1'
-      || !Number.isInteger(exportedConsensusSummary.source_count) || Number(exportedConsensusSummary.source_count) < 2 || Number(exportedConsensusSummary.source_count) > 4
-      || ![0, 1].includes(Number(exportedConsensusSummary.excluded_count))
-      || ![exportedConsensusSummary.agreement_score, exportedConsensusSummary.component_subscore,
-        exportedConsensusSummary.extent_subscore, exportedConsensusSummary.branch_subscore]
-        .every((score) => Number.isInteger(score) && Number(score) >= 0 && Number(score) <= 100)))
-    || (provenance.generic_tree !== undefined && (!genericTree || genericTree.schema_version !== 1
-      || !['image_silhouette', 'glb_geometry', 'manual_skeleton'].includes(String(genericTree.source))
-      || (genericTree.target_category !== undefined && genericTree.target_category !== 'custom_object')
-      || (genericTree.asset_content_sha256 !== undefined && !isBoundedIntegerTuple(genericTree.asset_content_sha256, 32, 255))
-      || !isBoundedIntegerTuple(genericTree.tree_topology_sha256, 32, 255)
-      || !Array.isArray(genericTree.normalized_length_ratios) || genericTree.normalized_length_ratios.length < 1
-      || genericTree.normalized_length_ratios.length > 16 || genericTree.normalized_length_ratios.some(
-        (ratio) => !Number.isSafeInteger(ratio) || Number(ratio) < 1_000_000)
-      || !['horizontal', 'vertical'].includes(String(genericTree.orientation))
-      || genericTree.generator_version !== 1 || genericTree.authorizes_apply !== false
-      || (genericTree.instruction_proposal !== undefined && (!treeProposal || treeProposal.schema_version !== 1
-        || !isBoundedIntegerTuple(treeProposal.topology_sha256, 32, 255)
-        || JSON.stringify(treeProposal.topology_sha256) !== JSON.stringify(genericTree.tree_topology_sha256)
-        || treeProposal.generator_version !== 1 || treeProposal.authorizes_apply !== false
-        || treeProposal.physical_motion_proof !== false || !Array.isArray(treeProposal.steps)
-        || treeProposal.steps.length < 1 || treeProposal.steps.length > 16
-        || treeProposal.steps.some((rawStep, index, all) => {
-          const step = exactCoreDataRecord(rawStep, ['canonical_crease_id', 'tree_depth', 'assignment', 'target_branch', 'fixed_side', 'caution'] as const)
-          const previous = index === 0 ? null : exactCoreDataRecord(all[index - 1], ['canonical_crease_id', 'tree_depth', 'assignment', 'target_branch', 'fixed_side', 'caution'] as const)
-          return !step || typeof step.canonical_crease_id !== 'string' || step.canonical_crease_id.length < 1 || step.canonical_crease_id.length > 64
-            || !Number.isInteger(step.tree_depth) || Number(step.tree_depth) < 0 || Number(step.tree_depth) > 16
-            || !['mountain', 'valley'].includes(String(step.assignment)) || typeof step.target_branch !== 'string'
-            || step.target_branch.length < 1 || step.target_branch.length > 96 || !['root', 'leaf'].includes(String(step.fixed_side))
-            || typeof step.caution !== 'string' || step.caution.length < 1 || step.caution.length > 256
-            || (previous !== null && (Number(previous.tree_depth) > Number(step.tree_depth)
-              || (previous.tree_depth === step.tree_depth && String(previous.canonical_crease_id) >= step.canonical_crease_id)))
-        }))))))) return null
-  const landmarks = record.reference_surface_landmarks_tenths_mm
-  if (landmarks !== undefined && (!Array.isArray(landmarks) || landmarks.length < 1 || landmarks.length > 256
-    || landmarks.some((point) => !isBoundedIntegerTuple(point, 3, 2_147_483_648)))) return null
+  const genericTreeRatios = genericTree === null
+    ? null
+    : snapshotCoreDataArray(genericTree.normalized_length_ratios, 16)
+  const genericTreeAssetDigest =
+    genericTree?.asset_content_sha256 === undefined
+      ? null
+      : snapshotSha256Bytes(genericTree.asset_content_sha256)
+  const genericTreeTopologyDigest = genericTree === null
+    ? null
+    : snapshotSha256Bytes(genericTree.tree_topology_sha256)
+  const treeProposalTopologyDigest = treeProposal === null
+    ? null
+    : snapshotSha256Bytes(treeProposal.topology_sha256)
+  const treeProposalStepInputs = treeProposal === null
+    ? null
+    : snapshotCoreDataArray(treeProposal.steps, 16)
+  const semantic = provenance?.semantic_landmark_provenance === undefined
+    ? null
+    : exactCoreDataRecord(
+        provenance.semantic_landmark_provenance,
+        ['schema_version', 'ordered_bindings', 'physical_ray_group_sha256'] as const,
+      )
+  const semanticBindings = semantic === null
+    ? null
+    : snapshotCoreDataArray(semantic.ordered_bindings, 10)
+  const semanticRayDigestInputs = semantic === null
+    ? null
+    : snapshotCoreDataArray(semantic.physical_ray_group_sha256, 4)
+  const semanticRayDigests = semanticRayDigestInputs === null
+    ? null
+    : semanticRayDigestInputs.map(snapshotSha256Bytes)
+  const confidenceReasons = provenance === null
+    ? null
+    : snapshotCoreDataArray(provenance.confidence_reasons, 8)
+  const topologyAuthorityDigest = provenance === null
+    ? null
+    : snapshotSha256Bytes(provenance.topology_authority_sha256)
+  const foldPathCertificateDigest =
+    provenance?.fold_path_certificate_sha256 === undefined
+      ? null
+      : snapshotSha256Bytes(provenance.fold_path_certificate_sha256)
+  const documentAuthorityDigest =
+    provenance?.document_authority_sha256 === undefined
+      ? null
+      : snapshotSha256Bytes(provenance.document_authority_sha256)
+  const semanticContract = beginnerSemanticContractV1(
+    semanticBindings?.length ?? -1,
+  )
+  const semanticRoles = semanticContract?.roles ?? null
+  const normalizedSemanticBindings = semanticBindings === null
+    ? null
+    : semanticBindings.map((raw, index) => {
+        const binding = exactCoreDataRecord(
+          raw,
+          ['ordinal', 'role', 'physical_ray'] as const,
+        )
+        if (!binding
+          || binding.ordinal !== index
+          || binding.role !== semanticRoles?.[index]
+          || binding.physical_ray !== index % 4) return null
+        return Object.freeze({
+          ordinal: index,
+          role: String(binding.role),
+          physical_ray: Number(binding.physical_ray),
+        })
+      })
+  const normalizedTreeProposalSteps = treeProposalStepInputs === null
+    ? null
+    : treeProposalStepInputs.map((rawStep, index, all) => {
+        const step = exactCoreDataRecord(
+          rawStep,
+          [
+            'canonical_crease_id', 'tree_depth', 'assignment',
+            'target_branch', 'fixed_side', 'caution',
+          ] as const,
+        )
+        const previous = index === 0
+          ? null
+          : exactCoreDataRecord(
+              all[index - 1],
+              [
+                'canonical_crease_id', 'tree_depth', 'assignment',
+                'target_branch', 'fixed_side', 'caution',
+              ] as const,
+            )
+        if (
+          !step
+          || !isNonEmptyUtf8StringWithin(step.canonical_crease_id, 64)
+          || !Number.isInteger(step.tree_depth)
+          || Number(step.tree_depth) < 0
+          || Number(step.tree_depth) > 255
+          || (
+            step.assignment !== 'mountain'
+            && step.assignment !== 'valley'
+          )
+          || !isNonEmptyUtf8StringWithin(step.target_branch, 96)
+          || (step.fixed_side !== 'root' && step.fixed_side !== 'leaf')
+          || !isNonEmptyUtf8StringWithin(step.caution, 256)
+          || (
+            index > 0
+            && (
+              previous === null
+              || !Number.isInteger(previous.tree_depth)
+              || !isNonEmptyUtf8StringWithin(
+                previous.canonical_crease_id,
+                64,
+              )
+              || Number(previous.tree_depth) > Number(step.tree_depth)
+              || (
+                previous.tree_depth === step.tree_depth
+                && compareUtf8Strings(
+                  previous.canonical_crease_id,
+                  step.canonical_crease_id,
+                ) >= 0
+              )
+            )
+          )
+        ) return null
+        return Object.freeze({
+          canonical_crease_id: String(step.canonical_crease_id),
+          tree_depth: Number(step.tree_depth),
+          assignment: step.assignment as 'mountain' | 'valley',
+          target_branch: String(step.target_branch),
+          fixed_side: step.fixed_side as 'root' | 'leaf',
+          caution: String(step.caution),
+        })
+      })
+  const exportedConsensusMatchesEmbedded =
+    exportedConsensusSummary === null
+    || provenanceConsensusSummary === null
+    || consensusSummaryKeys.every((key) =>
+      exportedConsensusSummary[key] === provenanceConsensusSummary[key])
+  const semanticIsValid = provenance?.semantic_landmark_provenance === undefined
+    ? true
+    : semantic !== null
+      && semantic.schema_version === 1
+      && semanticRoles !== null
+      && normalizedSemanticBindings !== null
+      && normalizedSemanticBindings.every((binding) => binding !== null)
+      && semanticRayDigests?.length === 4
+      && semanticRayDigests.every((digest, index) =>
+        sameBeginnerDigestBytesV1(
+          digest,
+          semanticContract?.rayDigests[index] ?? [],
+        ))
+  if (
+    record.generation_provenance !== undefined
+    && (
+      !provenance
+      || provenance.schema_version !== 1
+      || !topologyAuthorityDigest
+      || (
+        provenance.fold_path_certificate_sha256 !== undefined
+        && !foldPathCertificateDigest
+      )
+      || (
+        provenance.document_authority_sha256 !== undefined
+        && !documentAuthorityDigest
+      )
+      || !semanticIsValid
+      || !Number.isInteger(provenance.confidence_score)
+      || Number(provenance.confidence_score) < 0
+      || Number(provenance.confidence_score) > 100
+      || !confidenceReasons
+      || confidenceReasons.some((reason) =>
+        !isNonEmptyUtf8StringWithin(reason, 64))
+      || typeof provenance.explicit_override !== 'boolean'
+      || !isNonEmptyUtf8StringWithin(
+        provenance.source_asset_fingerprint,
+        128,
+      )
+      || (
+        provenance.reference_consensus !== undefined
+        && (
+          !provenanceConsensus
+          || provenanceConsensus.schema_version !== 1
+          || !Number.isSafeInteger(provenanceConsensus.source_revision)
+          || Number(provenanceConsensus.source_revision) < 0
+          || provenanceConsensusBindingInputs === null
+          || provenanceConsensusBindingInputs.length < 2
+          || normalizedProvenanceConsensusBindings === null
+          || normalizedProvenanceConsensusBindings.some(
+            (binding) => binding === null,
+          )
+          || new Set(
+            normalizedProvenanceConsensusBindings.map(
+              (binding) => binding?.asset_id,
+            ),
+          ).size !== normalizedProvenanceConsensusBindings.length
+          || (
+            provenanceConsensus.excluded_asset_id !== undefined
+            && (
+              !isCanonicalNonNilUuid(
+                provenanceConsensus.excluded_asset_id,
+              )
+              || !normalizedProvenanceConsensusBindings.some(
+                (binding) =>
+                  binding?.asset_id
+                    === provenanceConsensus.excluded_asset_id,
+              )
+            )
+          )
+          || provenanceConsensusPairDigestInputs === null
+          || provenanceConsensusPairDigestInputs.length < 1
+          || normalizedProvenanceConsensusPairDigests === null
+          || normalizedProvenanceConsensusPairDigests.some(
+            (digest) => digest === null,
+          )
+          || !provenanceConsensusSummary
+          || provenanceConsensusSummary.schema_version !== 1
+          || provenanceConsensusSummary.model
+            !== 'component_extent_branch_v1'
+          || provenanceConsensusSummary.source_count
+            !== provenanceConsensusBindingInputs.length
+          || provenanceConsensusSummary.excluded_count
+            !== (
+              provenanceConsensus.excluded_asset_id === undefined ? 0 : 1
+            )
+          || [
+            provenanceConsensusSummary.agreement_score,
+            provenanceConsensusSummary.component_subscore,
+            provenanceConsensusSummary.extent_subscore,
+            provenanceConsensusSummary.branch_subscore,
+          ].some((score) =>
+            !Number.isInteger(score)
+            || Number(score) < 0
+            || Number(score) > 100)
+        )
+      )
+      || (
+        provenance.reference_consensus_summary !== undefined
+        && (
+          !exportedConsensusSummary
+          || exportedConsensusSummary.schema_version !== 1
+          || exportedConsensusSummary.model
+            !== 'component_extent_branch_v1'
+          || !Number.isInteger(exportedConsensusSummary.source_count)
+          || Number(exportedConsensusSummary.source_count) < 2
+          || Number(exportedConsensusSummary.source_count) > 4
+          || ![0, 1].includes(
+            Number(exportedConsensusSummary.excluded_count),
+          )
+          || ![
+            exportedConsensusSummary.agreement_score,
+            exportedConsensusSummary.component_subscore,
+            exportedConsensusSummary.extent_subscore,
+            exportedConsensusSummary.branch_subscore,
+          ].every((score) =>
+            Number.isInteger(score)
+            && Number(score) >= 0
+            && Number(score) <= 100)
+          || !exportedConsensusMatchesEmbedded
+        )
+      )
+      || (
+        provenance.generic_tree !== undefined
+        && (
+          !genericTree
+          || genericTree.schema_version !== 1
+          || (
+            genericTree.source !== 'image_silhouette'
+            && genericTree.source !== 'glb_geometry'
+            && genericTree.source !== 'manual_skeleton'
+          )
+          || (
+            genericTree.target_category !== undefined
+            && genericTree.target_category !== 'custom_object'
+          )
+          || (
+            genericTree.asset_content_sha256 !== undefined
+            && !genericTreeAssetDigest
+          )
+          || !genericTreeTopologyDigest
+          || genericTreeRatios === null
+          || genericTreeRatios.length < 1
+          || genericTreeRatios.some((ratio) =>
+            !Number.isSafeInteger(ratio)
+            || Number(ratio) < 1_000_000
+            || Number(ratio) > 4_294_967_295)
+          || (
+            genericTree.orientation !== 'horizontal'
+            && genericTree.orientation !== 'vertical'
+          )
+          || genericTree.generator_version !== 1
+          || genericTree.authorizes_apply !== false
+          || (
+            genericTree.instruction_proposal !== undefined
+            && (
+              !treeProposal
+              || treeProposal.schema_version !== 1
+              || !treeProposalTopologyDigest
+              || !genericTreeTopologyDigest.every(
+                (byte, index) =>
+                  byte === treeProposalTopologyDigest[index],
+              )
+              || treeProposal.generator_version !== 1
+              || treeProposal.authorizes_apply !== false
+              || treeProposal.physical_motion_proof !== false
+              || treeProposalStepInputs === null
+              || treeProposalStepInputs.length < 1
+              || normalizedTreeProposalSteps === null
+              || normalizedTreeProposalSteps.some((step) => step === null)
+            )
+          )
+        )
+      )
+    )
+  ) return null
+  const landmarkInputs =
+    record.reference_surface_landmarks_tenths_mm === undefined
+      ? null
+      : snapshotCoreDataArray(
+          record.reference_surface_landmarks_tenths_mm,
+          256,
+        )
+  const normalizedLandmarks = landmarkInputs === null
+    ? null
+    : landmarkInputs.map((point) => {
+        const coordinates = snapshotCoreDataArray(point, 3)
+        if (
+          coordinates?.length !== 3
+          || coordinates.some((coordinate) =>
+            !Number.isInteger(coordinate)
+            || Number(coordinate) < -2_147_483_648
+            || Number(coordinate) > 2_147_483_647)
+        ) return null
+        return Object.freeze(
+          coordinates.map(Number),
+        ) as readonly [number, number, number]
+      })
+  if (
+    record.reference_surface_landmarks_tenths_mm !== undefined
+    && (
+      landmarkInputs === null
+      || landmarkInputs.length < 1
+      || normalizedLandmarks === null
+      || normalizedLandmarks.some((point) => point === null)
+    )
+  ) return null
   const outlineAuthority = record.outline_edit_authority === undefined ? null
     : exactCoreDataRecord(record.outline_edit_authority, [
         'schema_version', 'source_asset_id', 'source_sha256', 'edits',
       ] as const)
-  if (record.outline_edit_authority !== undefined && (!outlineAuthority
-    || outlineAuthority.schema_version !== 1 || !isCanonicalNonNilUuid(outlineAuthority.source_asset_id)
-    || !isBoundedIntegerTuple(outlineAuthority.source_sha256, 32, 255)
-    || !Array.isArray(outlineAuthority.edits) || outlineAuthority.edits.length < 1
-    || outlineAuthority.edits.length > 8)) return null
-  const outlineEdits = outlineAuthority === null ? [] : (outlineAuthority.edits as unknown[]).map((edit) => {
+  const outlineSourceDigest = outlineAuthority === null
+    ? null
+    : snapshotSha256Bytes(outlineAuthority.source_sha256)
+  const outlineEditInputs = outlineAuthority === null
+    ? null
+    : snapshotCoreDataArray(outlineAuthority.edits, 8)
+  if (
+    record.outline_edit_authority !== undefined
+    && (
+      !outlineAuthority
+      || outlineAuthority.schema_version !== 1
+      || !isCanonicalNonNilUuid(outlineAuthority.source_asset_id)
+      || !outlineSourceDigest
+      || outlineEditInputs === null
+      || outlineEditInputs.length < 1
+    )
+  ) return null
+  const outlineEdits = outlineEditInputs === null ? [] : outlineEditInputs.map((edit) => {
     const kind = snapshotCoreDataRecord(edit)?.kind
     const record = kind === 'split_vertical'
       ? exactCoreDataRecord(edit, ['kind', 'source_candidate_id', 'split_x', 'fragment_kinds'] as const)
@@ -1604,37 +3283,88 @@ export function normalizeBeginnerDesignProfile(
       && ['head', 'torso', 'leg', 'horn', 'ear', 'wing', 'fin', 'antenna', 'tail'].includes(value)
     const validCandidateId = (value: unknown) => Number.isInteger(value)
       && Number(value) >= 0 && Number(value) <= 255
-    if (!data || (kind === 'split_vertical' && (!validCandidateId(data.source_candidate_id)
-      || !Number.isSafeInteger(data.split_x) || Number(data.split_x) < 0
-      || Number(data.split_x) > 4_294_967_295 || !Array.isArray(data.fragment_kinds)
-      || data.fragment_kinds.length !== 2 || !data.fragment_kinds.every(validPartKind)
-      || data.fragment_kinds[0] === data.fragment_kinds[1]))
-      || (kind === 'merge' && (!Array.isArray(data.source_candidate_ids)
-        || data.source_candidate_ids.length !== 2
-        || !validCandidateId(data.source_candidate_ids[0])
-        || !validCandidateId(data.source_candidate_ids[1])
-        || Number(data.source_candidate_ids[0]) >= Number(data.source_candidate_ids[1])
-        || !validPartKind(data.merged_kind)))) return null
-    return Object.freeze({ ...record })
+    const fragmentKinds = kind === 'split_vertical'
+      ? snapshotCoreDataArray(data?.fragment_kinds, 2)
+      : null
+    const sourceCandidateIds = kind === 'merge'
+      ? snapshotCoreDataArray(data?.source_candidate_ids, 2)
+      : null
+    if (
+      !data
+      || (
+        kind === 'split_vertical'
+        && (
+          !validCandidateId(data.source_candidate_id)
+          || !Number.isSafeInteger(data.split_x)
+          || Number(data.split_x) < 0
+          || Number(data.split_x) > 4_294_967_295
+          || fragmentKinds?.length !== 2
+          || !fragmentKinds.every(validPartKind)
+          || fragmentKinds[0] === fragmentKinds[1]
+        )
+      )
+      || (
+        kind === 'merge'
+        && (
+          sourceCandidateIds?.length !== 2
+          || !validCandidateId(sourceCandidateIds[0])
+          || !validCandidateId(sourceCandidateIds[1])
+          || Number(sourceCandidateIds[0]) >= Number(sourceCandidateIds[1])
+          || !validPartKind(data.merged_kind)
+        )
+      )
+    ) return null
+    return kind === 'split_vertical'
+      ? Object.freeze({
+          kind,
+          source_candidate_id: Number(data.source_candidate_id),
+          split_x: Number(data.split_x),
+          fragment_kinds: Object.freeze(fragmentKinds!.slice()),
+        })
+      : Object.freeze({
+          kind,
+          source_candidate_ids: Object.freeze(sourceCandidateIds!.map(Number)),
+          merged_kind: String(data.merged_kind),
+        })
   })
   if (outlineEdits.some((edit) => edit === null)) return null
-  const archivedAssets = record.archived_reference_model_asset_ids === undefined ? []
-    : record.archived_reference_model_asset_ids
-  if (!Array.isArray(archivedAssets) || archivedAssets.length > 8
-    || archivedAssets.some((id) => !isCanonicalNonNilUuid(id))
-    || new Set(archivedAssets).size !== archivedAssets.length) return null
+  const archivedAssetInputs =
+    record.archived_reference_model_asset_ids === undefined
+      ? Object.freeze([] as unknown[])
+      : snapshotCoreDataArray(record.archived_reference_model_asset_ids, 8)
+  if (
+    !archivedAssetInputs
+    || archivedAssetInputs.some((id) => !isCanonicalNonNilUuid(id))
+    || new Set(archivedAssetInputs).size !== archivedAssetInputs.length
+  ) return null
+  const archivedAssets = archivedAssetInputs.map(String)
   const consensus = record.reference_consensus_v1 === undefined ? null
-    : exactCoreDataRecord(record.reference_consensus_v1, ['schema_version', 'bindings', 'excluded_asset_id'] as const)
-  const consensusBindings = consensus?.bindings
-  if (record.reference_consensus_v1 !== undefined && (!consensus || consensus.schema_version !== 1
-    || !Array.isArray(consensusBindings) || consensusBindings.length < 2 || consensusBindings.length > 4)) return null
-  const normalizedConsensusBindings = consensus === null ? [] : (consensusBindings as unknown[]).map((raw) => {
+    : coreDataRecordWithOptionalKeys(
+        record.reference_consensus_v1,
+        ['schema_version', 'bindings'] as const,
+        ['excluded_asset_id'] as const,
+      )
+  const consensusBindingInputs = consensus === null
+    ? null
+    : snapshotCoreDataArray(consensus.bindings, 4)
+  if (
+    record.reference_consensus_v1 !== undefined
+    && (
+      !consensus
+      || consensus.schema_version !== 1
+      || consensusBindingInputs === null
+      || consensusBindingInputs.length < 2
+    )
+  ) return null
+  const normalizedConsensusBindings = consensusBindingInputs === null ? [] : consensusBindingInputs.map((raw) => {
     const binding = exactCoreDataRecord(raw, ['kind', 'asset_id', 'sha256', 'quality'] as const)
-    if (!binding || !['image', 'reference_model'].includes(String(binding.kind))
-      || !isCanonicalNonNilUuid(binding.asset_id) || !isBoundedIntegerTuple(binding.sha256, 32, 255)
+    const digest = binding ? snapshotSha256Bytes(binding.sha256) : null
+    if (!binding
+      || (binding.kind !== 'image' && binding.kind !== 'reference_model')
+      || !isCanonicalNonNilUuid(binding.asset_id) || !digest
       || !Number.isInteger(binding.quality) || Number(binding.quality) < 0 || Number(binding.quality) > 100) return null
     return Object.freeze({ kind: binding.kind as 'image' | 'reference_model', asset_id: String(binding.asset_id),
-      sha256: Object.freeze((binding.sha256 as number[]).slice()), quality: Number(binding.quality) })
+      sha256: digest, quality: Number(binding.quality) })
   })
   if (normalizedConsensusBindings.some((binding) => binding === null)
     || new Set(normalizedConsensusBindings.map((binding) => binding?.asset_id)).size !== normalizedConsensusBindings.length
@@ -1648,13 +3378,15 @@ export function normalizeBeginnerDesignProfile(
     step_count_weight: weights[2],
     paper_efficiency_weight: weights[3],
     generation_constraints: generationConstraints,
-    ...(landmarks === undefined ? {} : { reference_surface_landmarks_tenths_mm: Object.freeze(
-      landmarks.map((point) => Object.freeze((point as number[]).slice()) as readonly [number, number, number]),
-    ) }),
+    ...(normalizedLandmarks === null ? {} : {
+      reference_surface_landmarks_tenths_mm: Object.freeze(
+        normalizedLandmarks.map((point) => point!),
+      ),
+    }),
     ...(outlineAuthority === null ? {} : { outline_edit_authority: Object.freeze({
       schema_version: 1 as const,
       source_asset_id: String(outlineAuthority.source_asset_id),
-      source_sha256: Object.freeze((outlineAuthority.source_sha256 as number[]).slice()),
+      source_sha256: outlineSourceDigest as ReadonlyArray<number>,
       edits: Object.freeze(outlineEdits as ReadonlyArray<Readonly<Record<string, unknown>>>),
     }) }),
     ...(archivedAssets.length === 0 ? {} : {
@@ -1667,49 +3399,96 @@ export function normalizeBeginnerDesignProfile(
     }) }),
     ...(provenance === null ? {} : { generation_provenance: Object.freeze({
       schema_version: 1 as const,
-      topology_authority_sha256: Object.freeze(
-        (provenance.topology_authority_sha256 as unknown[]).map(Number),
-      ) as ReadonlyArray<number>,
+      topology_authority_sha256:
+        topologyAuthorityDigest as ReadonlyArray<number>,
       ...(provenance.fold_path_certificate_sha256 === undefined ? {} : {
-        fold_path_certificate_sha256: Object.freeze(
-          (provenance.fold_path_certificate_sha256 as unknown[]).map(Number),
-        ) as ReadonlyArray<number>,
+        fold_path_certificate_sha256:
+          foldPathCertificateDigest as ReadonlyArray<number>,
+      }),
+      ...(provenance.document_authority_sha256 === undefined ? {} : {
+        document_authority_sha256:
+          documentAuthorityDigest as ReadonlyArray<number>,
       }),
       confidence_score: Number(provenance.confidence_score),
-      confidence_reasons: Object.freeze((provenance.confidence_reasons as string[]).slice()),
+      confidence_reasons: Object.freeze(
+        confidenceReasons!.map(String),
+      ),
       explicit_override: provenance.explicit_override as boolean,
       source_asset_fingerprint: provenance.source_asset_fingerprint as string,
+      ...(semantic === null ? {} : {
+        semantic_landmark_provenance: Object.freeze({
+          schema_version: 1 as const,
+          ordered_bindings: Object.freeze(
+            normalizedSemanticBindings!.map((binding) => binding!),
+          ),
+          physical_ray_group_sha256: Object.freeze(
+            semanticRayDigests!.map((digest) => digest!),
+          ),
+        }),
+      }),
       ...(exportedConsensusSummary === null ? {} : { reference_consensus_summary: Object.freeze({ ...exportedConsensusSummary }) }),
       ...(provenanceConsensus === null ? {} : { reference_consensus: Object.freeze({
         schema_version: 1 as const, source_revision: Number(provenanceConsensus.source_revision),
-        bindings: Object.freeze((provenanceConsensus.bindings as Array<Record<string, unknown>>).map((binding) => Object.freeze({ ...binding }))) as NonNullable<BeginnerDesignProfileV1['reference_consensus_v1']>['bindings'],
+        bindings: Object.freeze(
+          normalizedProvenanceConsensusBindings!.map((binding) => binding!),
+        ),
         ...(provenanceConsensus.excluded_asset_id === undefined ? {} : { excluded_asset_id: String(provenanceConsensus.excluded_asset_id) }),
-        pair_digests_sha256: Object.freeze((provenanceConsensus.pair_digests_sha256 as number[][]).map((digest) => Object.freeze(digest.slice()))),
-        summary: Object.freeze({ ...provenanceConsensusSummary }),
+        pair_digests_sha256: Object.freeze(
+          normalizedProvenanceConsensusPairDigests!.map((digest) => digest!),
+        ),
+        summary: Object.freeze({ ...provenanceConsensusSummary! }),
       }) }),
       ...(genericTree === null ? {} : { generic_tree: Object.freeze({
         schema_version: 1 as const,
         ...(genericTree.target_category === undefined ? {} : { target_category: 'custom_object' as const }),
         source: genericTree.source as 'image_silhouette' | 'glb_geometry' | 'manual_skeleton',
         ...(genericTree.asset_content_sha256 === undefined ? {} : {
-          asset_content_sha256: Object.freeze((genericTree.asset_content_sha256 as number[]).slice()),
+          asset_content_sha256:
+            genericTreeAssetDigest as ReadonlyArray<number>,
         }),
-        tree_topology_sha256: Object.freeze((genericTree.tree_topology_sha256 as number[]).slice()),
-        normalized_length_ratios: Object.freeze((genericTree.normalized_length_ratios as number[]).slice()),
+        tree_topology_sha256:
+          genericTreeTopologyDigest as ReadonlyArray<number>,
+        normalized_length_ratios: Object.freeze(
+          genericTreeRatios!.map(Number),
+        ),
         orientation: genericTree.orientation as 'horizontal' | 'vertical', generator_version: 1 as const,
         authorizes_apply: false as const,
         ...(treeProposal === null ? {} : { instruction_proposal: Object.freeze({
-          schema_version: 1 as const, topology_sha256: Object.freeze((treeProposal.topology_sha256 as number[]).slice()),
+          schema_version: 1 as const,
+          topology_sha256:
+            treeProposalTopologyDigest as ReadonlyArray<number>,
           generator_version: 1 as const, authorizes_apply: false as const, physical_motion_proof: false as const,
-          steps: Object.freeze((treeProposal.steps as Array<Record<string, unknown>>).map((step) => Object.freeze({
-            canonical_crease_id: step.canonical_crease_id as string, tree_depth: step.tree_depth as number,
-            assignment: step.assignment as 'mountain' | 'valley', target_branch: step.target_branch as string,
-            fixed_side: step.fixed_side as 'root' | 'leaf', caution: step.caution as string,
-          }))),
+          steps: Object.freeze(
+            normalizedTreeProposalSteps!.map((step) => step!),
+          ),
         }) }),
       }) }),
     }) }),
   }) as BeginnerDesignProfileV1
+}
+
+function sameBeginnerReferenceConsensusV1(
+  actual: BeginnerDesignProfileV1['reference_consensus_v1'],
+  expected: BeginnerDesignProfileV1['reference_consensus_v1'],
+): boolean {
+  if (actual === undefined || expected === undefined) {
+    return actual === expected
+  }
+  return actual.schema_version === expected.schema_version
+    && actual.excluded_asset_id === expected.excluded_asset_id
+    && actual.bindings.length === expected.bindings.length
+    && actual.bindings.every((binding, index) => {
+      const expectedBinding = expected.bindings[index]
+      return expectedBinding !== undefined
+        && binding.kind === expectedBinding.kind
+        && binding.asset_id === expectedBinding.asset_id
+        && binding.quality === expectedBinding.quality
+        && binding.sha256.length === expectedBinding.sha256.length
+        && binding.sha256.every(
+          (byte, digestIndex) =>
+            byte === expectedBinding.sha256[digestIndex],
+        )
+    })
 }
 
 function sameBeginnerDesignProfile(
@@ -1731,6 +3510,10 @@ function sameBeginnerDesignProfile(
       === JSON.stringify(expected.outline_edit_authority)
     && JSON.stringify(profile.archived_reference_model_asset_ids ?? [])
       === JSON.stringify(expected.archived_reference_model_asset_ids ?? [])
+    && sameBeginnerReferenceConsensusV1(
+      profile.reference_consensus_v1,
+      expected.reference_consensus_v1,
+    )
 }
 
 export type AnnotationAnchorV1 =
@@ -2566,6 +4349,9 @@ export async function suggestBeginnerReferenceModelFeatures(
   const response = exactCoreDataRecord(value, [
     'project_instance_id', 'project_id', 'revision', 'source_asset_sha256', 'suggestion',
   ] as const)
+  const sourceAssetSha256 = response
+    ? snapshotSha256Bytes(response.source_asset_sha256)
+    : null
   const suggestionKeys = [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
     'surface_area_milli', 'surface_landmarks_tenths_mm', 'surface_ranges', 'protrusions',
@@ -2578,42 +4364,84 @@ export async function suggestBeginnerReferenceModelFeatures(
       'generic_body_outline_tenths_mm', 'generic_body_outline_mode'].includes(key))) {
     throw new Error('invalid reference model suggestion')
   }
+  const bboxMinimum = snapshotCoreDataArray(
+    suggestion.bbox_min_tenths_mm,
+    3,
+  )
+  const bboxMaximum = snapshotCoreDataArray(
+    suggestion.bbox_max_tenths_mm,
+    3,
+  )
+  const dominantNormal = snapshotCoreDataArray(
+    suggestion.dominant_normal_milli,
+    3,
+  )
+  const landmarkInputs = snapshotCoreDataArray(
+    suggestion.surface_landmarks_tenths_mm,
+    256,
+  )
+  const surfaceLandmarks = landmarkInputs?.map((point) => {
+    const coordinates = snapshotCoreDataArray(point, 3)
+    return coordinates?.length === 3
+      && isI32Tuple(coordinates, 3)
+      ? Object.freeze(coordinates.map(Number))
+      : null
+  }) ?? []
+  const surfaceRangeInputs = snapshotCoreDataArray(
+    suggestion.surface_ranges,
+    8,
+  )
   if (!response || !matchesProjectOccGuard({
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
   }, response)
-    || !isBoundedIntegerTuple(response.source_asset_sha256, 32, 255)
+    || !sourceAssetSha256
     || !suggestion || !isCanonicalNonNilUuid(suggestion.asset_id)
     || suggestion.method !== 'bounded_bbox_area_normal_v1'
     || ![null, 'wing', 'fin', 'ear', 'horn', 'antenna', 'leg', 'tail'].includes(suggestion.suggested_part_kind as null | string)
-    || !isBoundedIntegerTuple(suggestion.bbox_min_tenths_mm, 3, 2_147_483_648)
-    || !isBoundedIntegerTuple(suggestion.bbox_max_tenths_mm, 3, 2_147_483_647)
-    || !isBoundedIntegerTuple(suggestion.dominant_normal_milli, 3, 1000)
+    || !isI32Tuple(bboxMinimum, 3)
+    || !isI32Tuple(bboxMaximum, 3)
+    || !isBoundedIntegerTuple(dominantNormal, 3, 1000)
     || !Number.isSafeInteger(suggestion.surface_area_milli)
     || Number(suggestion.surface_area_milli) < 0
-    || !Array.isArray(suggestion.surface_landmarks_tenths_mm)
-    || suggestion.surface_landmarks_tenths_mm.length < 1
-    || suggestion.surface_landmarks_tenths_mm.length > 256
-    || suggestion.surface_landmarks_tenths_mm.some((point) => !isBoundedIntegerTuple(point, 3, 2_147_483_648))) {
+    || !landmarkInputs
+    || surfaceLandmarks.length < 1
+    || surfaceLandmarks.some((point) => point === null)) {
     throw new Error('invalid reference model suggestion')
   }
-  if (!Array.isArray(suggestion.surface_ranges) || suggestion.surface_ranges.length < 1
-    || suggestion.surface_ranges.length > 8) throw new Error('invalid reference model suggestion')
-  const surfaceRanges = suggestion.surface_ranges.map((value, index) => {
+  if (!surfaceRangeInputs || surfaceRangeInputs.length < 1) {
+    throw new Error('invalid reference model suggestion')
+  }
+  const surfaceRanges = surfaceRangeInputs.map((value, index) => {
     const range = exactCoreDataRecord(value, [
       'id', 'triangle_indices', 'range_min_tenths_mm', 'range_max_tenths_mm', 'digest_sha256',
     ] as const)
-    if (!range || range.id !== index + 1 || !Array.isArray(range.triangle_indices)
-      || range.triangle_indices.length < 1 || range.triangle_indices.length > 40_000
-      || range.triangle_indices.some((triangle) => !Number.isInteger(triangle) || triangle < 0)
-      || !isBoundedIntegerTuple(range.range_min_tenths_mm, 3, 2_147_483_648)
-      || !isBoundedIntegerTuple(range.range_max_tenths_mm, 3, 2_147_483_647)
-      || !isBoundedIntegerTuple(range.digest_sha256, 32, 255)
-      || range.digest_sha256.some((byte) => byte < 0)) throw new Error('invalid reference model suggestion')
-    return Object.freeze({ ...range,
-      triangle_indices: Object.freeze(range.triangle_indices.slice()),
-      digest_sha256: Object.freeze(range.digest_sha256.slice()),
+    const triangleIndices = range
+      ? snapshotCoreDataArray(range.triangle_indices, 40_000)
+      : null
+    const rangeMinimum = range
+      ? snapshotCoreDataArray(range.range_min_tenths_mm, 3)
+      : null
+    const rangeMaximum = range
+      ? snapshotCoreDataArray(range.range_max_tenths_mm, 3)
+      : null
+    const digestSha256 = range
+      ? snapshotSha256Bytes(range.digest_sha256)
+      : null
+    if (!range || range.id !== index + 1
+      || !triangleIndices || triangleIndices.length < 1
+      || triangleIndices.some((triangle) =>
+        !Number.isInteger(triangle) || Number(triangle) < 0)
+      || !isI32Tuple(rangeMinimum, 3)
+      || !isI32Tuple(rangeMaximum, 3)
+      || !digestSha256) throw new Error('invalid reference model suggestion')
+    return Object.freeze({
+      id: index + 1,
+      triangle_indices: Object.freeze(triangleIndices.map(Number)),
+      range_min_tenths_mm: Object.freeze(rangeMinimum.map(Number)),
+      range_max_tenths_mm: Object.freeze(rangeMaximum.map(Number)),
+      digest_sha256: digestSha256,
     })
   })
   const constraints = normalizeBeginnerGenerationConstraints({
@@ -2633,48 +4461,95 @@ export async function suggestBeginnerReferenceModelFeatures(
     bulge_targets: [], target_asset: null, allowed_techniques: ['valley_fold'],
   })
   const generalProtrusions = generalConstraints?.protrusions ?? []
-  const stickBars = Array.isArray(suggestion.stick_bars) ? suggestion.stick_bars.map((value, index) => {
+  const stickBarInputs = snapshotCoreDataArray(suggestion.stick_bars, 3)
+  const stickBars = stickBarInputs ? stickBarInputs.map((value, index) => {
     const bar = exactCoreDataRecord(value, ['id', 'start_tenths_mm', 'end_tenths_mm', 'thickness_tenths_mm'] as const)
-    if (!bar || bar.id !== index || !isBoundedIntegerTuple(bar.start_tenths_mm, 3, 2_147_483_648)
-      || !isBoundedIntegerTuple(bar.end_tenths_mm, 3, 2_147_483_648)
+    const start = bar
+      ? snapshotCoreDataArray(bar.start_tenths_mm, 3)
+      : null
+    const end = bar
+      ? snapshotCoreDataArray(bar.end_tenths_mm, 3)
+      : null
+    if (!bar || bar.id !== index
+      || !isI32Tuple(start, 3)
+      || !isI32Tuple(end, 3)
       || !Number.isInteger(bar.thickness_tenths_mm) || Number(bar.thickness_tenths_mm) < 1
       || Number(bar.thickness_tenths_mm) > 65_535) return null
-    return Object.freeze({ ...bar })
+    return Object.freeze({
+      id: index,
+      start_tenths_mm: Object.freeze(start.map(Number)),
+      end_tenths_mm: Object.freeze(end.map(Number)),
+      thickness_tenths_mm: Number(bar.thickness_tenths_mm),
+    })
   }) : []
   const protrusions = constraints?.protrusions ?? []
   const bilateralProtrusions = protrusions.filter((target) => target.symmetry === 'bilateral')
+  const principalAxisExtents = snapshotCoreDataArray(
+    suggestion.principal_axis_extents_tenths_mm,
+    3,
+  )
+  const qualityReasons = snapshotCoreDataArray(
+    suggestion.quality_reasons,
+    8,
+  )
+  const insufficiencyReasons = snapshotCoreDataArray(
+    suggestion.insufficiency_reasons,
+    8,
+  )
+  const pairBindingInputs = snapshotCoreDataArray(
+    suggestion.pair_bindings,
+    8,
+  )
+  const pairBindings = pairBindingInputs?.map((binding, index) => {
+    const record = exactCoreDataRecord(binding, [
+      'pair_index', 'protrusion_id', 'center_y_tenths_mm',
+    ] as const)
+    return record
+      && record.pair_index === index
+      && record.protrusion_id === bilateralProtrusions[index]?.id
+      && record.center_y_tenths_mm
+        === bilateralProtrusions[index]?.position_tenths_mm[1]
+      ? Object.freeze({
+          pair_index: index,
+          protrusion_id: Number(record.protrusion_id),
+          center_y_tenths_mm: Number(record.center_y_tenths_mm),
+        })
+      : null
+  }) ?? []
   // Native may generalize an explicitly authored generic target to at most
   // eight bounded features. Geometry supplies measurements only; semantic
   // kinds remain the user's current target_parts and apply still requires
   // exact live-suggestion revalidation plus confirmation.
   if (!constraints || !generalConstraints || generalProtrusions.length < 1
-    || generalProtrusions.length > 32 || stickBars.length !== 3 || stickBars.some((bar) => !bar)
-    || !isBoundedIntegerTuple(suggestion.principal_axis_extents_tenths_mm, 3, 2_147_483_647)
-    || suggestion.principal_axis_extents_tenths_mm.some((extent) => extent < 1)
+    || generalProtrusions.length > 32 || !stickBarInputs
+    || stickBars.length !== 3 || stickBars.some((bar) => !bar)
+    || !isBoundedIntegerTuple(principalAxisExtents, 3, 2_147_483_647)
+    || principalAxisExtents.some((extent) => Number(extent) < 1)
     || !Number.isInteger(suggestion.quality_score) || Number(suggestion.quality_score) < 0 || Number(suggestion.quality_score) > 100
-    || !Array.isArray(suggestion.quality_reasons) || suggestion.quality_reasons.length < 1 || suggestion.quality_reasons.length > 8
-    || suggestion.quality_reasons.some((reason) => !['strict_glb_vertex_index_bounds', 'deterministic_aabb_principal_axes'].includes(String(reason)))
+    || !qualityReasons || qualityReasons.length < 1
+    || qualityReasons.some((reason) => !['strict_glb_vertex_index_bounds', 'deterministic_aabb_principal_axes'].includes(String(reason)))
     || !Number.isInteger(suggestion.component_count) || Number(suggestion.component_count) < 1 || Number(suggestion.component_count) > 8
     || typeof suggestion.inferred_component_bridges !== 'boolean'
     || (suggestion.inferred_component_bridges !== (Number(suggestion.component_count) > 1))
-    || !Array.isArray(suggestion.insufficiency_reasons) || suggestion.insufficiency_reasons.length > 8
-    || suggestion.insufficiency_reasons.some((reason) => !['insufficient_distinct_vertices', 'protrusion_candidate_limit_reached', 'component_bridges_are_estimated'].includes(String(reason)))
+    || !insufficiencyReasons
+    || insufficiencyReasons.some((reason) => !['insufficient_distinct_vertices', 'protrusion_candidate_limit_reached', 'component_bridges_are_estimated'].includes(String(reason)))
     || protrusions.length < 1 || protrusions.length > 8
-    || !Array.isArray(suggestion.pair_bindings)
-    || suggestion.pair_bindings.length !== bilateralProtrusions.length
-    || suggestion.pair_bindings.some((binding, index) => {
-      const record = exactCoreDataRecord(binding, ['pair_index', 'protrusion_id', 'center_y_tenths_mm'] as const)
-      return !record || record.pair_index !== index
-        || record.protrusion_id !== bilateralProtrusions[index]?.id
-        || record.center_y_tenths_mm !== bilateralProtrusions[index]?.position_tenths_mm[1]
-    })) {
+    || !pairBindingInputs
+    || pairBindings.length !== bilateralProtrusions.length
+    || pairBindings.some((binding) => binding === null)) {
     throw new Error('invalid reference model suggestion')
   }
-  return Object.freeze({ ...suggestion, source_asset_sha256: Object.freeze(response.source_asset_sha256.slice()),
+  return Object.freeze({
+    asset_id: String(suggestion.asset_id),
+    source_asset_sha256: sourceAssetSha256,
+    bbox_min_tenths_mm: Object.freeze(bboxMinimum.map(Number)),
+    bbox_max_tenths_mm: Object.freeze(bboxMaximum.map(Number)),
+    dominant_normal_milli: Object.freeze(dominantNormal.map(Number)),
+    surface_area_milli: Number(suggestion.surface_area_milli),
     surface_ranges: Object.freeze(surfaceRanges),
-    surface_landmarks_tenths_mm: Object.freeze(suggestion.surface_landmarks_tenths_mm.map(
-      (point) => Object.freeze((point as number[]).slice()) as unknown as readonly [number, number, number],
-    )),
+    surface_landmarks_tenths_mm: Object.freeze(
+      surfaceLandmarks.map((point) => point!),
+    ),
     ...(constraints.generic_body_outline_tenths_mm === undefined ? {} : {
       generic_body_outline_tenths_mm: constraints.generic_body_outline_tenths_mm,
       generic_body_outline_mode: constraints.generic_body_outline_mode,
@@ -2684,7 +4559,16 @@ export async function suggestBeginnerReferenceModelFeatures(
     stick_bars: Object.freeze(stickBars as NonNullable<(typeof stickBars)[number]>[]),
     component_count: Number(suggestion.component_count),
     inferred_component_bridges: suggestion.inferred_component_bridges as boolean,
-    pair_bindings: Object.freeze(suggestion.pair_bindings.slice()) }) as BeginnerReferenceModelSuggestionV1
+    principal_axis_extents_tenths_mm:
+      Object.freeze(principalAxisExtents.map(Number)),
+    quality_score: Number(suggestion.quality_score),
+    quality_reasons: Object.freeze(qualityReasons.map(String)),
+    insufficiency_reasons: Object.freeze(insufficiencyReasons.map(String)),
+    pair_bindings: Object.freeze(pairBindings.map((binding) => binding!)),
+    method: 'bounded_bbox_area_normal_v1' as const,
+    suggested_part_kind: suggestion.suggested_part_kind as
+      BeginnerReferenceModelSuggestionV1['suggested_part_kind'],
+  }) as BeginnerReferenceModelSuggestionV1
 }
 
 export function applyBeginnerReferenceModelFeatures(
@@ -2696,34 +4580,86 @@ export function applyBeginnerReferenceModelFeatures(
     bulge_direction_milli: readonly [number, number, number], bulge_amount_tenths_mm: number
   }>[],
 ) {
-  if (surfaceAssignments.length < 2 || surfaceAssignments.length > 8
-    || new Set(surfaceAssignments.map((item) => item.range_id)).size !== surfaceAssignments.length
-    || new Set(surfaceAssignments.map((item) => item.protrusion_id)).size !== surfaceAssignments.length
-    || surfaceAssignments.some((item) => !Number.isInteger(item.range_id)
-      || item.range_id < 1 || item.range_id > 8 || !Number.isInteger(item.protrusion_id)
-      || item.protrusion_id < 1 || item.protrusion_id > 65_535)) {
+  const assignmentInputs = snapshotCoreDataArray(surfaceAssignments, 8)
+  const assignments = assignmentInputs?.map((value) => {
+    const item = exactCoreDataRecord(
+      value,
+      ['range_id', 'protrusion_id'] as const,
+    )
+    return item
+      && Number.isInteger(item.range_id)
+      && Number(item.range_id) >= 1
+      && Number(item.range_id) <= 8
+      && Number.isInteger(item.protrusion_id)
+      && Number(item.protrusion_id) >= 1
+      && Number(item.protrusion_id) <= 65_535
+      ? {
+          range_id: Number(item.range_id),
+          protrusion_id: Number(item.protrusion_id),
+        }
+      : null
+  }) ?? []
+  if (!assignmentInputs || assignments.length < 2
+    || assignments.some((item) => item === null)
+    || new Set(assignments.map((item) => item?.range_id)).size
+      !== assignments.length
+    || new Set(assignments.map((item) => item?.protrusion_id)).size
+      !== assignments.length) {
     return Promise.reject(new Error('invalid reference model surface selection'))
   }
-  if (surfaceEdits.length !== surfaceAssignments.length
-    || new Set(surfaceEdits.map((item) => item.range_id)).size !== surfaceEdits.length
-    || surfaceEdits.some((item) => item.base_digest_sha256.length !== 32
-      || item.base_digest_sha256.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
-      || item.triangle_indices.length < 1 || item.triangle_indices.length > 40_000
-      || new Set(item.triangle_indices).size !== item.triangle_indices.length
-      || item.triangle_indices.some((triangle) => !Number.isInteger(triangle) || triangle < 0)
-      || !isBoundedIntegerTuple(item.bulge_direction_milli, 3, 1_000)
-      || item.bulge_direction_milli.every((axis) => axis === 0)
+  const editInputs = snapshotCoreDataArray(surfaceEdits, 8)
+  const edits = editInputs?.map((value) => {
+    const item = exactCoreDataRecord(value, [
+      'range_id', 'base_digest_sha256', 'triangle_indices',
+      'bulge_direction_milli', 'bulge_amount_tenths_mm',
+    ] as const)
+    const digest = item
+      ? snapshotSha256Bytes(item.base_digest_sha256)
+      : null
+    const triangles = item
+      ? snapshotCoreDataArray(item.triangle_indices, 40_000)
+      : null
+    const direction = item
+      ? snapshotCoreDataArray(item.bulge_direction_milli, 3)
+      : null
+    if (
+      !item
+      || !Number.isInteger(item.range_id)
+      || Number(item.range_id) < 1
+      || Number(item.range_id) > 8
+      || !digest
+      || !triangles
+      || triangles.length < 1
+      || new Set(triangles).size !== triangles.length
+      || triangles.some((triangle) =>
+        !Number.isInteger(triangle) || Number(triangle) < 0)
+      || !isBoundedIntegerTuple(direction, 3, 1_000)
+      || direction.every((axis) => axis === 0)
       || !Number.isInteger(item.bulge_amount_tenths_mm)
-      || item.bulge_amount_tenths_mm < 1 || item.bulge_amount_tenths_mm > 1_000_000)) {
+      || Number(item.bulge_amount_tenths_mm) < 1
+      || Number(item.bulge_amount_tenths_mm) > 1_000_000
+    ) return null
+    return {
+      range_id: Number(item.range_id),
+      base_digest_sha256: Array.from(digest),
+      triangle_indices: triangles.map(Number),
+      bulge_direction_milli: direction.map(Number),
+      bulge_amount_tenths_mm: Number(item.bulge_amount_tenths_mm),
+    }
+  }) ?? []
+  if (!editInputs || edits.length !== assignments.length
+    || edits.some((item) => item === null)
+    || new Set(edits.map((item) => item?.range_id)).size !== edits.length
+    || edits.some((edit) => !assignments.some((assignment) =>
+      assignment?.range_id === edit?.range_id))) {
     return Promise.reject(new Error('invalid reference model surface edit'))
   }
   return invoke<ProjectSnapshot>('apply_beginner_reference_model_features', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision,
-    expectedSuggestion, surfaceAssignments: surfaceAssignments.map((item) => ({ ...item })),
-    surfaceEdits: surfaceEdits.map((item) => ({ ...item,
-      base_digest_sha256: [...item.base_digest_sha256], triangle_indices: [...item.triangle_indices],
-      bulge_direction_milli: [...item.bulge_direction_milli],
-    })), confirmed: true,
+    expectedSuggestion,
+    surfaceAssignments: assignments,
+    surfaceEdits: edits,
+    confirmed: true,
   })
 }
 
@@ -2733,10 +4669,19 @@ export function evaluateBeginnerCandidates(
   expectedProjectInstanceId: string,
   requestedCandidateCount: number,
   requestGenerationId: string,
+  expectedProfile: BeginnerDesignProfileV1,
 ) {
+  if (!isCanonicalNonNilUuid(requestGenerationId)) {
+    return Promise.reject(new Error('invalid candidate generation'))
+  }
   if (!Number.isInteger(requestedCandidateCount)
     || requestedCandidateCount < 1 || requestedCandidateCount > 3) {
     return Promise.reject(new Error('invalid requested candidate count'))
+  }
+  const normalizedExpectedProfile =
+    normalizeBeginnerDesignProfile(expectedProfile)
+  if (!normalizedExpectedProfile) {
+    return Promise.reject(new Error('invalid expected beginner profile'))
   }
   return invoke<unknown>('evaluate_beginner_candidates', {
     expectedProjectInstanceId,
@@ -2751,6 +4696,8 @@ export function evaluateBeginnerCandidates(
       expectedProjectId,
       expectedRevision,
       requestedCandidateCount,
+      'candidate',
+      normalizedExpectedProfile,
     )
     if (!response) throw new Error('invalid beginner candidate response')
     return response
@@ -2776,7 +4723,8 @@ export type BeginnerContourPlacementWitnessV1 = Readonly<{
     vertex_start: number, crease_start: number,
   }>>
   generic_feature_bindings: ReadonlyArray<Readonly<{
-    protrusion_id: number, generated_feature_id: number, endpoint_count: 1 | 2 | 4,
+    protrusion_id: number, generated_feature_id: number,
+    endpoint_count: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8,
     crease_start: number, crease_authority_sha256: ReadonlyArray<number>,
     skeleton_segment_id: number, skeleton_endpoint: 'start' | 'end',
     mount_distance_squared_tenths_mm: number,
@@ -2795,6 +4743,7 @@ export type BeginnerContourPlacementWitnessV1 = Readonly<{
 
 export type BeginnerGridEvaluationResponse = Readonly<{
   request_generation_id: string
+  authority_token: string
   project_instance_id: string
   project_id: string
   revision: number
@@ -2825,244 +4774,24 @@ export type BeginnerGridEvaluationResponse = Readonly<{
 export async function evaluateBeginnerParameterGrid(
   expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
   requestGenerationId: string,
+  expectedProfile: BeginnerDesignProfileV1,
 ): Promise<BeginnerGridEvaluationResponse> {
+  if (!isCanonicalNonNilUuid(requestGenerationId)) {
+    throw new Error('invalid beginner grid generation')
+  }
+  const normalizedExpectedProfile =
+    normalizeBeginnerDesignProfile(expectedProfile)
+  if (!normalizedExpectedProfile) {
+    throw new Error('invalid expected beginner profile')
+  }
   const value = await invoke<unknown>('evaluate_beginner_parameter_grid', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision, requestGenerationId,
   })
-  const response = exactCoreDataRecord(value, [
-    'request_generation_id', 'project_instance_id', 'project_id', 'revision', 'grid_hash',
-    'evaluated_grid_points', 'global_checked_candidates', 'refinement_iterations', 'candidates',
-  ] as const)
-  if (!response || response.request_generation_id !== requestGenerationId
-    || !matchesProjectOccGuard({
-      expectedProjectInstanceId,
-      expectedProjectId,
-      expectedRevision,
-    }, response)
-    || response.evaluated_grid_points !== 27 || response.global_checked_candidates !== 3
-    || !Number.isInteger(response.refinement_iterations) || Number(response.refinement_iterations) < 0
-    || Number(response.refinement_iterations) > 24
-    || !Array.isArray(response.grid_hash)
-    || response.grid_hash.length !== 32
-    || response.grid_hash.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
-    || !Array.isArray(response.candidates) || response.candidates.length < 1 || response.candidates.length > 3) {
-    throw new Error('invalid beginner parameter grid response')
-  }
-  const rawCandidates = response.candidates.map((value) => exactCoreDataRecord(
-    value, ['point', 'primary_score', 'plan', 'assessment', 'local_proof_scope',
-      'global_proof_scope', 'complexity_score', 'scale_deviation_penalty',
-      'paper_efficiency_score',
-      'spacing_deviation_penalty', 'detail_mismatch_penalty', 'outcome_reason', 'contour_witness',
-      'refinement_iterations', 'strict_improvements', 'refinement_starts'] as const,
-  ))
-  if (rawCandidates.some((candidate) => candidate === null)) {
-    throw new Error('invalid beginner parameter grid response')
-  }
-  const admitted = rawCandidates as NonNullable<(typeof rawCandidates)[number]>[]
-  const normalizedPlans = normalizeBeginnerCandidateResponse({
-    schema_version: 1,
-    project_instance_id: expectedProjectInstanceId,
-    project_id: expectedProjectId,
-    revision: expectedRevision,
-    requested_candidate_count: 3,
-    bulge_treatment: 'target_shape_approximation',
-    elasticity_model: 'not_computed',
-    generation_status: 'ready',
-    generated_plans: admitted.map((candidate) => candidate.plan),
-    plan_assessments: admitted.map((candidate) => candidate.assessment),
-    candidates: [0, 1, 2].map((index) => ({
-      schema_version: 1, kind: ['recommended', 'shape_focused', 'foldability_focused'][index],
-      rank: index + 1, total_score: 100 - index, shape_score: 100 - index,
-      target_approximation_score: 100 - index, foldability_score: 100 - index,
-      step_count_score: 100 - index, paper_efficiency_score: 100 - index,
-    })),
-  }, expectedProjectInstanceId, expectedProjectId, expectedRevision, 3)
-  if (!normalizedPlans) throw new Error('invalid beginner parameter grid response')
-  const candidates = admitted.map((candidate, index) => {
-    const point = exactCoreDataRecord(candidate.point, [
-      'id', 'scale_percent', 'spacing_percent', 'detail_level',
-    ] as const)
-    const witness = exactCoreDataRecord(candidate.contour_witness, [
-      'body_contour_points', 'local_bindings', 'generic_feature_bindings', 'skeleton_branch_bindings',
-      'skeleton_tree_authority_sha256', 'witnessed_vertices', 'witnessed_creases', 'topology_authority_hash',
-      'max_contour_error_millionths',
-    ] as const)
-    const bindings = witness && Array.isArray(witness.local_bindings)
-      ? witness.local_bindings.map((binding) => exactCoreDataRecord(binding, [
-          'protrusion_id', 'contour_points', 'generated_face_id', 'vertex_start', 'crease_start',
-        ] as const))
-      : []
-    const featureBindings = witness && Array.isArray(witness.generic_feature_bindings)
-      ? witness.generic_feature_bindings.map((binding) => exactCoreDataRecord(binding, [
-          'protrusion_id', 'generated_feature_id', 'endpoint_count', 'crease_start',
-          'crease_authority_sha256', 'skeleton_segment_id', 'skeleton_endpoint',
-          'mount_distance_squared_tenths_mm',
-        ] as const))
-      : []
-    const witnessPointCount = witness && bindings.every((binding) => binding !== null)
-      ? Number(witness.body_contour_points) + bindings.reduce((sum, binding) => sum + Number(binding?.contour_points), 0)
-      : -1
-    const branchBindings = witness && Array.isArray(witness.skeleton_branch_bindings)
-      ? witness.skeleton_branch_bindings.map((branch) => exactCoreDataRecord(branch, [
-          'segment_id', 'parent_segment_id', 'parent_endpoint', 'child_endpoint',
-          'generated_feature_ids',
-        ] as const)) : []
-    if (!point || !witness || !Number.isInteger(point.id) || Number(point.id) < 0 || Number(point.id) > 26
-      || !Number.isInteger(point.scale_percent) || Number(point.scale_percent) < 10 || Number(point.scale_percent) > 45
-      || !Number.isInteger(point.spacing_percent) || Number(point.spacing_percent) < 20 || Number(point.spacing_percent) > 80
-      || !['simple', 'standard', 'detailed'].includes(String(point.detail_level))
-      || !Number.isInteger(candidate.primary_score) || Number(candidate.primary_score) < 0
-      || Number(candidate.primary_score) > 1000
-      || candidate.local_proof_scope !== 'necessary'
-      || candidate.global_proof_scope !== normalizedPlans.plan_assessments[index].proof_scope
-      || candidate.outcome_reason !== normalizedPlans.plan_assessments[index].reason
-      || !Number.isInteger(witness.body_contour_points) || Number(witness.body_contour_points) < 0 || Number(witness.body_contour_points) > 16
-      || bindings.length !== (witness.local_bindings as unknown[]).length || bindings.length > 8
-      || featureBindings.length !== (witness.generic_feature_bindings as unknown[]).length
-      || featureBindings.length > 8
-      || branchBindings.length !== (witness.skeleton_branch_bindings as unknown[]).length
-      || branchBindings.length > 32
-      || (normalizedPlans.generated_plans[index].kind === 'composite_generic_target_base'
-        ? featureBindings.length < 2
-        : featureBindings.length !== 0)
-      || bindings.some((binding, bindingIndex) => !binding || !Number.isInteger(binding.protrusion_id)
-        || Number(binding.protrusion_id) < 1 || Number(binding.protrusion_id) > 65535
-        || !Number.isInteger(binding.contour_points) || Number(binding.contour_points) < 3 || Number(binding.contour_points) > 8
-        || binding.generated_face_id !== bindingIndex + 1
-        || !Number.isInteger(binding.vertex_start) || Number(binding.vertex_start) < 0
-        || !Number.isInteger(binding.crease_start) || Number(binding.crease_start) < 0
-        || (bindingIndex > 0 && (Number(binding.vertex_start) !== Number(bindings[bindingIndex - 1]?.vertex_start)
-          + Number(bindings[bindingIndex - 1]?.contour_points)
-          || Number(binding.crease_start) !== Number(bindings[bindingIndex - 1]?.crease_start)
-            + Number(bindings[bindingIndex - 1]?.contour_points)))
-        || (bindingIndex > 0 && Number(bindings[bindingIndex - 1]?.protrusion_id) >= Number(binding.protrusion_id)))
-      || featureBindings.some((binding, bindingIndex) => !binding
-        || !Number.isInteger(binding.protrusion_id) || Number(binding.protrusion_id) < 1
-        || Number(binding.protrusion_id) > 65535
-        || binding.generated_feature_id !== binding.protrusion_id
-        || ![1, 2, 4].includes(Number(binding.endpoint_count))
-        || !Number.isInteger(binding.crease_start) || Number(binding.crease_start) < 0
-        || !isBoundedIntegerTuple(binding.crease_authority_sha256, 32, 255)
-        || binding.crease_authority_sha256.some((byte) => byte < 0)
-        || !Number.isInteger(binding.skeleton_segment_id) || Number(binding.skeleton_segment_id) < 1
-        || Number(binding.skeleton_segment_id) > 65535
-        || !['start', 'end'].includes(String(binding.skeleton_endpoint))
-        || !Number.isSafeInteger(binding.mount_distance_squared_tenths_mm)
-        || Number(binding.mount_distance_squared_tenths_mm) < 0
-        || Number(binding.crease_start) + Number(binding.endpoint_count)
-          > normalizedPlans.generated_plans[index].crease_pattern.edges.length
-        || (bindingIndex > 0 && Number(featureBindings[bindingIndex - 1]?.protrusion_id)
-          >= Number(binding.protrusion_id)))
-      || featureBindings.some((binding, index) => featureBindings.some((other, otherIndex) =>
-        index !== otherIndex && binding && other
-          && Number(binding.crease_start) < Number(other.crease_start) + Number(other.endpoint_count)
-          && Number(other.crease_start) < Number(binding.crease_start) + Number(binding.endpoint_count)))
-      || branchBindings.some((branch, index) => !branch
-        || !Number.isInteger(branch.segment_id) || Number(branch.segment_id) < 1
-        || (index === 0 ? branch.parent_segment_id !== null
-          : !Number.isInteger(branch.parent_segment_id) || Number(branch.parent_segment_id) < 1)
-        || (index === 0 ? branch.parent_endpoint !== null || branch.child_endpoint !== null
-          : !['start', 'end'].includes(String(branch.parent_endpoint))
-            || !['start', 'end'].includes(String(branch.child_endpoint))
-            || !branchBindings.slice(0, index).some(
-              (parent) => parent?.segment_id === branch.parent_segment_id))
-        || branchBindings.slice(0, index).some(
-          (previous) => previous?.segment_id === branch.segment_id)
-        || !Array.isArray(branch.generated_feature_ids)
-        || new Set(branch.generated_feature_ids).size !== branch.generated_feature_ids.length
-        || branch.generated_feature_ids.some((id) => !featureBindings.some(
-          (binding) => binding?.generated_feature_id === id)))
-      || !isBoundedIntegerTuple(witness.skeleton_tree_authority_sha256, 32, 255)
-      || !Number.isInteger(witness.witnessed_vertices) || Number(witness.witnessed_vertices) !== witnessPointCount
-      || !Number.isInteger(witness.witnessed_creases) || Number(witness.witnessed_creases) !== witnessPointCount
-      || !Array.isArray(witness.topology_authority_hash) || witness.topology_authority_hash.length !== 32
-      || witness.topology_authority_hash.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
-      || !Number.isInteger(witness.max_contour_error_millionths)
-      || Number(witness.max_contour_error_millionths) < 0 || Number(witness.max_contour_error_millionths) > 1
-      || normalizedPlans.generated_plans[index].crease_pattern.vertices.length < witnessPointCount
-      || normalizedPlans.generated_plans[index].crease_pattern.edges.length < witnessPointCount
-      || bindings.some((binding) => Number(binding?.vertex_start) + Number(binding?.contour_points)
-        > normalizedPlans.generated_plans[index].crease_pattern.vertices.length
-        || Number(binding?.crease_start) + Number(binding?.contour_points)
-          > normalizedPlans.generated_plans[index].crease_pattern.edges.length)
-      || !Number.isInteger(candidate.complexity_score) || Number(candidate.complexity_score) < 0 || Number(candidate.complexity_score) > 100
-      || !Number.isInteger(candidate.paper_efficiency_score)
-      || Number(candidate.paper_efficiency_score) < 0 || Number(candidate.paper_efficiency_score) > 100
-      || !Number.isInteger(candidate.refinement_iterations) || Number(candidate.refinement_iterations) < 0 || Number(candidate.refinement_iterations) > 8
-      || !Number.isInteger(candidate.strict_improvements) || Number(candidate.strict_improvements) < 0
-      || Number(candidate.strict_improvements) > Number(candidate.refinement_iterations) + 1
-      || !Number.isInteger(candidate.refinement_starts) || Number(candidate.refinement_starts) < 1
-      || Number(candidate.refinement_starts) > 5
-      || ![candidate.scale_deviation_penalty, candidate.spacing_deviation_penalty, candidate.detail_mismatch_penalty]
-        .every((penalty) => Number.isInteger(penalty) && Number(penalty) >= 0 && Number(penalty) <= 1000)
-      || Number(candidate.primary_score) !== 1000 - Number(candidate.scale_deviation_penalty)
-        - Number(candidate.spacing_deviation_penalty) - Number(candidate.detail_mismatch_penalty)
-      || (index > 0 && (Number(admitted[index - 1].primary_score) < Number(candidate.primary_score)
-        || (Number(admitted[index - 1].primary_score) === Number(candidate.primary_score)
-          && Number((exactCoreDataRecord(admitted[index - 1].point, ['id', 'scale_percent', 'spacing_percent', 'detail_level'] as const))?.id) >= Number(point.id))))) {
-      throw new Error('invalid beginner parameter grid response')
-    }
-    const admittedBindings = bindings as ReadonlyArray<NonNullable<(typeof bindings)[number]>>
-    const admittedFeatureBindings = featureBindings as ReadonlyArray<
-      NonNullable<(typeof featureBindings)[number]>
-    >
-    const admittedBranchBindings = branchBindings as ReadonlyArray<
-      NonNullable<(typeof branchBindings)[number]>
-    >
-    return Object.freeze({ point: Object.freeze(point) as BeginnerParameterGridPointV1,
-      primary_score: Number(candidate.primary_score), plan: normalizedPlans.generated_plans[index],
-      assessment: normalizedPlans.plan_assessments[index], local_proof_scope: 'necessary' as const,
-      global_proof_scope: candidate.global_proof_scope as BeginnerGeneratedPlanAssessmentV1['proof_scope'],
-      complexity_score: Number(candidate.complexity_score),
-      paper_efficiency_score: Number(candidate.paper_efficiency_score),
-      scale_deviation_penalty: Number(candidate.scale_deviation_penalty),
-      spacing_deviation_penalty: Number(candidate.spacing_deviation_penalty),
-      detail_mismatch_penalty: Number(candidate.detail_mismatch_penalty),
-      outcome_reason: candidate.outcome_reason as BeginnerGeneratedPlanAssessmentV1['reason'],
-      refinement_iterations: Number(candidate.refinement_iterations),
-      strict_improvements: Number(candidate.strict_improvements),
-      refinement_starts: Number(candidate.refinement_starts),
-      contour_witness: Object.freeze({
-        body_contour_points: Number(witness.body_contour_points),
-        local_bindings: Object.freeze(admittedBindings.map((binding) => Object.freeze({
-          protrusion_id: Number(binding.protrusion_id), contour_points: Number(binding.contour_points),
-          generated_face_id: Number(binding.generated_face_id),
-          vertex_start: Number(binding.vertex_start), crease_start: Number(binding.crease_start),
-        }))),
-        generic_feature_bindings: Object.freeze(admittedFeatureBindings.map((binding) => Object.freeze({
-          protrusion_id: Number(binding.protrusion_id),
-          generated_feature_id: Number(binding.generated_feature_id),
-          crease_authority_sha256: Object.freeze(
-            (binding.crease_authority_sha256 as number[]).slice()),
-          endpoint_count: Number(binding.endpoint_count) as 1 | 2 | 4,
-          crease_start: Number(binding.crease_start),
-          skeleton_segment_id: Number(binding.skeleton_segment_id),
-          skeleton_endpoint: String(binding.skeleton_endpoint) as 'start' | 'end',
-          mount_distance_squared_tenths_mm: Number(binding.mount_distance_squared_tenths_mm),
-        }))),
-        skeleton_branch_bindings: Object.freeze(admittedBranchBindings.map((branch) => Object.freeze({
-          segment_id: Number(branch.segment_id),
-          parent_segment_id: branch.parent_segment_id === null ? null : Number(branch.parent_segment_id),
-          parent_endpoint: branch.parent_endpoint as 'start' | 'end' | null,
-          child_endpoint: branch.child_endpoint as 'start' | 'end' | null,
-          generated_feature_ids: Object.freeze((branch.generated_feature_ids as number[]).slice()),
-        }))),
-        skeleton_tree_authority_sha256: Object.freeze(
-          witness.skeleton_tree_authority_sha256.slice()) as ReadonlyArray<number>,
-        witnessed_vertices: Number(witness.witnessed_vertices),
-        witnessed_creases: Number(witness.witnessed_creases),
-        topology_authority_hash: Object.freeze(witness.topology_authority_hash.slice()) as ReadonlyArray<number>,
-        max_contour_error_millionths: Number(witness.max_contour_error_millionths),
-      }) })
-  })
-  if (new Set(candidates.map((candidate) => candidate.point.id)).size !== candidates.length) {
-    throw new Error('invalid beginner parameter grid response')
-  }
-  return Object.freeze({ request_generation_id: requestGenerationId,
-    project_instance_id: expectedProjectInstanceId, project_id: expectedProjectId,
-    revision: expectedRevision, grid_hash: Object.freeze(response.grid_hash.slice()) as ReadonlyArray<number>,
-    evaluated_grid_points: 27, global_checked_candidates: 3,
-    refinement_iterations: Number(response.refinement_iterations), candidates: Object.freeze(candidates) })
+  return normalizeBeginnerGridEvaluationResponseV1(value, {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision,
+    requestGenerationId,
+    expectedProfile: normalizedExpectedProfile,
+  }, normalizeBeginnerCandidateResponse)
 }
 
 export async function getBeginnerParameterGridProgress(requestGenerationId: string) {
@@ -3094,15 +4823,18 @@ export function applyBeginnerParameterGridCandidate(
 ) {
   if (expectedProjectId !== grid.project_id || expectedRevision !== grid.revision
     || expectedProjectInstanceId !== grid.project_instance_id
+    || !isCanonicalNonNilUuid(grid.request_generation_id)
+    || !isCanonicalNonNilUuid(grid.authority_token)
     || !grid.candidates.includes(candidate)
-    || candidate.assessment.proof_scope !== 'sufficient'
-    || candidate.assessment.reason !== 'global_flat_foldability_proven'
-    || !candidate.assessment.apply_allowed) {
+    || !beginnerGeneratedPlanAssessmentAllowsApplyV1(
+      candidate.assessment,
+    )) {
     return Promise.reject(new Error('grid candidate lacks a live sufficient proof'))
   }
   return invoke<ProjectSnapshot>('apply_beginner_parameter_grid_candidate', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision,
     requestGenerationId: grid.request_generation_id,
+    authorityToken: grid.authority_token,
     expectedProfile,
     expectedGridHash: grid.grid_hash,
     selectedPoint: candidate.point,
@@ -3114,10 +4846,19 @@ export function applyBeginnerParameterGridCandidate(
 
 export type BeginnerSymmetricParameterEstimateResponse = Readonly<{
   project_instance_id: string; project_id: string; revision: number
-  estimate: Readonly<{ protrusion_count: 1 | 2 | 3 | 4 | 6 | 7 | 8 | 10; scale_percent: number; spacing_percent: number }>
+  estimate: Readonly<{ protrusion_count: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14; scale_percent: number; spacing_percent: number }>
   candidates: ReadonlyArray<Readonly<{ id: number; scale_percent: number; spacing_percent: number
-    approximation_score: number; complexity_score: number; required_protrusion_count: 1 | 2 | 3 | 4 | 6 | 7 | 8 | 10 }>>
+    approximation_score: number; complexity_score: number; required_protrusion_count: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 }>>
 }>
+
+const BEGINNER_SUPPORTED_PROTRUSION_COUNTS_V1 =
+  Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] as const)
+
+function isBeginnerSupportedProtrusionCountV1(value: unknown): boolean {
+  return Number.isInteger(value)
+    && (BEGINNER_SUPPORTED_PROTRUSION_COUNTS_V1 as readonly number[])
+      .includes(Number(value))
+}
 
 export async function getBeginnerSymmetricParameterEstimate(
   projectId: string, revision: number, projectInstanceId: string,
@@ -3131,7 +4872,8 @@ export async function getBeginnerSymmetricParameterEstimate(
     expectedProjectInstanceId: projectInstanceId,
     expectedProjectId: projectId,
     expectedRevision: revision,
-  }, record) || !estimate || ![1, 2, 3, 4, 6, 7, 8, 10].includes(Number(estimate.protrusion_count))
+  }, record) || !estimate
+    || !isBeginnerSupportedProtrusionCountV1(estimate.protrusion_count)
     || !Number.isInteger(estimate.scale_percent) || Number(estimate.scale_percent) < 10 || Number(estimate.scale_percent) > 45
     || !Number.isInteger(estimate.spacing_percent) || Number(estimate.spacing_percent) < 20 || Number(estimate.spacing_percent) > 80
     || !Array.isArray(record.candidates) || record.candidates.length !== 3) {
@@ -3139,7 +4881,8 @@ export async function getBeginnerSymmetricParameterEstimate(
   }
   const candidates = record.candidates.map((value, index) => {
     const item = exactCoreDataRecord(value, ['id', 'scale_percent', 'spacing_percent', 'approximation_score', 'complexity_score', 'required_protrusion_count'] as const)
-    if (!item || item.id !== index || ![1, 2, 3, 4, 6, 7, 8, 10].includes(Number(item.required_protrusion_count))
+    if (!item || item.id !== index
+      || !isBeginnerSupportedProtrusionCountV1(item.required_protrusion_count)
       || Number(item.required_protrusion_count) !== Number(estimate.protrusion_count)
       || !Number.isInteger(item.scale_percent) || Number(item.scale_percent) < 10 || Number(item.scale_percent) > 45
       || !Number.isInteger(item.spacing_percent) || Number(item.spacing_percent) < 20 || Number(item.spacing_percent) > 80
@@ -3277,14 +5020,16 @@ export async function recognizeBeginnerOutlineCandidates(
   const record = exactCoreDataRecord(value, [
     'project_instance_id', 'project_id', 'revision', 'underlay_id', 'asset_id', 'source_sha256', 'candidates',
   ] as const)
+  const sourceSha256 = record
+    ? snapshotSha256Bytes(record.source_sha256)
+    : null
   if (!record || !matchesProjectOccGuard({
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
   }, record)
     || record.underlay_id !== underlayId || record.asset_id !== assetId
-    || !isBoundedIntegerTuple(record.source_sha256, 32, 255)
-    || record.source_sha256.some((byte) => byte < 0)
+    || !sourceSha256
     || !Array.isArray(record.candidates) || record.candidates.length > 16) {
     throw new BeginnerRecognitionError('native_failure')
   }
@@ -3318,7 +5063,7 @@ export async function recognizeBeginnerOutlineCandidates(
     revision: expectedRevision,
     underlay_id: underlayId,
     asset_id: assetId,
-    source_sha256: Object.freeze(record.source_sha256.slice()),
+    source_sha256: sourceSha256,
     candidates: Object.freeze(candidates),
   })
 }
@@ -3354,6 +5099,8 @@ export type BeginnerPartSuggestionsResponse = Readonly<{
   }>>
 }>
 
+export const MAX_BEGINNER_PART_ASSIGNMENTS_V1 = 16
+
 export async function recognizeBeginnerPartSuggestions(
   proposal: BeginnerOutlineCandidatesResponse,
   candidate: BeginnerOutlineCandidatesResponse['candidates'][number],
@@ -3371,7 +5118,10 @@ export async function recognizeBeginnerPartSuggestions(
   }, record)
     || record.underlay_id !== proposal.underlay_id || record.asset_id !== proposal.asset_id
     || record.selected_outline_id !== candidate.id || !Array.isArray(record.suggestions)
-    || record.suggestions.length < 2 || record.suggestions.length > 8) throw new BeginnerRecognitionError('native_failure')
+    || record.suggestions.length < 2
+    || record.suggestions.length > MAX_BEGINNER_PART_ASSIGNMENTS_V1) {
+    throw new BeginnerRecognitionError('native_failure')
+  }
   const suggestions = record.suggestions.map((value) => {
     const item = exactCoreDataRecord(value, ['candidate_id', 'suggested_kind', 'confidence_reason'] as const)
     if (!item || !Number.isInteger(item.candidate_id)
@@ -3395,10 +5145,13 @@ export function applyBeginnerPartAssignments(
     split_x?: number
   }>,
 ) {
-  if (assignments.some((assignment) => assignment.source_candidate_ids
+  if (assignments.length < 1
+    || assignments.length > MAX_BEGINNER_PART_ASSIGNMENTS_V1
+    || assignments.some((assignment) => assignment.source_candidate_ids
     && (assignment.source_candidate_ids.length < 1 || assignment.source_candidate_ids.length > 2
       || new Set(assignment.source_candidate_ids).size !== assignment.source_candidate_ids.length
-      || assignment.source_candidate_ids.some((id) => !Number.isInteger(id) || id < 0 || id > 15)))
+      || assignment.source_candidate_ids.some((id) => !Number.isInteger(id)
+        || id < 0 || id >= MAX_BEGINNER_PART_ASSIGNMENTS_V1)))
     || assignments.some((assignment) => assignment.split_fragment !== undefined
       && assignment.split_fragment !== 0 && assignment.split_fragment !== 1)
     || assignments.some((assignment) => assignment.split_x !== undefined
@@ -5031,13 +6784,14 @@ export function appendGenericTreeInstructionProposal(
   expectedProjectInstanceId: string,
   expectedTopologySha256: ReadonlyArray<number>,
 ) {
+  const topologySha256 = snapshotSha256Bytes(expectedTopologySha256)
   if (!isCanonicalNonNilUuid(expectedProjectInstanceId) || !isCanonicalNonNilUuid(expectedProjectId)
-    || !isProjectRevision(expectedRevision) || !isBoundedIntegerTuple(expectedTopologySha256, 32, 255)) {
+    || !isProjectRevision(expectedRevision) || !topologySha256) {
     return Promise.reject(new Error('invalid_generic_tree_instruction_request'))
   }
   return invoke<ProjectSnapshot>('append_generic_tree_instruction_proposal', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision,
-    expectedTopologySha256: Array.from(expectedTopologySha256), confirmed: true,
+    expectedTopologySha256: Array.from(topologySha256), confirmed: true,
   })
 }
 
@@ -6270,6 +8024,13 @@ function normalizeProjectLayerMutationBaseSnapshot(
     value,
     PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS,
   )
+  const instructionTimeline = record && isCoreDataRecord(
+    record.instruction_timeline,
+  )
+    ? normalizeStrictOptionalPathCertificateReferences(
+        record.instruction_timeline,
+      )
+    : null
   if (
     !record
     || !isCanonicalNonNilUuid(record.project_instance_id)
@@ -6287,8 +8048,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     )
     || typeof record.is_dirty !== 'boolean'
     || !isCoreDataRecord(record.paper)
-    || !isCoreDataRecord(record.instruction_timeline)
-    || !hasStrictOptionalPathCertificateReferences(record.instruction_timeline)
+    || !instructionTimeline
     || !isCoreDataRecord(record.numeric_expressions)
     || !isCoreDataRecord(record.geometric_constraints)
     || !isCoreDataRecord(record.element_metadata)
@@ -6318,12 +8078,23 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !Array.isArray(creasePattern.vertices)
     || !Array.isArray(creasePattern.edges)
   ) return null
-  const referenceAssets = record.reference_model_assets
-  if (!Array.isArray(referenceAssets) || referenceAssets.length > 8) return null
-  const referenceModelAssets = (referenceAssets as unknown[]).map((value) =>
-    exactCoreDataRecord(value, ['asset_id', 'sha256'] as const))
-  if (referenceModelAssets.some((asset) => !asset || !isCanonicalNonNilUuid(asset.asset_id)
-    || !isBoundedIntegerTuple(asset.sha256, 32, 255))) return null
+  const referenceAssets = snapshotCoreDataArray(
+    record.reference_model_assets,
+    8,
+  )
+  if (!referenceAssets) return null
+  const referenceModelAssets = referenceAssets.map((value) => {
+    const asset = exactCoreDataRecord(value, ['asset_id', 'sha256'] as const)
+    const sha256 = asset ? snapshotSha256Bytes(asset.sha256) : null
+    if (!asset || !isCanonicalNonNilUuid(asset.asset_id) || !sha256) {
+      return null
+    }
+    return Object.freeze({
+      asset_id: asset.asset_id,
+      sha256: Object.freeze(Array.from(sha256)),
+    })
+  })
+  if (referenceModelAssets.some((asset) => asset === null)) return null
   const projectLayers = normalizeProjectLayerDocument(
     record.project_layers,
     creasePattern.edges as readonly Readonly<{ id: string }>[],
@@ -6353,8 +8124,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     paper: record.paper as ProjectSnapshot['paper'],
     crease_pattern:
       record.crease_pattern as ProjectSnapshot['crease_pattern'],
-    instruction_timeline:
-      record.instruction_timeline as ProjectSnapshot['instruction_timeline'],
+    instruction_timeline: instructionTimeline,
     numeric_expressions:
       record.numeric_expressions as ProjectSnapshot['numeric_expressions'],
     geometric_constraints:
@@ -6366,10 +8136,11 @@ function normalizeProjectLayerMutationBaseSnapshot(
     underlays: record.underlays as ProjectSnapshot['underlays'],
     fold_model_fingerprint: record.fold_model_fingerprint,
     boundary_length_authority_v1: boundaryLengthAuthority,
-    reference_model_assets: referenceModelAssets.map((asset) => ({
-      asset_id: String(asset!.asset_id),
-      sha256: [...(asset!.sha256 as number[])],
-    })),
+    reference_model_assets: Object.freeze(
+      referenceModelAssets as NonNullable<
+        (typeof referenceModelAssets)[number]
+      >[],
+    ) as unknown as NonNullable<ProjectSnapshot['reference_model_assets']>,
     can_undo: record.can_undo,
     can_redo: record.can_redo,
     cutting_allowed: record.cutting_allowed,
@@ -6377,20 +8148,93 @@ function normalizeProjectLayerMutationBaseSnapshot(
   })
 }
 
-function hasStrictOptionalPathCertificateReferences(value: Readonly<Record<string, unknown>>) {
-  if (value.steps === undefined) return true
-  if (!Array.isArray(value.steps)) return false
-  return value.steps.every((stepValue) => {
+function normalizeStrictOptionalPathCertificateReferences(
+  value: Readonly<Record<string, unknown>>,
+): ProjectSnapshot['instruction_timeline'] | null {
+  const timeline = snapshotCoreDataRecord(value)
+  if (!timeline) return null
+  if (timeline.steps === undefined) return null
+  const stepInputs = snapshotCoreDataArray(timeline.steps, 512)
+  if (!stepInputs) return null
+  const steps = stepInputs.map((stepValue) => {
     const step = snapshotCoreDataRecord(stepValue)
     const visual = step && snapshotCoreDataRecord(step.visual)
-    if (!visual) return false
+    if (!step || !visual) return null
     const referenceValue = visual.path_certificate_reference_v1
     const metadataValue = visual.named_technique_compiler_v1
+    const cycleProofValue = visual.cycle_layer_order_proof_v1
+    let normalizedCycleProof:
+      InstructionVisual['cycle_layer_order_proof_v1'] | undefined
+    if (cycleProofValue === undefined || cycleProofValue === null) {
+      normalizedCycleProof = cycleProofValue
+    } else {
+      const proof = exactCoreDataRecord(cycleProofValue, [
+        'version', 'model_id', 'target_order_sha256',
+        'transition_count', 'pairs',
+      ] as const)
+      const targetOrderSha256 = proof
+        ? snapshotSha256Bytes(proof.target_order_sha256)
+        : null
+      const pairInputs = proof
+        ? snapshotCoreDataArray(proof.pairs, 50_000)
+        : null
+      const pairs = pairInputs?.map((pairValue, index) => {
+        const pair = exactCoreDataRecord(
+          pairValue,
+          ['lower_face', 'upper_face'] as const,
+        )
+        const previous = index === 0
+          ? null
+          : exactCoreDataRecord(
+              pairInputs[index - 1],
+              ['lower_face', 'upper_face'] as const,
+            )
+        if (
+          !pair
+          || !isCanonicalNonNilUuid(pair.lower_face)
+          || !isCanonicalNonNilUuid(pair.upper_face)
+          || pair.lower_face === pair.upper_face
+          || (
+            previous
+            && `${String(previous.lower_face)}:${String(previous.upper_face)}`
+              >= `${pair.lower_face}:${pair.upper_face}`
+          )
+        ) return null
+        return Object.freeze({
+          lower_face: pair.lower_face,
+          upper_face: pair.upper_face,
+        })
+      }) ?? []
+      if (
+        !proof
+        || proof.version !== 1
+        || proof.model_id
+          !== 'native_continuous_layer_transport_certificate_v1'
+        || !targetOrderSha256
+        || !Number.isSafeInteger(proof.transition_count)
+        || Number(proof.transition_count) < 1
+        || !pairInputs
+        || pairs.some((pair) => pair === null)
+      ) return null
+      normalizedCycleProof = Object.freeze({
+        version: 1 as const,
+        model_id:
+          'native_continuous_layer_transport_certificate_v1' as const,
+        target_order_sha256: targetOrderSha256,
+        transition_count: Number(proof.transition_count),
+        pairs: Object.freeze(pairs.map((pair) => pair!)),
+      })
+    }
+    let normalizedMetadata: InstructionVisual['named_technique_compiler_v1']
+      | undefined
     if (metadataValue !== undefined && metadataValue !== null) {
       const metadata = exactCoreDataRecord(metadataValue, [
         'version', 'model_id', 'technique_kind', 'segment_index', 'segment_count',
         'compiler_output_sha256',
       ] as const)
+      const compilerOutputSha256 = metadata
+        ? snapshotSha256Bytes(metadata.compiler_output_sha256)
+        : null
       if (!metadata || metadata.version !== 1
         || metadata.model_id !== 'certified_named_technique_compiler_metadata_v1'
         || !['mountain', 'valley', 'squash', 'crimp', 'inside_reverse', 'outside_reverse',
@@ -6398,36 +8242,94 @@ function hasStrictOptionalPathCertificateReferences(value: Readonly<Record<strin
         || !Number.isSafeInteger(metadata.segment_index) || Number(metadata.segment_index) < 0
         || !Number.isSafeInteger(metadata.segment_count) || Number(metadata.segment_count) < 1
         || Number(metadata.segment_index) >= Number(metadata.segment_count)
-        || !isBoundedIntegerTuple(metadata.compiler_output_sha256, 32, 255)
-        || !(metadata.compiler_output_sha256 as number[]).some((byte) => byte !== 0)) return false
+        || !compilerOutputSha256
+        || !compilerOutputSha256.some((byte) => byte !== 0)) return null
+      normalizedMetadata = Object.freeze({
+        version: 1 as const,
+        model_id: 'certified_named_technique_compiler_metadata_v1' as const,
+        technique_kind: metadata.technique_kind as
+          BasicFoldTimelinePreviewRequestV1['techniqueKind'],
+        segment_index: Number(metadata.segment_index),
+        segment_count: Number(metadata.segment_count),
+        compiler_output_sha256: compilerOutputSha256,
+      })
+    } else {
+      normalizedMetadata = metadataValue as null | undefined
     }
-    if (referenceValue === undefined || referenceValue === null) return true
-    const reference = exactCoreDataRecord(referenceValue, [
-      'version',
-      'model_id',
-      'binding_sha256',
-      'source_pose_sha256',
-      'target_pose_sha256',
-      'source_model_binding_sha256',
-      'transition_count',
-    ] as const)
-    return Boolean(
-      reference
-      && reference.version === 1
-      && reference.model_id === 'bounded_certified_pose_graph_path_reference_v1'
-      && isBoundedIntegerTuple(reference.binding_sha256, 32, 255)
-      && isBoundedIntegerTuple(reference.source_pose_sha256, 32, 255)
-      && isBoundedIntegerTuple(reference.target_pose_sha256, 32, 255)
-      && isBoundedIntegerTuple(reference.source_model_binding_sha256, 32, 255)
-      && (reference.binding_sha256 as number[]).some((byte) => byte !== 0)
-      && (reference.source_model_binding_sha256 as number[]).some((byte) => byte !== 0)
-      && JSON.stringify(reference.source_pose_sha256)
-        !== JSON.stringify(reference.target_pose_sha256)
-      && Number.isSafeInteger(reference.transition_count)
-      && Number(reference.transition_count) >= 1
-      && Number(reference.transition_count) <= 64
-    )
+    let normalizedReference: PathCertificateReferenceV1 | null | undefined
+    if (referenceValue === undefined || referenceValue === null) {
+      normalizedReference = referenceValue
+    } else {
+      const reference = exactCoreDataRecord(referenceValue, [
+        'version',
+        'model_id',
+        'binding_sha256',
+        'source_pose_sha256',
+        'target_pose_sha256',
+        'source_model_binding_sha256',
+        'transition_count',
+      ] as const)
+      const bindingSha256 = reference
+        ? snapshotSha256Bytes(reference.binding_sha256)
+        : null
+      const sourcePoseSha256 = reference
+        ? snapshotSha256Bytes(reference.source_pose_sha256)
+        : null
+      const targetPoseSha256 = reference
+        ? snapshotSha256Bytes(reference.target_pose_sha256)
+        : null
+      const sourceModelBindingSha256 = reference
+        ? snapshotSha256Bytes(reference.source_model_binding_sha256)
+        : null
+      if (
+        !reference
+        || reference.version !== 1
+        || reference.model_id
+          !== 'bounded_certified_pose_graph_path_reference_v1'
+        || !bindingSha256
+        || !sourcePoseSha256
+        || !targetPoseSha256
+        || !sourceModelBindingSha256
+        || !bindingSha256.some((byte) => byte !== 0)
+        || !sourceModelBindingSha256.some((byte) => byte !== 0)
+        || !sourcePoseSha256.some(
+          (byte, index) => byte !== targetPoseSha256[index],
+        )
+        || !Number.isSafeInteger(reference.transition_count)
+        || Number(reference.transition_count) < 1
+        || Number(reference.transition_count) > 64
+      ) return null
+      normalizedReference = Object.freeze({
+        version: 1 as const,
+        model_id: 'bounded_certified_pose_graph_path_reference_v1' as const,
+        binding_sha256: bindingSha256,
+        source_pose_sha256: sourcePoseSha256,
+        target_pose_sha256: targetPoseSha256,
+        source_model_binding_sha256: sourceModelBindingSha256,
+        transition_count: Number(reference.transition_count),
+      })
+    }
+    return Object.freeze({
+      ...step,
+      visual: Object.freeze({
+        ...visual,
+        ...(Object.hasOwn(visual, 'cycle_layer_order_proof_v1')
+          ? { cycle_layer_order_proof_v1: normalizedCycleProof }
+          : {}),
+        ...(Object.hasOwn(visual, 'named_technique_compiler_v1')
+          ? { named_technique_compiler_v1: normalizedMetadata }
+          : {}),
+        ...(Object.hasOwn(visual, 'path_certificate_reference_v1')
+          ? { path_certificate_reference_v1: normalizedReference }
+          : {}),
+      }),
+    })
   })
+  if (steps.some((step) => step === null)) return null
+  return Object.freeze({
+    ...timeline,
+    steps: Object.freeze(steps),
+  }) as unknown as ProjectSnapshot['instruction_timeline']
 }
 
 /**
@@ -6839,6 +8741,27 @@ function exactCoreDataRecord<const Keys extends readonly string[]>(
     && expectedKeys.every((key) => Object.hasOwn(record, key))
     ? record as Readonly<Record<Keys[number], unknown>>
     : null
+}
+
+function coreDataRecordWithOptionalKeys<
+  const Required extends readonly string[],
+  const Optional extends readonly string[],
+>(
+  value: unknown,
+  requiredKeys: Required,
+  optionalKeys: Optional,
+): Readonly<Record<Required[number], unknown>
+  & Partial<Record<Optional[number], unknown>>> | null {
+  const record = snapshotCoreDataRecord(value)
+  if (!record
+    || requiredKeys.some((key) => !Object.hasOwn(record, key))
+    || optionalKeys.some((key) =>
+      Object.hasOwn(record, key) && record[key] === undefined)
+    || Object.keys(record).some((key) =>
+      !requiredKeys.includes(key as Required[number])
+      && !optionalKeys.includes(key as Optional[number]))) return null
+  return record as Readonly<Record<Required[number], unknown>
+    & Partial<Record<Optional[number], unknown>>>
 }
 
 function snapshotCoreDataRecord(

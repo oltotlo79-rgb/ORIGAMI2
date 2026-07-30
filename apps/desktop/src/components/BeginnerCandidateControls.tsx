@@ -9,6 +9,9 @@ import {
 } from '../lib/i18n.ts'
 import type { useBeginnerCandidateWorkflow } from '../lib/useBeginnerCandidateWorkflow.ts'
 import type { useBeginnerParameterGridWorkflow } from '../lib/useBeginnerParameterGridWorkflow.ts'
+import {
+  beginnerGeneratedPlanAssessmentAllowsApplyV1,
+} from '../lib/coreClient.ts'
 
 type CandidateWorkflow = ReturnType<typeof useBeginnerCandidateWorkflow>
 type GridWorkflow = ReturnType<typeof useBeginnerParameterGridWorkflow>
@@ -38,7 +41,10 @@ export function BeginnerCandidateControls({
     variables?: MessageVariables,
   ) => formatLocalizedText(locale, localized, variables)
   const {
+    beginnerCandidates,
     beginnerCandidateBusy,
+    beginnerCandidateApplyBusy,
+    beginnerCandidateRequestStatus,
     consensusProgress,
     beginnerSymmetricEstimate,
     beginnerSymmetricScale,
@@ -55,12 +61,39 @@ export function BeginnerCandidateControls({
     beginnerGridSelectedPointId,
     setBeginnerGridSelectedPointId,
     beginnerGridBusy,
+    beginnerGridApplyBusy,
+    beginnerGridRequestStatus,
     beginnerGridProgress,
     beginnerGridButtonRef,
     requestBeginnerGrid,
     cancelBeginnerGrid,
     confirmAndApplyBeginnerGridCandidate,
   } = gridWorkflow
+  const candidateRequestBlocked = coreBusy
+    || recoveryBlocking
+    || beginnerCandidateBusy
+    || beginnerCandidateApplyBusy
+    || beginnerGridBusy
+    || beginnerGridApplyBusy
+  const gridInteractionBlocked = coreBusy
+    || recoveryBlocking
+    || beginnerGridBusy
+    || beginnerGridApplyBusy
+    || beginnerGridRequestStatus !== 'ready'
+  const candidateTerminalStatus = beginnerCandidateRequestStatus === 'cancelled'
+    ? text(APP_TEXT.candidateGenerationCancelledAndAuthorityDiscarded)
+    : beginnerCandidateRequestStatus === 'failed'
+      ? text(APP_TEXT.candidateGenerationFailedAndAuthorityDiscarded)
+      : beginnerCandidateRequestStatus === 'empty' && !beginnerCandidates
+        ? text(APP_TEXT.candidateGenerationReturnedNoApplicableCandidates)
+        : null
+  const gridTerminalStatus = beginnerGridRequestStatus === 'cancelled'
+    ? text(APP_TEXT.gridEvaluationCancelledAndAuthorityDiscarded)
+    : beginnerGridRequestStatus === 'failed'
+      ? text(APP_TEXT.gridEvaluationFailedAndAuthorityDiscarded)
+      : beginnerGridRequestStatus === 'empty'
+        ? text(APP_TEXT.gridEvaluationReturnedNoCandidates)
+        : null
 
   return (
     <>
@@ -70,7 +103,8 @@ export function BeginnerCandidateControls({
                 <p id="beginner-candidate-description" className="muted">
                   {text(APP_TEXT.scoresUpToThreeCandidatesOnThisDeviceUsingThe)}
                 </p>
-                <button type="button" onClick={requestBeginnerSymmetricEstimate}>
+                <button type="button" onClick={requestBeginnerSymmetricEstimate}
+                  disabled={candidateRequestBlocked}>
                   {text(APP_TEXT.estimateSymmetricParameters)}
                 </button>
                 {beginnerSymmetricEstimate && (
@@ -85,7 +119,8 @@ export function BeginnerCandidateControls({
                           {formattedText(APP_TEXT.scaleScaleSpacingSpacingApproximationScoreComplexityComplexityRequiredCo, { scale: candidate.scale_percent, spacing: candidate.spacing_percent,
                             score: candidate.approximation_score, complexity: candidate.complexity_score,
                             count: candidate.required_protrusion_count })}
-                          <button type="button" onClick={() => {
+                          <button type="button" disabled={candidateRequestBlocked}
+                            onClick={() => {
                             setBeginnerSymmetricScale(candidate.scale_percent)
                             setBeginnerSymmetricSpacing(candidate.spacing_percent)
                           }}>
@@ -96,13 +131,16 @@ export function BeginnerCandidateControls({
                     </ol>
                     <label>{text(APP_TEXT.scale1045)}
                       <input type="number" min="10" max="45" value={beginnerSymmetricScale}
+                        disabled={candidateRequestBlocked}
                         onChange={(event) => setBeginnerSymmetricScale(Number(event.currentTarget.value))} />
                     </label>
                     <label>{text(APP_TEXT.spacing2080)}
                       <input type="number" min="20" max="80" value={beginnerSymmetricSpacing}
+                        disabled={candidateRequestBlocked}
                         onChange={(event) => setBeginnerSymmetricSpacing(Number(event.currentTarget.value))} />
                     </label>
-                    <button type="button" onClick={confirmBeginnerSymmetricEstimate}>
+                    <button type="button" onClick={confirmBeginnerSymmetricEstimate}
+                      disabled={candidateRequestBlocked}>
                       {text(APP_TEXT.confirmDesignParameters)}
                     </button>
                   </fieldset>
@@ -110,19 +148,46 @@ export function BeginnerCandidateControls({
                 <button
                   type="button"
                   onClick={() => requestBeginnerCandidates(1)}
-                  disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy}
+                  disabled={candidateRequestBlocked}
                   aria-describedby="beginner-candidate-description"
                 >
                   {beginnerCandidateBusy
                     ? text(APP_TEXT.scoringCandidates)
                     : text(APP_TEXT.scoreCandidates)}
                 </button>
-                {beginnerCandidateBusy && <div role="status" aria-live="polite">
-                  {`Consensus progress: assets ${consensusProgress.processed_assets}/${consensusProgress.total_assets}; pairs ${consensusProgress.processed_pairs}/${consensusProgress.total_pairs}.`}
-                  <button type="button" onClick={cancelConsensusAnalysis}>Cancel consensus analysis</button>
+                {beginnerCandidateBusy && <div role="group"
+                  aria-label={text(APP_TEXT.scoringCandidates)}>
+                  <p role="status" aria-live="polite" aria-atomic="true">
+                    {formattedText(
+                      APP_TEXT.consensusProgressAssetsAssetsPairsPairs,
+                      {
+                        processedAssets: consensusProgress.processed_assets,
+                        totalAssets: consensusProgress.total_assets,
+                        processedPairs: consensusProgress.processed_pairs,
+                        totalPairs: consensusProgress.total_pairs,
+                      },
+                    )}
+                  </p>
+                  <button type="button" onClick={cancelConsensusAnalysis}>
+                    {text(APP_TEXT.cancelConsensusAnalysis)}
+                  </button>
                 </div>}
+                {candidateTerminalStatus && (
+                  <p
+                    role={beginnerCandidateRequestStatus === 'failed'
+                      ? 'alert'
+                      : 'status'}
+                    aria-live={beginnerCandidateRequestStatus === 'failed'
+                      ? 'assertive'
+                      : 'polite'}
+                    aria-atomic="true"
+                  >
+                    {candidateTerminalStatus}
+                  </p>
+                )}
                 <button ref={beginnerGridButtonRef} type="button" onClick={requestBeginnerGrid}
-                  disabled={coreBusy || recoveryBlocking || beginnerGridBusy
+                  disabled={coreBusy || recoveryBlocking || beginnerGridBusy || beginnerGridApplyBusy
+                    || beginnerCandidateBusy || beginnerCandidateApplyBusy
                     || skeletonTreeStatus !== 'tree'}>
                   {beginnerGridBusy
                     ? text(APP_TEXT.evaluating27Designs)
@@ -132,8 +197,25 @@ export function BeginnerCandidateControls({
                   enumerated={beginnerGridProgress.enumerated}
                   checked={beginnerGridProgress.globalChecked} refined={beginnerGridProgress.refined}
                   onCancel={cancelBeginnerGrid} />
-                {beginnerGrid && (
-                  <section aria-label={text(APP_TEXT.top3FromThe27DesignSearch)}>
+                {gridTerminalStatus && (
+                  <p
+                    role={beginnerGridRequestStatus === 'failed'
+                      ? 'alert'
+                      : 'status'}
+                    aria-live={beginnerGridRequestStatus === 'failed'
+                      ? 'assertive'
+                      : 'polite'}
+                    aria-atomic="true"
+                  >
+                    {gridTerminalStatus}
+                  </p>
+                )}
+                {beginnerGrid && beginnerGridRequestStatus === 'ready' && (
+                  <section
+                    aria-label={text(APP_TEXT.top3FromThe27DesignSearch)}
+                    aria-live="polite"
+                    aria-atomic="false"
+                  >
                     <p className="muted">{formattedText(APP_TEXT.countDesignsEvaluatedGridHashHash, { count: beginnerGrid.evaluated_grid_points,
                       hash: beginnerGrid.grid_hash.slice(0, 6).map((byte) => byte.toString(16).padStart(2, '0')).join('') })}</p>
                     <table aria-label={text(APP_TEXT.strictCandidateAuthorityComparison)}>
@@ -151,12 +233,15 @@ export function BeginnerCandidateControls({
                         <td><input type="radio" name="beginner-grid-authority"
                           aria-label={formattedText(APP_TEXT.selectExactCandidateId, { id: candidate.point.id + 1 })}
                           checked={beginnerGridSelectedPointId === candidate.point.id}
+                          disabled={gridInteractionBlocked}
                           onChange={() => setBeginnerGridSelectedPointId(candidate.point.id)} /></td>
                         <td>{candidate.plan.crease_pattern.edges.length}</td>
                         <td>{candidate.plan.instruction_codes.length}</td>
                         <td>{candidate.local_proof_scope}</td>
                         <td>{candidate.global_proof_scope}</td>
-                        <td>{candidate.assessment.proof_scope === 'sufficient'
+                        <td>{beginnerGeneratedPlanAssessmentAllowsApplyV1(
+                          candidate.assessment,
+                        )
                           ? text(APP_TEXT.certifiedOnApply)
                           : text(APP_TEXT.blocked)}</td>
                         <td>{candidate.assessment.shape_approximation_score
@@ -164,10 +249,12 @@ export function BeginnerCandidateControls({
                         <td>{candidate.paper_efficiency_score}/100</td>
                       </tr>)}</tbody>
                     </table>
-                    <button type="button" disabled={beginnerGridSelectedPointId === null
+                    <button type="button" disabled={gridInteractionBlocked
+                      || beginnerGridSelectedPointId === null
                       || !beginnerGrid.candidates.some((candidate) => candidate.point.id === beginnerGridSelectedPointId
-                        && candidate.assessment.proof_scope === 'sufficient'
-                        && candidate.assessment.apply_allowed)}
+                        && beginnerGeneratedPlanAssessmentAllowsApplyV1(
+                          candidate.assessment,
+                        ))}
                       onClick={() => {
                         const selected = beginnerGrid.candidates.find(
                           (candidate) => candidate.point.id === beginnerGridSelectedPointId)
@@ -221,10 +308,11 @@ export function BeginnerCandidateControls({
                               .map((byte) => byte.toString(16).padStart(2, '0')).join(''),
                           })}</span>
                         )}
-                        {candidate.assessment.proof_scope === 'sufficient'
-                          && candidate.assessment.reason === 'global_flat_foldability_proven'
-                          && candidate.assessment.apply_allowed && (
-                          <button type="button" onClick={() => confirmAndApplyBeginnerGridCandidate(candidate)}>
+                        {beginnerGeneratedPlanAssessmentAllowsApplyV1(
+                          candidate.assessment,
+                        ) && (
+                          <button type="button" disabled={gridInteractionBlocked}
+                            onClick={() => confirmAndApplyBeginnerGridCandidate(candidate)}>
                             {text(APP_TEXT.revalidateAndApplyThisDesign)}
                           </button>
                         )}

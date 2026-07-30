@@ -118,6 +118,13 @@ fn prepared<'a>(
 }
 
 fn core_records(fixture: &Fixture) -> Vec<GeometricConstraintRecordV1> {
+    core_records_with_angle(fixture, 45.0)
+}
+
+fn core_records_with_angle(
+    fixture: &Fixture,
+    angle_degrees: f64,
+) -> Vec<GeometricConstraintRecordV1> {
     vec![
         record(GeometricConstraintKindV1::Parallel {
             first_edge: fixture.edges[A],
@@ -127,7 +134,7 @@ fn core_records(fixture: &Fixture) -> Vec<GeometricConstraintRecordV1> {
             vertex: fixture.vertices[CENTER],
             first_edge: fixture.edges[A],
             second_edge: fixture.edges[B],
-            angle_degrees: 45.0,
+            angle_degrees,
         }),
         record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[A],
@@ -237,6 +244,164 @@ fn exact_three_id_core_is_canonical_and_direct_mus() {
             baseline,
         );
     }
+}
+
+#[test]
+fn exact_one_hundred_thirty_five_three_id_core_is_canonical_and_fail_closed() {
+    let fixture = Fixture::new();
+    let records = core_records_with_angle(&fixture, 135.0);
+    let expected = sorted_ids(&records);
+    let prepared_set = prepared(&fixture, records.iter().cloned());
+    let baseline = prepared_set.preflight();
+    let conflict = target_conflict(&baseline, &fixture)
+        .expect("exact 135-degree single-unit core must be direct");
+    assert_eq!(conflict.constraint_ids(), expected);
+    assert_eq!(conflict.constraint_ids().len(), 3);
+    assert!(matches!(
+        find_bounded_direct_mus_v1(&prepared_set),
+        BoundedDirectMusV1::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        } if constraint_ids == expected && oracle_calls <= 7
+    ));
+
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        assert_eq!(
+            prepared(
+                &fixture,
+                order.into_iter().map(|index| records[index].clone()),
+            )
+            .preflight(),
+            baseline,
+        );
+    }
+
+    let mut unit_on_second_edge = records.clone();
+    unit_on_second_edge[2].constraint = GeometricConstraintKindV1::FixedLength {
+        edge: fixture.edges[B],
+        length_mm: 1.0,
+    };
+    assert_eq!(
+        prepared(&fixture, unit_on_second_edge).preflight(),
+        baseline,
+        "either member of the supplementary pair may carry the sole unit",
+    );
+
+    for mask in 0..32 {
+        let mut oriented_fixture = fixture.clone();
+        oriented_fixture.reverse_storage(mask);
+        if mask & 16 != 0 {
+            oriented_fixture.pattern.vertices.reverse();
+            oriented_fixture.pattern.edges.reverse();
+        }
+        let mut oriented_records = records.clone();
+        if mask & 4 != 0 {
+            let GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            } = &mut oriented_records[0].constraint
+            else {
+                unreachable!();
+            };
+            (*first_edge, *second_edge) = (*second_edge, *first_edge);
+        }
+        if mask & 8 != 0 {
+            let GeometricConstraintKindV1::FixedAngle {
+                first_edge,
+                second_edge,
+                ..
+            } = &mut oriented_records[1].constraint
+            else {
+                unreachable!();
+            };
+            (*first_edge, *second_edge) = (*second_edge, *first_edge);
+        }
+        assert_eq!(
+            prepared(&oriented_fixture, oriented_records).preflight(),
+            baseline,
+        );
+    }
+
+    let second_unit = record(GeometricConstraintKindV1::FixedLength {
+        edge: fixture.edges[B],
+        length_mm: 1.0,
+    });
+    let selected_unit = [records[2].id, second_unit.id]
+        .into_iter()
+        .min_by_key(ConstraintId::canonical_bytes)
+        .expect("two unit IDs");
+    let mut both_units = records.clone();
+    both_units.push(second_unit);
+    let mut expected_with_two_units = vec![records[0].id, records[1].id, selected_unit];
+    expected_with_two_units.sort_unstable_by_key(ConstraintId::canonical_bytes);
+    let both_units_outcome = prepared(&fixture, both_units.iter().cloned()).preflight();
+    let both_units_conflict =
+        target_conflict(&both_units_outcome, &fixture).expect("two-unit supplementary conflict");
+    assert_eq!(
+        both_units_conflict.constraint_ids(),
+        expected_with_two_units,
+    );
+    assert_eq!(both_units_conflict.constraint_ids().len(), 3);
+    both_units.reverse();
+    assert_eq!(
+        prepared(&fixture, both_units).preflight(),
+        both_units_outcome,
+    );
+
+    for angle_degrees in [135.0_f64.next_down(), 135.0_f64.next_up()] {
+        let mut changed = records.clone();
+        let GeometricConstraintKindV1::FixedAngle {
+            angle_degrees: stored,
+            ..
+        } = &mut changed[1].constraint
+        else {
+            unreachable!();
+        };
+        *stored = angle_degrees;
+        assert_solver_required(&prepared(&fixture, changed).preflight());
+    }
+    for length_mm in [1.0_f64.next_down(), 1.0_f64.next_up(), 0.5, 2.0] {
+        let mut changed = records.clone();
+        let GeometricConstraintKindV1::FixedLength {
+            length_mm: stored, ..
+        } = &mut changed[2].constraint
+        else {
+            unreachable!();
+        };
+        *stored = length_mm;
+        assert_solver_required(&prepared(&fixture, changed).preflight());
+    }
+
+    let mut nonstar = fixture.clone();
+    nonstar.pattern.edges[B].start = nonstar.vertices[A_ENDPOINT];
+    nonstar.pattern.edges[B].end = nonstar.vertices[B_ENDPOINT];
+    assert!(
+        prepare_geometric_constraints_v1(
+            &nonstar.pattern,
+            &document(core_records_with_angle(&nonstar, 135.0)),
+            GeometricConstraintLimitsV1::default(),
+        )
+        .is_err(),
+        "the supplementary fixed-angle vertex must be common to both real edges",
+    );
+
+    let reported = sorted_pair(&fixture);
+    assert!(
+        crate::constraints::is_proven_exact_forty_five_single_unit_parallel_angle_shape_for_test_v1(
+            reported[0],
+            reported[1],
+            expected,
+            &records,
+        ),
+        "the independent verifier accepts the exact supplementary grammar",
+    );
 }
 
 #[test]
@@ -430,6 +595,89 @@ fn every_single_deletion_has_the_frozen_exact_residual_witness() {
                 })
                 .is_some(),
                 "storage mask {storage_mask}, deletion {removed} must have an exact witness",
+            );
+        }
+    }
+}
+
+#[test]
+fn supplementary_135_every_single_deletion_has_a_frozen_exact_residual_witness() {
+    let diagonal = f64::from_bits(0x3fe6_a09e_667f_3bcd);
+    let expected_angle = deterministic_degrees_to_radians_v1(135.0).expect("frozen 135 radians");
+    assert_eq!(expected_angle.to_bits(), 0x4002_d97c_7f33_21d2);
+    assert_eq!(
+        deterministic_hypot_v1(-diagonal, diagonal)
+            .expect("finite supplementary diagonal hypot")
+            .to_bits(),
+        1.0_f64.to_bits(),
+    );
+    assert_eq!(
+        deterministic_atan2_v1(diagonal, -diagonal)
+            .expect("finite supplementary diagonal atan2")
+            .to_bits(),
+        expected_angle.to_bits(),
+    );
+    assert_eq!(
+        crate::constraints::deterministic_fixed_angle_residual_binary64_v1(expected_angle, 135.0,)
+            .to_bits(),
+        0,
+    );
+
+    let scale = f64::from_bits(0x5fec_0000_0000_0000);
+    let square = scale * scale;
+    let large_hypot =
+        deterministic_hypot_v1(-scale, scale).expect("finite supplementary large hypot");
+    let overflow_denominator =
+        deterministic_hypot_v1(scale, 0.0).expect("finite axis hypot") * large_hypot;
+    assert_eq!(overflow_denominator.to_bits(), f64::INFINITY.to_bits());
+    assert_eq!((square / overflow_denominator).to_bits(), 0);
+    let overflow_angle =
+        deterministic_atan2_v1(square, -square).expect("finite supplementary equal-term atan2");
+    assert_eq!(overflow_angle.to_bits(), expected_angle.to_bits());
+    assert_eq!(
+        crate::constraints::deterministic_fixed_angle_residual_binary64_v1(overflow_angle, 135.0,)
+            .to_bits(),
+        0,
+    );
+
+    for storage_mask in 0..4 {
+        let mut fixture = Fixture::new();
+        fixture.reverse_storage(storage_mask);
+        let records = core_records_with_angle(&fixture, 135.0);
+        for removed in 0..records.len() {
+            let subset = records
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != removed)
+                .map(|(_, record)| record.clone())
+                .collect::<Vec<_>>();
+            let overlay = match removed {
+                0 => complete_overlay(
+                    &fixture,
+                    Point2::new(1.0, 0.0),
+                    Point2::new(-diagonal, -diagonal),
+                ),
+                1 => complete_overlay(&fixture, Point2::new(1.0, 0.0), Point2::new(1.0, 0.0)),
+                2 => complete_overlay(
+                    &fixture,
+                    Point2::new(scale, 0.0),
+                    Point2::new(-scale, -scale),
+                ),
+                _ => unreachable!(),
+            };
+            assert!(
+                crate::constraint_solver::certify_binary64_residual_only_constraint_overlay_v1(
+                    &fixture.pattern,
+                    &document(subset),
+                    &overlay,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "supplementary storage mask {storage_mask}, deletion {removed} failed: {error:?}",
+                    )
+                })
+                .is_some(),
+                "supplementary storage mask {storage_mask}, deletion {removed} needs an exact witness",
             );
         }
     }
@@ -663,9 +911,15 @@ fn malformed_topology_references_ids_and_cause_shapes_fail_closed() {
 }
 
 #[test]
-fn non_forty_five_angles_retain_the_legacy_two_unit_four_id_boundary() {
+fn non_exact_single_unit_angles_retain_the_legacy_two_unit_four_id_boundary() {
     let fixture = Fixture::new();
-    for angle_degrees in [90.0, 45.0_f64.next_down(), 45.0_f64.next_up()] {
+    for angle_degrees in [
+        90.0,
+        45.0_f64.next_down(),
+        45.0_f64.next_up(),
+        135.0_f64.next_down(),
+        135.0_f64.next_up(),
+    ] {
         let mut records = core_records(&fixture);
         let GeometricConstraintKindV1::FixedAngle {
             angle_degrees: stored,
@@ -685,7 +939,7 @@ fn non_forty_five_angles_retain_the_legacy_two_unit_four_id_boundary() {
         let expected = sorted_ids(&records);
         let outcome = prepared(&fixture, records).preflight();
         let conflict = target_conflict(&outcome, &fixture)
-            .expect("the generic non-45 two-unit branch remains direct");
+            .expect("the generic two-unit branch remains direct");
         assert_eq!(conflict.constraint_ids(), expected);
         assert_eq!(conflict.constraint_ids().len(), 4);
     }

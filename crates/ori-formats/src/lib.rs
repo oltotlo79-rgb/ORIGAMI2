@@ -2,6 +2,7 @@
 
 //! Versioned persistence and interchange adapters.
 
+mod beginner_generation_document_authority;
 mod crease_pattern_export;
 mod fold;
 mod fold_frames;
@@ -707,6 +708,8 @@ pub enum FormatError {
     InvalidAnnotations,
     #[error("project underlays are invalid")]
     InvalidUnderlays,
+    #[error("project beginner-design profile is invalid")]
+    InvalidBeginnerDesignProfile,
     #[error("project crease-pattern geometry contains a non-finite coordinate")]
     NonFiniteGeometry,
     #[error(
@@ -778,6 +781,7 @@ fn validate_project_document(document: &ProjectDocument) -> Result<(), FormatErr
     validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
     validate_project_annotations(document)?;
     validate_project_underlays(document)?;
+    validate_project_beginner_design_profile(document)?;
     Ok(())
 }
 
@@ -804,6 +808,41 @@ fn validate_project_underlays(document: &ProjectDocument) -> Result<(), FormatEr
         if layer.content_kind != ori_domain::LayerContentKindV1::Underlay {
             return Err(FormatError::InvalidUnderlays);
         }
+    }
+    Ok(())
+}
+
+fn validate_project_beginner_design_profile(document: &ProjectDocument) -> Result<(), FormatError> {
+    let profile = &document.beginner_design_profile;
+    if !ori_domain::validate_beginner_design_profile_v1(profile) {
+        return Err(FormatError::InvalidBeginnerDesignProfile);
+    }
+    if profile.generation_provenance.is_none() {
+        return Ok(());
+    }
+    let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
+        underlay_id,
+        asset_id,
+    }) = profile.generation_constraints.target_asset
+    else {
+        return Ok(());
+    };
+    let mut bound = document
+        .underlays
+        .underlays
+        .iter()
+        .filter(|record| record.id == underlay_id);
+    let Some(record) = bound.next() else {
+        return Err(FormatError::InvalidBeginnerDesignProfile);
+    };
+    if bound.next().is_some()
+        || record.asset != asset_id
+        || !document.layers.layers.iter().any(|layer| {
+            layer.id == record.layer
+                && layer.content_kind == ori_domain::LayerContentKindV1::Underlay
+        })
+    {
+        return Err(FormatError::InvalidBeginnerDesignProfile);
     }
     Ok(())
 }
@@ -1815,6 +1854,123 @@ mod tests {
         assert!(matches!(
             write_project_ori2(&document),
             Err(FormatError::InvalidUnderlays)
+        ));
+    }
+
+    #[test]
+    fn project_readers_and_writers_reject_invalid_beginner_profiles() {
+        let mut document = sample_document();
+        document.beginner_design_profile.shape_fidelity_weight += 1;
+
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidBeginnerDesignProfile)
+        ));
+        assert!(matches!(
+            write_project_ori2(&document),
+            Err(FormatError::InvalidBeginnerDesignProfile)
+        ));
+        let raw = serde_json::to_vec(&document).expect("serialize invalid profile fixture");
+        assert!(matches!(
+            read_project_json(&raw),
+            Err(FormatError::InvalidBeginnerDesignProfile)
+        ));
+    }
+
+    #[test]
+    fn positive_beginner_reference_image_evidence_requires_its_live_underlay_binding() {
+        let mut document = sample_document();
+        let layer = LayerRecordV1 {
+            id: LayerId::new(),
+            name: "Reference image".to_owned(),
+            content_kind: LayerContentKindV1::Underlay,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+        };
+        let underlay_id = ori_domain::UnderlayId::new();
+        let asset_id = AssetId::new();
+        document.layers.layers.push(layer.clone());
+        document
+            .underlays
+            .underlays
+            .push(ori_domain::UnderlayRecordV1 {
+                id: underlay_id,
+                asset: asset_id,
+                transform: ori_domain::UnderlayTransformV1 {
+                    position: Point2::new(0.0, 0.0),
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    rotation_degrees: 0.0,
+                },
+                opacity: 1.0,
+                layer: layer.id,
+            });
+        document.texture_assets.push(ProjectTextureAssetV1 {
+            id: asset_id,
+            media_type: ProjectTextureMediaTypeV1::Png,
+            bytes: b"\x89PNG\r\n\x1a\nreference".to_vec(),
+        });
+        document
+            .beginner_design_profile
+            .generation_constraints
+            .target_asset = Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
+            underlay_id,
+            asset_id,
+        });
+        document.beginner_design_profile.generation_provenance =
+            Some(ori_domain::BeginnerGenerationProvenanceV1 {
+                schema_version: 1,
+                topology_authority_sha256: [0x31; 32],
+                fold_path_certificate_sha256: None,
+                document_authority_sha256: None,
+                confidence_score: 100,
+                confidence_reasons: vec!["live_reference_image".to_owned()],
+                explicit_override: false,
+                source_asset_fingerprint: "asset:live-reference-image".to_owned(),
+                semantic_landmark_provenance: None,
+                generic_tree: None,
+                reference_consensus: None,
+                reference_consensus_summary: None,
+            });
+
+        let valid = write_project_json(&document).expect("write live reference-image evidence");
+        assert_eq!(
+            read_project_json(&valid).expect("read live reference-image evidence"),
+            document
+        );
+
+        let mut wrong_underlay = document.clone();
+        let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
+            underlay_id, ..
+        }) = wrong_underlay
+            .beginner_design_profile
+            .generation_constraints
+            .target_asset
+            .as_mut()
+        else {
+            panic!("reference-image fixture");
+        };
+        *underlay_id = ori_domain::UnderlayId::new();
+        assert!(matches!(
+            write_project_json(&wrong_underlay),
+            Err(FormatError::InvalidBeginnerDesignProfile)
+        ));
+
+        let mut wrong_asset = document;
+        let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage { asset_id, .. }) =
+            wrong_asset
+                .beginner_design_profile
+                .generation_constraints
+                .target_asset
+                .as_mut()
+        else {
+            panic!("reference-image fixture");
+        };
+        *asset_id = AssetId::new();
+        assert!(matches!(
+            write_project_ori2(&wrong_asset),
+            Err(FormatError::InvalidBeginnerDesignProfile)
         ));
     }
 

@@ -16,6 +16,7 @@ const KEYS = [
   'symmetryBilateral',
   'symmetryRadial',
   'partKind',
+  'unassigned',
   'symmetry',
   'count',
   'rootWidth',

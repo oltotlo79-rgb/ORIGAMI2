@@ -1,3 +1,5 @@
+use crate::geometric_constraint_analysis::GeometricConstraintSatisfactionEvidenceKind;
+
 #[test]
 fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states() {
     let project = initial_project_state();
@@ -18,6 +20,7 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
         GeometricConstraintPreflightResult::ProvenSatisfiable {
             model_id: ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
             transcendental_model_id: ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+            evidence_kind: GeometricConstraintSatisfactionEvidenceKind::CurrentAssignment,
             constraint_count: 1,
             equation_count: 1,
             authorizes_project_mutation: false,
@@ -36,6 +39,48 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
             "model_id": "geometric_constraint_deterministic_binary64_exact_satisfaction_v2",
             "transcendental_model_id":
                 ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+            "evidence_kind": "current_assignment",
+            "constraint_count": 1,
+            "equation_count": 1,
+            "authorizes_project_mutation": false,
+            "replayable_across_runtimes":
+                ori_numeric::deterministic_transcendental_model_supported_v1(),
+        })
+    );
+
+    let constructed_positive = GeometricConstraintDocumentV1 {
+        schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+        constraints: vec![GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal { edge: second_edge },
+        }],
+    };
+    assert_eq!(
+        analyze_geometric_constraint_document(pattern, &constructed_positive),
+        GeometricConstraintPreflightResult::ProvenSatisfiable {
+            model_id: ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+            transcendental_model_id: ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+            evidence_kind:
+                GeometricConstraintSatisfactionEvidenceKind::DetachedConstructedAssignment,
+            constraint_count: 1,
+            equation_count: 1,
+            authorizes_project_mutation: false,
+            replayable_across_runtimes:
+                ori_numeric::deterministic_transcendental_model_supported_v1(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(analyze_geometric_constraint_document(
+            pattern,
+            &constructed_positive,
+        ))
+        .expect("serialize constructed positive constraint result"),
+        serde_json::json!({
+            "status": "proven_satisfiable",
+            "model_id": "geometric_constraint_deterministic_binary64_exact_satisfaction_v2",
+            "transcendental_model_id":
+                ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+            "evidence_kind": "detached_constructed_assignment",
             "constraint_count": 1,
             "equation_count": 1,
             "authorizes_project_mutation": false,
@@ -46,14 +91,16 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
 
     let no_direct = GeometricConstraintDocumentV1 {
         schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
-        constraints: vec![GeometricConstraintRecordV1 {
-            id: ConstraintId::new(),
-            constraint: GeometricConstraintKindV1::Horizontal { edge: second_edge },
-        }],
+        constraints: (0..=ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1)
+            .map(|_| GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::Horizontal { edge: second_edge },
+            })
+            .collect(),
     };
     assert_eq!(
         analyze_geometric_constraint_document(pattern, &no_direct),
-        GeometricConstraintPreflightResult::NoDirectConflict
+        GeometricConstraintPreflightResult::NoDirectConflict,
     );
 
     let zero_length_escape = GeometricConstraintDocumentV1 {
@@ -123,23 +170,44 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
         })
     );
 
+    let edge_ids = pattern.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
+    let mut solver_required_records = Vec::new();
+    'edge_pairs: for &numerator_edge in &edge_ids {
+        for &denominator_edge in &edge_ids {
+            if numerator_edge == denominator_edge {
+                continue;
+            }
+            solver_required_records.push(GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge,
+                    denominator_edge,
+                    ratio: 2.0,
+                },
+            });
+            if solver_required_records.len()
+                > ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1
+            {
+                break 'edge_pairs;
+            }
+        }
+    }
+    assert_eq!(
+        solver_required_records.len(),
+        ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 + 1,
+        "the startup pattern must provide nine distinct valid ordered edge roles",
+    );
     let solver_required = GeometricConstraintDocumentV1 {
         schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
-        constraints: vec![GeometricConstraintRecordV1 {
-            id: ConstraintId::new(),
-            constraint: GeometricConstraintKindV1::LengthRatio {
-                numerator_edge: first_edge,
-                denominator_edge: second_edge,
-                ratio: 2.0,
-            },
-        }],
+        constraints: solver_required_records,
     };
     assert!(matches!(
         analyze_geometric_constraint_document(pattern, &solver_required),
         GeometricConstraintPreflightResult::Unknown {
             reason: GeometricConstraintUnknownReason::SolverRequiredConstraintKinds,
-            ..
-        }
+            ref unchecked_constraint_ids,
+        } if unchecked_constraint_ids.len()
+            == ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 + 1
     ));
 }
 

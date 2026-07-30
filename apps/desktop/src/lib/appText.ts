@@ -853,8 +853,37 @@ export const APP_TEXT = Object.freeze({
   confirmDesignParameters: localized('確認して設計条件へ保存', 'Confirm design parameters'),
   scoringCandidates: localized('候補を評価中…', 'Scoring candidates…'),
   scoreCandidates: localized('候補を評価', 'Score candidates'),
+  consensusProgressAssetsAssetsPairsPairs: localized(
+    '参照合意の進捗: アセット {processedAssets}/{totalAssets}、組 {processedPairs}/{totalPairs}。',
+    'Consensus progress: assets {processedAssets}/{totalAssets}; pairs {processedPairs}/{totalPairs}.',
+  ),
+  cancelConsensusAnalysis: localized('参照合意の解析をキャンセル', 'Cancel consensus analysis'),
+  candidateGenerationCancelledAndAuthorityDiscarded: localized(
+    '候補生成をキャンセルしました。以前の候補の適用権限は破棄されました。',
+    'Candidate generation was cancelled. Previous candidate authority was discarded.',
+  ),
+  candidateGenerationFailedAndAuthorityDiscarded: localized(
+    '候補生成に失敗しました。適用できる候補権限はありません。',
+    'Candidate generation failed. No candidate authority is available to apply.',
+  ),
+  candidateGenerationReturnedNoApplicableCandidates: localized(
+    '適用可能な候補は生成されませんでした。',
+    'Candidate generation returned no applicable candidates.',
+  ),
   evaluating27Designs: localized('27案を評価中…', 'Evaluating 27 designs…'),
   evaluateTop3Of27Designs: localized('27案から上位3案を評価', 'Evaluate top 3 of 27 designs'),
+  gridEvaluationCancelledAndAuthorityDiscarded: localized(
+    '27案の評価をキャンセルしました。以前の格子候補の適用権限は破棄されました。',
+    'Grid evaluation was cancelled. Previous grid-candidate authority was discarded.',
+  ),
+  gridEvaluationFailedAndAuthorityDiscarded: localized(
+    '27案の評価に失敗しました。適用できる格子候補権限はありません。',
+    'Grid evaluation failed. No grid-candidate authority is available to apply.',
+  ),
+  gridEvaluationReturnedNoCandidates: localized(
+    '27案の評価から適用可能な候補は返されませんでした。',
+    'Grid evaluation returned no applicable candidates.',
+  ),
   top3FromThe27DesignSearch: localized('27案探索の上位3案', 'Top 3 from the 27-design search'),
   countDesignsEvaluatedGridHashHash: localized(
     '{count}案を評価・格子ハッシュ {hash}',
@@ -874,6 +903,10 @@ export const APP_TEXT = Object.freeze({
   selectExactCandidateId: localized('厳密候補 {id} を選択', 'Select exact candidate {id}'),
   certifiedOnApply: localized('適用時に認証', 'Certified on apply'),
   blocked: localized('ブロック', 'Blocked'),
+  candidateApplyUnavailable: localized(
+    'この候補は適用できません。',
+    'This candidate is unavailable to apply.',
+  ),
   notMeasured: localized('未計測', 'Not measured'),
   revalidateAndApplySelectedCandidate: localized(
     '選択候補を再検証して適用',
@@ -1031,6 +1064,10 @@ export const APP_TEXT = Object.freeze({
   candidate: localized('候補', 'Candidate'),
   candidateCreasePatternPreview: localized('候補の展開図プレビュー', 'Candidate crease-pattern preview'),
   candidateFoldingInstructions: localized('候補の折り手順', 'Candidate folding instructions'),
+  noValidatedCandidateFoldingInstructions: localized(
+    '検証済みの候補折り手順はありません。',
+    'No validated candidate folding instructions are available.',
+  ),
   createTheSymmetricFourLegBaseFromTheSharedCenter: localized(
     '対称4本脚の基本線を中央から作成します。',
     'Create the symmetric four-leg base from the shared center.',
@@ -1075,6 +1112,54 @@ export const APP_TEXT = Object.freeze({
   createOneBilateralInsectLegPairBase: localized(
     '昆虫の左右対称な脚1組のベースを作ります。',
     'Create one bilateral insect leg-pair base.',
+  ),
+  createTheSymmetricCompleteSixLegBase: localized(
+    '左右対称の完全な六脚ベースを作ります。',
+    'Create the symmetric complete six-leg base.',
+  ),
+  createTheCenterAxisTailBase: localized(
+    '中心軸から伸びる尾のベースを作ります。',
+    'Create the center-axis tail base.',
+  ),
+  createTheCenterAxisSingleHornBase: localized(
+    '中心軸から伸びる一本角のベースを作ります。',
+    'Create the center-axis single-horn base.',
+  ),
+  createTheCenterAxisSingleAntennaBase: localized(
+    '中心軸から伸びる一本触角のベースを作ります。',
+    'Create the center-axis single-antenna base.',
+  ),
+  createTheCompositeTailAndEarBase: localized(
+    '一本の尾と左右一組の耳を持つ複合ベースを作ります。',
+    'Create the composite tail-and-ear base.',
+  ),
+  createTheCompositeHornAndEarBase: localized(
+    '一本角と左右一組の耳を持つ複合ベースを作ります。',
+    'Create the composite horn-and-ear base.',
+  ),
+  createTheCompositeHornAndTailBase: localized(
+    '一本角と一本の尾を持つ複合ベースを作ります。',
+    'Create the composite horn-and-tail base.',
+  ),
+  createTheCompositeHornTailAndEarBase: localized(
+    '一本角、一本の尾、左右一組の耳を持つ複合ベースを作ります。',
+    'Create the composite horn, tail, and ear base.',
+  ),
+  createTheCompositeWingAndAntennaBase: localized(
+    '左右一組の翼と触角を持つ複合ベースを作ります。',
+    'Create the composite wing-and-antenna base.',
+  ),
+  createTheCompleteCompositeInsectBase: localized(
+    '翼、触角、六脚を持つ完全な複合昆虫ベースを作ります。',
+    'Create the complete composite insect base.',
+  ),
+  createTheCompleteCompositeAnimalBase: localized(
+    '角、尾、耳、四脚を持つ完全な複合動物ベースを作ります。',
+    'Create the complete composite animal base.',
+  ),
+  createTheCompleteCompositeWingedAnimalBase: localized(
+    '角、尾、耳、四脚、翼を持つ完全な複合有翼動物ベースを作ります。',
+    'Create the complete composite winged-animal base.',
   ),
   foldInHalfOnTheVerticalCenterLine: localized(
     '縦の中心線で二つ折りします。',
@@ -1889,6 +1974,30 @@ export const APP_TEXT = Object.freeze({
   evaluationStoppedBecauseTheExpressionIsTooComplex: localized(
     '数式が複雑すぎるため評価を中止しました。',
     'Evaluation stopped because the expression is too complex.',
+  ),
+  useBoundedTreeRiverAxialRatios: localized(
+    '一般木の河川・軸比（百万分率）を使用します: {ratios}。',
+    'Use bounded-tree river/axial ratios (millionths): {ratios}.',
+  ),
+  useBoundedRadialCornerSupport: localized(
+    '有界な放射状支持で用紙の4隅を覆います（追加支持折り線: {added} 本）。',
+    'Cover all four paper corners with bounded radial support ({added} support creases added).',
+  ),
+  useBoundedTreeBranchTopology: localized(
+    '一般木の分岐構造を使用します: 節点 {nodes}、葉 {leaves}、枝 {bars}。',
+    'Use bounded-tree branch topology: {nodes} nodes, {leaves} leaves, {bars} bars.',
+  ),
+  useBoundedTreePaperOrientationHorizontal: localized(
+    '一般木を用紙の横向き配置で評価します。',
+    'Evaluate the bounded tree in horizontal paper orientation.',
+  ),
+  useBoundedTreePaperOrientationVertical: localized(
+    '一般木を用紙の縦向き配置で評価します。',
+    'Evaluate the bounded tree in vertical paper orientation.',
+  ),
+  unknownGeneratedInstructionCode: localized(
+    '不明な生成命令です: {code}',
+    'Unknown generated instruction: {code}',
   ),
   enterAFiniteExpressionUsingDecimalsFractionsSquareRootsPi: localized(
     '小数・分数・平方根・π・四則演算・括弧を使った有限の数式を入力してください。',

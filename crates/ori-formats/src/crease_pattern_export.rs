@@ -1587,6 +1587,7 @@ mod tests {
         let (pattern, paper) = sample_pattern();
         let provenance = BeginnerGenerationProvenanceV1 {
             fold_path_certificate_sha256: Some([0x5au8; 32]),
+            document_authority_sha256: None,
             schema_version: 1,
             topology_authority_sha256: [0xabu8; 32],
             confidence_score: 87,
@@ -1680,6 +1681,7 @@ mod tests {
             schema_version: 1,
             topology_authority_sha256: [0x33; 32],
             fold_path_certificate_sha256: None,
+            document_authority_sha256: None,
             confidence_score: 80,
             confidence_reasons: vec!["native_topology_witness".to_owned()],
             explicit_override: false,
@@ -1730,6 +1732,7 @@ mod tests {
         let (pattern, paper) = sample_pattern();
         let provenance = BeginnerGenerationProvenanceV1 {
             fold_path_certificate_sha256: Some([0x3cu8; 32]),
+            document_authority_sha256: None,
             schema_version: 1,
             topology_authority_sha256: [7; 32],
             confidence_score: 91,

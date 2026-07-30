@@ -7,7 +7,10 @@ import {
   type LocalizedText,
   type MessageVariables,
 } from '../lib/i18n.ts'
-import type { useBeginnerRecognitionWorkflow } from '../lib/useBeginnerRecognitionWorkflow.ts'
+import {
+  MAX_BEGINNER_PART_ASSIGNMENTS_V1,
+  type useBeginnerRecognitionWorkflow,
+} from '../lib/useBeginnerRecognitionWorkflow.ts'
 
 type RecognitionWorkflow = ReturnType<typeof useBeginnerRecognitionWorkflow>
 
@@ -255,7 +258,10 @@ export function BeginnerRecognitionPanel({
                             <button type="button" onClick={() => setBeginnerPartAssignments((items) => {
                               const index = items.findIndex((item) => item.kind !== 'torso'
                                 && item.split_fragment === undefined)
-                              if (index < 0 || items.length >= 10) return items
+                              if (
+                                index < 0
+                                || items.length >= MAX_BEGINNER_PART_ASSIGNMENTS_V1
+                              ) return items
                               const source = items[index]
                               const outline = beginnerOutlineCandidates?.candidates.find(
                                 (candidate) => candidate.id === source.candidate_id)

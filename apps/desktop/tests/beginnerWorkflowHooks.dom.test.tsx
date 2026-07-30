@@ -27,6 +27,9 @@ import { BeginnerProtrusionEditor } from '../src/components/BeginnerProtrusionEd
 
 afterEach(cleanup)
 
+const CANDIDATE_GENERATION_ID =
+  '33333333-3333-4333-8333-333333333333'
+
 const COPY = {
   ja: '確認',
   en: 'Confirm',
@@ -104,23 +107,52 @@ function candidateResponse(project: ProjectSnapshot) {
   }
 }
 
+function applicableCandidateResponse(project: ProjectSnapshot) {
+  return {
+    ...candidateResponse(project),
+    generation_status: 'ready',
+    generated_plans: [{
+      kind: 'diagonal_fold',
+      crease_pattern: {
+        vertices: [],
+        edges: [{
+          id: '44444444-4444-4444-8444-444444444444',
+          start: '55555555-5555-4555-8555-555555555555',
+          end: '66666666-6666-4666-8666-666666666666',
+          kind: 'valley',
+        }],
+      },
+      instruction_codes: [],
+      target_parts: [],
+      skeleton_segments: [],
+      target_asset: null,
+    }],
+    plan_assessments: [{
+      proof_scope: 'sufficient',
+      apply_allowed: true,
+    }],
+  }
+}
+
 function CandidateHarness({
   project,
   transport,
   subscribe,
   progressEnabled = true,
+  runNativeEdit = vi.fn(async () => true),
 }: {
   project: ProjectSnapshot
   transport: Record<string, unknown>
   subscribe: ReturnType<typeof vi.fn>
   progressEnabled?: boolean
+  runNativeEdit?: ReturnType<typeof vi.fn>
 }) {
   const current = useRef(project)
   current.current = project
   const workflow = useBeginnerCandidateWorkflow({
     snapshot: project,
     getCurrentSnapshot: () => current.current,
-    runNativeEdit: async () => true,
+    runNativeEdit,
     confirm: () => true,
     copy: {
       applyPlan: COPY,
@@ -128,7 +160,7 @@ function CandidateHarness({
       appendInstructions: COPY,
     },
     transport: transport as never,
-    createGenerationId: () => 'candidate-generation',
+    createGenerationId: () => CANDIDATE_GENERATION_ID,
     consensusProgressEnabled: progressEnabled,
     subscribeConsensusProgress: subscribe,
   })
@@ -137,12 +169,33 @@ function CandidateHarness({
       <button onClick={() => workflow.requestBeginnerCandidates(1)}>
         request candidate
       </button>
+      <button onClick={workflow.cancelConsensusAnalysis}>
+        cancel candidate
+      </button>
       <output data-testid="candidate-busy">
         {String(workflow.beginnerCandidateBusy)}
+      </output>
+      <output data-testid="candidate-apply-busy">
+        {String(workflow.beginnerCandidateApplyBusy)}
       </output>
       <output data-testid="candidate-result">
         {workflow.beginnerCandidates ? 'ready' : 'empty'}
       </output>
+      <output data-testid="candidate-status">
+        {workflow.beginnerCandidateRequestStatus}
+      </output>
+      {workflow.beginnerCandidates?.generated_plans[0] && (
+        <button
+          disabled={workflow.beginnerCandidateApplyBusy}
+          onClick={() => workflow.confirmAndApplyBeginnerPlan(
+            workflow.beginnerCandidates!.generated_plans[0]!.kind,
+            workflow.beginnerCandidates!
+              .generated_plans[0]!.crease_pattern.edges[0]!.id,
+          )}
+        >
+          apply candidate
+        </button>
+      )}
     </>
   )
 }
@@ -452,7 +505,16 @@ describe('beginner workflow hook race boundaries', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'request candidate' }))
+    expect(transport.evaluate).toHaveBeenCalledWith(
+      first.project_id,
+      first.revision,
+      first.project_instance_id,
+      1,
+      CANDIDATE_GENERATION_ID,
+      first.beginner_design_profile,
+    )
     expect(screen.getByTestId('candidate-busy').textContent).toBe('true')
+    expect(screen.getByTestId('candidate-status').textContent).toBe('running')
     view.rerender(
       <CandidateHarness
         project={{ ...first }}
@@ -466,10 +528,13 @@ describe('beginner workflow hook race boundaries', () => {
       return pending.promise
     })
     expect(screen.getByTestId('candidate-result').textContent).toBe('ready')
+    expect(screen.getByTestId('candidate-status').textContent).toBe('empty')
 
     const nextPending = deferred<ReturnType<typeof candidateResponse>>()
     transport.evaluate.mockImplementationOnce(() => nextPending.promise)
     fireEvent.click(screen.getByRole('button', { name: 'request candidate' }))
+    expect(screen.getByTestId('candidate-result').textContent).toBe('empty')
+    expect(screen.getByTestId('candidate-status').textContent).toBe('running')
     view.rerender(
       <CandidateHarness
         project={snapshot(2)}
@@ -478,14 +543,139 @@ describe('beginner workflow hook race boundaries', () => {
       />,
     )
     await waitFor(() => expect(cancelConsensus).toHaveBeenCalledWith(
-      'candidate-generation',
+      CANDIDATE_GENERATION_ID,
     ))
     expect(screen.getByTestId('candidate-result').textContent).toBe('empty')
+    expect(screen.getByTestId('candidate-status').textContent).toBe('idle')
     await act(() => {
       nextPending.resolve(candidateResponse(first))
       return nextPending.promise
     })
     expect(screen.getByTestId('candidate-result').textContent).toBe('empty')
+  })
+
+  it('discards prior authority on cancellation and reports evaluation failure', async () => {
+    const project = snapshot()
+    const pending = deferred<ReturnType<typeof candidateResponse>>()
+    const cancelConsensus = vi.fn(async () => undefined)
+    const transport = {
+      evaluate: vi.fn(() => pending.promise),
+      cancelConsensus,
+    }
+    const subscribe = vi.fn(async () => vi.fn())
+    const view = render(
+      <CandidateHarness
+        project={project}
+        transport={transport}
+        subscribe={subscribe}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'request candidate' }))
+    fireEvent.click(screen.getByRole('button', { name: 'cancel candidate' }))
+    expect(screen.getByTestId('candidate-result').textContent).toBe('empty')
+    expect(screen.getByTestId('candidate-status').textContent)
+      .toBe('cancelled')
+    expect(cancelConsensus).toHaveBeenCalledWith(
+      CANDIDATE_GENERATION_ID,
+    )
+
+    view.rerender(
+      <CandidateHarness
+        project={project}
+        transport={{
+          evaluate: vi.fn(async () => {
+            throw new Error('evaluation failed')
+          }),
+          cancelConsensus,
+        }}
+        subscribe={subscribe}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'request candidate' }))
+    await waitFor(() => expect(
+      screen.getByTestId('candidate-status').textContent,
+    ).toBe('failed'))
+    expect(screen.getByTestId('candidate-result').textContent).toBe('empty')
+
+    view.rerender(
+      <CandidateHarness
+        project={project}
+        transport={{
+          evaluate: vi.fn(async () => candidateResponse(project)),
+          cancelConsensus,
+        }}
+        subscribe={subscribe}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'request candidate' }))
+    await waitFor(() => expect(
+      screen.getByTestId('candidate-status').textContent,
+    ).toBe('empty'))
+  })
+
+  it('single-consumes candidate apply authority across rapid attempts', async () => {
+    const project = snapshot()
+    const applied = deferred<boolean>()
+    const runNativeEdit = vi.fn(() => applied.promise)
+    const transport = {
+      evaluate: vi.fn(async () => applicableCandidateResponse(project)),
+      cancelConsensus: vi.fn(async () => undefined),
+    }
+    const view = render(
+      <CandidateHarness
+        project={project}
+        transport={transport}
+        subscribe={vi.fn(async () => vi.fn())}
+        runNativeEdit={runNativeEdit}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'request candidate' }))
+    const applyButton = await screen.findByRole('button', {
+      name: 'apply candidate',
+    })
+    fireEvent.click(applyButton)
+    fireEvent.click(applyButton)
+
+    expect(runNativeEdit).toHaveBeenCalledOnce()
+    expect(screen.getByTestId('candidate-apply-busy').textContent).toBe('true')
+    await act(() => {
+      applied.resolve(true)
+      return applied.promise
+    })
+    await waitFor(() => expect(
+      screen.getByTestId('candidate-apply-busy').textContent,
+    ).toBe('false'))
+    expect(screen.queryByRole('button', { name: 'apply candidate' })).toBeNull()
+    expect(screen.getByTestId('candidate-status').textContent).toBe('idle')
+    view.unmount()
+  })
+
+  it('cancels candidate authority and ignores a late response on unmount', async () => {
+    const project = snapshot()
+    const pending = deferred<ReturnType<typeof candidateResponse>>()
+    const cancelConsensus = vi.fn(async () => undefined)
+    const view = render(
+      <CandidateHarness
+        project={project}
+        transport={{
+          evaluate: vi.fn(() => pending.promise),
+          cancelConsensus,
+        }}
+        subscribe={vi.fn(async () => vi.fn())}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'request candidate' }))
+    view.unmount()
+    expect(cancelConsensus).toHaveBeenCalledWith(
+      CANDIDATE_GENERATION_ID,
+    )
+    await act(() => {
+      pending.resolve(candidateResponse(project))
+      return pending.promise
+    })
   })
 
   it('ignores stale recognition and reference responses after project ABA changes', async () => {

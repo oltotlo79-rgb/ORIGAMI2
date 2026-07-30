@@ -4,6 +4,7 @@ import {
   applyBeginnerOutlineCandidate,
   applyBeginnerPartAssignments,
   BeginnerRecognitionError,
+  MAX_BEGINNER_PART_ASSIGNMENTS_V1,
   recognizeBeginnerOutlineCandidates,
   recognizeBeginnerPartSuggestions,
   recognizeBeginnerSilhouette,
@@ -15,6 +16,7 @@ import {
   type ProjectSnapshot,
 } from './coreClient.ts'
 import type { LocalizedText } from './i18n.ts'
+import { resolveBeginnerProtrusionKindsV1 } from './beginnerProtrusionKinds.ts'
 import {
   beginnerProjectBinding,
   matchesBeginnerProjectBinding,
@@ -27,6 +29,8 @@ type Constraints = BeginnerDesignProfileV1['generation_constraints']
 type PartKind = Constraints['target_parts'][number]['kind']
 type RecognitionMode = 'marker' | 'silhouette'
 type RecognitionFailure = BeginnerRecognitionError['reason']
+
+export { MAX_BEGINNER_PART_ASSIGNMENTS_V1 }
 
 export type BeginnerPartAssignment = {
   candidate_id: number
@@ -76,6 +80,7 @@ export function useBeginnerRecognitionWorkflow(input: Readonly<{
     | 'setBeginnerBodyOutline'
     | 'setBeginnerBodyOutlineMode'
     | 'setBeginnerProtrusions'
+    | 'setBeginnerProtrusionKinds'
   >
   onMissingReference: () => void
   onRecognitionReady: (mode: RecognitionMode) => void
@@ -416,23 +421,26 @@ export function useBeginnerRecognitionWorkflow(input: Readonly<{
         && !input.confirm(input.copy.overrideLowConfidence)
       )
     ) return
-    if (proposal.target_parts.length > 0) {
-      const counts = new Map(
-        proposal.target_parts.map((part) => [part.kind, part.count]),
-      )
-      form.querySelectorAll<HTMLInputElement>(
-        'input[name^="target_part_"]',
-      ).forEach((field) => {
-        const kind = field.name.slice('target_part_'.length) as PartKind
-        field.value = String(counts.get(kind) ?? 0)
-      })
-      input.editor.setBeginnerPartTotal(
-        proposal.target_parts.reduce(
-          (sum, part) => sum + part.count,
-          0,
-        ),
-      )
-    }
+    const counts = new Map(
+      proposal.target_parts.map((part) => [part.kind, part.count]),
+    )
+    form.querySelectorAll<HTMLInputElement>(
+      'input[name^="target_part_"]',
+    ).forEach((field) => {
+      const kind = field.name.slice('target_part_'.length) as PartKind
+      const value = String(counts.get(kind) ?? 0)
+      field.value = value
+      // These fields are intentionally uncontrolled. Keep their reset/default
+      // value aligned so an unrelated recognition-state render cannot restore
+      // the project snapshot values before the copied proposal is submitted.
+      field.defaultValue = value
+    })
+    input.editor.setBeginnerPartTotal(
+      proposal.target_parts.reduce(
+        (sum, part) => sum + part.count,
+        0,
+      ),
+    )
     if (
       proposal.skeleton_quality?.distance_metric
         === 'aabb_squared_distance_v1'
@@ -461,23 +469,47 @@ export function useBeginnerRecognitionWorkflow(input: Readonly<{
           : 'symmetric',
       )
     }
-    if (proposal.protrusions) {
-      input.editor.setBeginnerProtrusions(
-        proposal.protrusions.filter(
-          (target) => acceptedRecognitionProtrusionIds.has(target.id),
-        ).map((target) => ({
-          ...target,
-          ...(target.local_outline_tenths_mm
-            ? {
-                local_outline_tenths_mm:
-                  target.local_outline_tenths_mm.map(
-                    (point) => [...point] as [number, number],
-                  ),
-              }
-            : {}),
-        })),
-      )
-    }
+    const proposalProtrusions = proposal.protrusions ?? []
+    const categoryField = form.elements.namedItem('target_category')
+    const categoryValue = categoryField instanceof HTMLSelectElement
+      || categoryField instanceof HTMLInputElement
+      ? categoryField.value
+      : ''
+    const proposalTargetCategory =
+      ['animal', 'insect', 'custom_object'].includes(categoryValue)
+        ? categoryValue as Constraints['target_category']
+        : null
+    const proposalKinds = resolveBeginnerProtrusionKindsV1(
+      proposal.target_parts,
+      proposalProtrusions,
+      {
+        targetCategory: proposalTargetCategory,
+        allowOrderedGeneric: true,
+      },
+    )
+    const accepted = proposalProtrusions.flatMap((target, index) => (
+      acceptedRecognitionProtrusionIds.has(target.id)
+        ? [{ target, kind: proposalKinds?.[index] }]
+        : []
+    ))
+    input.editor.setBeginnerProtrusions(
+      accepted.map(({ target }) => ({
+        ...target,
+        ...(target.local_outline_tenths_mm
+          ? {
+              local_outline_tenths_mm:
+                target.local_outline_tenths_mm.map(
+                  (point) => [...point] as [number, number],
+                ),
+            }
+          : {}),
+      })),
+    )
+    input.editor.setBeginnerProtrusionKinds(
+      proposalKinds && accepted.every(({ kind }) => kind !== undefined)
+        ? accepted.map(({ kind }) => kind!)
+        : accepted.map(() => null),
+    )
     input.onProposalCopied()
   }
 

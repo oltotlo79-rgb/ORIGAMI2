@@ -11,11 +11,27 @@ import {
 } from '../src/lib/i18n.ts'
 
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
+const generatedPlanContract = readFileSync(
+  new URL('../src/lib/beginnerGeneratedPlanContract.ts', import.meta.url),
+  'utf8',
+)
+const candidateResults = readFileSync(
+  new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url),
+  'utf8',
+)
+const generatedInstructionList = readFileSync(
+  new URL(
+    '../src/components/BeginnerGeneratedInstructionList.tsx',
+    import.meta.url,
+  ),
+  'utf8',
+)
 const app = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/BeginnerCandidateControls.tsx', import.meta.url), 'utf8'),
-  readFileSync(new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url), 'utf8'),
+  candidateResults,
+  generatedInstructionList,
   readFileSync(new URL('../src/components/BeginnerRecognitionPanel.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/BeginnerDesignEditorSection.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/BeginnerDesignSources.tsx', import.meta.url), 'utf8'),
@@ -45,14 +61,20 @@ test('AUT-106 candidate reads bind instance, project, and revision without mutat
   assert.match(native, /control\.checkpoint\(\)\?/u)
   assert.match(native, /beginner_candidate_snapshot_is_current_v1\(&current, &snapshot\)\?/u)
   assert.match(client, /invoke<unknown>\('evaluate_beginner_candidates'/)
-  assert.match(client, /response\.candidates\.length > 3/)
+  assert.match(
+    client,
+    /snapshotCoreDataArray\(response\?\.candidates, 3\)/u,
+  )
 })
 
 test('candidate admission requires ordered bounded explainable scores', () => {
   assert.match(client, /record\.rank !== index \+ 1/)
   assert.match(client, /Number\(score\) > 100/)
   assert.match(client, /record\.target_approximation_score/)
-  assert.match(client, /admitted\[index - 1\]\.total_score < candidate\.total_score/)
+  assert.match(
+    client,
+    /previous!\.total_score < candidate\.total_score/u,
+  )
   assert.match(app, /candidate\.shape_score/)
   assert.match(app, /candidate\.target_approximation_score/)
   assert.match(app, /Target-shape approximation/)
@@ -69,21 +91,52 @@ test('asymmetric fish plans require four ordered semantic ray bindings end to en
   assert.match(app, /Bind the head, tail, and left\/right fins to the certified four-ray base\./)
 })
 
+test('asymmetric insect UI preserves ten semantic bindings independently of physical count', () => {
+  assert.match(
+    client,
+    /'head', 'tail', 'wing_left', 'wing_right', 'leg_front_left',\s*'leg_front_right', 'leg_middle_left', 'leg_middle_right',\s*'leg_rear_left', 'leg_rear_right'/u,
+  )
+  assert.match(client, /semanticBindings\.length !== semanticRoles\?\.length/u)
+  assert.match(app, /10個の意味ランドマークを証明済み4放射へ結合します。/u)
+  assert.match(
+    app,
+    /Bind ten ordered insect landmarks to the certified four-ray base\./u,
+  )
+})
+
 test('candidate UI is bilingual, accessible, single-flight, and rejects stale ABA results', () => {
   assert.match(app, /設計候補の比較/)
   assert.match(app, /Compare design candidates/)
   assert.match(app, /aria-describedby="beginner-candidate-description"/)
-  assert.match(app, /if \(busyRef\.current\) return/)
+  assert.match(
+    app,
+    /if \(busyRef\.current \|\| candidateApplyBusyRef\.current\) return/u,
+  )
   assert.doesNotMatch(app, /input\.getCurrentSnapshot\(\) !== current/)
   assert.match(app, /matchesBeginnerProjectBinding\(\s*binding,\s*input\.getCurrentSnapshot\(\)/u)
 })
 
-test('manual protrusion profiles keep semantic bindings within the target-part record bound', () => {
+test('manual protrusion profiles retain compact unique semantic target records', () => {
   assert.match(
     app,
-    /beginnerProtrusionKinds\.length === beginnerProtrusions\.length[\s\S]*oneSemanticPartPerProtrusion\.length <= 8/u,
+    /const countsByKind = new Map<TargetPart\['kind'\], number>\(\)/u,
   )
-  assert.match(app, /\|\| targetParts\.length > 8/u)
+  assert.match(
+    app,
+    /const aggregate = \(countsByKind\.get\(kind\) \?\? 0\) \+ count/u,
+  )
+  assert.match(
+    app,
+    /const compactKindOrder = beginnerProtrusions\.length === 0[\s\S]*compactKindOrder\.flatMap/u,
+  )
+  assert.match(
+    app,
+    /if \(targetParts === null\) return/u,
+  )
+  assert.match(
+    app,
+    /\|\| !beginnerTargetPartRecordCountIsAdmissibleV1\(targetParts\)/u,
+  )
 })
 
 test('AUT-107 fixes the initial bulge and elasticity policy in native, IPC, and UI', () => {
@@ -98,19 +151,43 @@ test('AUT-107 fixes the initial bulge and elasticity policy in native, IPC, and 
 
 test('AUT-101 exposes bounded generated crease patterns and instructions as read-only previews', () => {
   assert.match(native, /generate_beginner_plans_v1/)
-  assert.match(client, /response\.generated_plans\.length > 3/)
-  assert.match(client, /record\.kind === 'composite_horn_tail_ear_base' \? 7/u)
-  assert.match(client, /record\.kind === 'composite_horn_tail_ear_base' \? 6/u)
-  assert.match(client, /record\.kind === 'composite_complete_insect_base' \? 21/u)
-  assert.match(client, /record\.kind === 'composite_complete_insect_base' \? 20/u)
-  assert.match(client, /record\.kind === 'composite_complete_animal_base' \? 11/u)
-  assert.match(client, /record\.kind === 'composite_complete_animal_base' \? 10/u)
-  assert.match(client, /record\.kind === 'composite_complete_winged_animal_base' \? 15/u)
-  assert.match(client, /record\.kind === 'composite_complete_winged_animal_base' \? 14/u)
+  assert.match(
+    client,
+    /snapshotCoreDataArray\(\s*response\?\.generated_plans,\s*3,\s*\)/u,
+  )
+  assert.match(
+    generatedPlanContract,
+    /MAX_BEGINNER_GENERIC_PLAN_VERTICES_V1 = 183/u,
+  )
+  assert.match(
+    generatedPlanContract,
+    /MAX_BEGINNER_GENERIC_PLAN_EDGES_V1 = 181/u,
+  )
+  assert.match(client, /beginnerGeneratedPlanSizeIsAdmissibleV1/u)
+  assert.match(client, /beginnerGeneratedPlanInstructionsAreCanonicalV1/u)
+  assert.match(
+    client,
+    /from '\.\/beginnerGeneratedPlanContract\.ts'/u,
+  )
+  assert.match(client, /instructionContext/u)
   assert.match(client, /vertexIds\.has\(edge\.start\)/)
   assert.match(client, /new Set\(admittedEdges\.map\(\(edge\) => edge\.id\)\)/)
   assert.match(app, /Candidate crease-pattern preview/)
   assert.match(app, /Candidate folding instructions/)
+  assert.match(app, /BeginnerGeneratedInstructionList/u)
+  assert.match(app, /Unknown generated instruction: \{code\}/u)
+  assert.match(
+    candidateResults,
+    /export \{ BeginnerGeneratedInstructionList \} from '\.\/BeginnerGeneratedInstructionList'/u,
+  )
+  assert.doesNotMatch(
+    candidateResults,
+    /bounded_tree_river_axial_v1/u,
+  )
+  assert.match(
+    generatedInstructionList,
+    /bounded_tree_branch_topology_v1:nodes=/u,
+  )
   assert.match(app, /read-only candidate/)
   assert.match(app, /plan\.crease_pattern\.edges\.map/)
   assert.match(app, /cancelBeginnerCandidates/)
@@ -131,10 +208,10 @@ test('AUT-101 admits only explicit symmetric animal and insect templates', () =>
   assert.match(app, /bilateral two-part protrusion target/)
   assert.match(app, /Create the symmetric four-leg base/)
   assert.match(app, /Create the bilateral wing base/)
-  assert.match(app, /翅・触角・六脚の完全複合昆虫ベース/)
-  assert.match(app, /Complete composite insect base/)
-  assert.match(app, /角・尾・耳・四脚の完全複合動物ベース/)
-  assert.match(app, /Complete composite animal base/)
+  assert.match(app, /翼、触角、六脚を持つ完全な複合昆虫ベースを作ります。/)
+  assert.match(app, /Create the complete composite insect base\./)
+  assert.match(app, /角、尾、耳、四脚を持つ完全な複合動物ベースを作ります。/)
+  assert.match(app, /Create the complete composite animal base\./)
   assert.match(
     completeAnimalBindingList,
     /COMPLETE_ANIMAL_BINDING_LIST_TEXT as TEXT/u,
@@ -187,7 +264,7 @@ test('AUT-101 admits only explicit symmetric animal and insect templates', () =>
 test('AUT-106 presents one recommendation first and adds bounded candidates on demand', () => {
   assert.match(native, /requested_candidate_count: u8/)
   assert.match(native, /candidates\.truncate\(usize::from\(requested_candidate_count\)\)/)
-  assert.match(client, /response\.candidates\.length !== requestedCandidateCount/)
+  assert.match(client, /candidateInputs\.length !== requestedCandidateCount/)
   assert.match(client, /requestedCandidateCount > 3/)
   assert.match(app, /requestBeginnerCandidates\(1\)/)
   assert.match(app, /requested_candidate_count \+ 1/)
@@ -206,14 +283,23 @@ test('AUT-103 exposes the exact weighted contribution behind each candidate comp
 test('generated candidates are geometry-gated with explicit local proof scope', () => {
   assert.match(native, /fn assess_beginner_generated_plan/)
   assert.match(native, /validate_crease_pattern\(&candidate_pattern\)/)
-  assert.match(native, /analyze_local_flat_foldability\(paper, &candidate_pattern\)/)
+  assert.match(
+    native,
+    /analyze_local_flat_foldability\(&candidate_paper, &candidate_pattern\)/u,
+  )
   assert.match(native, /if !assessment\.apply_allowed/)
-  assert.match(client, /response\.plan_assessments\.length !== response\.generated_plans\.length/)
+  assert.match(
+    client,
+    /planAssessmentInputs\.length !== generatedPlanInputs\.length/u,
+  )
   assert.match(client, /record\.expected_candidate_edge_id !== plan\.crease_pattern\.edges\[0\]/)
   assert.match(client, /'necessary', 'sufficient', 'indeterminate'/)
   assert.match(app, /候補の検証結果/)
   assert.match(app, /Warning: applying it does not guarantee flat foldability/)
-  assert.match(app, /!assessment\.apply_allowed/)
+  assert.match(
+    app,
+    /beginnerGeneratedPlanAssessmentAllowsApplyV1\(\s*assessment/u,
+  )
 })
 
 test('generated candidates receive bounded global proof outcomes before apply', () => {
@@ -232,7 +318,10 @@ test('expired beginner certification deadlines remain wire-valid and block apply
   assert.match(native, /reason: "deadline_exceeded"/)
   assert.match(native, /apply_allowed: false/)
   assert.match(client, /'deadline_exceeded'/)
-  assert.match(client, /'multi_reference_disagreement', 'deadline_exceeded'/)
+  assert.match(
+    client,
+    /deadline_exceeded: \['indeterminate', false\]/u,
+  )
   assert.match(app, /assessment\?\.reason === 'global_timeout' \|\| assessment\?\.reason === 'deadline_exceeded'/)
 })
 
@@ -252,7 +341,11 @@ test('disconnected GLB comparison is component-aware bounded and read-only', () 
   assert.match(native, /work > 64/u)
   assert.match(native, /extent_weight: 45,\s*branch_weight: 35,\s*bridge_weight: 20/u)
   assert.match(native, /component_aware_quantized_shape_v1/u)
-  assert.match(client, /componentComparison\.work_units\) > 64/u)
+  assert.match(
+    client,
+    /Number\(componentComparison\.work_units\)\s*!== expectedComponentWork/u,
+  )
+  assert.match(client, /expectedComponentWork > 64/u)
   assert.match(client, /componentComparison\.extent_weight !== 45/u)
   assert.match(app, /Component-aware shape score breakdown/u)
   assert.match(app, /bounded work/u)
@@ -265,7 +358,14 @@ test('image and GLB references fuse only under bounded dual hash authority', () 
   assert.match(native, /reference_sha256: sha2::Sha256::digest/u)
   assert.match(native, /multi_reference_disagreement/u)
   assert.match(client, /fusion\.revision !== expectedRevision/u)
-  assert.match(client, /isBoundedIntegerTuple\(fusion\.image_sha256, 32, 255\)/u)
+  assert.match(
+    client,
+    /snapshotSha256Bytes\(fusion\.image_sha256\)/u,
+  )
+  assert.match(
+    client,
+    /snapshotSha256Bytes\(fusion\.reference_sha256\)/u,
+  )
   assert.match(app, /画像とGLBが不一致のため候補適用をブロックしました/u)
   assert.match(app, /Image and GLB disagree; candidate apply is blocked/u)
 })
@@ -322,7 +422,8 @@ test('AUT-101 binds strict comparison selection and persisted path proof to exac
   assert.match(app, /Revalidate and apply selected candidate/u)
   assert.match(native, /fold_path_certificate_sha256: Some/u)
   assert.match(native, /topology_witness\.topology_authority_hash/u)
-  assert.match(native, /selected_instruction_codes/u)
+  assert.match(native, /struct BeginnerGridCandidateAuthorityV1/u)
+  assert.match(native, /expected_candidate_edge_id: EdgeId/u)
   assert.match(native, /grid_candidate_identity_stale/u)
   assert.match(native, /grid_candidate_topology_stale/u)
 })

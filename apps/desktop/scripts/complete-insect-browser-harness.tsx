@@ -5,14 +5,24 @@ import { BeginnerGridProgressStatus } from '../src/components/BeginnerGridProgre
 import { finishBeginnerGridCancellation, runBeginnerGridApplyWorkflow } from '../src/lib/beginnerGridWorkflow.ts'
 import '../src/App.css'
 
-const target = (id: number, direction: [number, number, number], y: number) => ({
+const target = (
+  id: number,
+  direction: [number, number, number],
+  y: number,
+  priority: number,
+) => ({
   id, count: 2, length_tenths_mm: id * 90, thickness_tenths_mm: id * 9,
   position_tenths_mm: [0, y, 0] as [number, number, number], direction_milli: direction,
   symmetry: 'bilateral' as const, curvature_degrees: 0, joint: 'fixed' as const,
-  motion_degrees: [0, 0] as [number, number], side: 'either' as const, priority: 50,
+  motion_degrees: [0, 0] as [number, number], side: 'either' as const, priority,
 })
-const bindings = [target(1, [1000, 0, 0], 0), target(2, [0, -1000, 0], 0),
-  target(3, [1000, 0, 0], -30), target(4, [1000, 0, 0], 0), target(5, [1000, 0, 0], 30)]
+const bindings = [
+  target(1, [1000, 0, 0], 0, 60),
+  target(2, [0, -1000, 0], 0, 60),
+  target(3, [1000, 0, 0], -30, 50),
+  target(4, [1000, 0, 0], 0, 50),
+  target(5, [1000, 0, 0], 30, 50),
+]
 
 function Harness() {
   const [recognized, setRecognized] = useState(false)
@@ -23,7 +33,7 @@ function Harness() {
   const evaluateRef = useRef<HTMLButtonElement>(null)
   const focus = () => requestAnimationFrame(() => evaluateRef.current?.focus())
   const recognize = (source: string) => {
-    setRecognized(true); setPreview(false); setApplied(false)
+    setRecognized(true); setPreview(false); setBusy(false); setApplied(false)
     setStatus(`${source} recognized with five canonical pair bindings`)
   }
   return <main>
@@ -38,7 +48,7 @@ function Harness() {
     <button ref={evaluateRef} onClick={() => {
       if (recognized) { setBusy(true); setPreview(true); setStatus('Complete insect grid ready') }
     }}>Evaluate complete insect grid</button>
-    <BeginnerGridProgressStatus locale="en" busy={busy} enumerated={27} checked={3}
+    <BeginnerGridProgressStatus locale="en" busy={busy} enumerated={27} checked={3} refined={18}
       onCancel={() => {
         setBusy(false); setStatus('Complete insect grid canceled')
         finishBeginnerGridCancellation(() => setPreview(false), focus)

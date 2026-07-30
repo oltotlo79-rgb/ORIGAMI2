@@ -8,7 +8,7 @@ import { APP_TEXT as TEXT } from '../src/lib/appText.ts'
 import { formatLocalizedText } from '../src/lib/i18n.ts'
 
 test('app text catalog is closed and deeply frozen', () => {
-  assert.equal(Object.keys(TEXT).length, 863)
+  assert.equal(Object.keys(TEXT).length, 891)
   assert.equal(Object.isFrozen(TEXT), true)
 
   for (const entry of Object.values(TEXT)) {
@@ -45,6 +45,7 @@ test('App and its extracted helpers reference the catalog for every fixed locali
     new URL('../src/lib/importWorkflowSupport.ts', import.meta.url),
     new URL('../src/components/BeginnerCandidateControls.tsx', import.meta.url),
     new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url),
+    new URL('../src/components/BeginnerGeneratedInstructionList.tsx', import.meta.url),
     new URL('../src/components/BeginnerRecognitionPanel.tsx', import.meta.url),
     new URL('../src/components/PaperInspectorSection.tsx', import.meta.url),
     new URL('../src/components/HistoryLimitInspectorSection.tsx', import.meta.url),
@@ -121,6 +122,6 @@ test('App and its extracted helpers reference the catalog for every fixed locali
       ),
       0,
     ),
-    939,
+    968,
   )
 })

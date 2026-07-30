@@ -9,7 +9,13 @@ const app = [
   readFileSync(new URL('../src/components/BeginnerCandidateControls.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/useBeginnerParameterGridWorkflow.ts', import.meta.url), 'utf8'),
 ].join('\n')
-const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
+const client = [
+  readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8'),
+  readFileSync(
+    new URL('../src/lib/beginnerGridResponse.ts', import.meta.url),
+    'utf8',
+  ),
+].join('\n')
 const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
 const nativeTests = readDesktopRustUnitTestSources()
 const recognition = readFileSync(new URL('../src-tauri/src/beginner_recognition.rs', import.meta.url), 'utf8')
@@ -23,7 +29,7 @@ test('complete animal recognition reaches the bounded grid through one native co
   assert.match(app, /evaluateBeginnerParameterGrid/)
   assert.match(
     app,
-    /setBeginnerGridProgress\(\{\s*enumerated: 27,\s*globalChecked: 3,\s*refined: response\.refinement_iterations,\s*\}\)/u,
+    /setBeginnerGridProgress\(\{\s*enumerated: response\.evaluated_grid_points,\s*globalChecked: response\.global_checked_candidates,\s*refined: response\.refinement_iterations,\s*\}\)/u,
   )
 })
 
@@ -50,6 +56,48 @@ test('grid cancellation and stale replacement stay generation and snapshot scope
   assert.match(app, /generationRef\.current = null[\s\S]*setBeginnerGridBusy\(false\)/u)
   assert.match(app, /finishBeginnerGridCancellation/)
   assert.match(workflow, /clearPreview\(\)\s*restoreFocus\(\)/)
+})
+
+test('grid apply carries a registry incarnation token and fails closed on ABA', () => {
+  assert.match(
+    native,
+    /struct BeginnerGridEvaluationResponse \{[\s\S]*?request_generation_id: ProjectId,[\s\S]*?authority_token: ProjectId,/u,
+  )
+  assert.match(
+    client,
+    /'request_generation_id', 'authority_token', 'project_instance_id'/u,
+  )
+  assert.match(
+    client,
+    /!isCanonicalNonNilUuid\(response\.authority_token\)/u,
+  )
+  assert.match(
+    client,
+    /authorityToken: grid\.authority_token/u,
+  )
+  assert.match(
+    app,
+    /transport\.apply\([\s\S]*?grid,[\s\S]*?expectedProfile,[\s\S]*?candidate/u,
+  )
+  assert.match(
+    native,
+    /authority\.authority_token == authority_token/u,
+  )
+  assert.match(
+    native,
+    /work\.authority_token\.get\(\) == Some\(&authority_token\)/u,
+  )
+  assert.match(
+    native,
+    /!Arc::ptr_eq\(current, &completed_grid_work\)/u,
+  )
+})
+
+test('grid candidate point IDs remain unique before UI selection', () => {
+  assert.match(
+    client,
+    /new Set\(candidates\.map\(\(candidate\) => candidate\.point\.id\)\)\.size\s*!== candidates\.length/u,
+  )
 })
 
 test('confirmed apply retains preview on failure and restores focus only after success', () => {

@@ -9,6 +9,7 @@ const app = [
   readFileSync(new URL('../src/components/BeginnerCandidateControls.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/BeginnerReferenceAssetPanel.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/useBeginnerCandidateWorkflow.ts', import.meta.url), 'utf8'),
 ].join('\n')
 

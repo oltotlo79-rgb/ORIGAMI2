@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use ori_domain::{CreasePattern, GeometricConstraintDocumentV1};
+use ori_domain::{CreasePattern, GeometricConstraintDocumentV1, GeometricConstraintKindV1};
 use ori_numeric::deterministic_transcendental_model_supported_v1;
 
 use crate::{
@@ -37,13 +37,25 @@ fn preflight_permits_complete_deterministic_residual_evaluation_v1(
     )
 }
 
+fn requires_covered_transcendental_model_v1(constraints: &GeometricConstraintDocumentV1) -> bool {
+    constraints.constraints.iter().any(|record| {
+        !matches!(
+            record.constraint,
+            GeometricConstraintKindV1::Horizontal { .. }
+                | GeometricConstraintKindV1::Vertical { .. }
+        )
+    })
+}
+
 /// Revalidates one complete candidate for the constrained mutation boundary.
 ///
 /// The returned unit value is deliberately ephemeral. It cannot be serialized,
-/// retained, or promoted into proof authority. Unsupported targets, positive
-/// direct conflicts, resource/cancellation preflight failures, invalid
-/// resources, allocation failure, non-finite intermediates, and any residual
-/// above the fixed tolerance all fail closed. The narrow
+/// retained, or promoted into proof authority. Targets not covered by the
+/// frozen transcendental model fail closed for every family that uses that
+/// model; axis-only residuals remain target-independent. Positive direct
+/// conflicts, resource/cancellation preflight failures, invalid resources,
+/// allocation failure, non-finite intermediates, and any residual above the
+/// fixed tolerance all fail closed. The narrow
 /// `SolverRequiredConstraintKinds` preflight outcome proceeds only to the
 /// complete deterministic residual evaluation below; it is not accepted by
 /// itself.
@@ -63,7 +75,11 @@ fn verify_deterministic_geometric_constraint_mutation_admission_with_model_suppo
     constraints: &GeometricConstraintDocumentV1,
     deterministic_model_supported: bool,
 ) -> Result<(), ConstraintSolveErrorV1> {
-    if !deterministic_model_supported {
+    // Axis-alignment residuals are only one binary64 coordinate subtraction
+    // and do not call the frozen hypot/atan2/sin/cos kernel. Keep those bounded
+    // same-constraint solver replacements available on otherwise uncovered
+    // targets, while every family that reaches that kernel remains fail-closed.
+    if !deterministic_model_supported && requires_covered_transcendental_model_v1(constraints) {
         return Err(ConstraintSolveErrorV1::NonConvergent);
     }
 
@@ -432,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_model_support_fails_closed_before_admission() {
+    fn unsupported_model_support_admits_only_axis_residuals() {
         let (pattern, document) = horizontal_fixture(0.0);
         assert_eq!(
             verify_deterministic_geometric_constraint_mutation_admission_with_model_support_for_test_v1(
@@ -440,7 +456,38 @@ mod tests {
                 &document,
                 false,
             ),
-            Err(ConstraintSolveErrorV1::NonConvergent)
+            Ok(()),
+            "horizontal residuals do not depend on the covered transcendental target set",
+        );
+
+        let edge = pattern.edges[0].id;
+        let length_document = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::FixedLength {
+                    edge,
+                    length_mm: 1.0,
+                },
+            }],
+        };
+        assert_eq!(
+            verify_deterministic_geometric_constraint_mutation_admission_with_model_support_for_test_v1(
+                &pattern,
+                &length_document,
+                true,
+            ),
+            Ok(()),
+            "the fixed-length control fixture must otherwise be admissible",
+        );
+        assert_eq!(
+            verify_deterministic_geometric_constraint_mutation_admission_with_model_support_for_test_v1(
+                &pattern,
+                &length_document,
+                false,
+            ),
+            Err(ConstraintSolveErrorV1::NonConvergent),
+            "hypot-dependent residuals remain fail-closed on an uncovered target",
         );
     }
 

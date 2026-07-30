@@ -290,6 +290,10 @@ export type BoundedDirectMusV1 =
       max_constraints: typeof MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS
     }>
 
+export type GeometricConstraintSatisfactionEvidenceKindV1 =
+  | 'current_assignment'
+  | 'detached_constructed_assignment'
+
 export type GeometricConstraintPreflightResultV1 =
   | Readonly<{
       status: 'direct_conflict'
@@ -301,6 +305,7 @@ export type GeometricConstraintPreflightResultV1 =
       model_id: typeof GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
       transcendental_model_id:
         typeof DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+      evidence_kind: GeometricConstraintSatisfactionEvidenceKindV1
       constraint_count: number
       equation_count: number
       authorizes_project_mutation: false
@@ -876,6 +881,7 @@ function parsePreflightResult(
           'status',
           'model_id',
           'transcendental_model_id',
+          'evidence_kind',
           'constraint_count',
           'equation_count',
           'authorizes_project_mutation',
@@ -885,6 +891,7 @@ function parsePreflightResult(
           !== GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID
         || record.transcendental_model_id
           !== DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1
+        || !isSatisfactionEvidenceKind(record.evidence_kind)
         || typeof record.constraint_count !== 'number'
         || !Number.isSafeInteger(record.constraint_count)
         || record.constraint_count < 1
@@ -900,6 +907,7 @@ function parsePreflightResult(
         status: record.status,
         model_id: record.model_id,
         transcendental_model_id: record.transcendental_model_id,
+        evidence_kind: record.evidence_kind,
         constraint_count: record.constraint_count,
         equation_count: record.equation_count,
         authorizes_project_mutation: false as const,
@@ -1844,6 +1852,13 @@ function isUnknownReason(
     || value === 'deadline_reached'
     || value === 'solver_required_constraint_kinds'
     || value === 'invalid_document_or_geometry'
+}
+
+function isSatisfactionEvidenceKind(
+  value: unknown,
+): value is GeometricConstraintSatisfactionEvidenceKindV1 {
+  return value === 'current_assignment'
+    || value === 'detached_constructed_assignment'
 }
 
 function allDistinct(values: readonly string[]): boolean {

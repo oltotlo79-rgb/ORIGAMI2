@@ -452,6 +452,12 @@ pub fn write_project_archive_ori2_with_limits(
     project: &Ori2ProjectArchive,
     limits: Ori2Limits,
 ) -> Result<Vec<u8>, FormatError> {
+    if project.document.format_version != crate::CURRENT_FORMAT_VERSION {
+        return Err(FormatError::UnsupportedVersion {
+            found: project.document.format_version,
+            latest: crate::CURRENT_FORMAT_VERSION,
+        });
+    }
     if let Some(layer_evidence) = &project.layer_evidence {
         validate_layer_evidence_archive_v1(layer_evidence)
             .map_err(FormatError::InvalidLayerEvidence)?;
@@ -521,6 +527,15 @@ fn write_project_archive_parts(
     } else {
         None
     };
+    if !crate::beginner_generation_document_authority::
+        has_authoritative_beginner_generation_history_v1(editor_history, document)
+    {
+        crate::beginner_generation_document_authority::
+            require_current_beginner_generation_document_authority_v1(document)?;
+    } else {
+        crate::beginner_generation_document_authority::
+            reject_mismatched_beginner_generation_document_authority_v1(document)?;
+    }
     let layer_evidence_bytes = layer_evidence
         .map(write_layer_evidence_archive_v1)
         .transpose()
@@ -723,7 +738,7 @@ pub fn read_project_archive_ori2_with_limits(
         });
     }
 
-    let project = read_project_json(&project_bytes)?;
+    let mut project = read_project_json(&project_bytes)?;
     if manifest.project.format_version != project.format_version {
         return Err(FormatError::ManifestProjectVersionMismatch {
             manifest: manifest.project.format_version,
@@ -805,6 +820,17 @@ pub fn read_project_archive_ori2_with_limits(
         )?),
         None => None,
     };
+    if !crate::beginner_generation_document_authority::
+        has_authoritative_beginner_generation_history_v1(
+        editor_history.as_ref(),
+        &project,
+    ) {
+        crate::beginner_generation_document_authority::
+            admit_beginner_generation_document_authority_v1(&mut project)?;
+    } else {
+        crate::beginner_generation_document_authority::
+            reject_mismatched_beginner_generation_document_authority_v1(&project)?;
+    }
     let layer_evidence = match &manifest.layer_evidence {
         Some(descriptor) => Some(read_layer_evidence_entry(&mut archive, descriptor, limits)?),
         None => None,
@@ -913,12 +939,17 @@ fn validate_editor_history_for_document(
     document: &ProjectDocument,
     history: &EditorHistoryV1,
 ) -> Result<(), FormatError> {
-    ori_core::EditorState::with_document_parts_layers_and_history_v1(
+    ori_core::EditorState::with_all_document_parts_annotations_underlays_memo_profile_and_history_v1(
         document.crease_pattern.clone(),
         document.paper.clone(),
         document.instruction_timeline.clone(),
         document.geometric_constraints.clone(),
         document.layers.clone(),
+        document.element_metadata.clone(),
+        document.annotations.clone(),
+        document.underlays.clone(),
+        document.memo.clone(),
+        document.beginner_design_profile.clone(),
         history.clone(),
     )
     .map(|_| ())

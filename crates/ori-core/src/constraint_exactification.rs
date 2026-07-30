@@ -26,7 +26,12 @@ pub(crate) use pair_constructive::{
     construct_pair_constraint_exact_assignment_v1,
 };
 pub(crate) use singleton_constructive::MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1;
-pub use singleton_constructive::construct_single_constraint_exact_assignment_v1;
+pub use singleton_constructive::{
+    MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    construct_bounded_singleton_composition_exact_assignment_v1,
+    construct_four_constraint_exact_assignment_v1, construct_single_constraint_exact_assignment_v1,
+    construct_three_constraint_exact_assignment_v1, construct_two_constraint_exact_assignment_v1,
+};
 pub(crate) use unit_parallel_fixed_angle_constructive::{
     MAX_UNIT_PARALLEL_FIXED_ANGLE_RESIDUAL_ONLY_OVERLAY_VERTICES_V1,
     construct_unit_parallel_fixed_angle_residual_exact_deletion_assignment_v1,

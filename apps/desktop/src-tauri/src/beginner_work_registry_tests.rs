@@ -1,4 +1,79 @@
 #[test]
+fn beginner_grid_registration_sequence_fails_closed_before_wrap() {
+    let sequence = AtomicU64::new(u64::MAX - 1);
+
+    assert_eq!(
+        beginner_design_commands::take_beginner_grid_registration_sequence_v1(&sequence),
+        Ok(u64::MAX - 1)
+    );
+    assert_eq!(sequence.load(AtomicOrdering::Acquire), u64::MAX);
+    assert_eq!(
+        beginner_design_commands::take_beginner_grid_registration_sequence_v1(&sequence),
+        Err("grid_registration_sequence_exhausted".to_owned())
+    );
+    assert_eq!(
+        sequence.load(AtomicOrdering::Acquire),
+        u64::MAX,
+        "sequence exhaustion must not wrap to zero"
+    );
+
+    let previously_wrapped = AtomicU64::new(0);
+    assert_eq!(
+        beginner_design_commands::take_beginner_grid_registration_sequence_v1(&previously_wrapped,),
+        Err("grid_registration_sequence_exhausted".to_owned())
+    );
+    assert_eq!(previously_wrapped.load(AtomicOrdering::Acquire), 0);
+}
+
+#[test]
+fn beginner_generation_tombstone_capacity_seals_without_forgetting_ids() {
+    let first = ProjectId::new();
+    let second = ProjectId::new();
+    let third = ProjectId::new();
+    let mut tombstones = std::collections::HashSet::new();
+    let sealed = AtomicBool::new(false);
+
+    assert_eq!(
+        beginner_design_commands::reserve_generation_tombstone_v1(
+            &mut tombstones,
+            &sealed,
+            first,
+            1,
+            "bounded",
+        ),
+        Ok(())
+    );
+    assert!(tombstones.contains(&first));
+    assert_eq!(
+        beginner_design_commands::reserve_generation_tombstone_v1(
+            &mut tombstones,
+            &sealed,
+            second,
+            1,
+            "bounded",
+        ),
+        Err("bounded".to_owned())
+    );
+    assert!(sealed.load(Ordering::Acquire));
+    assert!(tombstones.contains(&first));
+    assert!(!tombstones.contains(&second));
+
+    tombstones.clear();
+    assert_eq!(
+        beginner_design_commands::reserve_generation_tombstone_v1(
+            &mut tombstones,
+            &sealed,
+            third,
+            1,
+            "bounded",
+        ),
+        Err("bounded".to_owned()),
+        "an exhausted process-lifetime ledger must never resume after forgetting entries"
+    );
+    assert!(tombstones.is_empty());
+}
+
+#[test]
 fn beginner_grid_registration_duplicate_preserves_exact_cancel_and_progress_owner() {
     let _serial = serial_beginner_grid_test();
     let generation = ProjectId::new();
@@ -65,6 +140,48 @@ fn beginner_grid_registration_duplicate_preserves_exact_cancel_and_progress_owne
             .terminal_state,
         "failed"
     );
+}
+
+#[test]
+fn reference_consensus_generation_id_remains_tombstoned_after_owner_drop() {
+    let _serial = serial_beginner_grid_test();
+    let generation = ProjectId::new();
+    let original_work = Arc::new(ReferenceConsensusWorkV1::default());
+
+    assert_eq!(
+        beginner_design_commands::run_registered_reference_consensus_work_v1(
+            generation,
+            &original_work,
+            || Ok(37_u8),
+        ),
+        Ok(37)
+    );
+    assert!(
+        !reference_consensus_work_v1()
+            .lock()
+            .unwrap()
+            .contains_key(&generation),
+        "completed consensus work is removed from the live registry"
+    );
+
+    let replacement_work = Arc::new(ReferenceConsensusWorkV1::default());
+    assert_eq!(
+        beginner_design_commands::register_reference_consensus_work_v1(
+            generation,
+            &replacement_work,
+        )
+        .err()
+        .as_deref(),
+        Some("reference_consensus_generation_reused"),
+        "a delayed cancel handle must never be rebound to replacement work"
+    );
+    assert!(!replacement_work.registration_active.load(Ordering::Acquire));
+    assert_eq!(replacement_work.terminal.load(Ordering::Acquire), 0);
+    assert_eq!(
+        cancel_reference_consensus(generation),
+        Err("reference_consensus_generation_not_running".to_owned())
+    );
+    assert!(!replacement_work.cancelled.load(Ordering::Acquire));
 }
 
 #[test]
@@ -196,12 +313,24 @@ fn beginner_grid_registry_rejects_work_aliases_dirty_reuse_and_live_cap_overflow
     );
 
     drop(registrations.pop());
-    registrations.push(
+    assert_eq!(
         beginner_design_commands::register_beginner_grid_work_v1(
             overflow_generation,
             &overflow_work,
         )
-        .expect("a released slot is reusable after inactive history reclamation"),
+        .err()
+        .as_deref(),
+        Some("grid_generation_reused"),
+        "even a capacity-rejected cancellation handle remains single use"
+    );
+    let released_generation = ProjectId::new();
+    let released_work = Arc::new(BeginnerGridWork::default());
+    registrations.push(
+        beginner_design_commands::register_beginner_grid_work_v1(
+            released_generation,
+            &released_work,
+        )
+        .expect("a released slot accepts a distinct generation"),
     );
 }
 
@@ -486,12 +615,24 @@ fn reference_consensus_registry_rejects_work_aliases_dirty_reuse_and_live_cap_ov
     );
 
     drop(registrations.pop());
-    registrations.push(
+    assert_eq!(
         beginner_design_commands::register_reference_consensus_work_v1(
             overflow_generation,
             &overflow_work,
         )
-        .expect("a released consensus slot is reusable"),
+        .err()
+        .as_deref(),
+        Some("reference_consensus_generation_reused"),
+        "even a capacity-rejected consensus cancellation handle remains single use"
+    );
+    let released_generation = ProjectId::new();
+    let released_work = Arc::new(ReferenceConsensusWorkV1::default());
+    registrations.push(
+        beginner_design_commands::register_reference_consensus_work_v1(
+            released_generation,
+            &released_work,
+        )
+        .expect("a released consensus slot accepts a distinct generation"),
     );
 }
 
@@ -838,7 +979,7 @@ fn beginner_grid_command_claims_generation_before_project_lock_wait() {
 }
 
 #[test]
-fn beginner_grid_registration_rejects_live_terminal_owner_until_drop() {
+fn beginner_grid_registration_retains_terminal_generation_id_until_bounded_eviction() {
     let _serial = serial_beginner_grid_test();
     let generation = ProjectId::new();
     let work = Arc::new(BeginnerGridWork::default());
@@ -875,11 +1016,14 @@ fn beginner_grid_registration_rejects_live_terminal_owner_until_drop() {
         "completed"
     );
     let replacement = Arc::new(BeginnerGridWork::default());
-    let replacement_registration =
+    assert_eq!(
         beginner_design_commands::register_beginner_grid_work_v1(generation, &replacement)
-            .expect("history becomes reusable only after exact owner drop");
-    assert!(replacement.registration_active.load(Ordering::Acquire));
-    drop(replacement_registration);
+            .err()
+            .as_deref(),
+        Some("grid_generation_reused"),
+        "terminal history reserves the exact generation ID until bounded eviction"
+    );
+    assert!(!replacement.registration_active.load(Ordering::Acquire));
 }
 
 #[test]
@@ -940,13 +1084,13 @@ fn beginner_grid_terminal_transitions_linearize_cancel_complete_failure_and_drop
         Ok(23)
     );
     cancel_beginner_parameter_grid(complete_before_cancel)
-        .expect("late cancellation is an idempotent no-op");
+        .expect("late cancellation revokes an unconsumed completed generation");
     assert_eq!(
         complete_before_cancel_work.terminal.load(Ordering::Acquire),
-        1
+        2
     );
     assert!(
-        !complete_before_cancel_work
+        complete_before_cancel_work
             .cancelled
             .load(Ordering::Acquire)
     );
@@ -961,8 +1105,10 @@ fn beginner_grid_terminal_transitions_linearize_cancel_complete_failure_and_drop
         ),
         Err("simulated_grid_failure".to_owned())
     );
-    cancel_beginner_parameter_grid(failure_before_cancel)
-        .expect("late cancellation leaves failure terminal");
+    assert_eq!(
+        cancel_beginner_parameter_grid(failure_before_cancel),
+        Err("grid_generation_not_running".to_owned())
+    );
     assert_eq!(
         failure_before_cancel_work.terminal.load(Ordering::Acquire),
         3
@@ -1042,17 +1188,20 @@ fn beginner_grid_cancel_flag_precedes_terminal_and_finish_race_rolls_back_losers
         let terminal = work.terminal.load(Ordering::Acquire);
         let cancelled = work.cancelled.load(Ordering::Acquire);
         assert_eq!(cancel_result, Ok(()));
-        match terminal {
-            1 => {
-                assert_eq!(worker_result, Ok(43));
-                assert!(!cancelled);
+        assert_eq!(terminal, 2);
+        assert!(cancelled);
+        match worker_result {
+            Ok(43) => {
+                assert!(
+                    observed == (1, false) || observed == (2, true),
+                    "completion may publish immediately before the completed generation is revoked"
+                );
             }
-            2 => {
-                assert_eq!(worker_result, Err("grid_evaluation_cancelled".to_owned()));
-                assert!(cancelled);
+            Err(error) => {
+                assert_eq!(error, "grid_evaluation_cancelled");
                 assert_eq!(observed, (2, true));
             }
-            other => panic!("unexpected grid race terminal {other}"),
+            other => panic!("unexpected grid race result {other:?}"),
         }
     }
 }
@@ -1069,15 +1218,35 @@ fn beginner_grid_registry_recovers_poison_across_registration_progress_cancel_an
         .insert(generation, Arc::clone(&orphaned_work));
     poison_mutex_for_test(registry);
 
-    let work = Arc::new(BeginnerGridWork::default());
-    let registration = beginner_design_commands::register_beginner_grid_work_v1(generation, &work)
-        .expect("registration recovers poison and reclaims an inactive orphan");
+    let duplicate = Arc::new(BeginnerGridWork::default());
+    assert_eq!(
+        beginner_design_commands::register_beginner_grid_work_v1(generation, &duplicate)
+            .err()
+            .as_deref(),
+        Some("grid_generation_reused"),
+        "poison recovery must not silently reclaim an inactive running ID and create an ABA alias"
+    );
     assert!(!registry.is_poisoned());
     assert!(Arc::ptr_eq(
         registry
             .lock()
             .unwrap()
             .get(&generation)
+            .expect("orphaned ID remains fail-closed"),
+        &orphaned_work
+    ));
+
+    let recovered_generation = ProjectId::new();
+    let work = Arc::new(BeginnerGridWork::default());
+    let registration =
+        beginner_design_commands::register_beginner_grid_work_v1(recovered_generation, &work)
+            .expect("registration recovers poison for a distinct generation");
+    assert!(!registry.is_poisoned());
+    assert!(Arc::ptr_eq(
+        registry
+            .lock()
+            .unwrap()
+            .get(&recovered_generation)
             .expect("recovered registration owns the generation"),
         &work
     ));
@@ -1085,7 +1254,7 @@ fn beginner_grid_registry_recovers_poison_across_registration_progress_cancel_an
 
     poison_mutex_for_test(registry);
     assert_eq!(
-        get_beginner_parameter_grid_progress(generation)
+        get_beginner_parameter_grid_progress(recovered_generation)
             .expect("progress recovers registry poison")
             .terminal_state,
         "running"
@@ -1093,7 +1262,7 @@ fn beginner_grid_registry_recovers_poison_across_registration_progress_cancel_an
     assert!(!registry.is_poisoned());
 
     poison_mutex_for_test(registry);
-    cancel_beginner_parameter_grid(generation).expect("cancel recovers registry poison");
+    cancel_beginner_parameter_grid(recovered_generation).expect("cancel recovers registry poison");
     assert!(work.cancelled.load(Ordering::Acquire));
     assert!(!registry.is_poisoned());
     drop(registration);

@@ -1,5 +1,8 @@
 import type { BeginnerGenerationConstraintsV1 } from '../lib/coreClient'
 import {
+  MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1,
+} from '../lib/beginnerGenericFeatureBindingContract.ts'
+import {
   GENERIC_TARGET_BINDING_LIST_TEXT as TEXT,
 } from '../lib/genericTargetBindingListText.ts'
 import {
@@ -13,7 +16,8 @@ export function GenericTargetBindingList({ locale, protrusions }: {
   locale: 'ja' | 'en'
   protrusions: readonly Protrusion[]
 }) {
-  const valid = protrusions.length >= 2 && protrusions.length <= 8
+  const valid = protrusions.length >= 2
+    && protrusions.length <= MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1
     && protrusions.every((target, index) =>
       (index === 0 || (protrusions[index - 1]?.id ?? target.id) < target.id)
       && (target.count === 1 && target.symmetry === 'none'

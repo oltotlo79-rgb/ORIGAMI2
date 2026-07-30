@@ -104,6 +104,7 @@ type GeometricConstraintPanelSimpleTextKey =
   | 'directConflictCount'
   | 'unknownStatus'
   | 'provenSatisfiable'
+  | 'constructedSatisfiable'
   | 'noDirectConflict'
   | 'unanalyzed'
   | 'directConflictCauses'
@@ -293,6 +294,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
   provenSatisfiable: text(
     '現在の配置は全{constraintCount}件・{equationCount}方程式の決定論的binary64残差を厳密に満たしています。{scope}',
     'The current assignment exactly satisfies all {constraintCount} constraints and {equationCount} deterministic binary64 residual equations. {scope}',
+  ),
+  constructedSatisfiable: text(
+    '現在配置とは別の厳密配置が構成・再認証されました（全{constraintCount}件・{equationCount}方程式）。この証拠はプロジェクト変更を認可しません。{scope}',
+    'A detached exact assignment was constructed and re-certified for all {constraintCount} constraints and {equationCount} deterministic binary64 residual equations. This evidence does not authorize project mutation. {scope}',
   ),
   noDirectConflict: text(
     '直接矛盾は見つかりません（全制約の充足可能性は未証明）',

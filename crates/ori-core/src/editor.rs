@@ -11,19 +11,20 @@ use crate::{
     validate_geometric_constraint_record_against_pattern_v1,
 };
 use ori_domain::{
-    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, BeginnerDesignProfileV1, ConstraintId,
-    CreasePattern, DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1,
-    ElementMetadataDocumentV1, ElementMetadataV1, FaceId, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
-    GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
-    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionPose, InstructionStep,
-    InstructionStepId, InstructionTimeline, InstructionTimelineValidationError, InstructionVisual,
-    LayerId, LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS,
-    MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2, ProjectId, ProjectLayerDocumentV1,
-    ProjectLayerDocumentValidationErrorV1, RgbaColor, UnderlayDocumentV1, UnderlayId,
-    UnderlayRecordV1, Vertex, VertexId, validate_beginner_design_profile_v1,
-    validate_element_metadata_v1, validate_geometric_constraint_document_v1,
-    validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
-    validate_underlay_document_v1,
+    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, BeginnerDesignProfileV1,
+    BeginnerGenerationProvenanceV1, ConstraintId, CreasePattern, DEFAULT_PROJECT_LAYER_ID, Edge,
+    EdgeId, EdgeKind, EdgeLayerAssignmentV1, ElementMetadataDocumentV1, ElementMetadataV1, FaceId,
+    GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
+    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
+    GeometricConstraintRecordV1, InstructionPose, InstructionStep, InstructionStepId,
+    InstructionTimeline, InstructionTimelineValidationError, InstructionVisual, LayerId,
+    LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS, MAX_PROJECT_LAYER_INDEX_EDGES,
+    Paper, Point2, ProjectId, ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1,
+    RgbaColor, UnderlayDocumentV1, UnderlayId, UnderlayRecordV1, Vertex, VertexId,
+    beginner_design_profile_authority_sha256_v1, validate_beginner_design_profile_v1,
+    validate_beginner_generation_provenance_v1, validate_element_metadata_v1,
+    validate_geometric_constraint_document_v1, validate_instruction_timeline,
+    validate_project_layer_document_against_pattern_v1, validate_underlay_document_v1,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointPolygonRelation, PointSegmentRelation, SegmentIntersection,
@@ -34,9 +35,15 @@ use thiserror::Error;
 
 pub mod bulk_intersection_plan;
 
+mod beginner_generation_authority;
 mod history_persistence;
 mod speculative_unproven;
 
+use beginner_generation_authority::{
+    BeginnerGenerationAuthoritySnapshot, beginner_generation_provenance_escalates,
+    beginner_reference_binding_is_live, beginner_reference_binding_is_live_after_inverse,
+    inverse_changes_beginner_design_profile, redo_beginner_profile_pre_state_matches,
+};
 pub use history_persistence::{
     EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1, EditorHistoryV1,
 };
@@ -1242,6 +1249,21 @@ enum Inverse {
         memo: String,
     },
     RestoreBeginnerDesignProfile {
+        profile: Box<BeginnerDesignProfileV1>,
+    },
+    /// Restores one ordinary command inverse plus generation provenance,
+    /// without cloning the fold document or the potentially large profile.
+    /// The digest authenticates unchanged profile-authority inputs; only the
+    /// bounded provenance evidence is restored.
+    ///
+    /// Persistence admits exactly one wrapper layer.
+    RestoreBeginnerGenerationProvenance {
+        profile_authority_sha256: [u8; 32],
+        provenance: Box<BeginnerGenerationProvenanceV1>,
+        inner: Box<Inverse>,
+    },
+    RestoreUnderlaysAndBeginnerDesignProfile {
+        underlays: UnderlayDocumentV1,
         profile: Box<BeginnerDesignProfileV1>,
     },
     RestoreElementMetadata {
@@ -2718,11 +2740,18 @@ impl EditorState {
         let next_revision = self.next_revision()?;
         self.ensure_applied_history_depth_can_advance_v1()?;
         self.ensure_geometric_constraint_resource_admission(&command)?;
-        let result = command.changes(&self.pattern, &self.paper);
+        let mut result = command.changes(&self.pattern, &self.paper);
+        let generation_provenance_was_present =
+            self.beginner_design_profile.generation_provenance.is_some();
         let geometry_before = command
             .may_change_kinematic_geometry()
             .then(|| self.fold_model_fingerprint_v1());
         let inverse = self.apply(&command)?;
+        if generation_provenance_was_present
+            != self.beginner_design_profile.generation_provenance.is_some()
+        {
+            result.settings = true;
+        }
         let applied_pose =
             if geometry_before.is_some_and(|before| before != self.fold_model_fingerprint_v1()) {
                 AppliedPoseHistoryTransition::Restore {
@@ -2823,6 +2852,12 @@ impl EditorState {
         let Command::ApplyStackedFoldDocument(forward) = wrapped else {
             unreachable!("the speculative commit wrapper has one exact variant");
         };
+        if beginner_generation_provenance_escalates(
+            &self.beginner_design_profile,
+            &forward.beginner_design_profile,
+        ) {
+            return Err(CommandError::InvalidStackedFoldDocument.into());
+        }
         self.validate_stacked_fold_document_replacement_v1(
             &forward.pattern,
             &forward.paper,
@@ -4339,11 +4374,21 @@ impl EditorState {
             return Ok(self.result(Changes::default()));
         };
         self.ensure_applied_history_depth_can_advance_v1()?;
+        if !redo_beginner_profile_pre_state_matches(self, &entry.inverse) {
+            return Err(CommandError::InvalidBeginnerDesignProfile);
+        }
         entry
             .applied_pose
             .capture_before(&self.current_applied_pose);
-        let result = entry.forward.changes(&self.pattern, &self.paper);
+        let mut result = entry.forward.changes(&self.pattern, &self.paper);
+        let generation_provenance_was_present =
+            self.beginner_design_profile.generation_provenance.is_some();
         self.apply(&entry.forward)?;
+        if generation_provenance_was_present
+            != self.beginner_design_profile.generation_provenance.is_some()
+        {
+            result.settings = true;
+        }
         entry
             .applied_pose
             .restore_after(&mut self.current_applied_pose);
@@ -4369,7 +4414,11 @@ impl EditorState {
         self.ensure_project_layer_resource_admission(command)?;
         self.ensure_project_layers_allow(command)?;
         self.ensure_geometric_constraints_allow(command)?;
-        match *command {
+        let beginner_generation_authority_before =
+            (self.beginner_design_profile.generation_provenance.is_some()
+                && command.may_change_beginner_generation_authority_inputs())
+            .then(|| BeginnerGenerationAuthoritySnapshot::capture(self));
+        let inverse = match *command {
             Command::MirrorSelection {
                 ref vertices,
                 ref edges,
@@ -5929,6 +5978,24 @@ impl EditorState {
                 ref project_layers,
                 ref beginner_design_profile,
             } => {
+                if matches!(command, Command::ApplyStackedFoldDocument(..))
+                    && beginner_generation_provenance_escalates(
+                        &self.beginner_design_profile,
+                        beginner_design_profile,
+                    )
+                {
+                    return Err(CommandError::InvalidStackedFoldDocument);
+                }
+                if matches!(command, Command::ApplyBeginnerGeneratedDocument { .. })
+                    && beginner_design_profile.generation_provenance.is_some()
+                    && !beginner_reference_binding_is_live(
+                        beginner_design_profile,
+                        &self.underlays,
+                        &project_layers.layers,
+                    )
+                {
+                    return Err(CommandError::InvalidStackedFoldDocument);
+                }
                 self.validate_stacked_fold_document_replacement_v1(
                     pattern,
                     paper,
@@ -5969,7 +6036,12 @@ impl EditorState {
                 })
             }
             Command::UpdateBeginnerDesignProfile { ref profile } => {
-                if !validate_beginner_design_profile_v1(profile) {
+                if !validate_beginner_design_profile_v1(profile)
+                    || beginner_generation_provenance_escalates(
+                        &self.beginner_design_profile,
+                        profile,
+                    )
+                {
                     return Err(CommandError::InvalidBeginnerDesignProfile);
                 }
                 Ok(Inverse::RestoreBeginnerDesignProfile {
@@ -6724,7 +6796,28 @@ impl EditorState {
                     layer: previous_layer,
                 }))
             }
+        }?;
+        let Some(before) = beginner_generation_authority_before else {
+            return Ok(inverse);
+        };
+        if !before.authority_changed(self) {
+            return Ok(inverse);
         }
+
+        self.beginner_design_profile.generation_provenance = None;
+        if matches!(
+            &inverse,
+            Inverse::RestoreStackedFoldDocument { .. }
+                | Inverse::RestoreBeginnerDesignProfile { .. }
+        ) {
+            return Ok(inverse);
+        }
+        let (profile_authority_sha256, provenance) = before.into_restore_parts();
+        Ok(Inverse::RestoreBeginnerGenerationProvenance {
+            profile_authority_sha256,
+            provenance,
+            inner: Box::new(inverse),
+        })
     }
 
     fn commit_instruction_timeline(
@@ -9091,6 +9184,32 @@ impl EditorState {
             Inverse::RestoreBeginnerDesignProfile { profile } => {
                 self.beginner_design_profile.clone_from(profile.as_ref());
             }
+            Inverse::RestoreBeginnerGenerationProvenance {
+                profile_authority_sha256,
+                provenance,
+                inner,
+            } => {
+                if inverse_changes_beginner_design_profile(inner)
+                    || self.beginner_design_profile.generation_provenance.is_some()
+                    || beginner_design_profile_authority_sha256_v1(&self.beginner_design_profile)
+                        != *profile_authority_sha256
+                    || !beginner_reference_binding_is_live_after_inverse(self, inner)
+                {
+                    return Err(CommandError::InvalidBeginnerDesignProfile);
+                }
+                let provenance = provenance.as_ref().clone();
+                self.apply_inverse(inner)?;
+                debug_assert_eq!(
+                    beginner_design_profile_authority_sha256_v1(&self.beginner_design_profile),
+                    *profile_authority_sha256,
+                    "the exhaustive compact-wrapper guard admitted a profile-changing inverse"
+                );
+                self.beginner_design_profile.generation_provenance = Some(provenance);
+            }
+            Inverse::RestoreUnderlaysAndBeginnerDesignProfile { underlays, profile } => {
+                self.underlays.clone_from(underlays);
+                self.beginner_design_profile.clone_from(profile.as_ref());
+            }
             Inverse::RestoreElementMetadata { target, metadata } => {
                 self.replace_element_metadata(*target, metadata.clone());
             }
@@ -9698,6 +9817,125 @@ impl Command {
         Ok(Some(growth))
     }
 
+    /// Exhaustive guard used by the compact provenance inverse. Keeping this
+    /// match wildcard-free forces every future command variant to declare
+    /// whether it can replace the profile before it may be wrapped.
+    const fn changes_beginner_design_profile(&self) -> bool {
+        match self {
+            Self::UpdateBeginnerDesignProfile { .. }
+            | Self::ApplyStackedFoldDocument(..)
+            | Self::ApplyBeginnerGeneratedDocument { .. } => true,
+            Self::UpdateProjectMemo { .. }
+            | Self::SetElementMetadata { .. }
+            | Self::AddVertex { .. }
+            | Self::MoveVertex { .. }
+            | Self::MoveEdge { .. }
+            | Self::MoveVertices { .. }
+            | Self::RemoveVertex { .. }
+            | Self::AddEdge { .. }
+            | Self::AddConnectedVertex { .. }
+            | Self::RemoveConnectedVertex { .. }
+            | Self::RemoveEdge { .. }
+            | Self::SetCuttingAllowed { .. }
+            | Self::UpdatePaperProperties { .. }
+            | Self::SetLengthDisplayUnit { .. }
+            | Self::ResizeRectangularPaper { .. }
+            | Self::SplitEdge { .. }
+            | Self::ConnectEdgeIntersection { .. }
+            | Self::ConnectTJunction { .. }
+            | Self::ConnectIntersectionCluster { .. }
+            | Self::SplitBoundaryEdge { .. }
+            | Self::RemoveBoundaryVertex { .. }
+            | Self::AddGeometricConstraint { .. }
+            | Self::RemoveGeometricConstraint { .. }
+            | Self::AddAnnotation { .. }
+            | Self::UpdateAnnotation { .. }
+            | Self::RemoveAnnotation { .. }
+            | Self::AddUnderlay { .. }
+            | Self::UpdateUnderlay { .. }
+            | Self::RemoveUnderlay { .. }
+            | Self::AddInstructionStep { .. }
+            | Self::AppendInstructionSteps { .. }
+            | Self::UpdateInstructionStepMetadata { .. }
+            | Self::ReplaceInstructionStepPose { .. }
+            | Self::RemoveInstructionStep { .. }
+            | Self::MoveInstructionStep { .. }
+            | Self::RewriteInstructionTimelineSplitMerge { .. }
+            | Self::CreateLayer { .. }
+            | Self::RenameLayer { .. }
+            | Self::UpdateLayerPresentation { .. }
+            | Self::MoveLayer { .. }
+            | Self::DeleteLayer { .. }
+            | Self::AssignEdgeToLayer { .. }
+            | Self::MirrorSelection { .. }
+            | Self::ApplyNormalizedEdgeDocument { .. }
+            | Self::ApplyRayToTargetDocument(..)
+            | Self::ApplyLinearArrayDocument(..)
+            | Self::ApplyRadialArrayDocument(..) => false,
+        }
+    }
+
+    /// Returns whether this command can change an input bound by persisted
+    /// beginner-generation provenance.
+    ///
+    /// This is deliberately narrower than "changes settings": memo,
+    /// appearance, instruction, annotation, underlay-presentation, and layer
+    /// presentation edits do not alter the certified authored model.
+    const fn may_change_beginner_generation_authority_inputs(&self) -> bool {
+        match self {
+            Self::UpdateBeginnerDesignProfile { .. }
+            | Self::AddVertex { .. }
+            | Self::MoveVertex { .. }
+            | Self::MoveEdge { .. }
+            | Self::MoveVertices { .. }
+            | Self::RemoveVertex { .. }
+            | Self::AddEdge { .. }
+            | Self::AddConnectedVertex { .. }
+            | Self::RemoveConnectedVertex { .. }
+            | Self::RemoveEdge { .. }
+            | Self::UpdatePaperProperties { .. }
+            | Self::ResizeRectangularPaper { .. }
+            | Self::SplitEdge { .. }
+            | Self::ConnectEdgeIntersection { .. }
+            | Self::ConnectTJunction { .. }
+            | Self::ConnectIntersectionCluster { .. }
+            | Self::SplitBoundaryEdge { .. }
+            | Self::RemoveBoundaryVertex { .. }
+            | Self::AddUnderlay { .. }
+            | Self::UpdateUnderlay { .. }
+            | Self::RemoveUnderlay { .. }
+            | Self::DeleteLayer { .. }
+            | Self::AssignEdgeToLayer { .. }
+            | Self::MirrorSelection { .. }
+            | Self::ApplyNormalizedEdgeDocument { .. }
+            | Self::ApplyRayToTargetDocument(..)
+            | Self::ApplyLinearArrayDocument(..)
+            | Self::ApplyRadialArrayDocument(..)
+            | Self::ApplyStackedFoldDocument(..) => true,
+            Self::UpdateProjectMemo { .. }
+            | Self::SetElementMetadata { .. }
+            | Self::SetCuttingAllowed { .. }
+            | Self::SetLengthDisplayUnit { .. }
+            | Self::AddGeometricConstraint { .. }
+            | Self::RemoveGeometricConstraint { .. }
+            | Self::AddAnnotation { .. }
+            | Self::UpdateAnnotation { .. }
+            | Self::RemoveAnnotation { .. }
+            | Self::AddInstructionStep { .. }
+            | Self::AppendInstructionSteps { .. }
+            | Self::UpdateInstructionStepMetadata { .. }
+            | Self::ReplaceInstructionStepPose { .. }
+            | Self::RemoveInstructionStep { .. }
+            | Self::MoveInstructionStep { .. }
+            | Self::RewriteInstructionTimelineSplitMerge { .. }
+            | Self::CreateLayer { .. }
+            | Self::RenameLayer { .. }
+            | Self::UpdateLayerPresentation { .. }
+            | Self::MoveLayer { .. }
+            | Self::ApplyBeginnerGeneratedDocument { .. } => false,
+        }
+    }
+
     /// Returns whether this command can change the canonical material
     /// kinematics geometry.
     ///
@@ -10149,12 +10387,17 @@ impl Inverse {
                 instructions: true,
                 constraints: false,
             },
-            Self::RestoreProjectMemo { .. } | Self::RestoreBeginnerDesignProfile { .. } => {
-                Changes {
-                    settings: true,
-                    ..Changes::default()
-                }
+            Self::RestoreBeginnerGenerationProvenance { inner, .. } => {
+                let mut changes = inner.changes(pattern, paper);
+                changes.settings = true;
+                changes
             }
+            Self::RestoreProjectMemo { .. }
+            | Self::RestoreBeginnerDesignProfile { .. }
+            | Self::RestoreUnderlaysAndBeginnerDesignProfile { .. } => Changes {
+                settings: true,
+                ..Changes::default()
+            },
             Self::RestoreElementMetadata { target, .. } => Changes {
                 vertices: match target {
                     ElementMetadataTargetV1::Vertex(id) => vec![*id],
@@ -10623,6 +10866,8 @@ mod tests {
         geometric_constraints: GeometricConstraintDocumentV1,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
+        underlays: UnderlayDocumentV1,
+        beginner_design_profile: BeginnerDesignProfileV1,
         current_applied_pose: Option<crate::AppliedPoseV1>,
         revision: Revision,
         history_entry_limit: usize,
@@ -10637,6 +10882,8 @@ mod tests {
             geometric_constraints: editor.geometric_constraints.clone(),
             instruction_timeline: editor.instruction_timeline.clone(),
             project_layers: editor.project_layers.clone(),
+            underlays: editor.underlays.clone(),
+            beginner_design_profile: editor.beginner_design_profile.clone(),
             current_applied_pose: editor.current_applied_pose.clone(),
             revision: editor.revision,
             history_entry_limit: editor.history_entry_limit(),
@@ -21375,6 +21622,9 @@ mod tests {
             Err(CommandError::InstructionStepAppendHistoryMismatch),
         );
     }
+
+    #[path = "editor_beginner_generation_provenance_tests.rs"]
+    mod beginner_generation_provenance_tests;
 
     #[test]
     fn beginner_design_profile_is_validated_and_undoable() {

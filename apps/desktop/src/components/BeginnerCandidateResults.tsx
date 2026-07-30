@@ -1,9 +1,13 @@
 import { CompleteAnimalBindingList } from './CompleteAnimalBindingList'
 import { CompleteInsectBindingList } from './CompleteInsectBindingList'
 import { GenericTargetBindingList } from './GenericTargetBindingList'
+import { BeginnerGeneratedInstructionList } from './BeginnerGeneratedInstructionList'
 import { APP_TEXT } from '../lib/appText.ts'
 import { isBeginnerApplicableTemplate } from '../lib/beginnerApplicableTemplate.ts'
-import type { ProjectSnapshot } from '../lib/coreClient.ts'
+import {
+  beginnerGeneratedPlanAssessmentAllowsApplyV1,
+  type ProjectSnapshot,
+} from '../lib/coreClient.ts'
 import {
   formatLocalizedText,
   selectLocalizedText,
@@ -23,6 +27,8 @@ type BeginnerCandidateResultsProps = Readonly<{
   candidateWorkflow: CandidateWorkflow
 }>
 
+export { BeginnerGeneratedInstructionList } from './BeginnerGeneratedInstructionList'
+
 export function BeginnerCandidateResults({
   locale,
   snapshot: nativeSnapshot,
@@ -40,12 +46,19 @@ export function BeginnerCandidateResults({
   const {
     beginnerCandidates,
     beginnerCandidateBusy,
+    beginnerCandidateApplyBusy,
+    beginnerCandidateRequestStatus,
     selectedConsensusPair,
     setSelectedConsensusPair,
     requestBeginnerCandidates,
     excludeBeginnerConsensusAsset,
     confirmAndApplyBeginnerPlan,
   } = candidateWorkflow
+  const candidateInteractionBlocked = coreBusy
+    || recoveryBlocking
+    || beginnerCandidateBusy
+    || beginnerCandidateApplyBusy
+    || beginnerCandidateRequestStatus !== 'ready'
 
   return (
     <>
@@ -97,7 +110,7 @@ export function BeginnerCandidateResults({
                       onClick={() => requestBeginnerCandidates(
                         beginnerCandidates.requested_candidate_count + 1,
                       )}
-                      disabled={beginnerCandidateBusy}
+                      disabled={candidateInteractionBlocked}
                       aria-label={text(APP_TEXT.generateOneAdditionalCandidate)}
                     >
                       {text(APP_TEXT.generateAndCompareAnotherCandidate)}
@@ -133,6 +146,7 @@ export function BeginnerCandidateResults({
                                 : text(APP_TEXT.withinAllThresholds)
                               return <tr key={key} aria-selected={selectedConsensusPair === key}>
                                 <th scope="row"><button type="button" aria-pressed={selectedConsensusPair === key}
+                                  disabled={candidateInteractionBlocked}
                                   onClick={() => setSelectedConsensusPair(selectedConsensusPair === key ? null : key)}>
                                   {formattedText(APP_TEXT.referenceLeftReferenceRight, { left, right })}</button></th>
                                 <td>{`${pair.left_component_count} / ${pair.right_component_count} (error ${pair.component_error})`}</td>
@@ -149,7 +163,8 @@ export function BeginnerCandidateResults({
                           })()}
                           {nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id && <p role="status">{text(APP_TEXT.oneExplicitlyExcludedReferenceIsOmittedFromThisTable)}</p>}
                           {nativeSnapshot.beginner_design_profile.reference_consensus_v1 && (
-                            <fieldset><legend>{text(APP_TEXT.excludeOneOutlier)}</legend>
+                            <fieldset disabled={candidateInteractionBlocked}>
+                              <legend>{text(APP_TEXT.excludeOneOutlier)}</legend>
                               {nativeSnapshot.beginner_design_profile.reference_consensus_v1.bindings.map((binding, index) => (
                                 <button type="button" key={binding.asset_id}
                                   disabled={nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id === binding.asset_id}
@@ -179,6 +194,10 @@ export function BeginnerCandidateResults({
                           || isBeginnerApplicableTemplate(plan.kind)
                         ) ? plan.kind : null
                         const assessment = beginnerCandidates.plan_assessments[index]
+                        const assessmentAllowsApply = assessment !== undefined
+                          && beginnerGeneratedPlanAssessmentAllowsApplyV1(
+                            assessment,
+                          )
                         const assessmentReason = assessment?.reason === 'geometry_invalid'
                           ? text(APP_TEXT.geometryValidationFailed)
                           : assessment?.reason === 'global_flat_foldability_proven'
@@ -227,67 +246,10 @@ export function BeginnerCandidateResults({
                                 )
                               })}
                             </svg>
-                            <ol aria-label={text(APP_TEXT.candidateFoldingInstructions)}>
-                              {plan.instruction_codes.map((code) => (
-                                <li key={code}>
-                                  {code === 'symmetric_four_leg_base'
-                                    ? text(APP_TEXT.createTheSymmetricFourLegBaseFromTheSharedCenter)
-                                    : code === 'symmetric_wing_base'
-                                      ? text(APP_TEXT.createTheBilateralWingBaseFromTheSharedCenter)
-                                      : code === 'symmetric_bird_base'
-                                        ? text(APP_TEXT.createTheBilateralBirdWingBase)
-                                        : code === 'asymmetric_bird_landmark_base'
-                                          ? text(APP_TEXT.createTheAsymmetricBirdBaseBoundToIndividualLandmarks)
-                                          : code === 'asymmetric_four_leg_landmark_base'
-                                            ? text(APP_TEXT.createTheAsymmetricFourLegBaseBoundToFourIndividual)
-                                          : code === 'asymmetric_insect_landmark_base'
-                                            ? text(APP_TEXT.bindTenOrderedInsectLandmarksToTheCertifiedFourRay)
-                                          : code === 'asymmetric_fish_landmark_base'
-                                            ? text(APP_TEXT.bindTheHeadTailAndLeftRightFinsToThe)
-                                        : code === 'symmetric_fish_base'
-                                          ? text(APP_TEXT.createTheBilateralFishFinBase)
-                                          : code === 'symmetric_ear_base'
-                                            ? text(APP_TEXT.createTheBilateralLongEarBase)
-                                            : code === 'symmetric_horn_base'
-                                              ? text(APP_TEXT.createTheBilateralHornBase)
-                                              : code === 'symmetric_antenna_base'
-                                                ? text(APP_TEXT.createTheBilateralInsectAntennaBase)
-                                                : code === 'symmetric_six_leg_base'
-                                                  ? (locale === 'ja' ? '左右対称の完全六脚ベース' : 'Symmetric complete six-leg base')
-                                                : code === 'center_axis_tail_base'
-                                                  ? (locale === 'ja' ? '中心軸から伸びる尾のベース' : 'Center-axis tail base')
-                                                : code === 'center_axis_horn_base'
-                                                  ? (locale === 'ja' ? '中心軸から伸びる一本角のベース' : 'Center-axis single-horn base')
-                                                : code === 'center_axis_antenna_base'
-                                                  ? (locale === 'ja' ? '中心軸から伸びる一本触角のベース' : 'Center-axis single-antenna base')
-                                                : code === 'composite_tail_ear_base'
-                                                  ? (locale === 'ja' ? '単一尾と左右一組の耳の複合ベース' : 'Composite tail and ear base')
-                                                : code === 'composite_horn_ear_base'
-                                                  ? (locale === 'ja' ? '一本角と左右一組の耳の複合ベース' : 'Composite horn and ear base')
-                                                : code === 'composite_horn_tail_base'
-                                                  ? (locale === 'ja' ? '一本角と単一尾の複合ベース' : 'Composite horn and tail base')
-                                                : code === 'composite_horn_tail_ear_base'
-                                                  ? (locale === 'ja' ? '一本角・単一尾・左右一組の耳の複合ベース' : 'Composite horn, tail, and ear base')
-                                                : code === 'composite_wing_antenna_base'
-                                                  ? (locale === 'ja' ? '左右一組の翅と触角の複合ベース' : 'Composite wing and antenna base')
-                                                : code === 'composite_complete_insect_base'
-                                                  ? (locale === 'ja' ? '翅・触角・六脚の完全複合昆虫ベース' : 'Complete composite insect base')
-                                                : code === 'composite_complete_animal_base'
-                                                  ? (locale === 'ja' ? '角・尾・耳・四脚の完全複合動物ベース' : 'Complete composite animal base')
-                                                : code === 'composite_complete_winged_animal_base'
-                                                  ? (locale === 'ja' ? '角・尾・耳・四脚・翼の完全複合動物ベース' : 'Complete composite winged animal base')
-                                                : code === 'composite_generic_target_base'
-                                                  ? (locale === 'ja' ? '認識部位から作る上限付き汎用複合ベース' : 'Bounded composite base from recognized parts')
-                                                : code === 'symmetric_insect_leg_pair_base'
-                                                  ? text(APP_TEXT.createOneBilateralInsectLegPairBase)
-                                          : code === 'book_fold_vertical'
-                                    ? text(APP_TEXT.foldInHalfOnTheVerticalCenterLine)
-                                    : code === 'book_fold_horizontal'
-                                      ? text(APP_TEXT.foldInHalfOnTheHorizontalCenterLine)
-                                      : text(APP_TEXT.foldOnTheDiagonal)}
-                                </li>
-                              ))}
-                            </ol>
+                            <BeginnerGeneratedInstructionList
+                              locale={locale}
+                              instructionCodes={plan.instruction_codes}
+                            />
                             <p aria-label={text(APP_TEXT.targetPartsUsedByThisCandidate)}>
                               {plan.target_parts.map((part) => {
                                 const label = {
@@ -342,7 +304,11 @@ export function BeginnerCandidateResults({
                               {text(APP_TEXT.thisIsAReadOnlyCandidateItDoesNotBecome)}
                             </p>
                             <p
-                              role={assessment?.apply_allowed === false ? 'alert' : 'status'}
+                              role={assessmentAllowsApply ? 'status' : 'alert'}
+                              aria-live={assessmentAllowsApply
+                                ? 'polite'
+                                : 'assertive'}
+                              aria-atomic="true"
                               aria-label={text(APP_TEXT.candidateValidationResult)}
                             >
                               {assessment?.proof_scope === 'sufficient'
@@ -352,6 +318,8 @@ export function BeginnerCandidateResults({
                                   : text(APP_TEXT.indeterminate)}
                               {': '}{assessmentReason}
                               {assessment?.proof_scope === 'indeterminate' && ` ${text(APP_TEXT.warningApplyingItDoesNotGuaranteeFlatFoldability)}`}
+                              {!assessmentAllowsApply
+                                && ` ${text(APP_TEXT.candidateApplyUnavailable)}`}
                             </p>
                             {assessment?.shape_approximation_score !== null
                               && assessment?.shape_approximation_score !== undefined && (
@@ -379,8 +347,9 @@ export function BeginnerCandidateResults({
                                   applicableKind,
                                   plan.crease_pattern.edges[0].id,
                                 )}
-                                disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy
-                                  || !assessment || !assessment.apply_allowed}
+                                disabled={candidateInteractionBlocked
+                                  || !assessment
+                                  || !assessmentAllowsApply}
                                 aria-label={text(APP_TEXT.reviewAndApplyThisBoundedGeneratedCandidate)}
                               >
                                 {text(APP_TEXT.reviewAndApplyThisCandidate)}
@@ -391,7 +360,7 @@ export function BeginnerCandidateResults({
                       })}
                     </div>
                   ) : (
-                    <p role="status">
+                    <p role="status" aria-live="polite" aria-atomic="true">
                       {beginnerCandidates.generation_status === 'missing_target_category'
                         ? text(APP_TEXT.saveAnAnimalOrInsectTargetCategoryFirst)
                         : beginnerCandidates.generation_status === 'missing_required_parts'

@@ -21,9 +21,15 @@ use std::fs::OpenOptions;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use super::beginner_design_commands::{
-    BeginnerReferenceSurfaceRangeV1, ReferenceModelSurfaceConnectivityControlV1,
-    assess_beginner_generated_plan_with_control_v1, beginner_candidate_snapshot_is_current_v1,
-    capture_beginner_candidate_analysis_snapshot_v1,
+    BeginnerGeneratedPlanAssessment, BeginnerReferenceSurfaceRangeV1,
+    ReferenceModelSurfaceConnectivityControlV1, assess_beginner_generated_plan_with_control_v1,
+    beginner_assessment_has_sufficient_apply_authority_v1,
+    beginner_candidate_snapshot_is_current_v1, beginner_grid_assessment_authority_sha256_v1,
+    beginner_grid_candidate_authority_matches_result_v1, beginner_grid_plan_authority_sha256_v1,
+    beginner_grid_refined_point_is_in_domain_v1, beginner_grid_refined_points_duplicate_v1,
+    beginner_grid_refinement_metadata_is_valid_v1, beginner_plan_has_radial_corner_support_v1,
+    capture_beginner_candidate_analysis_snapshot_v1, materialize_beginner_boundary_splits_v1,
+    reference_model_profile_protrusions_after_surface_selection_v1,
     reference_model_surface_range_is_connected_with_control_v1,
 };
 use super::*;

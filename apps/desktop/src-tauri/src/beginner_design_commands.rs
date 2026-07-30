@@ -7,11 +7,17 @@
 use super::*;
 use std::sync::atomic::AtomicU64;
 
-// These registries contain only native jobs that are simultaneously owned by
-// live command scopes. Bounding them prevents untrusted generation IDs from
-// turning command registration into unbounded process-global allocation.
+// Live native work and retained grid terminal history stay independently
+// bounded. The separate lifetime tombstones prevent untrusted generation IDs
+// from becoming reusable cancellation handles without allowing unbounded
+// process-global allocation.
 pub(super) const MAX_REFERENCE_CONSENSUS_WORK_REGISTRATIONS_V1: usize = 64;
 pub(super) const MAX_BEGINNER_GRID_WORK_REGISTRATIONS_V1: usize = 64;
+// Generation IDs are cancellation handles. Forgetting one would allow a
+// delayed cancel for an old registration to target a later registration that
+// reused the same ID. Keep a bounded, process-lifetime tombstone set and fail
+// closed once it is exhausted instead of ever recycling cancellation handles.
+pub(super) const MAX_BEGINNER_WORK_GENERATION_TOMBSTONES_V1: usize = 65_536;
 
 struct ActiveWorkRegistrationClaimV1<'a> {
     active: &'a AtomicBool,
@@ -42,6 +48,25 @@ impl Drop for ActiveWorkRegistrationClaimV1<'_> {
     }
 }
 
+struct BeginnerGridApplyClaimV1<'a> {
+    active: &'a AtomicBool,
+}
+
+impl<'a> BeginnerGridApplyClaimV1<'a> {
+    fn try_claim(active: &'a AtomicBool) -> Result<Self, String> {
+        active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "grid_candidate_apply_in_progress".to_owned())?;
+        Ok(Self { active })
+    }
+}
+
+impl Drop for BeginnerGridApplyClaimV1<'_> {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ReferenceConsensusWorkV1 {
     pub(super) cancelled: AtomicBool,
@@ -51,9 +76,36 @@ pub(super) struct ReferenceConsensusWorkV1 {
 static REFERENCE_CONSENSUS_WORK_V1: OnceLock<
     Mutex<HashMap<ProjectId, Arc<ReferenceConsensusWorkV1>>>,
 > = OnceLock::new();
+static REFERENCE_CONSENSUS_GENERATION_TOMBSTONES_V1: OnceLock<Mutex<HashSet<ProjectId>>> =
+    OnceLock::new();
+static REFERENCE_CONSENSUS_GENERATION_TOMBSTONES_SEALED_V1: AtomicBool = AtomicBool::new(false);
 pub(super) fn reference_consensus_work_v1()
 -> &'static Mutex<HashMap<ProjectId, Arc<ReferenceConsensusWorkV1>>> {
     REFERENCE_CONSENSUS_WORK_V1.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn reference_consensus_generation_tombstones_v1() -> &'static Mutex<HashSet<ProjectId>> {
+    REFERENCE_CONSENSUS_GENERATION_TOMBSTONES_V1.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub(super) fn reserve_generation_tombstone_v1(
+    generation_tombstones: &mut HashSet<ProjectId>,
+    sealed: &AtomicBool,
+    request_generation_id: ProjectId,
+    maximum_tombstones: usize,
+    resource_error: &'static str,
+) -> Result<(), String> {
+    if sealed.load(Ordering::Acquire)
+        || generation_tombstones.len() >= maximum_tombstones
+        || generation_tombstones.try_reserve(1).is_err()
+    {
+        // Once a previously observed ID cannot be remembered, accepting any
+        // later registration could rebind a delayed cancellation handle.
+        sealed.store(true, Ordering::Release);
+        return Err(resource_error.to_owned());
+    }
+    generation_tombstones.insert(request_generation_id);
+    Ok(())
 }
 
 fn lock_recovering_registry_v1<T>(registry: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -114,9 +166,20 @@ pub(super) fn register_reference_consensus_work_v1(
 ) -> Result<ReferenceConsensusWorkRegistration, String> {
     let mut registry = lock_recovering_registry_v1(reference_consensus_work_v1());
     registry.retain(|_, existing| existing.registration_active.load(Ordering::Acquire));
-    if registry.contains_key(&request_generation_id) {
+    let mut generation_tombstones =
+        lock_recovering_registry_v1(reference_consensus_generation_tombstones_v1());
+    if registry.contains_key(&request_generation_id)
+        || generation_tombstones.contains(&request_generation_id)
+    {
         return Err("reference_consensus_generation_reused".to_owned());
     }
+    reserve_generation_tombstone_v1(
+        &mut generation_tombstones,
+        &REFERENCE_CONSENSUS_GENERATION_TOMBSTONES_SEALED_V1,
+        request_generation_id,
+        MAX_BEGINNER_WORK_GENERATION_TOMBSTONES_V1,
+        "reference_consensus_registry_resource_limit",
+    )?;
     let claim = ActiveWorkRegistrationClaimV1::try_claim(
         &work.registration_active,
         "reference_consensus_work_reused",
@@ -187,6 +250,29 @@ pub(super) fn run_registered_reference_consensus_work_v1<T>(
     finish_reference_consensus_work_v1(request_generation_id, work, operation())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BeginnerGridCandidateAuthorityV1 {
+    pub(super) point: ori_domain::BeginnerParameterGridPointV1,
+    pub(super) expected_candidate_edge_id: EdgeId,
+    pub(super) topology_authority_hash: [u8; 32],
+    pub(super) plan_sha256: [u8; 32],
+    pub(super) assessment_sha256: [u8; 32],
+    pub(super) refinement_iterations: u8,
+    pub(super) strict_improvements: u8,
+    pub(super) refinement_starts: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BeginnerGridApplyAuthorityV1 {
+    pub(super) authority_token: ProjectId,
+    pub(super) project_instance_id: ProjectId,
+    pub(super) project_id: ProjectId,
+    pub(super) revision: u64,
+    pub(super) profile_sha256: [u8; 32],
+    pub(super) grid_hash: ori_domain::BeginnerParameterGridHashV1,
+    pub(super) candidates: Vec<BeginnerGridCandidateAuthorityV1>,
+}
+
 #[derive(Default)]
 pub(super) struct BeginnerGridWork {
     pub(super) cancelled: AtomicBool,
@@ -195,13 +281,26 @@ pub(super) struct BeginnerGridWork {
     pub(super) refinement_iterations: AtomicU64,
     pub(super) terminal: AtomicU64,
     pub(super) registration_active: AtomicBool,
+    registration_sequence: AtomicU64,
+    apply_active: AtomicBool,
+    pub(super) apply_consumed: AtomicBool,
+    pub(super) authority_token: OnceLock<ProjectId>,
+    apply_authority: Mutex<Option<BeginnerGridApplyAuthorityV1>>,
 }
 
 static BEGINNER_GRID_WORK: OnceLock<Mutex<HashMap<ProjectId, Arc<BeginnerGridWork>>>> =
     OnceLock::new();
+static BEGINNER_GRID_REGISTRATION_SEQUENCE_V1: AtomicU64 = AtomicU64::new(1);
+static BEGINNER_GRID_GENERATION_TOMBSTONES_V1: OnceLock<Mutex<HashSet<ProjectId>>> =
+    OnceLock::new();
+static BEGINNER_GRID_GENERATION_TOMBSTONES_SEALED_V1: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn beginner_grid_work() -> &'static Mutex<HashMap<ProjectId, Arc<BeginnerGridWork>>> {
     BEGINNER_GRID_WORK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn beginner_grid_generation_tombstones_v1() -> &'static Mutex<HashSet<ProjectId>> {
+    BEGINNER_GRID_GENERATION_TOMBSTONES_V1.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[must_use = "dropping the registration completes only its exact grid work"]
@@ -227,9 +326,27 @@ impl Drop for BeginnerGridWorkRegistration {
 fn beginner_grid_work_is_fresh_v1(work: &BeginnerGridWork) -> bool {
     work.terminal.load(Ordering::Acquire) == 0
         && !work.cancelled.load(Ordering::Acquire)
+        && !work.apply_active.load(Ordering::Acquire)
+        && !work.apply_consumed.load(Ordering::Acquire)
+        && work.authority_token.get().is_none()
+        && lock_recovering_registry_v1(&work.apply_authority).is_none()
         && work.enumerated.load(Ordering::Acquire) == 0
         && work.global_checked.load(Ordering::Acquire) == 0
         && work.refinement_iterations.load(Ordering::Acquire) == 0
+}
+
+pub(super) fn take_beginner_grid_registration_sequence_v1(
+    sequence: &AtomicU64,
+) -> Result<u64, String> {
+    sequence
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            if current == 0 {
+                None
+            } else {
+                current.checked_add(1)
+            }
+        })
+        .map_err(|_| "grid_registration_sequence_exhausted".to_owned())
 }
 
 pub(super) fn register_beginner_grid_work_v1(
@@ -237,25 +354,69 @@ pub(super) fn register_beginner_grid_work_v1(
     work: &Arc<BeginnerGridWork>,
 ) -> Result<BeginnerGridWorkRegistration, String> {
     let mut registry = lock_recovering_registry_v1(beginner_grid_work());
-    registry.retain(|_, existing| existing.registration_active.load(Ordering::Acquire));
-    if registry.contains_key(&request_generation_id) {
+    let mut generation_tombstones =
+        lock_recovering_registry_v1(beginner_grid_generation_tombstones_v1());
+    if registry.contains_key(&request_generation_id)
+        || generation_tombstones.contains(&request_generation_id)
+    {
         return Err("grid_generation_reused".to_owned());
     }
+    reserve_generation_tombstone_v1(
+        &mut generation_tombstones,
+        &BEGINNER_GRID_GENERATION_TOMBSTONES_SEALED_V1,
+        request_generation_id,
+        MAX_BEGINNER_WORK_GENERATION_TOMBSTONES_V1,
+        "grid_registry_resource_limit",
+    )?;
     let claim =
         ActiveWorkRegistrationClaimV1::try_claim(&work.registration_active, "grid_work_reused")?;
     if !beginner_grid_work_is_fresh_v1(work) {
         return Err("grid_work_not_fresh".to_owned());
     }
-    if registry.len() >= MAX_BEGINNER_GRID_WORK_REGISTRATIONS_V1 || registry.try_reserve(1).is_err()
-    {
+    let evict = if registry.len() >= MAX_BEGINNER_GRID_WORK_REGISTRATIONS_V1 {
+        let evict = registry
+            .iter()
+            .filter(|(_, existing)| {
+                !existing.registration_active.load(Ordering::Acquire)
+                    && !existing.apply_active.load(Ordering::Acquire)
+                    && existing.terminal.load(Ordering::Acquire) != 0
+            })
+            .min_by_key(|(_, existing)| existing.registration_sequence.load(Ordering::Acquire))
+            .map(|(id, _)| *id);
+        if evict.is_none() {
+            return Err("grid_registry_resource_limit".to_owned());
+        }
+        evict
+    } else {
+        None
+    };
+    if registry.try_reserve(1).is_err() {
         return Err("grid_registry_resource_limit".to_owned());
     }
+    let registration_sequence =
+        take_beginner_grid_registration_sequence_v1(&BEGINNER_GRID_REGISTRATION_SEQUENCE_V1)?;
+    work.registration_sequence
+        .store(registration_sequence, Ordering::Release);
+    work.authority_token
+        .set(ProjectId::new())
+        .map_err(|_| "grid_work_reused".to_owned())?;
     let registration_work = Arc::clone(work);
+    if let Some(evict) = evict {
+        registry.remove(&evict);
+    }
     registry.insert(request_generation_id, Arc::clone(work));
     claim.commit();
     Ok(BeginnerGridWorkRegistration {
         work: registration_work,
     })
+}
+
+#[cfg(test)]
+pub(super) fn clear_beginner_work_generation_tombstones_for_test_v1() {
+    lock_recovering_registry_v1(beginner_grid_generation_tombstones_v1()).clear();
+    lock_recovering_registry_v1(reference_consensus_generation_tombstones_v1()).clear();
+    BEGINNER_GRID_GENERATION_TOMBSTONES_SEALED_V1.store(false, Ordering::Release);
+    REFERENCE_CONSENSUS_GENERATION_TOMBSTONES_SEALED_V1.store(false, Ordering::Release);
 }
 
 fn beginner_grid_cancelled_v1(work: &BeginnerGridWork) -> bool {
@@ -876,6 +1037,36 @@ pub(super) struct BeginnerGeneratedPlanAssessment {
     pub(super) component_shape_comparison: Option<BeginnerComponentShapeComparisonV1>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BeginnerSufficientApplyAuthorityV1 {
+    NativeFoldPathCertificateV2,
+    GlobalFlatFoldabilityV1,
+}
+
+fn beginner_sufficient_apply_authority_v1(
+    assessment: &BeginnerGeneratedPlanAssessment,
+) -> Option<BeginnerSufficientApplyAuthorityV1> {
+    if assessment.proof_scope != "sufficient" || !assessment.apply_allowed {
+        return None;
+    }
+    match assessment.reason {
+        "native_fold_path_certified" => {
+            Some(BeginnerSufficientApplyAuthorityV1::NativeFoldPathCertificateV2)
+        }
+        "global_flat_foldability_proven" => {
+            Some(BeginnerSufficientApplyAuthorityV1::GlobalFlatFoldabilityV1)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn beginner_assessment_has_sufficient_apply_authority_v1(
+    assessment: &BeginnerGeneratedPlanAssessment,
+) -> bool {
+    beginner_sufficient_apply_authority_v1(assessment).is_some()
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct BeginnerComponentShapeComparisonV1 {
     pub(super) component_count: u8,
@@ -1361,7 +1552,153 @@ struct BeginnerGlobalFoldabilityDeadline<'a> {
 }
 
 const MAX_BEGINNER_FOLD_PATH_CREASES_V1: usize = 256;
+// The linear graph schedule converts half the requested magnitude into an
+// exact bounded rational. Keep this a small, exactly representable dyadic so
+// both the endpoint and half-delta remain inside the 63-bit coefficient
+// contract on every runtime.
+const BEGINNER_GRAPH_FOLD_PATH_REQUESTED_ANGLE_DEGREES_V1: f64 = 1.0 / 1_073_741_824.0;
 
+pub(super) fn materialize_beginner_boundary_splits_v1(
+    source_pattern: &CreasePattern,
+    source_paper: &Paper,
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+) -> Result<(CreasePattern, Paper), &'static str> {
+    if source_paper.boundary_vertices.len() < 3 {
+        return Err("beginner_boundary_invalid");
+    }
+    let source_boundary = source_paper
+        .boundary_vertices
+        .iter()
+        .map(|id| {
+            source_pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == *id)
+                .cloned()
+                .ok_or("beginner_boundary_invalid")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut pattern = source_pattern.clone();
+    let mut paper = source_paper.clone();
+    let mut boundary_vertices = Vec::new();
+    boundary_vertices
+        .try_reserve(
+            source_boundary
+                .len()
+                .checked_add(plan.crease_pattern.vertices.len())
+                .ok_or("beginner_boundary_resource_limit")?,
+        )
+        .map_err(|_| "beginner_boundary_resource_limit")?;
+    let mut removed_edges = HashSet::new();
+    let mut replacement_edges = Vec::new();
+
+    for index in 0..source_boundary.len() {
+        let start = &source_boundary[index];
+        let end = &source_boundary[(index + 1) % source_boundary.len()];
+        let boundary_edge = source_pattern
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.kind == EdgeKind::Boundary
+                    && (edge.start == start.id && edge.end == end.id
+                        || edge.start == end.id && edge.end == start.id)
+            })
+            .collect::<Vec<_>>();
+        let [boundary_edge] = boundary_edge.as_slice() else {
+            return Err("beginner_boundary_invalid");
+        };
+        let dx = end.position.x - start.position.x;
+        let dy = end.position.y - start.position.y;
+        let parameter = |position: Point2| -> Option<f64> {
+            if dx == 0.0 && position.x == start.position.x && dy != 0.0 {
+                Some((position.y - start.position.y) / dy)
+            } else if dy == 0.0 && position.y == start.position.y && dx != 0.0 {
+                Some((position.x - start.position.x) / dx)
+            } else {
+                None
+            }
+        };
+        let mut inserted = plan
+            .crease_pattern
+            .vertices
+            .iter()
+            .filter_map(|vertex| {
+                parameter(vertex.position)
+                    .filter(|ratio| ratio.is_finite() && *ratio > 0.0 && *ratio < 1.0)
+                    .map(|ratio| (ratio, vertex))
+            })
+            .collect::<Vec<_>>();
+        inserted.sort_unstable_by(|left, right| {
+            left.0.total_cmp(&right.0).then_with(|| {
+                left.1
+                    .id
+                    .canonical_bytes()
+                    .cmp(&right.1.id.canonical_bytes())
+            })
+        });
+        if inserted.windows(2).any(|pair| {
+            pair[0].0.to_bits() == pair[1].0.to_bits() || pair[0].1.position == pair[1].1.position
+        }) {
+            return Err("beginner_boundary_vertex_collision");
+        }
+        boundary_vertices.push(start.id);
+        if inserted.is_empty() {
+            continue;
+        }
+        removed_edges.insert(boundary_edge.id);
+        let mut chain = Vec::with_capacity(inserted.len() + 2);
+        chain.push(start.id);
+        for (_, vertex) in inserted {
+            if pattern
+                .vertices
+                .iter()
+                .any(|current| current.id == vertex.id && current != vertex)
+                || pattern
+                    .vertices
+                    .iter()
+                    .any(|current| current.id != vertex.id && current.position == vertex.position)
+            {
+                return Err("beginner_boundary_vertex_collision");
+            }
+            if !pattern
+                .vertices
+                .iter()
+                .any(|current| current.id == vertex.id)
+            {
+                pattern.vertices.push(vertex.clone());
+            }
+            boundary_vertices.push(vertex.id);
+            chain.push(vertex.id);
+        }
+        chain.push(end.id);
+        for pair in chain.windows(2) {
+            let mut seed = Vec::with_capacity(16 * 3);
+            seed.extend_from_slice(&boundary_edge.id.canonical_bytes());
+            seed.extend_from_slice(&pair[0].canonical_bytes());
+            seed.extend_from_slice(&pair[1].canonical_bytes());
+            replacement_edges.push(ori_domain::Edge {
+                id: EdgeId::derive_v5(
+                    ProjectId::schema_namespace([
+                        0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00,
+                        0x00, 0x00, 0x06, 0x98,
+                    ]),
+                    &seed,
+                ),
+                start: pair[0],
+                end: pair[1],
+                kind: EdgeKind::Boundary,
+            });
+        }
+    }
+    pattern
+        .edges
+        .retain(|edge| !removed_edges.contains(&edge.id));
+    pattern.edges.extend(replacement_edges);
+    paper.boundary_vertices = boundary_vertices;
+    Ok((pattern, paper))
+}
+
+#[cfg(test)]
 pub(super) fn certify_beginner_fold_path_v1(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     paper: &Paper,
@@ -1377,7 +1714,7 @@ pub(super) fn certify_beginner_fold_path_v1(
     )
 }
 
-fn certify_beginner_fold_path_with_control_v1(
+pub(super) fn certify_beginner_fold_path_with_control_v1(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     paper: &Paper,
     candidate_pattern: &CreasePattern,
@@ -1448,60 +1785,146 @@ fn certify_beginner_fold_path_with_control_v1(
         }
         (path.continuous_certificate_model_id()?, requested)
     } else {
-        let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
+        let geometry_result = ori_kinematics::MaterialHingeGraphGeometry::prepare(
             candidate_pattern,
             paper,
             topology,
             ori_kinematics::TreeKinematicsLimits::default(),
-        )
-        .ok()?;
-        let audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
+        );
+        let geometry = geometry_result.ok()?;
+        let audit_result = ori_kinematics::MaterialHingeGraphAudit::prepare(
             topology,
             ori_kinematics::TreeKinematicsLimits::default(),
-        )
-        .ok()?;
+        );
+        let audit = audit_result.ok()?;
         let mut fixed_faces = geometry.face_ids().to_vec();
         fixed_faces.sort_unstable_by_key(|face| face.canonical_bytes());
-        let requested = 1.0e-8;
+        let requested = BEGINNER_GRAPH_FOLD_PATH_REQUESTED_ANGLE_DEGREES_V1;
         let certificate_model = fixed_faces.into_iter().find_map(|fixed_face| {
             if control.checkpoint().is_err() {
                 return None;
             }
-            let generated = if geometry.hinges().len() == 4 {
-                ori_kinematics::generate_kawasaki_120_120_60_60_path_candidate_v1(
+            let has_unique_kawasaki_mountain = geometry.hinges().len() == 4
+                && geometry
+                    .hinges()
+                    .iter()
+                    .filter(|hinge| {
+                        hinge.assignment() == ori_topology::FoldAssignment::Mountain
+                    })
+                    .count()
+                    == 1;
+            // A four-ray plan is not automatically a Kawasaki motion. Only
+            // the exact one-mountain family may enter that theorem; uniform
+            // valley-only or mountain-only plans must prove an independent
+            // exact opposite-pair bifold below.
+            let generated = (if has_unique_kawasaki_mountain {
+                ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_v1(
                     &geometry,
                     &audit,
                     fixed_face,
                     ori_kinematics::CycleScheduleLimitsV1::default(),
                 )
-                .ok()?
+                .ok()
             } else {
-                let initial = ori_kinematics::CanonicalHingeAngles::new(
-                    geometry
-                        .hinges()
+                None
+            })
+            .or_else(|| {
+                let mut hinge_edges = geometry
+                    .hinges()
+                    .iter()
+                    .map(|hinge| hinge.edge())
+                    .collect::<Vec<_>>();
+                hinge_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+                let pair_test_limit = hinge_edges
+                    .len()
+                    .checked_mul(hinge_edges.len().saturating_sub(1))
+                    .and_then(|value| value.checked_div(2))?;
+                let opposite_pairs =
+                    ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
+                        &geometry,
+                        &audit,
+                        pair_test_limit,
+                    )
+                    .ok()
+                    .unwrap_or_default();
+                let paper_bounds = paper
+                    .boundary_vertices
+                    .iter()
+                    .filter_map(|id| {
+                        candidate_pattern
+                            .vertices
+                            .iter()
+                            .find(|vertex| vertex.id == *id)
+                            .map(|vertex| vertex.position)
+                    })
+                    .fold(
+                        [
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                        ],
+                        |mut bounds, point| {
+                            bounds[0] = bounds[0].min(point.x);
+                            bounds[1] = bounds[1].max(point.x);
+                            bounds[2] = bounds[2].min(point.y);
+                            bounds[3] = bounds[3].max(point.y);
+                            bounds
+                        },
+                    );
+                let paper_corners = [
+                    Point2::new(paper_bounds[0], paper_bounds[2]),
+                    Point2::new(paper_bounds[1], paper_bounds[2]),
+                    Point2::new(paper_bounds[1], paper_bounds[3]),
+                    Point2::new(paper_bounds[0], paper_bounds[3]),
+                ];
+                let reaches_paper_corner = |edge_id: EdgeId| {
+                    candidate_pattern
+                        .edges
                         .iter()
-                        .map(|hinge| ori_kinematics::HingeAngle::new(hinge.edge(), 0.0))
+                        .find(|edge| edge.id == edge_id)
+                        .is_some_and(|edge| {
+                            [edge.start, edge.end].into_iter().any(|id| {
+                                candidate_pattern
+                                    .vertices
+                                    .iter()
+                                    .find(|vertex| vertex.id == id)
+                                    .is_some_and(|vertex| {
+                                        paper_corners.contains(&vertex.position)
+                                    })
+                            })
+                        })
+                };
+                let opposite_pair = opposite_pairs
+                    .iter()
+                    .copied()
+                    .find(|pair| pair.iter().all(|edge| !reaches_paper_corner(*edge)))
+                    .or_else(|| opposite_pairs.first().copied())?;
+                let initial = ori_kinematics::CanonicalHingeAngles::new(
+                    hinge_edges
+                        .iter()
+                        .copied()
+                        .map(|edge| ori_kinematics::HingeAngle::new(edge, 0.0))
                         .collect::<Result<Vec<_>, _>>()
                         .ok()?,
                 )
                 .ok()?;
                 let target = ori_kinematics::CanonicalHingeAngles::new(
-                    geometry
-                        .hinges()
+                    // HingeAngle is the public unsigned 0..=180 magnitude.
+                    // MaterialHingeGraphGeometry binds each edge's live
+                    // mountain/valley assignment and applies its sign while
+                    // solving. Passing a negative valley value here rejects
+                    // every mixed-assignment graph before schedule generation.
+                    hinge_edges
                         .iter()
-                        .map(|hinge| {
-                            let signed = candidate_pattern
-                                .edges
-                                .iter()
-                                .find(|edge| edge.id == hinge.edge())
-                                .map_or(requested, |edge| {
-                                    if edge.kind == EdgeKind::Valley {
-                                        -requested
-                                    } else {
-                                        requested
-                                    }
-                                });
-                            ori_kinematics::HingeAngle::new(hinge.edge(), signed)
+                        .copied()
+                        .map(|edge| {
+                            let magnitude = if opposite_pair.contains(&edge) {
+                                requested
+                            } else {
+                                0.0
+                            };
+                            ori_kinematics::HingeAngle::new(edge, magnitude)
                         })
                         .collect::<Result<Vec<_>, _>>()
                         .ok()?,
@@ -1515,21 +1938,22 @@ fn certify_beginner_fold_path_with_control_v1(
                     &target,
                     ori_kinematics::MultiHingePathCandidateLimitsV1::default(),
                 )
-                .ok()?
-            };
+                .ok()
+            })?;
             let schedule_limits = ori_kinematics::CycleScheduleLimitsV1 {
                 max_work: 1_048_576,
                 ..ori_kinematics::CycleScheduleLimitsV1::default()
             };
-            let closure = geometry.prove_dyadic_schedule_closure_v1(
+            let closure_result = geometry.prove_dyadic_schedule_closure_v1(
                 &audit, fixed_face, generated.schedule(), 1.0e-8,
                 ori_kinematics::DyadicIntervalClosureLimitsV1 {
                     max_depth: 16, max_leaves: 65_536,
                     max_work: schedule_limits.max_work, schedule_limits,
                 },
-            ).ok()?;
+            );
+            let closure = closure_result.ok()?;
             if paper.thickness_mm > 0.0 {
-                let certificate = ori_collision::certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1(
+                let certificate_result = ori_collision::certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1(
                     &geometry,
                     &audit,
                     fixed_face,
@@ -1538,8 +1962,8 @@ fn certify_beginner_fold_path_with_control_v1(
                     paper.thickness_mm,
                     32,
                     control,
-                )
-                .ok()??;
+                );
+                let certificate = certificate_result.ok()??;
                 if control.checkpoint().is_err() {
                     return None;
                 }
@@ -1553,9 +1977,11 @@ fn certify_beginner_fold_path_with_control_v1(
                 )
                     .then_some(ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
             } else if paper.thickness_mm == 0.0 {
-                ori_collision::diagnose_scheduled_cycle_path_v1(
+                let model = ori_collision::diagnose_scheduled_cycle_path_v1(
                     &geometry, &audit, fixed_face, &generated, &closure, 32,
-                ).continuous_certificate_model_id()
+                )
+                .continuous_certificate_model_id();
+                model
             } else { None }
         })?;
         if control.checkpoint().is_err() {
@@ -1691,7 +2117,22 @@ pub(super) fn assess_beginner_generated_plan_with_control_v1(
             component_shape_comparison,
         };
     }
-    let mut candidate_pattern = current_pattern.clone();
+    let (mut candidate_pattern, candidate_paper) =
+        match materialize_beginner_boundary_splits_v1(current_pattern, paper, plan) {
+            Ok(candidate) => candidate,
+            Err(_) => {
+                return BeginnerGeneratedPlanAssessment {
+                    kind: plan.kind,
+                    expected_candidate_edge_id,
+                    proof_scope: "necessary",
+                    apply_allowed: false,
+                    reason: "geometry_invalid",
+                    shape_approximation_score,
+                    shape_difference_reason,
+                    component_shape_comparison,
+                };
+            }
+        };
     for vertex in &plan.crease_pattern.vertices {
         if let Some(current) = candidate_pattern
             .vertices
@@ -1737,7 +2178,7 @@ pub(super) fn assess_beginner_generated_plan_with_control_v1(
         .edges
         .extend(plan.crease_pattern.edges.iter().cloned());
     if !validate_crease_pattern(&candidate_pattern).is_valid()
-        || !validate_paper(paper, &candidate_pattern).is_valid()
+        || !validate_paper(&candidate_paper, &candidate_pattern).is_valid()
     {
         return BeginnerGeneratedPlanAssessment {
             kind: plan.kind,
@@ -1758,7 +2199,7 @@ pub(super) fn assess_beginner_generated_plan_with_control_v1(
     let candidate_snapshot = if candidate_pattern.vertices.len() + candidate_pattern.edges.len()
         <= MAX_CANDIDATE_GLOBAL_RECORDS
     {
-        EditorState::with_paper(candidate_pattern.clone(), paper.clone())
+        EditorState::with_paper(candidate_pattern.clone(), candidate_paper.clone())
             .topology_analysis_input(geometry_authority)
             .analyze()
             .simulation_snapshot()
@@ -1769,7 +2210,7 @@ pub(super) fn assess_beginner_generated_plan_with_control_v1(
     if let Some(snapshot) = candidate_snapshot.as_ref() {
         if certify_beginner_fold_path_with_control_v1(
             plan,
-            paper,
+            &candidate_paper,
             &candidate_pattern,
             snapshot,
             &deadline_control,
@@ -1788,7 +2229,7 @@ pub(super) fn assess_beginner_generated_plan_with_control_v1(
             };
         }
     }
-    let local = analyze_local_flat_foldability(paper, &candidate_pattern);
+    let local = analyze_local_flat_foldability(&candidate_paper, &candidate_pattern);
     let (mut proof_scope, mut apply_allowed, mut reason) = match local.status {
         LocalFlatFoldabilityReportStatus::NecessaryConditionsSatisfied => {
             ("necessary", true, "necessary_conditions_satisfied")
@@ -1820,7 +2261,7 @@ pub(super) fn assess_beginner_generated_plan_with_control_v1(
                 match analyze_global_flat_foldability_with_observer(
                     GlobalFlatFoldabilityInput::current_with_geometry(
                         identity_namespace,
-                        paper,
+                        &candidate_paper,
                         &candidate_pattern,
                         snapshot,
                         &local,
@@ -1832,7 +2273,7 @@ pub(super) fn assess_beginner_generated_plan_with_control_v1(
                         GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
                             if certify_beginner_fold_path_with_control_v1(
                                 plan,
-                                paper,
+                                &candidate_paper,
                                 &candidate_pattern,
                                 snapshot,
                                 &deadline_control,
@@ -2169,11 +2610,11 @@ pub(super) fn temporary_symmetric_profile_for_grid(
     if canonical != Some(point) {
         return Err("beginner_parameter_grid_point_invalid".to_owned());
     }
-    let preserved_generic_tree_segments = (symmetric_plan_kind(source)
-        == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
-        .then(|| source.generation_constraints.skeleton_segments.clone());
-
-    let preserved_pair_ids =
+    let preserved_pair_ids = if symmetric_plan_kind(source)
+        == Some(ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+    {
+        None
+    } else {
         ori_domain::animal_complete_bindings_v1(&source.generation_constraints)
             .map(|binding| {
                 vec![
@@ -2206,37 +2647,18 @@ pub(super) fn temporary_symmetric_profile_for_grid(
                     },
                 )
             })
-            .or_else(|| {
-                let protrusions = &source.generation_constraints.protrusions;
-                let feature_records = source
-                    .generation_constraints
-                    .target_parts
-                    .iter()
-                    .filter(|part| {
-                        !matches!(
-                            part.kind,
-                            ori_domain::BeginnerTargetPartKindV1::Head
-                                | ori_domain::BeginnerTargetPartKindV1::Torso
-                        )
-                    })
-                    .count();
-                ((2..=8).contains(&protrusions.len())
-                    && feature_records == protrusions.len()
-                    && protrusions.windows(2).all(|pair| pair[0].id < pair[1].id))
-                .then(|| protrusions.iter().map(|target| target.id).collect())
-            });
+    };
     let mut profile = source.clone();
     profile.generation_constraints.detail_level = point.detail_level;
     let estimate = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
         .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
-    configure_symmetric_profile(
+    if !configure_symmetric_profile(
         &mut profile,
         estimate,
         point.scale_percent,
         point.spacing_percent,
-    );
-    if let Some(segments) = preserved_generic_tree_segments {
-        profile.generation_constraints.skeleton_segments = segments;
+    ) {
+        return Err("beginner_parameter_grid_profile_invalid".to_owned());
     }
     if let Some(pair_ids) = preserved_pair_ids {
         profile.generation_constraints.protrusions = pair_ids
@@ -2268,10 +2690,13 @@ pub(super) fn temporary_symmetric_profile_for_grid(
             })
             .collect();
     }
-    if matches!(
-        source.generation_constraints.target_asset,
-        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { .. })
-    ) {
+    if symmetric_plan_kind(source)
+        != Some(ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+        && matches!(
+            source.generation_constraints.target_asset,
+            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { .. })
+        )
+    {
         if let (Some(base), Some(candidate)) = (
             source
                 .generation_constraints
@@ -2370,242 +2795,8 @@ pub(super) fn grid_template_plan(
 
 fn symmetric_plan_kind(
     profile: &ori_domain::BeginnerDesignProfileV1,
-) -> ori_domain::BeginnerGeneratedPlanKindV1 {
-    let has = |kind| {
-        profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == kind && part.count == 2)
-    };
-    let feature_records = profile
-        .generation_constraints
-        .target_parts
-        .iter()
-        .filter(|part| {
-            !matches!(
-                part.kind,
-                ori_domain::BeginnerTargetPartKindV1::Head
-                    | ori_domain::BeginnerTargetPartKindV1::Torso
-            )
-        })
-        .count();
-    let has_one = |kind| {
-        profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == kind && part.count == 1)
-    };
-    let horn = has_one(ori_domain::BeginnerTargetPartKindV1::Horn);
-    let tail = has_one(ori_domain::BeginnerTargetPartKindV1::Tail);
-    let ears = has(ori_domain::BeginnerTargetPartKindV1::Ear);
-    let legs = profile
-        .generation_constraints
-        .target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4);
-    let wings = has(ori_domain::BeginnerTargetPartKindV1::Wing);
-    let known_animal = feature_records == 2 && ((ears || tail) && horn || tail && ears)
-        || feature_records == 3 && horn && tail && ears
-        || feature_records == 4 && horn && tail && ears && legs
-        || feature_records == 5 && horn && tail && ears && legs && wings;
-    let wing_antenna = wings && has(ori_domain::BeginnerTargetPartKindV1::Antenna);
-    let known_insect = feature_records == 2 && wing_antenna
-        || feature_records == 3
-            && wing_antenna
-            && profile
-                .generation_constraints
-                .target_parts
-                .iter()
-                .any(|part| {
-                    part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6
-                });
-    let generic_mixed_target = feature_records >= 2 && !known_animal && !known_insect;
-    if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::CustomObject)
-        || generic_mixed_target
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
-        && has(ori_domain::BeginnerTargetPartKindV1::Ear)
-    {
-        if has(ori_domain::BeginnerTargetPartKindV1::Wing) {
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase
-        } else {
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
-        }
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| {
-                part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2
-            })
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| {
-                part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2
-            })
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornEarBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeTailEarBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| {
-                part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 1
-            })
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisAntennaBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisHornBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
-        && profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
-    {
-        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisTailBase
-    } else if profile.generation_constraints.target_category
-        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
-    {
-        if profile
-            .generation_constraints
-            .target_parts
-            .iter()
-            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6)
-        {
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase
-        } else if has(ori_domain::BeginnerTargetPartKindV1::Antenna) {
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
-        } else if has(ori_domain::BeginnerTargetPartKindV1::Leg) {
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
-        } else {
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
-        }
-    } else if has(ori_domain::BeginnerTargetPartKindV1::Wing) {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
-    } else if has(ori_domain::BeginnerTargetPartKindV1::Fin) {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
-    } else if has(ori_domain::BeginnerTargetPartKindV1::Ear) {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
-    } else if has(ori_domain::BeginnerTargetPartKindV1::Horn) {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase
-    } else {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
-    }
+) -> Option<ori_domain::BeginnerGeneratedPlanKindV1> {
+    ori_domain::beginner_expected_generated_plan_kind_v1(&profile.generation_constraints)
 }
 
 #[derive(Debug, Serialize)]
@@ -2617,7 +2808,7 @@ pub(super) struct BeginnerContourBindingWitness {
     pub(super) crease_start: u16,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct BeginnerGenericFeatureBindingWitness {
     pub(super) protrusion_id: u16,
     pub(super) generated_feature_id: u8,
@@ -2627,6 +2818,38 @@ pub(super) struct BeginnerGenericFeatureBindingWitness {
     pub(super) skeleton_segment_id: u16,
     pub(super) skeleton_endpoint: &'static str,
     pub(super) mount_distance_squared_tenths_mm: u64,
+}
+
+pub(super) const MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1: usize =
+    ori_domain::MAX_BEGINNER_GENERIC_PROTRUSION_BINDINGS_V1;
+
+pub(super) fn generic_feature_binding_contract_v1(
+    targets: &[ori_domain::BeginnerProtrusionTargetV1],
+    bindings: &[BeginnerGenericFeatureBindingWitness],
+) -> bool {
+    if !(1..=MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1).contains(&bindings.len())
+        || bindings.len() != targets.len()
+    {
+        return false;
+    }
+    let mut canonical_targets = targets.iter().collect::<Vec<_>>();
+    canonical_targets.sort_unstable_by_key(|target| target.id);
+    if canonical_targets
+        .windows(2)
+        .any(|pair| pair[0].id >= pair[1].id)
+    {
+        return false;
+    }
+    bindings
+        .iter()
+        .zip(canonical_targets)
+        .enumerate()
+        .all(|(index, (binding, target))| {
+            u8::try_from(index + 1).ok() == Some(binding.generated_feature_id)
+                && binding.protrusion_id == target.id
+                && binding.endpoint_count == target.count
+                && (1..=8).contains(&binding.endpoint_count)
+        })
 }
 
 #[derive(Debug, Serialize)]
@@ -2654,22 +2877,7 @@ pub(super) struct BeginnerContourPlacementWitness {
 pub(super) fn canonical_generic_tree_segments_v1(
     segments: &[ori_domain::BeginnerSkeletonSegmentV1],
 ) -> Option<Vec<ori_domain::BeginnerSkeletonSegmentV1>> {
-    if segments.is_empty() || segments.len() > ori_domain::MAX_BEGINNER_GENERIC_TREE_BARS_V1 {
-        return None;
-    }
-    let mut canonical = segments.to_vec();
-    canonical.sort_unstable_by_key(|segment| segment.id);
-    if canonical.windows(2).any(|pair| pair[0].id == pair[1].id) {
-        return None;
-    }
-    for segment in &mut canonical {
-        let start = (segment.start.x_tenths_mm, segment.start.y_tenths_mm);
-        let end = (segment.end.x_tenths_mm, segment.end.y_tenths_mm);
-        if end < start {
-            std::mem::swap(&mut segment.start, &mut segment.end);
-        }
-    }
-    Some(canonical)
+    ori_domain::canonical_beginner_generic_tree_segments_v1(segments)
 }
 
 pub(super) fn normalized_contour_error_millionths(
@@ -2785,6 +2993,61 @@ pub(super) fn normalized_contour_error_millionths(
     u32::try_from((maximum * 1_000_000.0).round() as u64).ok()
 }
 
+fn validate_beginner_contour_block_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    outline: &[[i32; 2]],
+    vertex_start: usize,
+    crease_start: usize,
+) -> Option<(u32, Vec<VertexId>, Vec<EdgeId>)> {
+    let count = outline.len();
+    if count < 3 {
+        return None;
+    }
+    let vertices = plan
+        .crease_pattern
+        .vertices
+        .get(vertex_start..vertex_start.checked_add(count)?)?;
+    let creases = plan
+        .crease_pattern
+        .edges
+        .get(crease_start..crease_start.checked_add(count)?)?;
+    let mut vertex_ids = HashSet::with_capacity(count);
+    let mut crease_ids = HashSet::with_capacity(count);
+    if vertices.iter().any(|vertex| !vertex_ids.insert(vertex.id))
+        || creases.iter().any(|crease| !crease_ids.insert(crease.id))
+        || creases.iter().enumerate().any(|(index, crease)| {
+            crease.start != vertices[index].id || crease.end != vertices[(index + 1) % count].id
+        })
+    {
+        return None;
+    }
+    // A contour block owns its exact generated records. Reusing one of those
+    // identities elsewhere would let an identical outline impersonate a
+    // different target binding.
+    if vertices.iter().any(|owned| {
+        plan.crease_pattern
+            .vertices
+            .iter()
+            .filter(|candidate| candidate.id == owned.id)
+            .count()
+            != 1
+    }) || creases.iter().any(|owned| {
+        plan.crease_pattern
+            .edges
+            .iter()
+            .filter(|candidate| candidate.id == owned.id)
+            .count()
+            != 1
+    }) {
+        return None;
+    }
+    Some((
+        normalized_contour_error_millionths(outline, vertices)?,
+        vertices.iter().map(|vertex| vertex.id).collect(),
+        creases.iter().map(|crease| crease.id).collect(),
+    ))
+}
+
 pub(super) fn beginner_contour_placement_witness(
     constraints: &ori_domain::BeginnerGenerationConstraintsV1,
     plan: &ori_domain::BeginnerGeneratedPlanV1,
@@ -2857,24 +3120,31 @@ pub(super) fn beginner_contour_placement_witness(
             .protrusions
             .iter()
             .try_fold(0usize, |total, target| {
-                if matches!(target.count, 1 | 2 | 4) {
+                if (1..=8).contains(&target.count) {
                     total.checked_add(usize::from(target.count))
                 } else {
                     None
                 }
             })?;
+        if ori_domain::estimate_symmetric_parameters_v1(constraints).is_none_or(|estimate| {
+            usize::from(estimate.protrusion_count) != endpoint_count
+                || estimate.protrusion_count > ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1
+        }) {
+            return None;
+        }
         let mut crease_cursor = contour_edge_end
             .checked_sub(witnessed)?
             .checked_sub(endpoint_count)?;
         let mut canonical_targets = constraints.protrusions.iter().collect::<Vec<_>>();
         canonical_targets.sort_unstable_by_key(|target| target.id);
-        if canonical_targets
-            .windows(2)
-            .any(|pair| pair[0].id >= pair[1].id)
+        if !(1..=MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1).contains(&canonical_targets.len())
+            || canonical_targets
+                .windows(2)
+                .any(|pair| pair[0].id >= pair[1].id)
         {
             return None;
         }
-        for target in canonical_targets {
+        for (index, target) in canonical_targets.into_iter().enumerate() {
             let count = usize::from(target.count);
             let creases = plan
                 .crease_pattern
@@ -2911,7 +3181,7 @@ pub(super) fn beginner_contour_placement_witness(
                 .min()?;
             generic_feature_bindings.push(BeginnerGenericFeatureBindingWitness {
                 protrusion_id: target.id,
-                generated_feature_id: u8::try_from(target.id).ok()?,
+                generated_feature_id: u8::try_from(index.checked_add(1)?).ok()?,
                 endpoint_count: target.count,
                 crease_start: u16::try_from(crease_cursor).ok()?,
                 crease_authority_sha256: sha2::Sha256::digest(
@@ -2925,11 +3195,8 @@ pub(super) fn beginner_contour_placement_witness(
             });
             crease_cursor = crease_cursor.checked_add(count)?;
         }
-        generic_feature_bindings.sort_unstable_by_key(|binding| binding.generated_feature_id);
-        if generic_feature_bindings.windows(2).any(|pair| {
-            pair[0].generated_feature_id >= pair[1].generated_feature_id
-                || pair[0].protrusion_id >= pair[1].protrusion_id
-        }) {
+        if !generic_feature_binding_contract_v1(&constraints.protrusions, &generic_feature_bindings)
+        {
             return None;
         }
         if crease_cursor != contour_edge_end.checked_sub(witnessed)? {
@@ -2956,29 +3223,46 @@ pub(super) fn beginner_contour_placement_witness(
         return None;
     }
     let mut max_contour_error_millionths = 0;
+    let mut owned_contour_vertices = HashSet::with_capacity(witnessed);
+    let mut owned_contour_creases = HashSet::with_capacity(witnessed);
     if let Some(outline) = constraints.generic_body_outline_tenths_mm.as_deref() {
-        let best = plan.crease_pattern.vertices[..contour_vertex_end]
-            .windows(outline.len())
-            .filter_map(|vertices| normalized_contour_error_millionths(outline, vertices))
-            .min()?;
+        let vertex_start = contour_vertex_end.checked_sub(witnessed)?;
+        let crease_start = contour_edge_end.checked_sub(witnessed)?;
+        let (best, vertices, creases) =
+            validate_beginner_contour_block_v1(plan, outline, vertex_start, crease_start)?;
+        if vertices
+            .into_iter()
+            .any(|id| !owned_contour_vertices.insert(id))
+            || creases
+                .into_iter()
+                .any(|id| !owned_contour_creases.insert(id))
+        {
+            return None;
+        }
         max_contour_error_millionths = max_contour_error_millionths.max(best);
     }
-    for binding in &mut local_bindings {
+    for binding in &local_bindings {
         let outline = constraints
             .protrusions
             .iter()
             .find(|target| target.id == binding.protrusion_id)?
             .local_outline_tenths_mm
             .as_deref()?;
-        let (start, best) = plan.crease_pattern.vertices[..contour_vertex_end]
-            .windows(outline.len())
-            .enumerate()
-            .filter_map(|(start, vertices)| {
-                normalized_contour_error_millionths(outline, vertices).map(|score| (start, score))
-            })
-            .min_by_key(|(_, score)| *score)?;
-        binding.vertex_start = u16::try_from(start).ok()?;
-        binding.crease_start = u16::try_from(start).ok()?;
+        let (best, vertices, creases) = validate_beginner_contour_block_v1(
+            plan,
+            outline,
+            usize::from(binding.vertex_start),
+            usize::from(binding.crease_start),
+        )?;
+        if vertices
+            .into_iter()
+            .any(|id| !owned_contour_vertices.insert(id))
+            || creases
+                .into_iter()
+                .any(|id| !owned_contour_creases.insert(id))
+        {
+            return None;
+        }
         max_contour_error_millionths = max_contour_error_millionths.max(best);
     }
     if max_contour_error_millionths > 1 {
@@ -3168,6 +3452,7 @@ fn beginner_plan_paper_efficiency_score_v1(
 #[derive(Debug, Serialize)]
 pub(super) struct BeginnerGridEvaluationResponse {
     request_generation_id: ProjectId,
+    authority_token: ProjectId,
     project_instance_id: ProjectId,
     project_id: ProjectId,
     revision: u64,
@@ -3178,12 +3463,154 @@ pub(super) struct BeginnerGridEvaluationResponse {
     candidates: Vec<BeginnerGridCandidateResponse>,
 }
 
+fn beginner_profile_authority_sha256_v1(
+    profile: &ori_domain::BeginnerDesignProfileV1,
+) -> Result<[u8; 32], String> {
+    serde_json::to_vec(profile)
+        .map(|bytes| sha2::Sha256::digest(bytes).into())
+        .map_err(|_| "grid_profile_authority_unavailable".to_owned())
+}
+
+fn beginner_grid_serialized_authority_sha256_v1(
+    domain: &[u8],
+    value: &impl serde::Serialize,
+) -> Result<[u8; 32], String> {
+    let bytes =
+        serde_json::to_vec(value).map_err(|_| "grid_candidate_authority_invalid".to_owned())?;
+    let mut hash = sha2::Sha256::new();
+    hash.update(domain);
+    hash.update(
+        u64::try_from(bytes.len())
+            .map_err(|_| "grid_candidate_authority_invalid".to_owned())?
+            .to_be_bytes(),
+    );
+    hash.update(bytes);
+    Ok(hash.finalize().into())
+}
+
+pub(super) fn beginner_grid_plan_authority_sha256_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+) -> Result<[u8; 32], String> {
+    beginner_grid_serialized_authority_sha256_v1(
+        b"ORIGAMI2\0beginner-grid-plan-authority\0v1\0",
+        plan,
+    )
+}
+
+pub(super) fn beginner_grid_assessment_authority_sha256_v1(
+    assessment: &BeginnerGeneratedPlanAssessment,
+) -> Result<[u8; 32], String> {
+    beginner_grid_serialized_authority_sha256_v1(
+        b"ORIGAMI2\0beginner-grid-assessment-authority\0v1\0",
+        assessment,
+    )
+}
+
+pub(super) fn beginner_grid_candidate_authority_matches_result_v1(
+    authority: &BeginnerGridCandidateAuthorityV1,
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    assessment: &BeginnerGeneratedPlanAssessment,
+) -> Result<bool, String> {
+    Ok(
+        authority.plan_sha256 == beginner_grid_plan_authority_sha256_v1(plan)?
+            && authority.assessment_sha256
+                == beginner_grid_assessment_authority_sha256_v1(assessment)?,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn beginner_grid_authority_allows_candidate_v1(
+    work: &BeginnerGridWork,
+    authority: &BeginnerGridApplyAuthorityV1,
+    authority_token: ProjectId,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    profile_sha256: [u8; 32],
+    grid_hash: ori_domain::BeginnerParameterGridHashV1,
+    point: ori_domain::BeginnerParameterGridPointV1,
+    candidate_edge_id: EdgeId,
+    topology_authority_hash: [u8; 32],
+) -> bool {
+    work.terminal.load(Ordering::Acquire) == 1
+        && !work.registration_active.load(Ordering::Acquire)
+        && !work.cancelled.load(Ordering::Acquire)
+        && !work.apply_consumed.load(Ordering::Acquire)
+        && authority.authority_token == authority_token
+        && work.authority_token.get() == Some(&authority_token)
+        && authority.project_instance_id == project_instance_id
+        && authority.project_id == project_id
+        && authority.revision == revision
+        && authority.grid_hash == grid_hash
+        && authority.profile_sha256 == profile_sha256
+        && authority.candidates.iter().any(|candidate| {
+            candidate.point == point
+                && candidate.expected_candidate_edge_id == candidate_edge_id
+                && candidate.topology_authority_hash == topology_authority_hash
+        })
+}
+
 const MAX_BEGINNER_REFINEMENT_ITERATIONS_V1: u8 = 8;
 const MAX_BEGINNER_REFINEMENT_PROPOSALS_V1: usize = 32;
 const BEGINNER_REFINEMENT_STARTS_V1: u8 = 5;
 const MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1: usize = 2;
-const MAX_BEGINNER_GENERIC_TREE_PRIMARY_WORK_V1: usize =
-    ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1 * MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1;
+
+pub(super) fn beginner_grid_refined_point_is_in_domain_v1(
+    grid: &[ori_domain::BeginnerParameterGridPointV1],
+    point: ori_domain::BeginnerParameterGridPointV1,
+) -> bool {
+    grid.get(usize::from(point.id)).is_some_and(|seed| {
+        seed.id == point.id
+            && seed.detail_level == point.detail_level
+            && (10..=45).contains(&point.scale_percent)
+            && (20..=80).contains(&point.spacing_percent)
+    })
+}
+
+pub(super) fn beginner_grid_refinement_metadata_is_valid_v1(
+    seed: ori_domain::BeginnerParameterGridPointV1,
+    refined: ori_domain::BeginnerParameterGridPointV1,
+    reference_available: bool,
+    refinement_iterations: u8,
+    strict_improvements: u8,
+    refinement_starts: u8,
+) -> bool {
+    let coordinates_changed = seed.scale_percent != refined.scale_percent
+        || seed.spacing_percent != refined.spacing_percent;
+    let reachable_scale_delta = 4_u8.saturating_add(refinement_iterations.saturating_mul(2));
+    let reachable_spacing_delta = 6_u8.saturating_add(refinement_iterations.saturating_mul(3));
+    seed.id == refined.id
+        && seed.detail_level == refined.detail_level
+        && refinement_iterations <= MAX_BEGINNER_REFINEMENT_ITERATIONS_V1
+        && strict_improvements <= refinement_iterations.saturating_add(1)
+        && seed.scale_percent.abs_diff(refined.scale_percent) <= reachable_scale_delta
+        && seed.spacing_percent.abs_diff(refined.spacing_percent) <= reachable_spacing_delta
+        && if reference_available {
+            refinement_starts == BEGINNER_REFINEMENT_STARTS_V1
+                && (coordinates_changed == (strict_improvements > 0))
+        } else {
+            refinement_starts == 1
+                && refinement_iterations == 0
+                && strict_improvements == 0
+                && !coordinates_changed
+        }
+}
+
+fn beginner_grid_refinement_score_is_valid_v1(
+    seed_plan: &ori_domain::BeginnerGeneratedPlanV1,
+    refined_plan: &ori_domain::BeginnerGeneratedPlanV1,
+    reference: Option<&BeginnerReferenceModelSuggestionV1>,
+    profile: &ori_domain::BeginnerDesignProfileV1,
+    strict_improvements: u8,
+) -> bool {
+    if strict_improvements == 0 {
+        return refined_plan == seed_plan;
+    }
+    reference.is_some_and(|reference| {
+        preset_weighted_refinement_score_v1(refined_plan, reference, profile)
+            > preset_weighted_refinement_score_v1(seed_plan, reference, profile)
+    })
+}
 
 pub(super) fn validate_beginner_manufacturability_v1(
     pattern: &CreasePattern,
@@ -3309,25 +3736,25 @@ fn refine_beginner_grid_plan_v1(
                 .into_iter()
                 .find(|candidate| {
                     candidate.kind == expected_kind
-                        && candidate.instruction_codes.iter().any(|code| {
-                            (code == "bounded_tree_paper_orientation_v1:vertical")
-                                == prefer_vertical
-                        })
+                        && candidate
+                            .instruction_codes
+                            .iter()
+                            .any(|code| code == "bounded_tree_paper_orientation_v1:vertical")
+                            == prefer_vertical
                 })
         else {
             continue;
         };
-        if beginner_contour_placement_witness(&profile.generation_constraints, &seed_plan).is_none()
+        let seed_profile = temporary_symmetric_profile_for_grid(profile, seed_point)
+            .map_err(|_| "grid_refinement_generation_failed".to_owned())?;
+        if beginner_contour_placement_witness(&seed_profile.generation_constraints, &seed_plan)
+            .is_none()
             || validate_beginner_manufacturability_v1(&seed_plan.crease_pattern, paper).is_err()
         {
             continue;
         }
         let seed_score = preset_weighted_refinement_score_v1(&seed_plan, reference, profile);
-        if seed_score > score
-            || (seed_score == score
-                && (seed_point.scale_percent, seed_point.spacing_percent)
-                    < (point.scale_percent, point.spacing_percent))
-        {
+        if seed_score > score {
             score = seed_score;
             point = seed_point;
             plan = seed_plan;
@@ -3372,14 +3799,21 @@ fn refine_beginner_grid_plan_v1(
             .into_iter()
             .find(|candidate| {
                 candidate.kind == expected_kind
-                    && candidate.instruction_codes.iter().any(|code| {
-                        (code == "bounded_tree_paper_orientation_v1:vertical") == prefer_vertical
-                    })
+                    && candidate
+                        .instruction_codes
+                        .iter()
+                        .any(|code| code == "bounded_tree_paper_orientation_v1:vertical")
+                        == prefer_vertical
             }) else {
                 continue;
             };
-            if beginner_contour_placement_witness(&profile.generation_constraints, &candidate_plan)
-                .is_none()
+            let candidate_profile = temporary_symmetric_profile_for_grid(profile, candidate_point)
+                .map_err(|_| "grid_refinement_generation_failed".to_owned())?;
+            if beginner_contour_placement_witness(
+                &candidate_profile.generation_constraints,
+                &candidate_plan,
+            )
+            .is_none()
                 || validate_beginner_manufacturability_v1(&candidate_plan.crease_pattern, paper)
                     .is_err()
             {
@@ -3423,6 +3857,37 @@ fn refine_beginner_grid_plan_v1(
     ))
 }
 
+fn canonicalize_beginner_grid_candidates_v1(candidates: &mut Vec<BeginnerGridCandidateResponse>) {
+    candidates.sort_by_key(|candidate| {
+        (
+            std::cmp::Reverse(candidate.primary_score),
+            candidate.point.id,
+        )
+    });
+    let mut admitted_points = Vec::<ori_domain::BeginnerParameterGridPointV1>::new();
+    candidates.retain(|candidate| {
+        let duplicates_seed_or_refined_tuple = admitted_points
+            .iter()
+            .any(|admitted| beginner_grid_refined_points_duplicate_v1(*admitted, candidate.point));
+        if duplicates_seed_or_refined_tuple {
+            false
+        } else {
+            admitted_points.push(candidate.point);
+            true
+        }
+    });
+}
+
+pub(super) fn beginner_grid_refined_points_duplicate_v1(
+    left: ori_domain::BeginnerParameterGridPointV1,
+    right: ori_domain::BeginnerParameterGridPointV1,
+) -> bool {
+    left.id == right.id
+        || (left.scale_percent == right.scale_percent
+            && left.spacing_percent == right.spacing_percent
+            && left.detail_level == right.detail_level)
+}
+
 #[tauri::command]
 pub(super) fn evaluate_beginner_parameter_grid(
     state: State<'_, AppState>,
@@ -3462,10 +3927,14 @@ pub(super) fn evaluate_beginner_parameter_grid(
             ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
                 .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
         let grid = ori_domain::beginner_parameter_grid_v1();
-        let expected_kind = symmetric_plan_kind(profile);
-        let mut primary = Vec::with_capacity(MAX_BEGINNER_GENERIC_TREE_PRIMARY_WORK_V1);
+        let expected_kind = symmetric_plan_kind(profile)
+            .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
+        let reference = live_reference_model_suggestion_v1(project).ok();
+        let mut primary = Vec::with_capacity(ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1);
         for point in grid.iter().copied() {
             control.checkpoint()?;
+            let configured_profile = temporary_symmetric_profile_for_grid(profile, point)
+                .map_err(|_| "grid_template_generation_failed".to_owned())?;
             let plans = grid_template_plan(
                 project.project_id,
                 project.editor.pattern(),
@@ -3481,6 +3950,21 @@ pub(super) fn evaluate_beginner_parameter_grid(
             if plans.is_empty() {
                 return Err("grid_template_generation_failed".to_owned());
             }
+            let plan =
+                plans
+                    .into_iter()
+                    .max_by_key(|plan| {
+                        (
+                            reference.as_ref().map_or(0, |reference| {
+                                preset_weighted_refinement_score_v1(plan, reference, profile)
+                            }),
+                            beginner_plan_paper_efficiency_score_v1(plan, project.editor.paper()),
+                            u8::from(plan.instruction_codes.iter().any(|code| {
+                                code == "bounded_tree_paper_orientation_v1:horizontal"
+                            })),
+                        )
+                    })
+                    .ok_or_else(|| "grid_template_generation_failed".to_owned())?;
             let deviation = u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
                 + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5;
             let detail_penalty =
@@ -3489,19 +3973,19 @@ pub(super) fn evaluate_beginner_parameter_grid(
                 } else {
                     10
                 };
-            for plan in plans {
-                primary.push((
-                    1000_u16.saturating_sub(deviation + detail_penalty),
-                    point,
-                    plan,
-                ));
-            }
+            primary.push((
+                1000_u16.saturating_sub(deviation + detail_penalty),
+                point,
+                plan,
+                configured_profile,
+            ));
             work.enumerated.fetch_add(1, Ordering::Release);
         }
         control.checkpoint()?;
-        primary.sort_by_key(|(score, point, _)| (std::cmp::Reverse(*score), point.id));
-        primary.retain(|(_, _, plan)| {
-            beginner_contour_placement_witness(&profile.generation_constraints, plan).is_some()
+        primary.sort_by_key(|(score, point, _, _)| (std::cmp::Reverse(*score), point.id));
+        primary.retain(|(_, _, plan, configured_profile)| {
+            beginner_contour_placement_witness(&configured_profile.generation_constraints, plan)
+                .is_some()
         });
         if primary.len() < 3 {
             return Err("grid_contour_candidate_shortage".to_owned());
@@ -3509,13 +3993,19 @@ pub(super) fn evaluate_beginner_parameter_grid(
         primary.truncate(3);
 
         control.checkpoint()?;
-        let reference = live_reference_model_suggestion_v1(&project).ok();
         let mut candidates = primary
             .into_iter()
-            .map(|(_primary_score, point, plan)| {
-                control.checkpoint()?;
-                let (point, plan, refinement_iterations, strict_improvements, refinement_starts) =
-                    refine_beginner_grid_plan_v1(
+            .map(
+                |(_primary_score, seed_point, seed_plan, _configured_profile)| {
+                    control.checkpoint()?;
+                    let initial_plan = seed_plan.clone();
+                    let (
+                        point,
+                        plan,
+                        refinement_iterations,
+                        strict_improvements,
+                        refinement_starts,
+                    ) = refine_beginner_grid_plan_v1(
                         project.project_id,
                         project.editor.pattern(),
                         &project.editor.paper().boundary_vertices,
@@ -3525,90 +4015,161 @@ pub(super) fn evaluate_beginner_parameter_grid(
                         reference.as_ref(),
                         &work,
                         control.deadline,
-                        point,
-                        plan,
+                        seed_point,
+                        seed_plan,
                     )?;
-                control.checkpoint()?;
-                let detail_penalty =
-                    if point.detail_level == profile.generation_constraints.detail_level {
-                        0
-                    } else {
-                        10
-                    };
-                let primary_score = 1000_u16.saturating_sub(
-                    u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
-                        + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5
-                        + detail_penalty,
-                );
-                let assessment = assess_beginner_generated_plan_with_control_v1(
-                    project.project_id,
-                    project.editor.paper(),
-                    project.editor.pattern(),
-                    &plan,
-                    reference.as_ref(),
-                    control.deadline,
-                    Some(&work.cancelled),
-                );
-                control.checkpoint()?;
-                let global_proof_scope = assessment.proof_scope;
-                let outcome_reason = assessment.reason;
-                let complexity_score = u8::try_from(
-                    plan.crease_pattern.edges.len().saturating_mul(10)
-                        + match point.detail_level {
-                            ori_domain::BeginnerDetailLevelV1::Simple => 10,
-                            ori_domain::BeginnerDetailLevelV1::Standard => 20,
-                            ori_domain::BeginnerDetailLevelV1::Detailed => 30,
-                        },
-                )
-                .unwrap_or(100)
-                .min(100);
-                let contour_witness =
-                    beginner_contour_placement_witness(&profile.generation_constraints, &plan)
-                        .ok_or_else(|| "grid_contour_witness_invalid".to_owned())?;
-                let paper_efficiency_score =
-                    beginner_plan_paper_efficiency_score_v1(&plan, project.editor.paper());
-                work.global_checked.fetch_add(1, Ordering::Release);
-                Ok(BeginnerGridCandidateResponse {
-                    point,
-                    primary_score,
-                    plan,
-                    assessment,
-                    local_proof_scope: "necessary",
-                    global_proof_scope,
-                    complexity_score,
-                    paper_efficiency_score,
-                    scale_deviation_penalty: u16::from(
-                        point.scale_percent.abs_diff(estimate.scale_percent),
-                    ) * 10,
-                    spacing_deviation_penalty: u16::from(
-                        point.spacing_percent.abs_diff(estimate.spacing_percent),
-                    ) * 5,
-                    detail_mismatch_penalty: detail_penalty,
-                    outcome_reason,
-                    contour_witness,
-                    refinement_iterations,
-                    strict_improvements,
-                    refinement_starts,
-                })
-            })
+                    control.checkpoint()?;
+                    if !beginner_grid_refined_point_is_in_domain_v1(&grid, point)
+                        || !beginner_grid_refinement_metadata_is_valid_v1(
+                            seed_point,
+                            point,
+                            reference.is_some(),
+                            refinement_iterations,
+                            strict_improvements,
+                            refinement_starts,
+                        )
+                        || !beginner_grid_refinement_score_is_valid_v1(
+                            &initial_plan,
+                            &plan,
+                            reference.as_ref(),
+                            profile,
+                            strict_improvements,
+                        )
+                    {
+                        return Err("grid_refinement_contract_invalid".to_owned());
+                    }
+                    let configured_profile =
+                        temporary_symmetric_profile_for_grid(profile, point)
+                            .map_err(|_| "grid_contour_witness_invalid".to_owned())?;
+                    let detail_penalty =
+                        if point.detail_level == profile.generation_constraints.detail_level {
+                            0
+                        } else {
+                            10
+                        };
+                    let primary_score = 1000_u16.saturating_sub(
+                        u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
+                            + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent))
+                                * 5
+                            + detail_penalty,
+                    );
+                    let assessment = assess_beginner_generated_plan_with_control_v1(
+                        project.project_id,
+                        project.editor.paper(),
+                        project.editor.pattern(),
+                        &plan,
+                        reference.as_ref(),
+                        control.deadline,
+                        Some(&work.cancelled),
+                    );
+                    control.checkpoint()?;
+                    let global_proof_scope = assessment.proof_scope;
+                    let outcome_reason = assessment.reason;
+                    let complexity_score = u8::try_from(
+                        plan.crease_pattern.edges.len().saturating_mul(10)
+                            + match point.detail_level {
+                                ori_domain::BeginnerDetailLevelV1::Simple => 10,
+                                ori_domain::BeginnerDetailLevelV1::Standard => 20,
+                                ori_domain::BeginnerDetailLevelV1::Detailed => 30,
+                            },
+                    )
+                    .unwrap_or(100)
+                    .min(100);
+                    let contour_witness = beginner_contour_placement_witness(
+                        &configured_profile.generation_constraints,
+                        &plan,
+                    )
+                    .ok_or_else(|| "grid_contour_witness_invalid".to_owned())?;
+                    let paper_efficiency_score =
+                        beginner_plan_paper_efficiency_score_v1(&plan, project.editor.paper());
+                    work.global_checked.fetch_add(1, Ordering::Release);
+                    Ok(BeginnerGridCandidateResponse {
+                        point,
+                        primary_score,
+                        plan,
+                        assessment,
+                        local_proof_scope: "necessary",
+                        global_proof_scope,
+                        complexity_score,
+                        paper_efficiency_score,
+                        scale_deviation_penalty: u16::from(
+                            point.scale_percent.abs_diff(estimate.scale_percent),
+                        ) * 10,
+                        spacing_deviation_penalty: u16::from(
+                            point.spacing_percent.abs_diff(estimate.spacing_percent),
+                        ) * 5,
+                        detail_mismatch_penalty: detail_penalty,
+                        outcome_reason,
+                        contour_witness,
+                        refinement_iterations,
+                        strict_improvements,
+                        refinement_starts,
+                    })
+                },
+            )
             .collect::<Result<Vec<_>, String>>()?;
         control.checkpoint()?;
+        let global_checked_candidates = work.global_checked.load(Ordering::Acquire).min(255) as u8;
+        if global_checked_candidates != 3 {
+            return Err("grid_global_candidate_count_invalid".to_owned());
+        }
         candidates
             .retain(|candidate| candidate.assessment.reason != "folded_pose_simulation_failed");
+        canonicalize_beginner_grid_candidates_v1(&mut candidates);
         if candidates.is_empty() {
             return Err("grid_folded_simulation_unavailable".to_owned());
         }
         let current = lock_project(&state)?;
         beginner_candidate_snapshot_is_current_v1(&current, &snapshot)?;
         control.checkpoint()?;
-        Ok(BeginnerGridEvaluationResponse {
-            request_generation_id,
+        let grid_hash = ori_domain::beginner_parameter_grid_hash_v1(&grid);
+        let apply_authority = BeginnerGridApplyAuthorityV1 {
+            authority_token: *work
+                .authority_token
+                .get()
+                .ok_or_else(|| "grid_candidate_authority_invalid".to_owned())?,
             project_instance_id: project.instance_id,
             project_id: project.project_id,
             revision: snapshot.expectation.revision,
-            grid_hash: ori_domain::beginner_parameter_grid_hash_v1(&grid),
+            profile_sha256: beginner_profile_authority_sha256_v1(profile)?,
+            grid_hash,
+            candidates: candidates
+                .iter()
+                .map(|candidate| {
+                    let edge = candidate
+                        .plan
+                        .crease_pattern
+                        .edges
+                        .first()
+                        .ok_or_else(|| "grid_candidate_authority_invalid".to_owned())?;
+                    Ok(BeginnerGridCandidateAuthorityV1 {
+                        point: candidate.point,
+                        expected_candidate_edge_id: edge.id,
+                        topology_authority_hash: candidate.contour_witness.topology_authority_hash,
+                        plan_sha256: beginner_grid_plan_authority_sha256_v1(&candidate.plan)?,
+                        assessment_sha256: beginner_grid_assessment_authority_sha256_v1(
+                            &candidate.assessment,
+                        )?,
+                        refinement_iterations: candidate.refinement_iterations,
+                        strict_improvements: candidate.strict_improvements,
+                        refinement_starts: candidate.refinement_starts,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        };
+        *lock_recovering_registry_v1(&work.apply_authority) = Some(apply_authority);
+        Ok(BeginnerGridEvaluationResponse {
+            request_generation_id,
+            authority_token: *work
+                .authority_token
+                .get()
+                .ok_or_else(|| "grid_candidate_authority_invalid".to_owned())?,
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision: snapshot.expectation.revision,
+            grid_hash,
             evaluated_grid_points: ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1 as u8,
-            global_checked_candidates: 3,
+            global_checked_candidates,
             refinement_iterations: work
                 .refinement_iterations
                 .load(Ordering::Acquire)
@@ -3663,8 +4224,209 @@ pub(super) fn cancel_beginner_parameter_grid(
     let work = registry
         .get(&request_generation_id)
         .ok_or_else(|| "grid_generation_not_running".to_owned())?;
-    request_work_cancellation_v1(&work.cancelled, &work.terminal);
+    if work.apply_consumed.load(Ordering::Acquire) {
+        return Err("grid_generation_already_applied".to_owned());
+    }
+    match work.terminal.load(Ordering::Acquire) {
+        0 | 1 => {
+            // The registry mutex also serializes finish and the final apply
+            // commit. Publishing cancellation and its terminal state here
+            // therefore gives cancel/apply one deterministic winner.
+            work.cancelled.store(true, Ordering::Release);
+            work.terminal.store(2, Ordering::Release);
+            *lock_recovering_registry_v1(&work.apply_authority) = None;
+        }
+        2 => {}
+        _ => return Err("grid_generation_not_running".to_owned()),
+    }
     Ok(())
+}
+
+fn canonical_general_tree_segments_v1(
+    source: &[ori_domain::BeginnerSkeletonSegmentV1],
+) -> Option<Vec<ori_domain::BeginnerSkeletonSegmentV1>> {
+    let default_segment =
+        |id, start_x, start_y, end_x, end_y| ori_domain::BeginnerSkeletonSegmentV1 {
+            id,
+            start: ori_domain::BeginnerSkeletonPointV1 {
+                x_tenths_mm: start_x,
+                y_tenths_mm: start_y,
+            },
+            end: ori_domain::BeginnerSkeletonPointV1 {
+                x_tenths_mm: end_x,
+                y_tenths_mm: end_y,
+            },
+            thickness_tenths_mm: 50,
+        };
+    let fallback = || {
+        vec![
+            default_segment(1, -500, 0, 0, 500),
+            default_segment(2, 500, 0, 0, 500),
+            default_segment(3, 0, -500, 0, 500),
+        ]
+    };
+    let bounds = source
+        .iter()
+        .flat_map(|segment| [segment.start, segment.end])
+        .fold(
+            (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
+            |(min_x, max_x, min_y, max_y), point| {
+                (
+                    min_x.min(point.x_tenths_mm),
+                    max_x.max(point.x_tenths_mm),
+                    min_y.min(point.y_tenths_mm),
+                    max_y.max(point.y_tenths_mm),
+                )
+            },
+        );
+    if source.is_empty() {
+        return Some(fallback());
+    }
+    if ori_domain::beginner_generic_tree_length_ratios_v1(source).is_none()
+        || bounds.1.saturating_sub(bounds.0) < 9
+        || bounds.3.saturating_sub(bounds.2) < 9
+    {
+        return None;
+    }
+    ori_domain::canonical_beginner_generic_tree_segments_v1(source)
+}
+
+fn configure_general_symmetric_profile_v1(
+    profile: &mut ori_domain::BeginnerDesignProfileV1,
+    estimate: ori_domain::BeginnerSymmetricParameterEstimateV1,
+    scale_percent: u8,
+    spacing_percent: u8,
+) -> bool {
+    let count = usize::from(estimate.protrusion_count);
+    if !(2..=usize::from(ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1)).contains(&count) {
+        return false;
+    }
+    let Some(canonical_tree) =
+        canonical_general_tree_segments_v1(&profile.generation_constraints.skeleton_segments)
+    else {
+        return false;
+    };
+    profile.generation_constraints.skeleton_segments = canonical_tree;
+
+    let mut existing = profile.generation_constraints.protrusions.clone();
+    existing.sort_unstable_by_key(|target| target.id);
+    let reusable_source_ids =
+        existing.len() == count && existing.windows(2).all(|pair| pair[0].id < pair[1].id);
+    let structurally_singleton = reusable_source_ids
+        && existing.iter().all(|target| {
+            target.count == 1 && target.symmetry == ori_domain::BeginnerProtrusionSymmetryV1::None
+        });
+    if structurally_singleton {
+        for target in &mut existing {
+            target.length_tenths_mm = target
+                .length_tenths_mm
+                .saturating_mul(u32::from(scale_percent))
+                .checked_div(27)
+                .unwrap_or(1)
+                .clamp(1, 1_000_000);
+            target.thickness_tenths_mm = u16::try_from(
+                u32::from(target.thickness_tenths_mm)
+                    .saturating_mul(u32::from(spacing_percent))
+                    .checked_div(50)
+                    .unwrap_or(1)
+                    .clamp(1, 10_000),
+            )
+            .unwrap_or(10_000);
+        }
+        let mut candidate_constraints = profile.generation_constraints.clone();
+        candidate_constraints.protrusions = existing.clone();
+        if ori_domain::beginner_target_approximation_score_v1(&candidate_constraints) > 0 {
+            profile.generation_constraints.protrusions = existing;
+            return true;
+        }
+    }
+
+    let bounds = profile
+        .generation_constraints
+        .skeleton_segments
+        .iter()
+        .flat_map(|segment| {
+            [
+                (segment.start.x_tenths_mm, segment.start.y_tenths_mm),
+                (segment.end.x_tenths_mm, segment.end.y_tenths_mm),
+            ]
+        })
+        .fold(
+            (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
+            |(min_x, max_x, min_y, max_y), (x, y)| {
+                (min_x.min(x), max_x.max(x), min_y.min(y), max_y.max(y))
+            },
+        );
+    let (minimum_x, maximum_x, minimum_y, maximum_y) = bounds;
+    let axis_x = i64::from(minimum_x)
+        .checked_add(i64::from(maximum_x))
+        .and_then(|value| i32::try_from(value / 2).ok())
+        .unwrap_or(0);
+    let span_y = i64::from(maximum_y) - i64::from(minimum_y);
+    let prototype = profile
+        .generation_constraints
+        .protrusions
+        .iter()
+        .min_by_key(|target| target.id)
+        .cloned()
+        .unwrap_or(ori_domain::BeginnerProtrusionTargetV1 {
+            id: 1,
+            count: 1,
+            length_tenths_mm: u32::from(scale_percent) * 10,
+            thickness_tenths_mm: u16::from(spacing_percent) * 2,
+            root_width_tenths_mm: None,
+            tip_width_tenths_mm: None,
+            local_outline_tenths_mm: None,
+            position_tenths_mm: [axis_x, 0, 0],
+            direction_milli: [1_000, 0, 0],
+            symmetry: ori_domain::BeginnerProtrusionSymmetryV1::None,
+            curvature_degrees: 0,
+            joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+            motion_degrees: [0, 0],
+            side: ori_domain::BeginnerProtrusionSideV1::Either,
+            priority: 50,
+        });
+    profile.generation_constraints.protrusions = (0..count)
+        .map(|index| {
+            let mut target = if reusable_source_ids {
+                existing[index].clone()
+            } else {
+                prototype.clone()
+            };
+            target.id = if reusable_source_ids {
+                existing[index].id
+            } else {
+                u16::try_from(index + 1).unwrap_or(u16::MAX)
+            };
+            target.count = 1;
+            target.length_tenths_mm = u32::from(scale_percent) * 10;
+            target.thickness_tenths_mm = u16::from(spacing_percent) * 2;
+            target.root_width_tenths_mm = None;
+            target.tip_width_tenths_mm = None;
+            target.local_outline_tenths_mm = None;
+            let y = i64::from(minimum_y)
+                .checked_add(
+                    span_y
+                        .saturating_mul(i64::try_from(index + 1).unwrap_or(i64::MAX))
+                        .checked_div(i64::try_from(count + 1).unwrap_or(1))
+                        .unwrap_or(0),
+                )
+                .and_then(|value| i32::try_from(value).ok())
+                .unwrap_or(0);
+            target.position_tenths_mm = [axis_x, y, 0];
+            target.direction_milli = if index % 2 == 0 {
+                [1_000, 0, 0]
+            } else {
+                [-1_000, 0, 0]
+            };
+            target.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::None;
+            target
+        })
+        .collect();
+    for bulge in &mut profile.generation_constraints.bulge_targets {
+        bulge.reference_surface_binding = None;
+    }
+    true
 }
 
 pub(super) fn configure_symmetric_profile(
@@ -3672,7 +4434,23 @@ pub(super) fn configure_symmetric_profile(
     estimate: ori_domain::BeginnerSymmetricParameterEstimateV1,
     scale_percent: u8,
     spacing_percent: u8,
-) {
+) -> bool {
+    if !(1..=ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1)
+        .contains(&estimate.protrusion_count)
+    {
+        return false;
+    }
+    profile.generation_provenance = None;
+    if symmetric_plan_kind(profile)
+        == Some(ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+    {
+        return configure_general_symmetric_profile_v1(
+            profile,
+            estimate,
+            scale_percent,
+            spacing_percent,
+        );
+    }
     let insect = profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Insect);
     let single_tail = profile
@@ -4023,6 +4801,7 @@ pub(super) fn configure_symmetric_profile(
             }
         }
     }
+    true
 }
 
 #[tauri::command]
@@ -4051,7 +4830,9 @@ pub(super) fn apply_beginner_symmetric_parameters(
     if live != expected_estimate {
         return Err("symmetric_parameter_estimate_stale".to_owned());
     }
-    configure_symmetric_profile(&mut profile, live, scale_percent, spacing_percent);
+    if !configure_symmetric_profile(&mut profile, live, scale_percent, spacing_percent) {
+        return Err("symmetric_parameter_profile_invalid".to_owned());
+    }
     execute_expected_command(
         &mut project,
         expectation,
@@ -4084,6 +4865,7 @@ pub(super) fn archive_beginner_reference_model_asset(
         return Err("reference_model_asset_stale".to_owned());
     }
     let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_provenance = None;
     profile
         .archived_reference_model_asset_ids
         .retain(|id| *id != asset_id);
@@ -4123,6 +4905,399 @@ pub(super) fn apply_beginner_generated_plan(
         selected_kind,
         expected_candidate_edge_id,
     )
+}
+
+fn beginner_source_asset_content_sha256_v1(
+    project: &ProjectState,
+    profile: &ori_domain::BeginnerDesignProfileV1,
+) -> Result<Option<[u8; 32]>, String> {
+    match profile.generation_constraints.target_asset {
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage { asset_id, .. }) => {
+            project
+                .texture_assets
+                .iter()
+                .find(|asset| asset.id == asset_id)
+                .map(|asset| Some(sha2::Sha256::digest(&asset.bytes).into()))
+                .ok_or_else(|| "beginner_source_asset_stale".to_owned())
+        }
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) => project
+            .reference_model_assets
+            .iter()
+            .find(|asset| asset.id == asset_id)
+            .map(|asset| Some(sha2::Sha256::digest(&asset.bytes).into()))
+            .ok_or_else(|| "beginner_source_asset_stale".to_owned()),
+        None => Ok(None),
+    }
+}
+
+fn beginner_source_asset_fingerprint_v1(
+    project: &ProjectState,
+    profile: &ori_domain::BeginnerDesignProfileV1,
+) -> Result<String, String> {
+    beginner_source_asset_content_sha256_v1(project, profile).map(|digest| {
+        digest.map_or_else(
+            || "none".to_owned(),
+            |digest| {
+                format!(
+                    "sha256:{}",
+                    digest
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                )
+            },
+        )
+    })
+}
+
+fn build_beginner_reference_consensus_provenance_v1(
+    project: &ProjectState,
+    profile: &ori_domain::BeginnerDesignProfileV1,
+    expected_revision: u64,
+) -> Result<Option<ori_domain::BeginnerReferenceConsensusProvenanceV1>, String> {
+    profile
+        .reference_consensus_v1
+        .as_ref()
+        .map(|consensus| {
+            let analysis = beginner_reference_consensus_analysis_v1(project, None)
+                .ok_or_else(|| "reference_consensus_analysis_unavailable".to_owned())?;
+            Ok(ori_domain::BeginnerReferenceConsensusProvenanceV1 {
+                schema_version: 1,
+                source_revision: expected_revision,
+                bindings: consensus.bindings.clone(),
+                excluded_asset_id: consensus.excluded_asset_id,
+                pair_digests_sha256: analysis
+                    .pairs
+                    .iter()
+                    .map(|pair| pair.pair_digest_sha256)
+                    .collect(),
+                summary: ori_domain::BeginnerReferenceConsensusSummaryV1 {
+                    schema_version: 1,
+                    model: "component_extent_branch_v1".to_owned(),
+                    source_count: consensus.bindings.len() as u8,
+                    excluded_count: u8::from(consensus.excluded_asset_id.is_some()),
+                    agreement_score: analysis.agreement_score,
+                    component_subscore: analysis
+                        .pairs
+                        .iter()
+                        .map(|pair| 100_u16.saturating_sub(u16::from(pair.component_error) * 20))
+                        .sum::<u16>()
+                        .checked_div(analysis.pairs.len() as u16)
+                        .unwrap_or(0) as u8,
+                    extent_subscore: analysis
+                        .pairs
+                        .iter()
+                        .map(|pair| {
+                            100_u16.saturating_sub(u16::from(pair.normalized_extent_error) * 2)
+                        })
+                        .sum::<u16>()
+                        .checked_div(analysis.pairs.len() as u16)
+                        .unwrap_or(0) as u8,
+                    branch_subscore: analysis
+                        .pairs
+                        .iter()
+                        .map(|pair| 100_u16.saturating_sub(u16::from(pair.branch_error) * 10))
+                        .sum::<u16>()
+                        .checked_div(analysis.pairs.len() as u16)
+                        .unwrap_or(0) as u8,
+                },
+            })
+        })
+        .transpose()
+}
+
+pub(super) fn build_beginner_generic_tree_provenance_v1(
+    project: &ProjectState,
+    profile: &mut ori_domain::BeginnerDesignProfileV1,
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    require_grid_orientation: bool,
+) -> Result<Option<ori_domain::BeginnerGenericTreeProvenanceV1>, String> {
+    if plan.kind != ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+        return Ok(None);
+    }
+    let segments =
+        canonical_generic_tree_segments_v1(&profile.generation_constraints.skeleton_segments)
+            .ok_or_else(|| "grid_candidate_tree_provenance_invalid".to_owned())?;
+    if plan.skeleton_segments != segments {
+        return Err("grid_candidate_tree_provenance_invalid".to_owned());
+    }
+    let ratios = ori_domain::beginner_generic_tree_length_ratios_v1(&segments)
+        .ok_or_else(|| "grid_candidate_tree_ratio_provenance_invalid".to_owned())?;
+    let point = |point: ori_domain::BeginnerSkeletonPointV1| (point.x_tenths_mm, point.y_tenths_mm);
+    let mut degree = std::collections::BTreeMap::<(i32, i32), usize>::new();
+    for segment in &segments {
+        *degree.entry(point(segment.start)).or_default() += 1;
+        *degree.entry(point(segment.end)).or_default() += 1;
+    }
+    let leaves = degree.values().filter(|degree| **degree == 1).count();
+    let axial_instruction = format!(
+        "bounded_tree_river_axial_v1:{}",
+        ratios
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let topology_instruction = format!(
+        "bounded_tree_branch_topology_v1:nodes={}:leaves={}:bars={}",
+        degree.len(),
+        leaves,
+        segments.len()
+    );
+    let has_radial_corner_support = beginner_plan_has_radial_corner_support_v1(plan);
+    let topology_index = if has_radial_corner_support { 2 } else { 1 };
+    if plan.instruction_codes.first() != Some(&axial_instruction)
+        || plan.instruction_codes.get(topology_index) != Some(&topology_instruction)
+    {
+        return Err("grid_candidate_tree_ratio_provenance_invalid".to_owned());
+    }
+    let orientation = if require_grid_orientation {
+        if plan.instruction_codes.len() != topology_index + 2 {
+            return Err("grid_candidate_tree_orientation_provenance_invalid".to_owned());
+        }
+        match plan.instruction_codes.last().map(String::as_str) {
+            Some("bounded_tree_paper_orientation_v1:horizontal") => {
+                ori_domain::BeginnerGenericTreeOrientationV1::Horizontal
+            }
+            Some("bounded_tree_paper_orientation_v1:vertical") => {
+                ori_domain::BeginnerGenericTreeOrientationV1::Vertical
+            }
+            _ => {
+                return Err("grid_candidate_tree_orientation_provenance_invalid".to_owned());
+            }
+        }
+    } else if plan.instruction_codes.len() == topology_index + 1 {
+        ori_domain::BeginnerGenericTreeOrientationV1::Horizontal
+    } else {
+        return Err("grid_candidate_tree_ratio_provenance_invalid".to_owned());
+    };
+    let source = match profile.generation_constraints.target_asset {
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage { .. }) => {
+            ori_domain::BeginnerGenericTreeSourceV1::ImageSilhouette
+        }
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { .. }) => {
+            ori_domain::BeginnerGenericTreeSourceV1::GlbGeometry
+        }
+        None => ori_domain::BeginnerGenericTreeSourceV1::ManualSkeleton,
+    };
+    let asset_content_sha256 = beginner_source_asset_content_sha256_v1(project, profile)?;
+    let tree_topology_sha256: [u8; 32] = sha2::Sha256::digest(
+        serde_json::to_vec(&segments)
+            .map_err(|_| "grid_candidate_tree_provenance_invalid".to_owned())?,
+    )
+    .into();
+    let canonical_root = point(segments[0].start);
+    let mut depths = std::collections::BTreeMap::from([(canonical_root, 0_u8)]);
+    while depths.len() <= segments.len() {
+        let before = depths.len();
+        for segment in &segments {
+            let start = point(segment.start);
+            let end = point(segment.end);
+            match (depths.get(&start).copied(), depths.get(&end).copied()) {
+                (Some(depth), None) => {
+                    depths.insert(end, depth.saturating_add(1));
+                }
+                (None, Some(depth)) => {
+                    depths.insert(start, depth.saturating_add(1));
+                }
+                _ => {}
+            }
+        }
+        if depths.len() == before {
+            break;
+        }
+    }
+    if depths.len() != degree.len() {
+        return Err("grid_candidate_tree_provenance_invalid".to_owned());
+    }
+    let mut proposal_steps = segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let start_depth = depths
+                .get(&point(segment.start))
+                .copied()
+                .unwrap_or(u8::MAX);
+            let end_depth = depths
+                .get(&point(segment.end))
+                .copied()
+                .unwrap_or(u8::MAX);
+            ori_domain::BeginnerGenericTreeInstructionStepV1 {
+                canonical_crease_id: format!("tree-river-{:04}", segment.id),
+                tree_depth: start_depth.min(end_depth),
+                assignment: if index % 2 == 0 {
+                    "valley"
+                } else {
+                    "mountain"
+                }
+                .to_owned(),
+                target_branch: format!("branch-{:04}", segment.id),
+                fixed_side: "root".to_owned(),
+                caution: "Read-only declarative proposal; no physical-motion proof. Confirm only after checking the folded preview.".to_owned(),
+            }
+        })
+        .collect::<Vec<_>>();
+    proposal_steps.sort_by(|left, right| {
+        (left.tree_depth, &left.canonical_crease_id)
+            .cmp(&(right.tree_depth, &right.canonical_crease_id))
+    });
+    profile.generation_constraints.skeleton_segments = segments;
+    Ok(Some(ori_domain::BeginnerGenericTreeProvenanceV1 {
+        schema_version: 1,
+        target_category: (profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::CustomObject))
+        .then_some(ori_domain::BeginnerTargetCategoryV1::CustomObject),
+        source,
+        asset_content_sha256,
+        tree_topology_sha256,
+        normalized_length_ratios: ratios,
+        orientation,
+        generator_version: 1,
+        authorizes_apply: false,
+        instruction_proposal: Some(ori_domain::BeginnerGenericTreeInstructionProposalV1 {
+            schema_version: 1,
+            topology_sha256: tree_topology_sha256,
+            generator_version: 1,
+            authorizes_apply: false,
+            physical_motion_proof: false,
+            steps: proposal_steps,
+        }),
+    }))
+}
+
+const MAX_BEGINNER_RADIAL_SECTORS_V1: usize = 24;
+
+pub(super) fn beginner_plan_has_radial_corner_support_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+) -> bool {
+    let mut support_codes = plan
+        .instruction_codes
+        .iter()
+        .filter(|code| code.starts_with("bounded_radial_corner_support_v1:"));
+    let Some(code) = support_codes.next() else {
+        return false;
+    };
+    if support_codes.next().is_some() {
+        return false;
+    }
+    let Some((added, covered)) = code
+        .strip_prefix("bounded_radial_corner_support_v1:added=")
+        .and_then(|payload| payload.split_once(":covered="))
+    else {
+        return false;
+    };
+    let maximum_added =
+        if plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+            5
+        } else {
+            4
+        };
+    let instruction_is_valid = added
+        .parse::<u8>()
+        .ok()
+        .zip(covered.parse::<u8>().ok())
+        .is_some_and(|(added, covered)| added <= maximum_added && covered == 4);
+    if !instruction_is_valid {
+        return false;
+    }
+    let physical_edges = plan
+        .crease_pattern
+        .edges
+        .iter()
+        .filter(|edge| {
+            matches!(
+                edge.kind,
+                ori_domain::EdgeKind::Mountain | ori_domain::EdgeKind::Valley
+            )
+        })
+        .collect::<Vec<_>>();
+    if !(4..=MAX_BEGINNER_RADIAL_SECTORS_V1).contains(&physical_edges.len())
+        || !physical_edges.len().is_multiple_of(2)
+    {
+        return false;
+    }
+    let Some(first) = physical_edges.first() else {
+        return false;
+    };
+    let mut center_candidates = [first.start, first.end].into_iter().filter(|candidate| {
+        physical_edges
+            .iter()
+            .all(|edge| edge.start == *candidate || edge.end == *candidate)
+    });
+    let Some(center_id) = center_candidates.next() else {
+        return false;
+    };
+    if center_candidates.next().is_some() {
+        return false;
+    }
+    let position_for = |id| {
+        plan.crease_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == id)
+            .map(|vertex| vertex.position)
+    };
+    let Some(center) = position_for(center_id) else {
+        return false;
+    };
+    let mut endpoints = Vec::with_capacity(physical_edges.len());
+    for edge in physical_edges {
+        let endpoint_id = if edge.start == center_id {
+            edge.end
+        } else if edge.end == center_id {
+            edge.start
+        } else {
+            return false;
+        };
+        let Some(endpoint) = position_for(endpoint_id) else {
+            return false;
+        };
+        if endpoint == center
+            || !endpoint.x.is_finite()
+            || !endpoint.y.is_finite()
+            || endpoints.contains(&endpoint)
+        {
+            return false;
+        }
+        endpoints.push(endpoint);
+    }
+    let bounds = endpoints.iter().fold(
+        [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |mut bounds, point| {
+            bounds[0] = bounds[0].min(point.x);
+            bounds[1] = bounds[1].max(point.x);
+            bounds[2] = bounds[2].min(point.y);
+            bounds[3] = bounds[3].max(point.y);
+            bounds
+        },
+    );
+    if !bounds.into_iter().all(f64::is_finite)
+        || bounds[0] >= bounds[1]
+        || bounds[2] >= bounds[3]
+        || !(bounds[0]..bounds[1]).contains(&center.x)
+        || !(bounds[2]..bounds[3]).contains(&center.y)
+        || endpoints.iter().any(|point| {
+            !((point.x == bounds[0] || point.x == bounds[1])
+                && (bounds[2]..=bounds[3]).contains(&point.y)
+                || (point.y == bounds[2] || point.y == bounds[3])
+                    && (bounds[0]..=bounds[1]).contains(&point.x))
+        })
+    {
+        return false;
+    }
+    [
+        Point2::new(bounds[0], bounds[2]),
+        Point2::new(bounds[1], bounds[2]),
+        Point2::new(bounds[1], bounds[3]),
+        Point2::new(bounds[0], bounds[3]),
+    ]
+    .into_iter()
+    .all(|corner| endpoints.contains(&corner))
 }
 
 pub(super) fn apply_beginner_generated_plan_document(
@@ -4199,6 +5374,7 @@ pub(super) fn apply_beginner_generated_plan_document(
         .into_iter()
         .find(|plan| plan.kind == selected_kind)
         .ok_or_else(|| "the generated plan is no longer available".to_owned())?;
+    let has_radial_corner_support = beginner_plan_has_radial_corner_support_v1(&plan);
     let semantic_landmark_provenance = plan.semantic_landmark_provenance.clone();
     if plan.crease_pattern.edges.first().map(|edge| edge.id) != Some(expected_candidate_edge_id) {
         return Err("the generated candidate identity changed before apply".to_owned());
@@ -4234,49 +5410,67 @@ pub(super) fn apply_beginner_generated_plan_document(
             assessment.reason
         ));
     }
-    let mut certificate_pattern = project.editor.pattern().clone();
-    for vertex in &plan.crease_pattern.vertices {
-        if !certificate_pattern
-            .vertices
-            .iter()
-            .any(|current| current.id == vertex.id)
-        {
-            certificate_pattern.vertices.push(vertex.clone());
-        }
-    }
-    certificate_pattern
-        .edges
-        .extend(plan.crease_pattern.edges.iter().cloned());
-    let certificate_editor =
-        EditorState::with_paper(certificate_pattern.clone(), project.editor.paper().clone());
-    let certificate_topology = certificate_editor
-        .topology_analysis_input(project.project_id)
-        .analyze();
-    let fold_path_certificate_sha256 = certify_beginner_fold_path_v1(
-        &plan,
+    let topology_witness = (selected_kind
+        == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+        .then(|| {
+            beginner_contour_placement_witness(&expected_profile.generation_constraints, &plan)
+                .ok_or_else(|| "the generated plan topology changed before apply".to_owned())
+        })
+        .transpose()?;
+    let (mut pattern, paper) = materialize_beginner_boundary_splits_v1(
+        project.editor.pattern(),
         project.editor.paper(),
-        &certificate_pattern,
-        certificate_topology
-            .simulation_snapshot()
-            .ok_or_else(|| "the generated plan topology changed before apply".to_owned())?,
+        &plan,
     )
-    .ok_or_else(|| "the generated plan fold path changed before apply".to_owned())?;
-    let mut pattern = project.editor.pattern().clone();
-    for vertex in plan.crease_pattern.vertices {
-        if !pattern
+    .map_err(str::to_owned)?;
+    for vertex in &plan.crease_pattern.vertices {
+        if let Some(current) = pattern
             .vertices
             .iter()
-            .any(|current| current.id == vertex.id)
+            .find(|current| current.id == vertex.id)
         {
-            pattern.vertices.push(vertex);
+            if current != vertex {
+                return Err(
+                    "the generated candidate vertex identity changed before apply".to_owned(),
+                );
+            }
+        } else {
+            pattern.vertices.push(vertex.clone());
         }
     }
-    for edge in plan.crease_pattern.edges {
+    for edge in &plan.crease_pattern.edges {
         if pattern.edges.iter().any(|current| current.id == edge.id) {
             return Err("the generated plan was already applied".to_owned());
         }
-        pattern.edges.push(edge);
+        pattern.edges.push(edge.clone());
     }
+    let certificate_editor = EditorState::with_paper(pattern.clone(), paper.clone());
+    let certificate_topology = certificate_editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let certificate_control = ori_collision::CooperativeOperationControlV1::new(
+        None,
+        std::time::Instant::now() + std::time::Duration::from_millis(750),
+    );
+    let fold_path_certificate_sha256 = certify_beginner_fold_path_with_control_v1(
+        &plan,
+        &paper,
+        &pattern,
+        certificate_topology
+            .simulation_snapshot()
+            .ok_or_else(|| "the generated plan topology changed before apply".to_owned())?,
+        &certificate_control,
+    )
+    .ok_or_else(|| "the generated plan fold path changed before apply".to_owned())?;
+    let mut beginner_design_profile = project.editor.beginner_design_profile().clone();
+    let generic_tree = build_beginner_generic_tree_provenance_v1(
+        &project,
+        &mut beginner_design_profile,
+        &plan,
+        false,
+    )?;
+    let source_asset_fingerprint =
+        beginner_source_asset_fingerprint_v1(&project, &beginner_design_profile)?;
     let mut instruction_timeline = project.editor.instruction_timeline().clone();
     let (title, description, caution) = match selected_kind {
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase => (
@@ -4302,8 +5496,8 @@ pub(super) fn apply_beginner_generated_plan_document(
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase => (
             "Asymmetric insect landmark base",
-            "Apply the certified four-ray geometry bound to ten ordered insect landmarks.",
-            "Head, tail, two wings, and six legs retain bounded semantic provenance grouped by ray digest.",
+            "Apply the certified four-ray geometry bound to ten ordered insect target landmarks.",
+            "All ten target bindings retain bounded semantic provenance grouped by ray digest.",
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase => (
             "Asymmetric fish landmark base",
@@ -4407,107 +5601,77 @@ pub(super) fn apply_beginner_generated_plan_document(
         ),
         _ => return Err("the selected generated plan is preview-only".to_owned()),
     };
-    if selected_kind != ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
-        let certificate_hex = fold_path_certificate_sha256
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        instruction_timeline.steps.push(InstructionStep {
-            id: InstructionStepId::new(),
-            title: title.to_owned(),
-            description: description.to_owned(),
-            caution: format!("{caution} Native fold-path certificate SHA-256: {certificate_hex}."),
-            duration_ms: 2_000,
-            visual: InstructionVisual::default(),
-            pose: InstructionPose {
-                model: InstructionPoseModel::DeclarativeOnlyV1,
-                source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
-                fixed_face: None,
-                hinge_angles: Vec::new(),
-            },
-        });
-    }
-    let paper = project.editor.paper().clone();
+    let certificate_hex = fold_path_certificate_sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let radial_corner_support_caution = if has_radial_corner_support {
+        " The certified radial fan reaches all four paper corners. The bounded path moves exactly one certified opposite hinge pair; every other hinge remains at zero angle."
+    } else {
+        ""
+    };
+    instruction_timeline.steps.push(InstructionStep {
+        id: InstructionStepId::new(),
+        title: title.to_owned(),
+        description: description.to_owned(),
+        caution: format!(
+            "{caution}{radial_corner_support_caution} Native fold-path certificate SHA-256: {certificate_hex}."
+        ),
+        duration_ms: 2_000,
+        visual: InstructionVisual::default(),
+        pose: InstructionPose {
+            model: InstructionPoseModel::DeclarativeOnlyV1,
+            source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        },
+    });
     let project_layers = project.editor.project_layers().clone();
-    let mut beginner_design_profile = project.editor.beginner_design_profile().clone();
-    let topology_authority_sha256: [u8; 32] = sha2::Sha256::digest(
-        serde_json::to_vec(&certificate_pattern)
-            .map_err(|_| "the generated plan topology could not be bound".to_owned())?,
-    )
-    .into();
-    let reference_consensus_provenance = beginner_design_profile
-        .reference_consensus_v1
-        .as_ref()
-        .map(|consensus| {
-            let analysis = beginner_reference_consensus_analysis_v1(&project, None)
-                .ok_or_else(|| "reference_consensus_analysis_unavailable".to_owned())?;
-            Ok::<_, String>(ori_domain::BeginnerReferenceConsensusProvenanceV1 {
-                schema_version: 1,
-                source_revision: expected_revision,
-                bindings: consensus.bindings.clone(),
-                excluded_asset_id: consensus.excluded_asset_id,
-                pair_digests_sha256: analysis
-                    .pairs
-                    .iter()
-                    .map(|pair| pair.pair_digest_sha256)
-                    .collect(),
-                summary: ori_domain::BeginnerReferenceConsensusSummaryV1 {
-                    schema_version: 1,
-                    model: "component_extent_branch_v1".to_owned(),
-                    source_count: consensus.bindings.len() as u8,
-                    excluded_count: u8::from(consensus.excluded_asset_id.is_some()),
-                    agreement_score: analysis.agreement_score,
-                    component_subscore: analysis
-                        .pairs
-                        .iter()
-                        .map(|pair| 100_u16.saturating_sub(u16::from(pair.component_error) * 20))
-                        .sum::<u16>()
-                        .checked_div(analysis.pairs.len() as u16)
-                        .unwrap_or(0) as u8,
-                    extent_subscore: analysis
-                        .pairs
-                        .iter()
-                        .map(|pair| {
-                            100_u16.saturating_sub(u16::from(pair.normalized_extent_error) * 2)
-                        })
-                        .sum::<u16>()
-                        .checked_div(analysis.pairs.len() as u16)
-                        .unwrap_or(0) as u8,
-                    branch_subscore: analysis
-                        .pairs
-                        .iter()
-                        .map(|pair| 100_u16.saturating_sub(u16::from(pair.branch_error) * 10))
-                        .sum::<u16>()
-                        .checked_div(analysis.pairs.len() as u16)
-                        .unwrap_or(0) as u8,
-                },
-            })
-        })
-        .transpose()?;
+    let topology_authority_sha256: [u8; 32] = topology_witness.as_ref().map_or_else(
+        || {
+            serde_json::to_vec(&pattern)
+                .map(|bytes| sha2::Sha256::digest(bytes).into())
+                .map_err(|_| "the generated plan topology could not be bound".to_owned())
+        },
+        |witness| Ok(witness.topology_authority_hash),
+    )?;
+    let reference_consensus_provenance = build_beginner_reference_consensus_provenance_v1(
+        &project,
+        &beginner_design_profile,
+        expected_revision,
+    )?;
+    let mut confidence_reasons = vec![
+        "native_topology_witness".to_owned(),
+        "bounded_native_fold_path_v2".to_owned(),
+    ];
+    if has_radial_corner_support {
+        confidence_reasons.push("bounded_radial_corner_support_v1".to_owned());
+    }
     beginner_design_profile.generation_provenance =
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
             topology_authority_sha256,
             fold_path_certificate_sha256: Some(fold_path_certificate_sha256),
+            document_authority_sha256: None,
             confidence_score: ori_domain::beginner_target_approximation_score_v1(
                 &beginner_design_profile.generation_constraints,
             ),
-            confidence_reasons: vec![
-                "native_topology_witness".to_owned(),
-                "bounded_native_fold_path_v2".to_owned(),
-            ],
+            confidence_reasons,
             explicit_override: false,
-            source_asset_fingerprint: beginner_design_profile
-                .generation_constraints
-                .target_asset
-                .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}")),
+            source_asset_fingerprint,
             semantic_landmark_provenance,
-            generic_tree: None,
+            generic_tree,
             reference_consensus_summary: reference_consensus_provenance
                 .as_ref()
                 .map(|value| value.summary.clone()),
             reference_consensus: reference_consensus_provenance,
         });
+    ori_core::bind_beginner_generation_document_authority_v1(
+        &pattern,
+        &paper,
+        &mut beginner_design_profile,
+    )
+    .ok_or_else(|| "the generated document authority could not be bound".to_owned())?;
     execute_expected_command(
         &mut project,
         ProjectExpectation::new(
@@ -4525,24 +5689,102 @@ pub(super) fn apply_beginner_generated_plan_document(
     )
 }
 
+#[cfg(test)]
 pub(super) fn apply_grid_plan_document(
     project: &mut ProjectState,
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     plan: ori_domain::BeginnerGeneratedPlanV1,
+    configured_profile: ori_domain::BeginnerDesignProfileV1,
+    certification_cancelled: Option<&AtomicBool>,
+) -> Result<ProjectSnapshot, String> {
+    apply_grid_plan_document_internal(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        plan,
+        configured_profile,
+        certification_cancelled,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_registered_grid_plan_document(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    plan: ori_domain::BeginnerGeneratedPlanV1,
+    configured_profile: ori_domain::BeginnerDesignProfileV1,
+    request_generation_id: ProjectId,
+    work: &Arc<BeginnerGridWork>,
+) -> Result<ProjectSnapshot, String> {
+    apply_grid_plan_document_internal(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        plan,
+        configured_profile,
+        Some(&work.cancelled),
+        Some((request_generation_id, work)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_grid_plan_document_internal(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    plan: ori_domain::BeginnerGeneratedPlanV1,
+    configured_profile: ori_domain::BeginnerDesignProfileV1,
+    certification_cancelled: Option<&AtomicBool>,
+    registered_work: Option<(ProjectId, &Arc<BeginnerGridWork>)>,
 ) -> Result<ProjectSnapshot, String> {
     let selected_kind = plan.kind;
-    let selected_instruction_codes = plan.instruction_codes.clone();
+    let has_radial_corner_support = beginner_plan_has_radial_corner_support_v1(&plan);
+    if !ori_domain::validate_beginner_design_profile_v1(&configured_profile)
+        || symmetric_plan_kind(&configured_profile) != Some(selected_kind)
+        || plan.target_parts != configured_profile.generation_constraints.target_parts
+        || plan.target_asset != configured_profile.generation_constraints.target_asset
+    {
+        return Err("grid_candidate_configured_profile_invalid".to_owned());
+    }
+    if !target_asset_reference_is_live(
+        project,
+        configured_profile.generation_constraints.target_asset,
+    ) {
+        return Err("grid_candidate_asset_stale".to_owned());
+    }
+    if !component_bridge_override_is_live_v1(project, &configured_profile) {
+        return Err("component_bridge_override_stale_or_disconnected".to_owned());
+    }
+    if !reference_consensus_is_live_v1(project, &configured_profile) {
+        return Err("reference_consensus_asset_binding_stale".to_owned());
+    }
+    let reference_suggestion = live_reference_model_suggestion_v1(project).ok();
+    if reference_suggestion
+        .as_ref()
+        .and_then(|reference| beginner_multi_reference_fusion_v1(project, reference))
+        .is_some_and(|fusion| !fusion.apply_allowed)
+    {
+        return Err("multi_reference_disagreement".to_owned());
+    }
+    if configured_profile.reference_consensus_v1.is_some() {
+        let analysis = beginner_reference_consensus_analysis_v1(project, None)
+            .ok_or_else(|| "reference_consensus_analysis_unavailable".to_owned())?;
+        if !analysis.apply_allowed {
+            return Err("reference_consensus_multiple_disagreements".to_owned());
+        }
+    }
     let semantic_landmark_provenance = plan.semantic_landmark_provenance.clone();
-    let topology_witness = beginner_contour_placement_witness(
-        &project
-            .editor
-            .beginner_design_profile()
-            .generation_constraints,
-        &plan,
-    )
-    .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+    let topology_witness =
+        beginner_contour_placement_witness(&configured_profile.generation_constraints, &plan)
+            .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
     let mut topology_ids = topology_witness
         .local_bindings
         .iter()
@@ -4597,30 +5839,49 @@ pub(super) fn apply_grid_plan_document(
             creases.iter().map(|edge| edge.id).collect(),
         ));
     }
-    let mut pattern = project.editor.pattern().clone();
-    for vertex in plan.crease_pattern.vertices {
-        if !pattern
+    let (mut pattern, paper) = materialize_beginner_boundary_splits_v1(
+        project.editor.pattern(),
+        project.editor.paper(),
+        &plan,
+    )
+    .map_err(str::to_owned)?;
+    for vertex in &plan.crease_pattern.vertices {
+        if let Some(current) = pattern
             .vertices
             .iter()
-            .any(|current| current.id == vertex.id)
+            .find(|current| current.id == vertex.id)
         {
-            pattern.vertices.push(vertex);
+            if current != vertex {
+                return Err("grid_candidate_vertex_identity_stale".to_owned());
+            }
+        } else {
+            pattern.vertices.push(vertex.clone());
         }
     }
-    for edge in plan.crease_pattern.edges {
+    for edge in &plan.crease_pattern.edges {
         if pattern.edges.iter().any(|current| current.id == edge.id) {
             return Err("grid_candidate_replayed".to_owned());
         }
-        pattern.edges.push(edge);
+        pattern.edges.push(edge.clone());
     }
     let mut faces = std::collections::HashSet::new();
-    let mut witnessed_vertices = std::collections::HashSet::new();
+    let mut witnessed_vertex_owners = std::collections::HashMap::<VertexId, Vec<u8>>::new();
     let mut witnessed_creases = std::collections::HashSet::new();
     if topology_ids.iter().any(|(face_id, vertices, creases)| {
+        let mut face_vertices = HashSet::with_capacity(vertices.len());
         !faces.insert(*face_id)
             || vertices.iter().any(|id| {
-                witnessed_vertices.insert(*id);
-                !pattern.vertices.iter().any(|vertex| vertex.id == *id)
+                if !face_vertices.insert(*id)
+                    || !pattern.vertices.iter().any(|vertex| vertex.id == *id)
+                {
+                    true
+                } else {
+                    witnessed_vertex_owners
+                        .entry(*id)
+                        .or_default()
+                        .push(*face_id);
+                    false
+                }
             })
             || creases.iter().any(|id| {
                 !witnessed_creases.insert(*id) || !pattern.edges.iter().any(|edge| edge.id == *id)
@@ -4628,6 +5889,51 @@ pub(super) fn apply_grid_plan_document(
     }) {
         return Err("grid_candidate_topology_stale".to_owned());
     }
+    let shared_generic_vertices = witnessed_vertex_owners
+        .iter()
+        .filter(|(_, owners)| owners.len() > 1)
+        .map(|(id, owners)| owners.iter().all(|face_id| *face_id >= 129).then_some(*id))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+    if shared_generic_vertices.len() > 1 {
+        return Err("grid_candidate_topology_stale".to_owned());
+    }
+    if let Some(shared) = shared_generic_vertices.first().copied() {
+        for (_face_id, vertices, creases) in topology_ids
+            .iter()
+            .filter(|(face_id, _, _)| *face_id >= 129)
+        {
+            if !vertices.contains(&shared)
+                || creases.iter().any(|crease_id| {
+                    pattern
+                        .edges
+                        .iter()
+                        .find(|edge| edge.id == *crease_id)
+                        .is_none_or(|edge| edge.start != shared && edge.end != shared)
+                })
+            {
+                return Err("grid_candidate_topology_stale".to_owned());
+            }
+        }
+    }
+    let certificate_editor = EditorState::with_paper(pattern.clone(), paper.clone());
+    let certificate_topology = certificate_editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let certificate_control = ori_collision::CooperativeOperationControlV1::new(
+        certification_cancelled,
+        std::time::Instant::now() + std::time::Duration::from_millis(750),
+    );
+    let fold_path_certificate_sha256 = certify_beginner_fold_path_with_control_v1(
+        &plan,
+        &paper,
+        &pattern,
+        certificate_topology
+            .simulation_snapshot()
+            .ok_or_else(|| "grid_candidate_path_certificate_invalid".to_owned())?,
+        &certificate_control,
+    )
+    .ok_or_else(|| "grid_candidate_path_certificate_invalid".to_owned())?;
     let mut instruction_timeline = project.editor.instruction_timeline().clone();
     let (title, description, caution) = match selected_kind {
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase => (
@@ -4653,7 +5959,7 @@ pub(super) fn apply_grid_plan_document(
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase => (
             "Asymmetric insect landmark grid candidate",
-            "Apply certified four-ray geometry with ten ordered semantic landmark bindings.",
+            "Apply certified four-ray geometry with ten ordered insect target landmark bindings.",
             "All ray-group digests, live semantic bindings, and the native fold path were revalidated before apply.",
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase => (
@@ -4758,11 +6064,18 @@ pub(super) fn apply_grid_plan_document(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
+    let radial_corner_support_caution = if has_radial_corner_support {
+        " The certified radial fan reaches all four paper corners. The bounded path moves exactly one certified opposite hinge pair; every other hinge remains at zero angle."
+    } else {
+        ""
+    };
     instruction_timeline.steps.push(InstructionStep {
         id: InstructionStepId::new(),
         title: title.to_owned(),
         description: description.to_owned(),
-        caution: format!("{caution} topology authority SHA-256: {authority_hex}."),
+        caution: format!(
+            "{caution}{radial_corner_support_caution} topology authority SHA-256: {authority_hex}."
+        ),
         duration_ms: 2_000,
         visual: InstructionVisual::default(),
         pose: InstructionPose {
@@ -4772,206 +6085,92 @@ pub(super) fn apply_grid_plan_document(
             hinge_angles: Vec::new(),
         },
     });
-    let paper = project.editor.paper().clone();
     let project_layers = project.editor.project_layers().clone();
-    let mut beginner_design_profile = project.editor.beginner_design_profile().clone();
-    let source_asset_fingerprint = live_reference_model_suggestion_v1(project)
-        .ok()
-        .and_then(|reference| serde_json::to_vec(&reference.surface_landmarks_tenths_mm).ok())
-        .map(|bytes| {
-            let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
-            format!(
-                "glb-landmarks-sha256:{}",
-                digest
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            )
-        })
-        .unwrap_or_else(|| {
-            beginner_design_profile
-                .generation_constraints
-                .target_asset
-                .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}"))
-        });
-    let generic_tree = if selected_kind
-        == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
-    {
-        let source = match beginner_design_profile.generation_constraints.target_asset {
-            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage { .. }) => {
-                ori_domain::BeginnerGenericTreeSourceV1::ImageSilhouette
-            }
-            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { .. }) => {
-                ori_domain::BeginnerGenericTreeSourceV1::GlbGeometry
-            }
-            None => ori_domain::BeginnerGenericTreeSourceV1::ManualSkeleton,
-        };
-        let asset_content_sha256 = match beginner_design_profile.generation_constraints.target_asset
-        {
-            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
-                asset_id, ..
-            }) => project
-                .texture_assets
-                .iter()
-                .find(|asset| asset.id == asset_id)
-                .map(|asset| <[u8; 32]>::from(sha2::Sha256::digest(&asset.bytes))),
-            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) => {
-                project
-                    .reference_model_assets
-                    .iter()
-                    .find(|asset| asset.id == asset_id)
-                    .map(|asset| <[u8; 32]>::from(sha2::Sha256::digest(&asset.bytes)))
-            }
-            None => None,
-        };
-        let ratios = selected_instruction_codes
-            .iter()
-            .find_map(|code| code.strip_prefix("bounded_tree_river_axial_v1:"))
-            .and_then(|encoded| {
-                encoded
-                    .split(',')
-                    .map(str::parse::<u32>)
-                    .collect::<Result<Vec<_>, _>>()
-                    .ok()
-            })
-            .filter(|ratios| !ratios.is_empty() && ratios.len() <= 16)
-            .ok_or("grid_candidate_tree_ratio_provenance_invalid")?;
-        let orientation = if selected_instruction_codes
-            .iter()
-            .any(|code| code == "bounded_tree_paper_orientation_v1:vertical")
-        {
-            ori_domain::BeginnerGenericTreeOrientationV1::Vertical
-        } else if selected_instruction_codes
-            .iter()
-            .any(|code| code == "bounded_tree_paper_orientation_v1:horizontal")
-        {
-            ori_domain::BeginnerGenericTreeOrientationV1::Horizontal
-        } else {
-            return Err("grid_candidate_tree_orientation_provenance_invalid".to_owned());
-        };
-        let segments = canonical_generic_tree_segments_v1(
-            &beginner_design_profile
-                .generation_constraints
-                .skeleton_segments,
-        )
-        .ok_or_else(|| "grid_candidate_tree_provenance_invalid".to_owned())?;
-        let tree_topology_sha256: [u8; 32] = sha2::Sha256::digest(
-            serde_json::to_vec(&segments).map_err(|_| "grid_candidate_tree_provenance_invalid")?,
-        )
-        .into();
-        let point =
-            |point: ori_domain::BeginnerSkeletonPointV1| (point.x_tenths_mm, point.y_tenths_mm);
-        let canonical_root = point(segments[0].start);
-        let mut depths = std::collections::BTreeMap::from([(canonical_root, 0_u8)]);
-        while depths.len() <= segments.len() {
-            let before = depths.len();
-            for segment in &segments {
-                let start = point(segment.start);
-                let end = point(segment.end);
-                match (depths.get(&start).copied(), depths.get(&end).copied()) {
-                    (Some(depth), None) => {
-                        depths.insert(end, depth.saturating_add(1));
-                    }
-                    (None, Some(depth)) => {
-                        depths.insert(start, depth.saturating_add(1));
-                    }
-                    _ => {}
-                }
-            }
-            if depths.len() == before {
-                break;
-            }
-        }
-        let mut proposal_steps = segments.iter().enumerate().map(|(index, segment)| {
-            let start_depth = depths.get(&point(segment.start)).copied().unwrap_or(u8::MAX);
-            let end_depth = depths.get(&point(segment.end)).copied().unwrap_or(u8::MAX);
-            let depth = start_depth.min(end_depth);
-            ori_domain::BeginnerGenericTreeInstructionStepV1 {
-                canonical_crease_id: format!("tree-river-{:04}", segment.id),
-                tree_depth: depth,
-                assignment: if index % 2 == 0 { "valley" } else { "mountain" }.to_owned(),
-                target_branch: format!("branch-{:04}", segment.id),
-                fixed_side: "root".to_owned(),
-                caution: "Read-only declarative proposal; no physical-motion proof. Confirm only after checking the folded preview.".to_owned(),
-            }
-        }).collect::<Vec<_>>();
-        proposal_steps.sort_by(|left, right| {
-            (left.tree_depth, &left.canonical_crease_id)
-                .cmp(&(right.tree_depth, &right.canonical_crease_id))
-        });
-        beginner_design_profile
-            .generation_constraints
-            .skeleton_segments = segments;
-        Some(ori_domain::BeginnerGenericTreeProvenanceV1 {
-            schema_version: 1,
-            target_category: (beginner_design_profile
-                .generation_constraints
-                .target_category
-                == Some(ori_domain::BeginnerTargetCategoryV1::CustomObject))
-            .then_some(ori_domain::BeginnerTargetCategoryV1::CustomObject),
-            source,
-            asset_content_sha256,
-            tree_topology_sha256,
-            normalized_length_ratios: ratios,
-            orientation,
-            generator_version: 1,
-            authorizes_apply: false,
-            instruction_proposal: Some(ori_domain::BeginnerGenericTreeInstructionProposalV1 {
-                schema_version: 1,
-                topology_sha256: tree_topology_sha256,
-                generator_version: 1,
-                authorizes_apply: false,
-                physical_motion_proof: false,
-                steps: proposal_steps,
-            }),
-        })
-    } else {
-        None
-    };
+    let mut beginner_design_profile = configured_profile;
+    let source_asset_fingerprint =
+        beginner_source_asset_fingerprint_v1(project, &beginner_design_profile)?;
+    let generic_tree = build_beginner_generic_tree_provenance_v1(
+        project,
+        &mut beginner_design_profile,
+        &plan,
+        true,
+    )?;
+    let reference_consensus_provenance = build_beginner_reference_consensus_provenance_v1(
+        project,
+        &beginner_design_profile,
+        expected_revision,
+    )?;
+    let mut confidence_reasons = vec![
+        "native_topology_witness".to_owned(),
+        "preset_weighted_2d_3d_metric".to_owned(),
+        "bounded_fold_path_certificate_v1".to_owned(),
+    ];
+    if has_radial_corner_support {
+        confidence_reasons.push("bounded_radial_corner_support_v1".to_owned());
+    }
     beginner_design_profile.generation_provenance =
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
             topology_authority_sha256: topology_witness.topology_authority_hash,
-            fold_path_certificate_sha256: Some(
-                sha2::Sha256::digest(
-                    serde_json::to_vec(&(
-                        topology_witness.topology_authority_hash,
-                        selected_instruction_codes,
-                    ))
-                    .map_err(|_| "grid_candidate_path_certificate_invalid")?,
-                )
-                .into(),
-            ),
+            fold_path_certificate_sha256: Some(fold_path_certificate_sha256),
+            document_authority_sha256: None,
             confidence_score: ori_domain::beginner_target_approximation_score_v1(
                 &beginner_design_profile.generation_constraints,
             ),
-            confidence_reasons: vec![
-                "native_topology_witness".to_owned(),
-                "preset_weighted_2d_3d_metric".to_owned(),
-                "bounded_fold_path_certificate_v1".to_owned(),
-            ],
+            confidence_reasons,
             explicit_override: false,
             source_asset_fingerprint,
             semantic_landmark_provenance,
             generic_tree,
-            reference_consensus: None,
-            reference_consensus_summary: None,
+            reference_consensus_summary: reference_consensus_provenance
+                .as_ref()
+                .map(|value| value.summary.clone()),
+            reference_consensus: reference_consensus_provenance,
         });
-    execute_expected_command(
-        project,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-        Command::ApplyBeginnerGeneratedDocument {
-            pattern,
-            paper,
-            instruction_timeline,
-            project_layers,
-            beginner_design_profile: Box::new(beginner_design_profile),
-        },
+    ori_core::bind_beginner_generation_document_authority_v1(
+        &pattern,
+        &paper,
+        &mut beginner_design_profile,
     )
+    .ok_or_else(|| "grid_candidate_document_authority_invalid".to_owned())?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let command = Command::ApplyBeginnerGeneratedDocument {
+        pattern,
+        paper,
+        instruction_timeline,
+        project_layers,
+        beginner_design_profile: Box::new(beginner_design_profile),
+    };
+    if let Some((request_generation_id, work)) = registered_work {
+        // Hold the registry mutex across the exact editor mutation so a
+        // completed-work cancellation and a single-consume apply are
+        // linearizable. Cancellation that wins first changes terminal to 2;
+        // apply that wins first publishes apply_consumed before releasing the
+        // mutex, after which cancellation reports already-applied.
+        let registry = lock_recovering_registry_v1(beginner_grid_work());
+        if registry
+            .get(&request_generation_id)
+            .is_none_or(|current| !Arc::ptr_eq(current, work))
+            || work.terminal.load(Ordering::Acquire) != 1
+            || work.cancelled.load(Ordering::Acquire)
+            || !work.apply_active.load(Ordering::Acquire)
+            || work.apply_consumed.load(Ordering::Acquire)
+        {
+            return Err("grid_candidate_generation_stale".to_owned());
+        }
+        let applied = execute_expected_command(project, expectation, command);
+        if applied.is_ok() {
+            work.apply_consumed.store(true, Ordering::Release);
+            *lock_recovering_registry_v1(&work.apply_authority) = None;
+        }
+        applied
+    } else {
+        execute_expected_command(project, expectation, command)
+    }
 }
 
 #[tauri::command]
@@ -4981,6 +6180,7 @@ pub(super) fn apply_beginner_parameter_grid_candidate(
     expected_project_id: ProjectId,
     expected_revision: u64,
     request_generation_id: ProjectId,
+    authority_token: ProjectId,
     expected_profile: ori_domain::BeginnerDesignProfileV1,
     expected_grid_hash: ori_domain::BeginnerParameterGridHashV1,
     selected_point: ori_domain::BeginnerParameterGridPointV1,
@@ -5004,10 +6204,11 @@ pub(super) fn apply_beginner_parameter_grid_candidate(
     };
     let grid = ori_domain::beginner_parameter_grid_v1();
     if ori_domain::beginner_parameter_grid_hash_v1(&grid) != expected_grid_hash
-        || grid.get(usize::from(selected_point.id)).copied() != Some(selected_point)
+        || !beginner_grid_refined_point_is_in_domain_v1(&grid, selected_point)
     {
         return Err("grid_candidate_contract_stale".to_owned());
     }
+    let seed_point = grid[usize::from(selected_point.id)];
     let mut project = lock_and_expect(
         &state,
         ProjectExpectation::new(
@@ -5019,13 +6220,41 @@ pub(super) fn apply_beginner_parameter_grid_candidate(
     if project.editor.beginner_design_profile() != &expected_profile {
         return Err("grid_candidate_profile_stale".to_owned());
     }
+    let completed_authority = lock_recovering_registry_v1(&completed_grid_work.apply_authority)
+        .clone()
+        .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
+    if !beginner_grid_authority_allows_candidate_v1(
+        &completed_grid_work,
+        &completed_authority,
+        authority_token,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        beginner_profile_authority_sha256_v1(&expected_profile)?,
+        expected_grid_hash,
+        selected_point,
+        expected_candidate_edge_id,
+        expected_topology_authority_hash,
+    ) {
+        return Err("grid_candidate_generation_stale".to_owned());
+    }
     if !target_asset_reference_is_live(
         &project,
         expected_profile.generation_constraints.target_asset,
     ) {
         return Err("grid_candidate_asset_stale".to_owned());
     }
-    let kind = symmetric_plan_kind(&expected_profile);
+    if !component_bridge_override_is_live_v1(&project, &expected_profile) {
+        return Err("component_bridge_override_stale_or_disconnected".to_owned());
+    }
+    if !reference_consensus_is_live_v1(&project, &expected_profile) {
+        return Err("reference_consensus_asset_binding_stale".to_owned());
+    }
+    let kind = symmetric_plan_kind(&expected_profile)
+        .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
+    let configured_profile =
+        temporary_symmetric_profile_for_grid(&expected_profile, selected_point)
+            .map_err(|_| "grid_candidate_generation_stale".to_owned())?;
     let plan = grid_template_plan(
         project.project_id,
         project.editor.pattern(),
@@ -5035,17 +6264,39 @@ pub(super) fn apply_beginner_parameter_grid_candidate(
     )
     .map_err(|_| "grid_candidate_generation_stale".to_owned())?
     .into_iter()
-    .find(|plan| plan.kind == kind)
+    .find(|plan| {
+        plan.kind == kind
+            && plan.crease_pattern.edges.first().map(|edge| edge.id)
+                == Some(expected_candidate_edge_id)
+            && beginner_contour_placement_witness(&configured_profile.generation_constraints, plan)
+                .is_some_and(|witness| {
+                    witness.topology_authority_hash == expected_topology_authority_hash
+                })
+    })
     .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
     if plan.crease_pattern.edges.first().map(|edge| edge.id) != Some(expected_candidate_edge_id) {
         return Err("grid_candidate_identity_stale".to_owned());
     }
-    if beginner_contour_placement_witness(&expected_profile.generation_constraints, &plan)
+    if beginner_contour_placement_witness(&configured_profile.generation_constraints, &plan)
         .is_none_or(|witness| witness.topology_authority_hash != expected_topology_authority_hash)
     {
         return Err("grid_candidate_topology_stale".to_owned());
     }
     let reference = live_reference_model_suggestion_v1(&project).ok();
+    if reference
+        .as_ref()
+        .and_then(|reference| beginner_multi_reference_fusion_v1(&project, reference))
+        .is_some_and(|fusion| !fusion.apply_allowed)
+    {
+        return Err("multi_reference_disagreement".to_owned());
+    }
+    if expected_profile.reference_consensus_v1.is_some() {
+        let analysis = beginner_reference_consensus_analysis_v1(&project, None)
+            .ok_or_else(|| "reference_consensus_analysis_unavailable".to_owned())?;
+        if !analysis.apply_allowed {
+            return Err("reference_consensus_multiple_disagreements".to_owned());
+        }
+    }
     let assessment = assess_beginner_generated_plan_with_deadline(
         project.project_id,
         project.editor.paper(),
@@ -5055,31 +6306,91 @@ pub(super) fn apply_beginner_parameter_grid_candidate(
         std::time::Instant::now() + std::time::Duration::from_millis(750),
     );
     if assessment.expected_candidate_edge_id != expected_candidate_edge_id
-        || assessment.proof_scope != "sufficient"
-        || assessment.reason != "global_flat_foldability_proven"
-        || !assessment.apply_allowed
+        || beginner_sufficient_apply_authority_v1(&assessment).is_none()
     {
         return Err("grid_candidate_global_proof_stale".to_owned());
     }
-    // Pin the exact completed work through the project mutation. A reused
-    // generation cannot replace the registry entry between authorization and
-    // apply (ABA), and a replacement observed here fails closed.
-    let registry = lock_recovering_registry_v1(beginner_grid_work());
-    if registry
-        .get(&request_generation_id)
-        .is_none_or(|current| !Arc::ptr_eq(current, &completed_grid_work))
-        || completed_grid_work.terminal.load(Ordering::Acquire) != 1
-    {
+    let candidate_authority = completed_authority
+        .candidates
+        .iter()
+        .find(|candidate| {
+            candidate.point == selected_point
+                && candidate.expected_candidate_edge_id == expected_candidate_edge_id
+                && candidate.topology_authority_hash == expected_topology_authority_hash
+        })
+        .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
+    if !beginner_grid_candidate_authority_matches_result_v1(
+        candidate_authority,
+        &plan,
+        &assessment,
+    )? || !beginner_grid_refinement_metadata_is_valid_v1(
+        seed_point,
+        selected_point,
+        reference.is_some(),
+        candidate_authority.refinement_iterations,
+        candidate_authority.strict_improvements,
+        candidate_authority.refinement_starts,
+    ) {
         return Err("grid_candidate_generation_stale".to_owned());
     }
-    let applied = apply_grid_plan_document(
+    let prefer_vertical = plan
+        .instruction_codes
+        .iter()
+        .any(|code| code == "bounded_tree_paper_orientation_v1:vertical");
+    let seed_plan = grid_template_plan(
+        project.project_id,
+        project.editor.pattern(),
+        &project.editor.paper().boundary_vertices,
+        &expected_profile,
+        seed_point,
+    )
+    .map_err(|_| "grid_candidate_generation_stale".to_owned())?
+    .into_iter()
+    .find(|candidate| {
+        candidate.kind == kind
+            && candidate
+                .instruction_codes
+                .iter()
+                .any(|code| code == "bounded_tree_paper_orientation_v1:vertical")
+                == prefer_vertical
+    })
+    .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
+    if !beginner_grid_refinement_score_is_valid_v1(
+        &seed_plan,
+        &plan,
+        reference.as_ref(),
+        &expected_profile,
+        candidate_authority.strict_improvements,
+    ) {
+        return Err("grid_candidate_generation_stale".to_owned());
+    }
+    // Pin the exact completed work with an atomic apply claim. Registry
+    // eviction excludes claimed work, while releasing the registry mutex lets
+    // cancellation reach the controlled certifier during the bounded apply.
+    let apply_claim;
+    {
+        let registry = lock_recovering_registry_v1(beginner_grid_work());
+        if registry
+            .get(&request_generation_id)
+            .is_none_or(|current| !Arc::ptr_eq(current, &completed_grid_work))
+            || completed_grid_work.terminal.load(Ordering::Acquire) != 1
+            || completed_grid_work.apply_consumed.load(Ordering::Acquire)
+        {
+            return Err("grid_candidate_generation_stale".to_owned());
+        }
+        apply_claim = BeginnerGridApplyClaimV1::try_claim(&completed_grid_work.apply_active)?;
+    }
+    let applied = apply_registered_grid_plan_document(
         &mut project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
         plan,
+        configured_profile,
+        request_generation_id,
+        &completed_grid_work,
     );
-    drop(registry);
+    drop(apply_claim);
     applied
 }
 
@@ -5201,7 +6512,7 @@ pub(super) fn update_beginner_design_profile(
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
-    profile: ori_domain::BeginnerDesignProfileV1,
+    mut profile: ori_domain::BeginnerDesignProfileV1,
 ) -> Result<ProjectSnapshot, String> {
     if !ori_domain::validate_beginner_design_profile_v1(&profile) {
         return Err("invalid beginner design profile".to_owned());
@@ -5211,7 +6522,7 @@ pub(super) fn update_beginner_design_profile(
         expected_project_id,
         expected_revision,
     );
-    let mut project = lock_project(&state)?;
+    let mut project = lock_and_expect(&state, expectation)?;
     if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
         return Err("the target reference image is unavailable".to_owned());
     }
@@ -5230,6 +6541,7 @@ pub(super) fn update_beginner_design_profile(
     {
         return Err("the 3D bulge target fold-model binding is stale".to_owned());
     }
+    profile.generation_provenance = None;
     execute_expected_command(
         &mut project,
         expectation,
@@ -5305,6 +6617,7 @@ pub(super) fn update_beginner_reference_consensus(
         });
     }
     let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_provenance = None;
     profile.reference_consensus_v1 = Some(ori_domain::BeginnerReferenceConsensusV1 {
         schema_version: 1,
         bindings,
@@ -5439,6 +6752,7 @@ pub(super) fn import_beginner_reference_model(
             bytes,
         });
     let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_provenance = None;
     profile
         .archived_reference_model_asset_ids
         .retain(|id| *id != asset_id);
@@ -5485,6 +6799,7 @@ pub(super) fn activate_beginner_reference_model_asset(
         return Err("reference_model_asset_stale".to_owned());
     }
     let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_provenance = None;
     profile.generation_constraints.target_asset =
         Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id });
     execute_expected_command(
@@ -5764,6 +7079,20 @@ pub(super) fn derive_reference_model_suggestion_v1(
     category: Option<ori_domain::BeginnerTargetCategoryV1>,
     target_parts: &[ori_domain::BeginnerTargetPartRecordV1],
 ) -> Result<BeginnerReferenceModelSuggestionV1, String> {
+    let mut semantic_kinds = HashSet::with_capacity(target_parts.len());
+    let semantic_total = target_parts.iter().try_fold(0_u16, |total, part| {
+        if !semantic_kinds.insert(part.kind)
+            || !(1..=ori_domain::MAX_BEGINNER_TARGET_PART_COUNT_V1).contains(&part.count)
+        {
+            return None;
+        }
+        total.checked_add(u16::from(part.count))
+    });
+    if target_parts.len() > ori_domain::MAX_BEGINNER_TARGET_PART_RECORDS_V1
+        || semantic_total.is_none_or(|total| total > ori_domain::MAX_BEGINNER_TARGET_PARTS_TOTAL_V1)
+    {
+        return Err("reference_model_feature_range".to_owned());
+    }
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     for position in &geometry.positions {
@@ -5977,22 +7306,48 @@ pub(super) fn derive_reference_model_suggestion_v1(
     let bilateral = quantized.iter().all(|point| {
         quantized.contains(&[axis_twice.saturating_sub(point[0]), point[1], point[2]])
     });
-    let requested_six_legs = target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
-    let requested_four_legs = target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4);
-    let requested_single_tail = target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1);
+    let mut semantic_target_parts = target_parts.to_vec();
+    let semantic_category = category.unwrap_or(ori_domain::BeginnerTargetCategoryV1::CustomObject);
+    if semantic_category != ori_domain::BeginnerTargetCategoryV1::CustomObject {
+        for kind in [
+            ori_domain::BeginnerTargetPartKindV1::Head,
+            ori_domain::BeginnerTargetPartKindV1::Torso,
+        ] {
+            if !semantic_target_parts.iter().any(|part| part.kind == kind) {
+                semantic_target_parts
+                    .push(ori_domain::BeginnerTargetPartRecordV1 { kind, count: 1 });
+            }
+        }
+    }
+    let semantic_constraints = ori_domain::BeginnerGenerationConstraintsV1 {
+        target_category: Some(semantic_category),
+        target_parts: semantic_target_parts,
+        ..ori_domain::BeginnerGenerationConstraintsV1::default()
+    };
+    let semantic_plan_kind =
+        ori_domain::beginner_expected_generated_plan_kind_v1(&semantic_constraints);
+    let is_general = semantic_plan_kind
+        == Some(ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase);
+    let requested_six_legs = !is_general
+        && target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
+    let requested_four_legs = !is_general
+        && target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4);
+    let requested_single_tail = !is_general
+        && target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1);
     let requested_tail_ear = requested_single_tail
         && target_parts
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2);
-    let requested_single_horn = target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1);
+    let requested_single_horn = !is_general
+        && target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1);
     let requested_horn_ear = requested_single_horn
         && target_parts
             .iter()
@@ -6014,12 +7369,14 @@ pub(super) fn derive_reference_model_suggestion_v1(
     {
         return Err("reference_model_feature_range".to_owned());
     }
-    let requested_single_antenna = target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 1);
-    let requested_wing_antenna = target_parts
-        .iter()
-        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
+    let requested_single_antenna = !is_general
+        && target_parts.iter().any(|part| {
+            part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 1
+        });
+    let requested_wing_antenna = !is_general
+        && target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
         && target_parts.iter().any(|part| {
             part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2
         });
@@ -6203,7 +7560,7 @@ pub(super) fn derive_reference_model_suggestion_v1(
             }
         }
     }
-    let mut generic_feature_parts = target_parts
+    let generic_feature_parts = target_parts
         .iter()
         .filter(|part| {
             !matches!(
@@ -6213,37 +7570,29 @@ pub(super) fn derive_reference_model_suggestion_v1(
             )
         })
         .collect::<Vec<_>>();
-    let feature_rank = |kind| match kind {
-        ori_domain::BeginnerTargetPartKindV1::Leg => 0,
-        ori_domain::BeginnerTargetPartKindV1::Wing => 1,
-        ori_domain::BeginnerTargetPartKindV1::Tail => 2,
-        ori_domain::BeginnerTargetPartKindV1::Horn => 3,
-        ori_domain::BeginnerTargetPartKindV1::Antenna => 4,
-        ori_domain::BeginnerTargetPartKindV1::Ear => 5,
-        ori_domain::BeginnerTargetPartKindV1::Fin => 6,
-        ori_domain::BeginnerTargetPartKindV1::Head
-        | ori_domain::BeginnerTargetPartKindV1::Torso => 7,
-    };
-    generic_feature_parts.sort_by_key(|part| feature_rank(part.kind));
-    if !requested_complete_animal
-        && !requested_wing_antenna
-        && (2..=8).contains(&generic_feature_parts.len())
-    {
+    if is_general && !generic_feature_parts.is_empty() {
+        let semantic_feature_count = generic_feature_parts
+            .iter()
+            .try_fold(0_u8, |total, part| total.checked_add(part.count));
+        if semantic_feature_count.is_none_or(|count| {
+            !(2..=ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1).contains(&count)
+        }) {
+            return Err("reference_model_feature_range".to_owned());
+        }
         protrusions = generic_feature_parts
             .iter()
             .enumerate()
             .map(|(index, part)| {
-                if !matches!(part.count, 1 | 2 | 4) {
-                    return Err("reference_model_feature_range".to_owned());
-                }
+                let symmetry = match part.count {
+                    1 => ori_domain::BeginnerProtrusionSymmetryV1::None,
+                    2 | 4 | 6 | 8 => ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                    3 | 5 | 7 => ori_domain::BeginnerProtrusionSymmetryV1::Radial,
+                    _ => return Err("reference_model_feature_range".to_owned()),
+                };
                 let mut target = base.clone();
                 target.id = index as u16 + 1;
                 target.count = part.count;
-                target.symmetry = if part.count == 1 {
-                    ori_domain::BeginnerProtrusionSymmetryV1::None
-                } else {
-                    ori_domain::BeginnerProtrusionSymmetryV1::Bilateral
-                };
+                target.symmetry = symmetry;
                 target.direction_milli = if matches!(
                     part.kind,
                     ori_domain::BeginnerTargetPartKindV1::Horn
@@ -6258,6 +7607,8 @@ pub(super) fn derive_reference_model_suggestion_v1(
                 Ok(target)
             })
             .collect::<Result<Vec<_>, String>>()?;
+    } else if semantic_plan_kind.is_none() && !generic_feature_parts.is_empty() {
+        return Err("reference_model_feature_range".to_owned());
     }
     let pair_bindings = protrusions
         .iter()
@@ -6410,6 +7761,28 @@ pub(super) fn reference_model_surface_selection_matches_live_v1(
         geometry,
         &mut control,
     )
+}
+
+pub(super) fn reference_model_profile_protrusions_after_surface_selection_v1(
+    assignments: &[BeginnerReferenceSurfaceAssignmentV1],
+    live: &BeginnerReferenceModelSuggestionV1,
+) -> Option<Vec<ori_domain::BeginnerProtrusionTargetV1>> {
+    if !(2..=8).contains(&assignments.len()) {
+        return None;
+    }
+    let measured = live
+        .protrusions
+        .iter()
+        .map(|target| target.id)
+        .collect::<HashSet<_>>();
+    let selected = assignments
+        .iter()
+        .map(|assignment| assignment.protrusion_id)
+        .collect::<HashSet<_>>();
+    (measured.len() == live.protrusions.len()
+        && selected.len() == assignments.len()
+        && selected.is_subset(&measured))
+    .then(|| live.protrusions.clone())
 }
 
 fn reference_model_surface_selection_matches_live_with_control_v1(
@@ -6770,6 +8143,7 @@ pub(super) fn apply_beginner_reference_model_features(
     );
     let mut project = lock_and_expect(&state, expectation)?;
     let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_provenance = None;
     let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) =
         profile.generation_constraints.target_asset
     else {
@@ -6821,16 +8195,9 @@ pub(super) fn apply_beginner_reference_model_features(
     ) {
         return Err("reference_model_surface_selection_tampered".to_owned());
     }
-    let selected_protrusions = surface_assignments
-        .iter()
-        .map(|assignment| assignment.protrusion_id)
-        .collect::<HashSet<_>>();
-    profile.generation_constraints.protrusions = live
-        .protrusions
-        .iter()
-        .filter(|target| selected_protrusions.contains(&target.id))
-        .cloned()
-        .collect();
+    profile.generation_constraints.protrusions =
+        reference_model_profile_protrusions_after_surface_selection_v1(&surface_assignments, &live)
+            .ok_or_else(|| "reference_model_surface_selection_tampered".to_owned())?;
     let topology = project
         .editor
         .topology_analysis_input(project.project_id)
@@ -6879,7 +8246,17 @@ pub(super) fn apply_beginner_reference_model_features(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 3 {
+    let bounded_generic =
+        ori_domain::beginner_uses_bounded_generic_target_base_v1(&profile.generation_constraints);
+    if bounded_generic
+        && ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints).is_none()
+    {
+        return Err("reference_model_suggestion_invalid".to_owned());
+    }
+    if !bounded_generic
+        && profile.generation_constraints.target_category.is_some()
+        && live.protrusions.len() == 3
+    {
         if let Some(binding) =
             ori_domain::animal_horn_tail_ear_bindings_v1(&profile.generation_constraints)
         {
@@ -6895,7 +8272,10 @@ pub(super) fn apply_beginner_reference_model_features(
             return Err("reference_model_suggestion_invalid".to_owned());
         }
     }
-    if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 2 {
+    if !bounded_generic
+        && profile.generation_constraints.target_category.is_some()
+        && live.protrusions.len() == 2
+    {
         if let Some(binding) =
             ori_domain::insect_wing_antenna_bindings_v1(&profile.generation_constraints)
         {
@@ -6930,7 +8310,10 @@ pub(super) fn apply_beginner_reference_model_features(
             }
         }
     }
-    if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 5 {
+    if !bounded_generic
+        && profile.generation_constraints.target_category.is_some()
+        && live.protrusions.len() == 5
+    {
         let expected = if profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
         {
@@ -6959,7 +8342,10 @@ pub(super) fn apply_beginner_reference_model_features(
             return Err("reference_model_suggestion_invalid".to_owned());
         }
     }
-    if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 4 {
+    if !bounded_generic
+        && profile.generation_constraints.target_category.is_some()
+        && live.protrusions.len() == 4
+    {
         let binding = ori_domain::animal_complete_bindings_v1(&profile.generation_constraints)
             .ok_or_else(|| "reference_model_suggestion_invalid".to_owned())?;
         let expected = [

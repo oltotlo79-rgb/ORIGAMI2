@@ -246,6 +246,7 @@ pub(super) enum GeometricConstraintPreflightResult {
     ProvenSatisfiable {
         model_id: &'static str,
         transcendental_model_id: &'static str,
+        evidence_kind: GeometricConstraintSatisfactionEvidenceKind,
         constraint_count: usize,
         equation_count: usize,
         authorizes_project_mutation: bool,
@@ -256,6 +257,13 @@ pub(super) enum GeometricConstraintPreflightResult {
         reason: GeometricConstraintUnknownReason,
         unchecked_constraint_ids: Vec<ConstraintId>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum GeometricConstraintSatisfactionEvidenceKind {
+    CurrentAssignment,
+    DetachedConstructedAssignment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -627,6 +635,37 @@ fn analyze_geometric_constraint_document_outcome_with_observer(
             finish_exact_geometric_constraint_satisfaction(document, observer, certificate).into(),
         );
     }
+    if let Some(stop) = observer.checkpoint() {
+        return Ok(stopped_geometric_constraint_analysis_result(document, stop).into());
+    }
+    let constructive_assignment =
+        (!matches!(preflight, ConstraintPreflightV1::DirectConflict { .. }))
+            .then(|| match document.constraints.len() {
+                1 => ori_core::construct_single_constraint_exact_assignment_v1(pattern, document),
+                count
+                    if (2..=ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1)
+                        .contains(&count) =>
+                {
+                    ori_core::construct_bounded_singleton_composition_exact_assignment_v1(
+                        pattern, document,
+                    )
+                }
+                _ => None,
+            })
+            .flatten();
+    if let Some(assignment) = constructive_assignment {
+        // This is an observation-only SAT witness. The constructed candidate
+        // never crosses the native DTO boundary and cannot authorize project
+        // mutation; only its independently re-certified full-document
+        // certificate is reduced to ProvenSatisfiable with an explicit
+        // detached-construction evidence kind.
+        return Ok(finish_constructed_exact_geometric_constraint_satisfaction(
+            document,
+            observer,
+            assignment.certificate(),
+        )
+        .into());
+    }
 
     let outcome = match preflight {
         ConstraintPreflightV1::DirectConflict { conflicts } => {
@@ -688,6 +727,33 @@ pub(super) fn finish_exact_geometric_constraint_satisfaction(
     observer: &mut GeometricConstraintAnalysisObserver,
     certificate: ori_core::Binary64ExactConstraintSatisfactionV1,
 ) -> GeometricConstraintPreflightResult {
+    finish_exact_geometric_constraint_satisfaction_with_evidence(
+        document,
+        observer,
+        certificate,
+        GeometricConstraintSatisfactionEvidenceKind::CurrentAssignment,
+    )
+}
+
+fn finish_constructed_exact_geometric_constraint_satisfaction(
+    document: &GeometricConstraintDocumentV1,
+    observer: &mut GeometricConstraintAnalysisObserver,
+    certificate: ori_core::Binary64ExactConstraintSatisfactionV1,
+) -> GeometricConstraintPreflightResult {
+    finish_exact_geometric_constraint_satisfaction_with_evidence(
+        document,
+        observer,
+        certificate,
+        GeometricConstraintSatisfactionEvidenceKind::DetachedConstructedAssignment,
+    )
+}
+
+fn finish_exact_geometric_constraint_satisfaction_with_evidence(
+    document: &GeometricConstraintDocumentV1,
+    observer: &mut GeometricConstraintAnalysisObserver,
+    certificate: ori_core::Binary64ExactConstraintSatisfactionV1,
+    evidence_kind: GeometricConstraintSatisfactionEvidenceKind,
+) -> GeometricConstraintPreflightResult {
     if let Some(stop) = observer.checkpoint() {
         return stopped_geometric_constraint_analysis_result(document, stop);
     }
@@ -710,6 +776,7 @@ pub(super) fn finish_exact_geometric_constraint_satisfaction(
     GeometricConstraintPreflightResult::ProvenSatisfiable {
         model_id: certificate.model_id(),
         transcendental_model_id: certificate.transcendental_model_id(),
+        evidence_kind,
         constraint_count,
         equation_count,
         authorizes_project_mutation: certificate.authorizes_project_mutation(),
@@ -796,3 +863,7 @@ pub(super) fn analyze_bounded_direct_mus_with_observer(
 #[cfg(test)]
 #[path = "geometric_constraint_analysis_semantic_tests.rs"]
 mod semantic_mus_tests;
+
+#[cfg(test)]
+#[path = "geometric_constraint_analysis/singleton_constructive_sat_tests.rs"]
+mod singleton_constructive_sat_tests;

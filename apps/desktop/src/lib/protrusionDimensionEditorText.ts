@@ -6,6 +6,7 @@ export type ProtrusionDimensionEditorText = Readonly<Record<
   | 'symmetryBilateral'
   | 'symmetryRadial'
   | 'partKind'
+  | 'unassigned'
   | 'symmetry'
   | 'count'
   | 'rootWidth'
@@ -61,6 +62,7 @@ export const PROTRUSION_DIMENSION_EDITOR_TEXT =
     symmetryBilateral: text('左右対称', 'Bilateral'),
     symmetryRadial: text('放射対称', 'Radial'),
     partKind: text('種類', 'Part kind'),
+    unassigned: text('未割り当て', 'Unassigned'),
     symmetry: text('対称性', 'Symmetry'),
     count: text('個数', 'Count'),
     rootWidth: text('根元幅', 'Root width'),

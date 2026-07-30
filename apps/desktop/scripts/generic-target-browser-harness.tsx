@@ -6,7 +6,17 @@ import { GenericBodyOutlineEditor } from '../src/components/GenericBodyOutlineEd
 import { BeginnerShapeCanvasPreview } from '../src/components/BeginnerShapeCanvasPreview.tsx'
 import { RecognitionContourCopyAction } from '../src/components/RecognitionContourCopyAction.tsx'
 import { finishBeginnerGridCancellation, runBeginnerGridApplyWorkflow } from '../src/lib/beginnerGridWorkflow.ts'
-import type { BeginnerGenerationConstraintsV1 } from '../src/lib/coreClient.ts'
+import {
+  applyBeginnerParameterGridCandidate,
+  evaluateBeginnerParameterGrid,
+  getProjectSnapshot,
+  redo as redoProject,
+  undo as undoProject,
+  type BeginnerDesignProfileV1,
+  type BeginnerGenerationConstraintsV1,
+  type BeginnerGridEvaluationResponse,
+  type ProjectSnapshot,
+} from '../src/lib/coreClient.ts'
 import '../src/App.css'
 
 const initialBindings: NonNullable<BeginnerGenerationConstraintsV1['protrusions']> = [
@@ -17,6 +27,401 @@ const initialBindings: NonNullable<BeginnerGenerationConstraintsV1['protrusions'
     position_tenths_mm: [0, 0, 0], direction_milli: [1000, 0, 0], curvature_degrees: 0,
     joint: 'fixed', motion_degrees: [0, 0], side: 'either', priority: 60 },
 ]
+
+const GENERAL14_INSTANCE_ID = '11111111-1111-4111-8111-111111111111'
+const GENERAL14_PROJECT_ID = '22222222-2222-4222-8222-222222222222'
+const GENERAL14_GENERATION_ID = '33333333-3333-4333-8333-333333333333'
+const GENERAL14_AUTHORITY_TOKEN = '44444444-4444-4444-8444-444444444444'
+const GENERAL14_GRID_HASH = [
+  224, 59, 9, 238, 119, 51, 70, 177,
+  12, 139, 19, 69, 142, 139, 157, 2,
+  55, 85, 134, 120, 49, 93, 4, 65,
+  125, 141, 52, 157, 74, 39, 236, 192,
+] as const
+const general14Uuid = (namespace: number, index: number) =>
+  `${namespace.toString(16).padStart(8, '0')}`
+  + `-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
+
+const GENERAL14_PROFILE: BeginnerDesignProfileV1 = {
+  schema_version: 1,
+  preset: 'balanced',
+  shape_fidelity_weight: 35,
+  foldability_weight: 35,
+  step_count_weight: 15,
+  paper_efficiency_weight: 15,
+  generation_constraints: {
+    schema_version: 1,
+    maximum_steps: 60,
+    detail_level: 'standard',
+    target_category: 'animal',
+    target_parts: [
+      { kind: 'head', count: 1 },
+      { kind: 'torso', count: 1 },
+      { kind: 'fin', count: 8 },
+      { kind: 'tail', count: 6 },
+    ],
+    skeleton_segments: [
+      {
+        id: 10,
+        start: { x_tenths_mm: 0, y_tenths_mm: 0 },
+        end: { x_tenths_mm: 1_000, y_tenths_mm: 0 },
+        thickness_tenths_mm: 10,
+      },
+      {
+        id: 20,
+        start: { x_tenths_mm: 1_000, y_tenths_mm: 0 },
+        end: { x_tenths_mm: 1_000, y_tenths_mm: 500 },
+        thickness_tenths_mm: 10,
+      },
+    ],
+    protrusions: Array.from({ length: 14 }, (_, index) => ({
+      id: index + 1,
+      count: 1,
+      symmetry: 'none' as const,
+      length_tenths_mm: 200 + index,
+      thickness_tenths_mm: 20,
+      position_tenths_mm: [index * 10, 0, 0] as [number, number, number],
+      direction_milli: [0, 1_000, 0] as [number, number, number],
+      curvature_degrees: 0,
+      joint: 'fixed' as const,
+      motion_degrees: [0, 0] as [number, number],
+      side: 'either' as const,
+      priority: 50,
+    })),
+    bulge_targets: [],
+    target_asset: null,
+    allowed_techniques: ['valley_fold'],
+  },
+}
+
+function makeGeneral14GridResponse() {
+  const center = {
+    id: general14Uuid(1, 1),
+    position: { x: 0, y: 0 },
+  }
+  const featureVertices = Array.from({ length: 14 }, (_, index) => ({
+    id: general14Uuid(2, index + 1),
+    position: { x: index + 1, y: 1 },
+  }))
+  const supportVertices = Array.from({ length: 4 }, (_, index) => ({
+    id: general14Uuid(3, index + 1),
+    position: { x: index, y: 2 },
+  }))
+  const treeVertices = Array.from({ length: 3 }, (_, index) => ({
+    id: general14Uuid(4, index + 1),
+    position: { x: 10 + Math.min(index, 1), y: 10 + Math.max(0, index - 1) },
+  }))
+  const supportEdges = supportVertices.map((vertex, index) => ({
+    id: general14Uuid(5, index + 1),
+    start: center.id,
+    end: vertex.id,
+    kind: 'valley' as const,
+  }))
+  const featureEdges = featureVertices.map((vertex, index) => ({
+    id: general14Uuid(6, index + 1),
+    start: center.id,
+    end: vertex.id,
+    kind: 'valley' as const,
+  }))
+  const treeEdges = [
+    {
+      id: general14Uuid(7, 1),
+      start: treeVertices[0]!.id,
+      end: treeVertices[1]!.id,
+      kind: 'auxiliary' as const,
+    },
+    {
+      id: general14Uuid(7, 2),
+      start: treeVertices[1]!.id,
+      end: treeVertices[2]!.id,
+      kind: 'auxiliary' as const,
+    },
+  ]
+  const plan = {
+    schema_version: 1,
+    kind: 'composite_generic_target_base',
+    crease_pattern: {
+      vertices: [center, ...featureVertices, ...supportVertices, ...treeVertices],
+      edges: [...supportEdges, ...featureEdges, ...treeEdges],
+    },
+    instruction_codes: [
+      'bounded_tree_river_axial_v1:4000000,1000000',
+      'bounded_radial_corner_support_v1:added=4:covered=4',
+      'bounded_tree_branch_topology_v1:nodes=3:leaves=2:bars=2',
+      'bounded_tree_paper_orientation_v1:horizontal',
+    ],
+    target_parts: GENERAL14_PROFILE.generation_constraints.target_parts
+      .map((part) => ({ ...part })),
+    skeleton_segments: GENERAL14_PROFILE.generation_constraints
+      .skeleton_segments.map((segment) => ({
+        ...segment,
+        start: { ...segment.start },
+        end: { ...segment.end },
+      })),
+    target_asset: null,
+  }
+  const assessment = {
+    kind: plan.kind,
+    expected_candidate_edge_id: supportEdges[0]!.id,
+    proof_scope: 'sufficient',
+    apply_allowed: true,
+    reason: 'native_fold_path_certified',
+    shape_approximation_score: null,
+    shape_difference_reason: null,
+    component_shape_comparison: null,
+  }
+  return {
+    request_generation_id: GENERAL14_GENERATION_ID,
+    authority_token: GENERAL14_AUTHORITY_TOKEN,
+    project_instance_id: GENERAL14_INSTANCE_ID,
+    project_id: GENERAL14_PROJECT_ID,
+    revision: 7,
+    grid_hash: [...GENERAL14_GRID_HASH],
+    evaluated_grid_points: 27,
+    global_checked_candidates: 3,
+    refinement_iterations: 0,
+    candidates: [{
+      point: {
+        id: 13,
+        scale_percent: 27,
+        spacing_percent: 50,
+        detail_level: 'standard',
+      },
+      primary_score: 980,
+      plan,
+      assessment,
+      local_proof_scope: 'necessary',
+      global_proof_scope: 'sufficient',
+      complexity_score: 100,
+      paper_efficiency_score: 50,
+      scale_deviation_penalty: 20,
+      spacing_deviation_penalty: 0,
+      detail_mismatch_penalty: 0,
+      outcome_reason: assessment.reason,
+      contour_witness: {
+        body_contour_points: 0,
+        local_bindings: [],
+        generic_feature_bindings: Array.from({ length: 14 }, (_, index) => ({
+          protrusion_id: index + 1,
+          generated_feature_id: index + 1,
+          endpoint_count: 1,
+          crease_start: 4 + index,
+          crease_authority_sha256: Array(32).fill(10 + index),
+          skeleton_segment_id: index === 0 ? 10 : 20,
+          skeleton_endpoint: index === 0 ? 'start' : 'end',
+          mount_distance_squared_tenths_mm: 0,
+        })),
+        skeleton_branch_bindings: [
+          {
+            segment_id: 10,
+            parent_segment_id: null,
+            parent_endpoint: null,
+            child_endpoint: null,
+            generated_feature_ids: [1],
+          },
+          {
+            segment_id: 20,
+            parent_segment_id: 10,
+            parent_endpoint: 'end',
+            child_endpoint: 'start',
+            generated_feature_ids: Array.from(
+              { length: 13 },
+              (_, index) => index + 2,
+            ),
+          },
+        ],
+        skeleton_tree_authority_sha256: Array(32).fill(2),
+        witnessed_vertices: 0,
+        witnessed_creases: 0,
+        topology_authority_hash: Array(32).fill(3),
+        max_contour_error_millionths: 0,
+      },
+      refinement_iterations: 0,
+      strict_improvements: 0,
+      refinement_starts: 1,
+    }],
+  }
+}
+
+const GENERAL14_GRID_RESPONSE = makeGeneral14GridResponse()
+const GENERAL14_FEATURE_BINDINGS =
+  GENERAL14_GRID_RESPONSE.candidates[0]!.contour_witness
+    .generic_feature_bindings
+type General14Snapshot = ProjectSnapshot & Readonly<{
+  general_semantic_feature_bindings_v1: typeof GENERAL14_FEATURE_BINDINGS
+}>
+const general14Snapshot = (
+  revision: number,
+  bindings: typeof GENERAL14_FEATURE_BINDINGS,
+) => ({
+  project_instance_id: GENERAL14_INSTANCE_ID,
+  project_id: GENERAL14_PROJECT_ID,
+  revision,
+  beginner_design_profile: structuredClone(GENERAL14_PROFILE),
+  general_semantic_feature_bindings_v1: structuredClone(bindings),
+  can_undo: bindings.length === 14,
+  can_redo: bindings.length === 0,
+}) as unknown as General14Snapshot
+const exactKeys = (value: unknown, expected: readonly string[]) =>
+  typeof value === 'object'
+  && value !== null
+  && !Array.isArray(value)
+  && Object.keys(value).sort().join('\u0000')
+    === [...expected].sort().join('\u0000')
+const sameJson = (left: unknown, right: unknown) =>
+  JSON.stringify(left) === JSON.stringify(right)
+const general14Evidence = {
+  evaluations: 0,
+  applies: 0,
+  undos: 0,
+  redos: 0,
+  reopens: 0,
+  strictEvaluateDto: false,
+  strictApplyDto: false,
+  maximumDeclaredSemanticCount: 14,
+}
+let general14LiveSnapshot = general14Snapshot(7, [])
+let general14RedoBindings: typeof GENERAL14_FEATURE_BINDINGS | null = null
+
+function assertGeneral14Fixture() {
+  const semanticEndpoints =
+    GENERAL14_PROFILE.generation_constraints.target_parts.reduce(
+      (sum, part) =>
+        part.kind === 'head' || part.kind === 'torso'
+          ? sum
+          : sum + part.count,
+      0,
+    )
+  const physicalBindings =
+    GENERAL14_PROFILE.generation_constraints.protrusions ?? []
+  const witnessedEndpoints = GENERAL14_FEATURE_BINDINGS.reduce(
+    (sum, binding) => sum + binding.endpoint_count,
+    0,
+  )
+  if (
+    semanticEndpoints !== 14
+    || physicalBindings.length !== 14
+    || physicalBindings.some((binding) => binding.count !== 1)
+    || GENERAL14_FEATURE_BINDINGS.length !== 14
+    || witnessedEndpoints !== 14
+    || GENERAL14_FEATURE_BINDINGS.some((binding, index) =>
+      binding.protrusion_id !== index + 1
+      || binding.generated_feature_id !== index + 1
+      || binding.endpoint_count !== 1)
+  ) throw new Error('general semantic count 14 fixture crossed its strict bound')
+}
+
+Object.assign(window, {
+  __ORIGAMI2_GENERIC_TARGET_GENERAL14_EVIDENCE__: general14Evidence,
+  __TAURI_INTERNALS__: {
+    invoke: async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'evaluate_beginner_parameter_grid') {
+        if (!exactKeys(args, [
+          'expectedProjectInstanceId',
+          'expectedProjectId',
+          'expectedRevision',
+          'requestGenerationId',
+        ]) || args?.expectedProjectInstanceId !== GENERAL14_INSTANCE_ID
+          || args?.expectedProjectId !== GENERAL14_PROJECT_ID
+          || args?.expectedRevision !== 7
+          || args?.requestGenerationId !== GENERAL14_GENERATION_ID) {
+          throw new Error('invalid general semantic count 14 preview request')
+        }
+        assertGeneral14Fixture()
+        general14Evidence.evaluations += 1
+        general14Evidence.strictEvaluateDto = true
+        return structuredClone(GENERAL14_GRID_RESPONSE)
+      }
+      if (command === 'apply_beginner_parameter_grid_candidate') {
+        const candidate = GENERAL14_GRID_RESPONSE.candidates[0]!
+        if (!exactKeys(args, [
+          'expectedProjectInstanceId',
+          'expectedProjectId',
+          'expectedRevision',
+          'requestGenerationId',
+          'authorityToken',
+          'expectedProfile',
+          'expectedGridHash',
+          'selectedPoint',
+          'expectedCandidateEdgeId',
+          'expectedTopologyAuthorityHash',
+          'confirmed',
+        ]) || args?.expectedProjectInstanceId !== GENERAL14_INSTANCE_ID
+          || args?.expectedProjectId !== GENERAL14_PROJECT_ID
+          || args?.expectedRevision !== 7
+          || args?.requestGenerationId !== GENERAL14_GENERATION_ID
+          || args?.authorityToken !== GENERAL14_AUTHORITY_TOKEN
+          || !sameJson(args?.expectedProfile, GENERAL14_PROFILE)
+          || !sameJson(args?.expectedGridHash, GENERAL14_GRID_HASH)
+          || !sameJson(args?.selectedPoint, candidate.point)
+          || args?.expectedCandidateEdgeId
+            !== candidate.assessment.expected_candidate_edge_id
+          || !sameJson(
+            args?.expectedTopologyAuthorityHash,
+            candidate.contour_witness.topology_authority_hash,
+          )
+          || args?.confirmed !== true) {
+          throw new Error('invalid general semantic count 14 apply request')
+        }
+        assertGeneral14Fixture()
+        general14Evidence.applies += 1
+        general14Evidence.strictApplyDto = true
+        general14RedoBindings = null
+        general14LiveSnapshot = general14Snapshot(
+          8,
+          GENERAL14_FEATURE_BINDINGS,
+        )
+        return structuredClone(general14LiveSnapshot)
+      }
+      if (command === 'undo' || command === 'redo') {
+        if (!exactKeys(args, [
+          'expectedProjectInstanceId',
+          'expectedProjectId',
+          'expectedRevision',
+        ]) || args?.expectedProjectInstanceId !== GENERAL14_INSTANCE_ID
+          || args?.expectedProjectId !== GENERAL14_PROJECT_ID
+          || args?.expectedRevision !== general14LiveSnapshot.revision) {
+          throw new Error(`invalid general semantic count 14 ${command}`)
+        }
+        if (command === 'undo') {
+          if (GENERAL14_FEATURE_BINDINGS.length
+            !== general14LiveSnapshot.general_semantic_feature_bindings_v1.length) {
+            throw new Error('general semantic count 14 undo lost authority')
+          }
+          general14Evidence.undos += 1
+          general14RedoBindings = structuredClone(GENERAL14_FEATURE_BINDINGS)
+          general14LiveSnapshot = general14Snapshot(
+            general14LiveSnapshot.revision + 1,
+            [],
+          )
+        } else {
+          if (general14RedoBindings?.length !== 14) {
+            throw new Error('general semantic count 14 redo lacks authority')
+          }
+          general14Evidence.redos += 1
+          general14LiveSnapshot = general14Snapshot(
+            general14LiveSnapshot.revision + 1,
+            general14RedoBindings,
+          )
+          general14RedoBindings = null
+        }
+        return structuredClone(general14LiveSnapshot)
+      }
+      if (command === 'project_snapshot') {
+        general14Evidence.reopens += 1
+        return structuredClone(general14LiveSnapshot)
+      }
+      throw new Error(`unexpected generic target harness command ${command}`)
+    },
+  },
+})
+
+const snapshotGeneral14Bindings = (snapshot: ProjectSnapshot | null) =>
+  snapshot === null
+    ? []
+    : (snapshot as General14Snapshot)
+        .general_semantic_feature_bindings_v1
+
 function Harness() {
   const [metricPreset, setMetricPreset] = useState<'balanced' | 'shape' | 'foldability'>('balanced')
   const [recognized, setRecognized] = useState(false), [preview, setPreview] = useState(false)
@@ -56,6 +461,10 @@ function Harness() {
   const [asymmetricInsect, setAsymmetricInsect] = useState(false)
   const [asymmetricFish, setAsymmetricFish] = useState(false)
   const [exportStatus, setExportStatus] = useState<string | null>(null)
+  const [general14Grid, setGeneral14Grid] =
+    useState<BeginnerGridEvaluationResponse | null>(null)
+  const [general14HistorySnapshot, setGeneral14HistorySnapshot] =
+    useState<ProjectSnapshot | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
@@ -126,7 +535,134 @@ function Harness() {
       setGlbWitness({ bounds: '120×80×65 mm', bulges: 2, discrepancy: 7 })
     } else setGlbWitness(null)
   }
+  const previewGeneral14 = async () => {
+    const grid = await evaluateBeginnerParameterGrid(
+      GENERAL14_PROJECT_ID,
+      7,
+      GENERAL14_INSTANCE_ID,
+      GENERAL14_GENERATION_ID,
+      GENERAL14_PROFILE,
+    )
+    const featureBindings =
+      grid.candidates[0]?.contour_witness.generic_feature_bindings ?? []
+    const endpointCount = featureBindings.reduce(
+      (sum, binding) => sum + binding.endpoint_count,
+      0,
+    )
+    if (featureBindings.length !== 14 || endpointCount !== 14) {
+      throw new Error('strict general semantic count 14 DTO was not retained')
+    }
+    setGeneral14Grid(grid)
+    setGeneral14HistorySnapshot(null)
+    setStatus('General semantic count 14 preview admitted by strict native DTO')
+  }
+  const applyGeneral14 = () => {
+    const grid = general14Grid
+    const candidate = grid?.candidates[0]
+    if (!grid || !candidate) return
+    void runBeginnerGridApplyWorkflow({
+      confirm: () => true,
+      apply: async () => {
+        const next = await applyBeginnerParameterGridCandidate(
+          GENERAL14_PROJECT_ID,
+          7,
+          GENERAL14_INSTANCE_ID,
+          grid,
+          GENERAL14_PROFILE,
+          candidate,
+        )
+        setGeneral14HistorySnapshot(next)
+        return true
+      },
+      clearPreview: () => setGeneral14Grid(null),
+      restoreFocus: () => undefined,
+    }).then((appliedGeneral14) => {
+      if (appliedGeneral14) {
+        setStatus('General semantic count 14 applied with 14 persisted bindings')
+      }
+    })
+  }
+  const mutateGeneral14History = async (action: 'undo' | 'redo') => {
+    const current = general14HistorySnapshot
+    if (!current) return
+    const next = await (action === 'undo' ? undoProject : redoProject)(
+      current.project_id,
+      current.revision,
+      current.project_instance_id,
+    )
+    const bindingCount = snapshotGeneral14Bindings(next).length
+    if (
+      (action === 'undo' && bindingCount !== 0)
+      || (action === 'redo' && bindingCount !== 14)
+    ) throw new Error(`general semantic count 14 ${action} drifted`)
+    setGeneral14HistorySnapshot(next)
+    setStatus(action === 'undo'
+      ? 'General semantic count 14 undone'
+      : 'General semantic count 14 redone with 14 persisted bindings')
+  }
+  const reopenGeneral14 = async () => {
+    const next = await getProjectSnapshot()
+    if (snapshotGeneral14Bindings(next).length !== 14) {
+      throw new Error('general semantic count 14 reopen lost bindings')
+    }
+    setGeneral14HistorySnapshot(next)
+    setStatus(
+      'General semantic count 14 reopened from project snapshot with 14 persisted bindings',
+    )
+  }
+  const general14PreviewBindings =
+    general14Grid?.candidates[0]?.contour_witness.generic_feature_bindings ?? []
+  const general14HistoryBindings =
+    snapshotGeneral14Bindings(general14HistorySnapshot)
   return <main><h1>Bounded generic target</h1>
+    <button onClick={() => void previewGeneral14()}>
+      Preview general semantic count 14
+    </button>
+    {general14Grid && <section aria-label="General semantic count 14 preview">
+      <p>Strict production DTO retained 14 semantic endpoints and 14 feature bindings.</p>
+      <ol aria-label="General semantic count 14 preview bindings">
+        {general14PreviewBindings.map((binding) =>
+          <li key={binding.generated_feature_id}>
+            Binding {binding.generated_feature_id}: protrusion {binding.protrusion_id},
+            endpoints {binding.endpoint_count}
+          </li>)}
+      </ol>
+      <button onClick={applyGeneral14}>Apply general semantic count 14</button>
+    </section>}
+    {general14HistorySnapshot && <section aria-label="General semantic count 14 history">
+      <p>Persisted general feature bindings: {general14HistoryBindings.length}/14.</p>
+      <ol aria-label="Persisted general semantic count 14 bindings">
+        {general14HistoryBindings.map((binding) =>
+          <li key={binding.generated_feature_id}>
+            Binding {binding.generated_feature_id}: endpoint count {binding.endpoint_count}
+          </li>)}
+      </ol>
+      <button
+        disabled={general14HistoryBindings.length !== 14}
+        onClick={() => void mutateGeneral14History('undo')}
+      >
+        Undo general semantic count 14
+      </button>
+      <button
+        disabled={general14HistoryBindings.length !== 0}
+        onClick={() => void mutateGeneral14History('redo')}
+      >
+        Redo general semantic count 14
+      </button>
+      <button
+        disabled={general14HistoryBindings.length !== 14}
+        onClick={() => void reopenGeneral14()}
+      >
+        Reopen general semantic count 14 snapshot
+      </button>
+      <button onClick={() => {
+        setGeneral14Grid(null)
+        setGeneral14HistorySnapshot(null)
+        setStatus('General semantic count 14 lifecycle reset')
+      }}>
+        Reset general semantic count 14 lifecycle
+      </button>
+    </section>}
     <button onClick={() => setMetricPreset('balanced')}>Use balanced metric</button>
     <button onClick={() => setMetricPreset('shape')}>Use shape-priority metric</button>
     <button onClick={() => setMetricPreset('foldability')}>Use foldability-priority metric</button>

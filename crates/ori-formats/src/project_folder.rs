@@ -371,6 +371,15 @@ pub fn write_project_folder_v1_with_limits(
     }
 
     let project_bytes = write_project_json(&archive.document)?;
+    if !crate::beginner_generation_document_authority::
+        has_authoritative_beginner_generation_history_v1(history, &archive.document)
+    {
+        crate::beginner_generation_document_authority::
+            require_current_beginner_generation_document_authority_v1(&archive.document)?;
+    } else {
+        crate::beginner_generation_document_authority::
+            reject_mismatched_beginner_generation_document_authority_v1(&archive.document)?;
+    }
     ensure_role_size(FolderRole::Project, project_bytes.len() as u64, limits)?;
     let project_sha256 = sha256_hex(&project_bytes);
 
@@ -550,7 +559,7 @@ pub fn read_project_folder_v1_with_limits(
 
     let project_entry = entry_by_path(entries, PROJECT_FOLDER_PROJECT_PATH)?;
     let project_limit = effective_project_limit(limits);
-    let project = read_project_json_with_limits(
+    let mut project = read_project_json_with_limits(
         &project_entry.bytes,
         ProjectJsonLimits {
             max_input_size: project_limit as usize,
@@ -581,6 +590,17 @@ pub fn read_project_folder_v1_with_limits(
     } else {
         None
     };
+    if !crate::beginner_generation_document_authority::
+        has_authoritative_beginner_generation_history_v1(
+        editor_history.as_ref(),
+        &project,
+    ) {
+        crate::beginner_generation_document_authority::
+            admit_beginner_generation_document_authority_v1(&mut project)?;
+    } else {
+        crate::beginner_generation_document_authority::
+            reject_mismatched_beginner_generation_document_authority_v1(&project)?;
+    }
     let expected_features = crate::ori2::required_features_for_project_archive_v1(
         &project,
         editor_history.as_ref(),
@@ -820,12 +840,17 @@ fn validate_editor_history_for_document(
     document: &ProjectDocument,
     history: &EditorHistoryV1,
 ) -> Result<(), ProjectFolderError> {
-    ori_core::EditorState::with_document_parts_layers_and_history_v1(
+    ori_core::EditorState::with_all_document_parts_annotations_underlays_memo_profile_and_history_v1(
         document.crease_pattern.clone(),
         document.paper.clone(),
         document.instruction_timeline.clone(),
         document.geometric_constraints.clone(),
         document.layers.clone(),
+        document.element_metadata.clone(),
+        document.annotations.clone(),
+        document.underlays.clone(),
+        document.memo.clone(),
+        document.beginner_design_profile.clone(),
         history.clone(),
     )
     .map(|_| ())
@@ -1385,6 +1410,20 @@ mod tests {
             .expect("descriptor")
     }
 
+    fn replace_project_document(entries: &mut [ProjectFolderEntryV1], document: &ProjectDocument) {
+        let bytes = serde_json::to_vec_pretty(document).expect("project JSON");
+        entries
+            .iter_mut()
+            .find(|entry| entry.path == PROJECT_FOLDER_PROJECT_PATH)
+            .expect("project entry")
+            .bytes = bytes.clone();
+        let mut manifest = manifest(entries);
+        let descriptor = descriptor_mut(&mut manifest, FolderRole::Project.as_str());
+        descriptor.uncompressed_size = bytes.len() as u64;
+        descriptor.sha256 = sha256_hex(&bytes);
+        replace_manifest(entries, &manifest);
+    }
+
     #[test]
     fn writer_is_deterministic_and_emits_canonical_order() {
         let archive = Ori2ProjectArchive::document_only(sample_document());
@@ -1503,6 +1542,97 @@ mod tests {
                 .iter()
                 .all(|entry| entry.path != PROJECT_FOLDER_EDITOR_HISTORY_PATH)
         );
+    }
+
+    #[test]
+    fn document_only_generation_authority_round_trips_downgrades_legacy_and_rejects_tampering() {
+        let mut document = sample_document();
+        document.beginner_design_profile.generation_provenance =
+            Some(ori_domain::BeginnerGenerationProvenanceV1 {
+                schema_version: 1,
+                topology_authority_sha256: [0x31; 32],
+                fold_path_certificate_sha256: Some([0x62; 32]),
+                document_authority_sha256: None,
+                confidence_score: 93,
+                confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+                explicit_override: false,
+                source_asset_fingerprint: "asset:expanded-folder".to_owned(),
+                semantic_landmark_provenance: None,
+                generic_tree: None,
+                reference_consensus: None,
+                reference_consensus_summary: None,
+            });
+        ori_core::bind_beginner_generation_document_authority_v1(
+            &document.crease_pattern,
+            &document.paper,
+            &mut document.beginner_design_profile,
+        )
+        .expect("bind final expanded-folder document");
+        let archive = Ori2ProjectArchive::document_only(document.clone());
+        let written = write_project_folder_v1(&archive).expect("write bound folder");
+        assert_eq!(
+            read_project_folder_v1(written.entries())
+                .expect("read bound folder")
+                .archive(),
+            &archive
+        );
+
+        let mut stale = document.clone();
+        stale.crease_pattern.vertices[0].position.x += 0.001;
+        assert!(matches!(
+            write_project_folder_v1(&Ori2ProjectArchive::document_only(stale.clone())),
+            Err(ProjectFolderError::Project(
+                FormatError::InvalidBeginnerDesignProfile
+            ))
+        ));
+        let mut stale_entries = written.entries().to_vec();
+        replace_project_document(&mut stale_entries, &stale);
+        assert!(matches!(
+            read_project_folder_v1(&stale_entries),
+            Err(ProjectFolderError::Project(
+                FormatError::InvalidBeginnerDesignProfile
+            ))
+        ));
+
+        let mut legacy = document;
+        legacy
+            .beginner_design_profile
+            .generation_provenance
+            .as_mut()
+            .unwrap()
+            .document_authority_sha256 = None;
+        assert!(matches!(
+            write_project_folder_v1(&Ori2ProjectArchive {
+                editor_history: Some(non_default_empty_history(legacy.project_id)),
+                layer_evidence: None,
+                document: legacy.clone(),
+            }),
+            Err(ProjectFolderError::Project(
+                FormatError::InvalidBeginnerDesignProfile
+            ))
+        ));
+        let mut unsupported = legacy.clone();
+        unsupported.format_version = CURRENT_FORMAT_VERSION + 1;
+        assert!(matches!(
+            write_project_folder_v1(&Ori2ProjectArchive::document_only(unsupported)),
+            Err(ProjectFolderError::Project(
+                FormatError::UnsupportedVersion { .. }
+            ))
+        ));
+        let mut legacy_entries = written.entries().to_vec();
+        replace_project_document(&mut legacy_entries, &legacy);
+        let reopened =
+            read_project_folder_v1(&legacy_entries).expect("legacy folder remains readable");
+        assert!(
+            reopened
+                .archive()
+                .document
+                .beginner_design_profile
+                .generation_provenance
+                .is_none(),
+            "legacy positive evidence must reopen only after an explicit downgrade"
+        );
+        write_project_folder_v1(reopened.archive()).expect("downgraded legacy folder resaves");
     }
 
     #[test]

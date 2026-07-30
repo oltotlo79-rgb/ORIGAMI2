@@ -68,6 +68,30 @@ function asymmetricInsectEstimate() {
   return response
 }
 
+function generalCountFiveEstimate() {
+  const response = completeInsectEstimate()
+  response.estimate.protrusion_count = 5
+  response.candidates.forEach((candidate, index) => {
+    candidate.required_protrusion_count = 5
+    candidate.complexity_score = [75, 74, 76][index]!
+  })
+  return response
+}
+
+function generalCountEstimate(count: 9 | 11 | 12 | 13 | 14) {
+  const response = completeInsectEstimate()
+  response.estimate.protrusion_count = count
+  response.candidates.forEach((candidate, index) => {
+    candidate.required_protrusion_count = count
+    candidate.complexity_score = [
+      count * 10 + 25,
+      count * 10 + 24,
+      count * 10 + 26,
+    ][index]!
+  })
+  return response
+}
+
 async function readEstimate() {
   return getBeginnerSymmetricParameterEstimate(
     PROJECT_ID,
@@ -133,6 +157,20 @@ describe('beginner symmetric estimate strict client', () => {
     )).toEqual([95, 94, 96])
   })
 
+  it('accepts all three general-case count-five candidates', async () => {
+    nativeInvoke.mockResolvedValue(generalCountFiveEstimate())
+
+    const response = await readEstimate()
+
+    expect(response.estimate.protrusion_count).toBe(5)
+    expect(response.candidates.map(
+      (candidate) => candidate.required_protrusion_count,
+    )).toEqual([5, 5, 5])
+    expect(response.candidates.map(
+      (candidate) => candidate.complexity_score,
+    )).toEqual([75, 74, 76])
+  })
+
   it('rejects an estimate and candidate count mismatch in either direction', async () => {
     const candidateTamper = completeAnimalEstimate()
     candidateTamper.candidates[1]!.required_protrusion_count = 10
@@ -149,8 +187,26 @@ describe('beginner symmetric estimate strict client', () => {
     )
   })
 
-  it('keeps neighboring undeclared protrusion counts closed', async () => {
-    for (const invalid of [5, 9]) {
+  it('accepts bounded general-case counts nine and eleven through fourteen', async () => {
+    for (const count of [9, 11, 12, 13, 14] as const) {
+      nativeInvoke.mockResolvedValueOnce(generalCountEstimate(count))
+      const response = await readEstimate()
+      expect(response.estimate.protrusion_count).toBe(count)
+      expect(response.candidates.map(
+        (candidate) => candidate.required_protrusion_count,
+      )).toEqual([count, count, count])
+      expect(response.candidates.map(
+        (candidate) => candidate.complexity_score,
+      )).toEqual([
+        count * 10 + 25,
+        count * 10 + 24,
+        count * 10 + 26,
+      ])
+    }
+  })
+
+  it('keeps the next undeclared protrusion count closed', async () => {
+    for (const invalid of [15]) {
       const invalidEstimate = completeAnimalEstimate()
       invalidEstimate.estimate.protrusion_count = invalid
       nativeInvoke.mockResolvedValueOnce(invalidEstimate)

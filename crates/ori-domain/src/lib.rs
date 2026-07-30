@@ -9,6 +9,7 @@ use uuid::Uuid;
 mod annotations;
 mod beginner_candidates;
 mod beginner_design;
+mod beginner_document_authority;
 mod beginner_generation;
 mod beginner_generator;
 mod beginner_recognition;
@@ -31,14 +32,19 @@ pub use beginner_candidates::{
     MAX_BEGINNER_CANDIDATES_V1, score_beginner_candidates_v1,
 };
 pub use beginner_design::{
-    BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1, BeginnerDesignPresetV1, BeginnerDesignProfileV1,
-    BeginnerGenerationProvenanceV1, BeginnerGenericTreeInstructionProposalV1,
-    BeginnerGenericTreeInstructionStepV1, BeginnerGenericTreeOrientationV1,
-    BeginnerGenericTreeProvenanceV1, BeginnerGenericTreeSourceV1, BeginnerOutlineEditAuthorityV1,
-    BeginnerOutlineEditRecordV1, BeginnerReferenceBindingKindV1, BeginnerReferenceBindingV1,
-    BeginnerReferenceConsensusProvenanceV1, BeginnerReferenceConsensusSummaryV1,
-    BeginnerReferenceConsensusV1, validate_beginner_design_profile_v1,
+    BEGINNER_DESIGN_PROFILE_AUTHORITY_SHA256_V1_DOMAIN, BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1,
+    BeginnerDesignPresetV1, BeginnerDesignProfileV1, BeginnerGenerationProvenanceV1,
+    BeginnerGenericTreeInstructionProposalV1, BeginnerGenericTreeInstructionStepV1,
+    BeginnerGenericTreeOrientationV1, BeginnerGenericTreeProvenanceV1, BeginnerGenericTreeSourceV1,
+    BeginnerOutlineEditAuthorityV1, BeginnerOutlineEditRecordV1, BeginnerReferenceBindingKindV1,
+    BeginnerReferenceBindingV1, BeginnerReferenceConsensusProvenanceV1,
+    BeginnerReferenceConsensusSummaryV1, BeginnerReferenceConsensusV1,
+    beginner_design_profile_authority_sha256_v1, validate_beginner_design_profile_v1,
     validate_beginner_generation_provenance_v1,
+};
+pub use beginner_document_authority::{
+    BEGINNER_GENERATION_DOCUMENT_AUTHORITY_SHA256_V1_DOMAIN,
+    beginner_generation_document_authority_sha256_v1,
 };
 pub use beginner_generation::{
     BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_V1, BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1,
@@ -66,14 +72,17 @@ pub use beginner_generator::{
     BeginnerParameterGridHashV1, BeginnerParameterGridPointV1, BeginnerSemanticLandmarkBindingV1,
     BeginnerSemanticLandmarkProvenanceV1, BeginnerSymmetricParameterCandidateV1,
     BeginnerSymmetricParameterEstimateV1, BeginnerTailEarBindingV1, BeginnerWingAntennaBindingV1,
-    MAX_BEGINNER_GENERATED_CANDIDATES_V1, MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1,
+    MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1, MAX_BEGINNER_GENERATED_CANDIDATES_V1,
+    MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1, MAX_BEGINNER_GENERIC_PROTRUSION_BINDINGS_V1,
     MAX_BEGINNER_GENERIC_TREE_BARS_V1, animal_complete_bindings_v1,
     animal_complete_winged_bindings_v1, animal_horn_ear_bindings_v1, animal_horn_tail_bindings_v1,
-    animal_horn_tail_ear_bindings_v1, animal_tail_ear_bindings_v1, beginner_parameter_grid_hash_v1,
-    beginner_parameter_grid_v1, beginner_target_approximation_score_v1,
-    estimate_symmetric_parameters_v1, generate_beginner_plans_v1, insect_complete_bindings_v1,
-    insect_three_pair_bindings_v1, insect_wing_antenna_bindings_v1,
-    symmetric_parameter_candidates_v1,
+    animal_horn_tail_ear_bindings_v1, animal_tail_ear_bindings_v1,
+    beginner_expected_generated_plan_kind_v1, beginner_generic_tree_length_ratios_v1,
+    beginner_parameter_grid_hash_v1, beginner_parameter_grid_v1,
+    beginner_target_approximation_score_v1, beginner_uses_bounded_generic_target_base_v1,
+    canonical_beginner_generic_tree_segments_v1, estimate_symmetric_parameters_v1,
+    generate_beginner_plans_v1, insect_complete_bindings_v1, insect_three_pair_bindings_v1,
+    insect_wing_antenna_bindings_v1, symmetric_parameter_candidates_v1,
 };
 pub use beginner_recognition::{
     BEGINNER_RECOGNITION_SCHEMA_VERSION_V1, BeginnerOutlineCandidateV1,

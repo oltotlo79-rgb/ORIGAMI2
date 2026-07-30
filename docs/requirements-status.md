@@ -5,15 +5,17 @@
 2026-07-30 authoritative semantic inventory correction: `DirectConstraintConflictKindV1` の24 wire-compatible variantすべてに、限定形の各原因削除後を独立exact SAT witnessで再認証する24/24 sound semantic proof familyがある。現行model IDは `geometric_constraint_deterministic_binary64_semantic_mus_v4` である。本節が以下の22/24・v3記録を上書きする現行正本であり、過去の記録自体は履歴として保持する。
 
 - 23番目の `NonParallelFixedAngleInParallelComponent` は、異なる3実在辺に対するexact 2-hopの `Parallel` 2件、両terminal間のbit-exact `FixedAngle(90.0)`、両terminalのbit-exact `FixedLength(1.0)` 2件から成るcanonical 5-ID causeだけを対象とする。semantic MUSへの昇格はsource topologyがcommon-center starで、5件すべての単独削除に専用finite production residual-only witnessがある場合に限る。非単位長、固定長欠落、90度の非exact値、1-hop・3-hop以上・任意長pathはsolver-required `Unknown`を維持し、nonstar topologyはdirect theoremを保持しても専用semantic constructorではfail closedとする。
-- 24番目の `ParallelWithFixedNonParallelAngle` は、同じ2実在辺に対する `Parallel`、bit-exact `FixedAngle(45.0)`、どちらか片側のbit-exact `FixedLength(1.0)` 1件から成るcanonical 3-ID causeだけを対象とする。両側にunit lengthがある場合も最小 `ConstraintId` の1件だけをcanonicalに選び、semantic MUSへの昇格はcommon-center starと3件すべての単独削除witnessを要求する。45度またはunit長の非exact値、one-sidedなgeneric angle、nonstar topologyはfail closedとし、generic angleの既存4-ID direct boundaryは両側unit lengthを要求したまま維持する。
+- 24番目の `ParallelWithFixedNonParallelAngle` は、同じ2実在辺に対する `Parallel`、bit-exact `FixedAngle(45.0)` または `FixedAngle(135.0)`、どちらか片側のbit-exact `FixedLength(1.0)` 1件から成るcanonical 3-ID causeだけを対象とする。両側にunit lengthがある場合も最小 `ConstraintId` の1件だけをcanonicalに選び、semantic MUSへの昇格はcommon-center starと3件すべての単独削除witnessを要求する。45/135度以外または45/135度の非exact値、unit長の非exact値、one-sidedなgeneric angle、nonstar topologyはfail closedとし、generic angleの既存4-ID direct boundaryは両側unit lengthを要求したまま維持する。
 
-EDT-009は一般11制約種の完全SAT/UNSAT決定、完全な一般矛盾原因、一般MUS探索をまだ提供しないため部分実装のままである。MUST集計は実装済み85 / 部分実装2 / 未着手0、数式・幾何制約は85%、全体は81.96%（表示82.0%）から変更しない。
+2026-07-30 EDT-009 bounded constructive SAT現行追補: 現在配置のexact-zero肯定とは別に、全11種のsingleton制約をproduction exact certificateで個別に構成し、共有頂点の割当座標がbit一致する1..=8件だけをmergeして文書全体のproduction residualで再認証する。native DTOは`current_assignment`と`detached_constructed_assignment`を別のclosed evidence kindとして返し、strict TypeScript parserは未知値をfail-closedする。日英UIは後者を現在配置の充足と表示せず、別の厳密配置を構成・再認証した非mutation証拠として表示する。候補座標はDTOへ公開せず、DirectConflict優先、9件以上、共有座標不一致、resource、取消、deadlineでは肯定しない。これは限定SAT存在証拠を増やすが、任意組合せの完全SAT/UNSAT、完全な一般原因、一般MUSは未完成である。
+
+EDT-009は一般11制約種の完全SAT/UNSAT決定、完全な一般矛盾原因、一般MUS探索をまだ提供しないため部分実装のままである。MUST集計は実装済み85 / 部分実装2 / 未着手0から変更しない。次期反映headのCI発効までは数式・幾何制約85%、全体81.96%（表示82.0%）を維持し、発効条件成立後だけ数式・幾何制約86%、全体82.29%（表示82.3%）を採用する。
 
 更新日: 2026-07-30
 
 現在の行単位集計は **実装済み85 / 部分実装2 / 未着手0**。
 
-全体加重完成度はこのMUST行集計とは別指標で、`docs/progress.md`の正本発効規則に従う。反映headのCI条件成立前は79.32%（表示79.3%）、成立後は81.96%（表示82.0%）である。以下の日付付き完成度・集計は各checkpoint時点の履歴で、現在値を上書きしない。
+全体加重完成度はこのMUST行集計とは別指標で、`docs/progress.md`の正本発効規則に従う。現行正本は81.96%（表示82.0%）であり、数式・幾何制約86%と初心者向け自動設計38%を含む次期remote `main` head自身の必須CI・artifact条件が成立した場合だけ82.29%（表示82.3%）を発効する。以下の日付付き完成度・集計は各checkpoint時点の履歴で、現在値を上書きしない。
 
 以下の現行訂正より前の項目に残る「現行」「現在の正本」という表現は各checkpoint当時の記録であり、semantic MUS範囲は直後の2026-07-30 unit-terminal two-hop平行component現行訂正が上書きする。
 

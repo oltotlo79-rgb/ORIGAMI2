@@ -1,5 +1,32 @@
 # 完成度再評価（正本発効条件付き、2026-07-22起案）
 
+## 2026-07-30 次期候補（82.29%・同一head CI発効待ち）
+
+発効済み正本81.96%を基準に、一般判定と初心者向け一般自動設計の利用者能力を再監査した。次期候補は **82.29%（表示82.3%）** であり、本節の計上対象を含むremote `main` head自身が後述の発効条件を満たすまでは、正本81.96%（表示82.0%）を維持する。
+
+| 領域 | 全体比率 | 81.96%時点 | 次期候補 | 次期寄与 | 増分根拠 |
+|---|---:|---:|---:|---:|---|
+| 要件・基本設計・技術検証 | 5% | 85% | 85% | 4.25% | 据え置き |
+| プロジェクト・保存・履歴 | 8% | 94% | 94% | 7.52% | 据え置き |
+| 2D展開図エディター | 15% | 100% | 100% | 15.00% | 据え置き |
+| 数式・幾何制約 | 9% | 85% | 86% | 7.74% | 互換singleton 1..=8件からdetachedな厳密配置を構成し、全production residualを再認証。current assignment証拠とnative DTO・strict TypeScript・日英UIで区別 |
+| 3D折り・紙厚・衝突 | 17% | 75% | 75% | 12.75% | 4-block正厚作業は未完のため不計上 |
+| 折り可能性・経路探索 | 18% | 78% | 78% | 14.04% | 据え置き |
+| 折り手順・PDF | 10% | 92% | 92% | 9.20% | 据え置き |
+| 入出力・互換性 | 5% | 100% | 100% | 5.00% | 据え置き |
+| 多言語・設定・配布・QA | 5% | 75% | 75% | 3.75% | browser回帰を別加算しない |
+| 初心者向け自動設計 | 8% | 35% | 38% | 3.04% | general semantic count 2..=14の生成・Apply・Undo/Redo・再読込、count 15 fail-closed、認識parser/apply 16件境界、production frontendのcount 14 browser lifecycleを一能力bundleとして計上 |
+| **合計** | **100%** | — | — | **82.29%** | **表示82.3%** |
+
+```text
+4.25 + 7.52 + 15.00 + 7.74 + 12.75
++ 14.04 + 9.20 + 5.00 + 3.75 + 3.04 = 82.29%
+```
+
+二重計上を避けるため、manual count 2..=14、count 14 browser、認識cap同期、count 15負境界は初心者向け自動設計の+3点へ一括し、QAへ加算しない。constructive SATと証拠種別UI分離は数式・幾何制約の+1点へ一括する。bit-exact 135度の限定semantic family拡張は既計上familyの証拠密度向上、4-block正厚positive lifecycleは未完として、いずれも追加加算しない。
+
+次期反映headとexactに同じ`head_sha`の単一CI run attemptで、必須7 job（`dependency-advisory-audit`、`frontend`、`slicer-acceptance`、`rust (macos-latest)`、`rust (windows-latest)`、`windows-bundle`、`macos-bundle`）がすべてterminalの`conclusion=success`となり、同じrunの必須4 artifact（`rustsec-warning-review`、`sample-viewer-runtime-log`、Windows NSIS、macOS app）が監査時に生成済みかつ`expired=false`であることを要求する。`frontend` jobはgeneral count 14、complete animal、complete insectの3 browser lifecycleを含む。別head・別attempt・skip・cancel・failure・artifact欠落・計上対象の未push差分が一つでもあれば82.29%を発効しない。
+
 ## 位置づけ
 
 次の3監査を統合し、2026-07-26に反映前base CIまで完了した完成度再評価である。

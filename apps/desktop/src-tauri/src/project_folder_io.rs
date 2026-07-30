@@ -412,6 +412,8 @@ pub(super) async fn save_project_folder_as(
     project.current_path = None;
     project.saved_revision = Some(capture.binding.revision);
     project.saved_document = Some(capture.binding.archive.document);
+    project.saved_speculative_unproven_state =
+        Some(project.editor.speculative_unproven_fold_state_marker_v1());
     let response = ProjectFolderFileResponse {
         canceled: false,
         project: redacted_snapshot(&project),
@@ -1269,6 +1271,7 @@ mod tests {
                     schema_version: 1,
                     topology_authority_sha256: [0x31; 32],
                     fold_path_certificate_sha256: Some([0x62; 32]),
+                    document_authority_sha256: None,
                     confidence_score: 93,
                     confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
                     explicit_override: false,
@@ -1278,6 +1281,12 @@ mod tests {
                     reference_consensus: None,
                     reference_consensus_summary: None,
                 });
+                ori_core::bind_beginner_generation_document_authority_v1(
+                    &archive.document.crease_pattern,
+                    &archive.document.paper,
+                    &mut archive.document.beginner_design_profile,
+                )
+                .expect("bind expanded-folder provenance to the final document");
             }
             let artifact = write_project_folder_v1(&archive).expect("write folder provenance");
             write_fixture(&root, &artifact);

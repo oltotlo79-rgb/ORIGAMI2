@@ -76,7 +76,9 @@ export function ConstraintPreflightStatus({
     className = 'is-clear'
     message = formatLocalizedText(
       locale,
-      TEXT.provenSatisfiable,
+      preflight.evidence_kind === 'current_assignment'
+        ? TEXT.provenSatisfiable
+        : TEXT.constructedSatisfiable,
       {
         constraintCount: preflight.constraint_count,
         equationCount: preflight.equation_count,

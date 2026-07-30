@@ -45,6 +45,8 @@ fn creation_expressions_follow_document_dirty_state_without_entering_editor_undo
     let saved_expressions = project.numeric_expressions.clone();
     project.saved_document = Some(saved_document.clone());
     project.saved_revision = Some(project.editor.revision());
+    project.saved_speculative_unproven_state =
+        Some(project.editor.speculative_unproven_fold_state_marker_v1());
     assert!(!project.is_dirty());
 
     let resized = execute_command(

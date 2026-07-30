@@ -16,6 +16,7 @@ const app = [
   source('../src/lib/useBeginnerEditorState.ts'),
   source('../src/lib/useBeginnerProfileWorkflow.ts'),
   source('../src/lib/useBeginnerCandidateWorkflow.ts'),
+  source('../src/lib/beginnerCandidateWorkflowSupport.ts'),
 ].join('\n')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/beginner_recognition.rs')
@@ -78,7 +79,10 @@ test('bounded PNG or JPEG silhouette recognition fails closed without inferred p
   assert.match(native, /MAX_BEGINNER_RECOGNITION_PIXELS_V1/u)
   assert.match(app, /Recognize outline from image/u)
   assert.match(app, /read-only outline proposal/u)
-  assert.match(app, /proposal\.target_parts\.length > 0/u)
+  assert.match(app, /proposal\.target_parts\.map\(\(part\) => \[part\.kind, part\.count\]\)/u)
+  assert.match(app, /const value = String\(counts\.get\(kind\) \?\? 0\)/u)
+  assert.match(app, /field\.value = value/u)
+  assert.match(app, /field\.defaultValue = value/u)
   assert.match(client, /generic_body_outline_tenths_mm\?: Array<\[number, number\]>/u)
   assert.match(client, /protrusions\?: BeginnerGenerationConstraintsV1\['protrusions'\]/u)
   assert.match(app, /setBeginnerBodyOutline\(\s*proposal\.generic_body_outline_tenths_mm/u)
@@ -98,7 +102,10 @@ test('multiple silhouettes form one bounded custom tree only through inferred MS
   assert.match(domain, /component_bridges_are_estimated/u)
   assert.match(domain, /explicit_override_required: inferred_component_bridges/u)
   assert.match(client, /aabb_squared_distance_v1/u)
-  assert.match(app, /=== 'aabb_squared_distance_v1'\s*\?\s*'custom_object'/u)
+  assert.match(
+    app,
+    /=== 'aabb_squared_distance_v1'[\s\S]*?category\.value = 'custom_object'/u,
+  )
 })
 
 test('multiple outline candidates stay strict, stale-safe, and read-only', () => {
@@ -125,6 +132,20 @@ test('an explicitly confirmed outline is revalidated and copied as one history c
 })
 
 test('part suggestions require explicit assignment and one confirmed history command', () => {
+  assert.match(
+    native,
+    /MAX_BEGINNER_PART_ASSIGNMENTS_V1: usize =\s*ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1 as usize \+ 2/u,
+  )
+  assert.match(client, /export const MAX_BEGINNER_PART_ASSIGNMENTS_V1 = 16/u)
+  assert.match(
+    client,
+    /record\.suggestions\.length > MAX_BEGINNER_PART_ASSIGNMENTS_V1/u,
+  )
+  assert.match(
+    client,
+    /assignments\.length > MAX_BEGINNER_PART_ASSIGNMENTS_V1/u,
+  )
+  assert.match(app, /export \{ MAX_BEGINNER_PART_ASSIGNMENTS_V1 \}/u)
   assert.match(native, /part_suggestion_ambiguous/u)
   assert.match(native, /part_assignment_stale/u)
   assert.match(native, /UpdateBeginnerDesignProfile/u)
@@ -157,11 +178,12 @@ test('part suggestions require explicit assignment and one confirmed history com
   assert.match(client, /split_x\?: number/u)
   assert.match(client, /sourceSha256: \[\.\.\.outline\.source_sha256\]/u)
   assert.match(app, /left\.candidate_id - right\.candidate_id/u)
-  assert.match(native, /!specialized && \(2\.\.=8\)\.contains\(&feature_parts\.len\(\)\)/u)
+  assert.match(native, /let is_general =\s*expected_plan_kind ==[\s\S]*CompositeGenericTargetBase/u)
   assert.match(native, /part_assignment_generic_binding_invalid/u)
-  assert.match(native, /matches!\(count, 3 \| 5 \| 7 \| 8\)/u)
-  assert.match(native, /repeated_single_rank/u)
-  assert.match(native, /candidate\.bounds\.min_y, candidate\.bounds\.min_x, candidate\.id/u)
+  assert.match(native, /compact_beginner_target_parts_v1\(&request\.assignments\)/u)
+  assert.match(native, /generic_singleton_protrusions_from_assignments_v1/u)
+  assert.match(native, /estimate_symmetric_parameters_v1\(&profile\.generation_constraints\)/u)
+  assert.match(native, /left_bounds\.min_y,[\s\S]*left_bounds\.min_x,[\s\S]*left\.candidate_id/u)
 })
 
 test('confirmed outline split and merge provenance persists with the editable profile', () => {
@@ -171,7 +193,11 @@ test('confirmed outline split and merge provenance persists with the editable pr
   assert.match(native, /profile\.outline_edit_authority/u)
   assert.match(native, /source_asset_id: request\.asset_id/u)
   assert.match(native, /source_sha256: request\.source_sha256/u)
-  assert.match(client, /'reference_surface_landmarks_tenths_mm', 'outline_edit_authority'/u)
+  assert.match(
+    app,
+    /\| 'reference_surface_landmarks_tenths_mm'\s*\| 'outline_edit_authority'/u,
+  )
+  assert.match(app, /preserveOutlineAuthority && outlineAuthority/u)
   assert.match(client, /JSON\.stringify\(profile\.outline_edit_authority\)/u)
   assert.match(app, /Saved outline edit authority/u)
 })

@@ -986,141 +986,143 @@ fn unit_terminal_two_hop_parallel_angle_counter_crosses_the_native_dto_exactly_f
 }
 
 #[test]
-fn unit_parallel_fixed_angle_counter_crosses_the_native_dto_exactly_three_times() {
-    let center = VertexId::new();
-    let endpoints = [VertexId::new(), VertexId::new()];
-    let edges = [EdgeId::new(), EdgeId::new()];
-    let pattern = CreasePattern {
-        vertices: vec![
-            Vertex {
-                id: center,
-                position: Point2::new(0.0, 0.0),
-            },
-            Vertex {
-                id: endpoints[0],
-                position: Point2::new(3.0, 1.0),
-            },
-            Vertex {
-                id: endpoints[1],
-                position: Point2::new(1.0, 3.0),
-            },
-        ],
-        edges: edges
-            .into_iter()
-            .zip(endpoints)
-            .map(|(id, end)| Edge {
-                id,
-                start: center,
-                end,
-                kind: EdgeKind::Auxiliary,
-            })
-            .collect(),
-    };
-    let records = vec![
-        record(GeometricConstraintKindV1::Parallel {
-            first_edge: edges[0],
-            second_edge: edges[1],
-        }),
-        record(GeometricConstraintKindV1::FixedAngle {
-            vertex: center,
-            first_edge: edges[0],
-            second_edge: edges[1],
-            angle_degrees: 45.0,
-        }),
-        record(GeometricConstraintKindV1::FixedLength {
-            edge: edges[0],
-            length_mm: 1.0,
-        }),
-    ];
-    let expected_ids = canonical_ids(&records);
-    let outcome = analyze_geometric_constraint_document_outcome_with_observer(
-        &pattern,
-        &document(records),
-        &mut continuing_observer(),
-    )
-    .expect("unit parallel-fixed-angle semantic outcome");
-    let (conflicts, bounded_direct_mus) = match outcome.result {
-        GeometricConstraintPreflightResult::DirectConflict {
-            conflicts,
-            bounded_direct_mus,
-        } => (conflicts, bounded_direct_mus),
-        other => panic!("expected unit parallel-fixed-angle direct conflict, got {other:?}"),
-    };
-    assert!(conflicts.iter().any(|candidate| {
-        matches!(
-            candidate.conflict(),
-            DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle { .. }
-        ) && candidate.constraint_ids() == expected_ids
-    }));
-    assert!(matches!(
-        &bounded_direct_mus,
-        BoundedDirectMusResult::ProvenUnsatisfiable {
-            constraint_ids,
-            oracle_calls,
-        } if constraint_ids == &expected_ids && *oracle_calls > 0
-    ));
+fn unit_parallel_supplementary_fixed_angle_counter_crosses_the_native_dto_exactly_three_times() {
+    for angle_degrees in [45.0, 135.0] {
+        let center = VertexId::new();
+        let endpoints = [VertexId::new(), VertexId::new()];
+        let edges = [EdgeId::new(), EdgeId::new()];
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: center,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: endpoints[0],
+                    position: Point2::new(3.0, 1.0),
+                },
+                Vertex {
+                    id: endpoints[1],
+                    position: Point2::new(1.0, 3.0),
+                },
+            ],
+            edges: edges
+                .into_iter()
+                .zip(endpoints)
+                .map(|(id, end)| Edge {
+                    id,
+                    start: center,
+                    end,
+                    kind: EdgeKind::Auxiliary,
+                })
+                .collect(),
+        };
+        let records = vec![
+            record(GeometricConstraintKindV1::Parallel {
+                first_edge: edges[0],
+                second_edge: edges[1],
+            }),
+            record(GeometricConstraintKindV1::FixedAngle {
+                vertex: center,
+                first_edge: edges[0],
+                second_edge: edges[1],
+                angle_degrees,
+            }),
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: edges[0],
+                length_mm: 1.0,
+            }),
+        ];
+        let expected_ids = canonical_ids(&records);
+        let outcome = analyze_geometric_constraint_document_outcome_with_observer(
+            &pattern,
+            &document(records),
+            &mut continuing_observer(),
+        )
+        .expect("unit parallel-fixed-angle semantic outcome");
+        let (conflicts, bounded_direct_mus) = match outcome.result {
+            GeometricConstraintPreflightResult::DirectConflict {
+                conflicts,
+                bounded_direct_mus,
+            } => (conflicts, bounded_direct_mus),
+            other => panic!("expected unit parallel-fixed-angle direct conflict, got {other:?}"),
+        };
+        assert!(conflicts.iter().any(|candidate| {
+            matches!(
+                candidate.conflict(),
+                DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle { .. }
+            ) && candidate.constraint_ids() == expected_ids
+        }));
+        assert!(matches!(
+            &bounded_direct_mus,
+            BoundedDirectMusResult::ProvenUnsatisfiable {
+                constraint_ids,
+                oracle_calls,
+            } if constraint_ids == &expected_ids && *oracle_calls > 0
+        ));
 
-    let semantic_mus = outcome
-        .semantic_mus
-        .expect("unit parallel-fixed-angle core must carry semantic status");
-    assert!(matches!(
-        &semantic_mus,
-        GeometricConstraintSemanticMusResult::Certified {
-            constraint_ids,
-            constraint_count: 3,
-            deletion_witness_checks: 3,
-            deletion_witness_work,
-            current_assignment_witness_count: 0,
-            axis_exactification_witness_count: 0,
-            single_constraint_constructive_witness_count: 0,
-            pair_constraint_constructive_witness_count: 0,
-            pair_constraint_algebraic_witness_count: 0,
-            length_constraint_constructive_witness_count: 0,
-            zero_length_closure_constructive_witness_count: 0,
-            anchored_mirror_residual_only_witness_count: 0,
-            unit_parallel_fixed_angle_residual_only_witness_count: 3,
-            unit_terminal_two_hop_parallel_angle_residual_only_witness_count: 0,
-            unit_two_hop_parallel_residual_only_witness_count: 0,
-            authorizes_project_mutation: false,
-            ..
-        } if constraint_ids == &expected_ids && *deletion_witness_work > 0
-    ));
+        let semantic_mus = outcome
+            .semantic_mus
+            .expect("unit parallel-fixed-angle core must carry semantic status");
+        assert!(matches!(
+            &semantic_mus,
+            GeometricConstraintSemanticMusResult::Certified {
+                constraint_ids,
+                constraint_count: 3,
+                deletion_witness_checks: 3,
+                deletion_witness_work,
+                current_assignment_witness_count: 0,
+                axis_exactification_witness_count: 0,
+                single_constraint_constructive_witness_count: 0,
+                pair_constraint_constructive_witness_count: 0,
+                pair_constraint_algebraic_witness_count: 0,
+                length_constraint_constructive_witness_count: 0,
+                zero_length_closure_constructive_witness_count: 0,
+                anchored_mirror_residual_only_witness_count: 0,
+                unit_parallel_fixed_angle_residual_only_witness_count: 3,
+                unit_terminal_two_hop_parallel_angle_residual_only_witness_count: 0,
+                unit_two_hop_parallel_residual_only_witness_count: 0,
+                authorizes_project_mutation: false,
+                ..
+            } if constraint_ids == &expected_ids && *deletion_witness_work > 0
+        ));
 
-    let response = GeometricConstraintPreflightResponse {
-        project_instance_id: ProjectId::new(),
-        project_id: ProjectId::new(),
-        revision: 15,
-        result: GeometricConstraintPreflightResult::DirectConflict {
-            conflicts,
-            bounded_direct_mus,
-        },
-        semantic_mus: Some(semantic_mus),
-    };
-    let encoded = serde_json::to_value(response)
-        .expect("serialize unit parallel-fixed-angle desktop response");
-    let semantic = encoded["semantic_mus"]
-        .as_object()
-        .expect("certified semantic MUS object");
-    assert_eq!(semantic.len(), 21);
-    assert_eq!(
-        semantic["unit_parallel_fixed_angle_residual_only_witness_count"],
-        3,
-    );
-    let method_sum = [
-        "current_assignment_witness_count",
-        "axis_exactification_witness_count",
-        "single_constraint_constructive_witness_count",
-        "pair_constraint_constructive_witness_count",
-        "pair_constraint_algebraic_witness_count",
-        "length_constraint_constructive_witness_count",
-        "zero_length_closure_constructive_witness_count",
-        "anchored_mirror_residual_only_witness_count",
-        "unit_parallel_fixed_angle_residual_only_witness_count",
-        "unit_terminal_two_hop_parallel_angle_residual_only_witness_count",
-        "unit_two_hop_parallel_residual_only_witness_count",
-    ]
-    .into_iter()
-    .map(|key| semantic[key].as_u64().expect("wire counter is u64"))
-    .sum::<u64>();
-    assert_eq!(method_sum, 3);
+        let response = GeometricConstraintPreflightResponse {
+            project_instance_id: ProjectId::new(),
+            project_id: ProjectId::new(),
+            revision: 15,
+            result: GeometricConstraintPreflightResult::DirectConflict {
+                conflicts,
+                bounded_direct_mus,
+            },
+            semantic_mus: Some(semantic_mus),
+        };
+        let encoded = serde_json::to_value(response)
+            .expect("serialize unit parallel-fixed-angle desktop response");
+        let semantic = encoded["semantic_mus"]
+            .as_object()
+            .expect("certified semantic MUS object");
+        assert_eq!(semantic.len(), 21);
+        assert_eq!(
+            semantic["unit_parallel_fixed_angle_residual_only_witness_count"],
+            3,
+        );
+        let method_sum = [
+            "current_assignment_witness_count",
+            "axis_exactification_witness_count",
+            "single_constraint_constructive_witness_count",
+            "pair_constraint_constructive_witness_count",
+            "pair_constraint_algebraic_witness_count",
+            "length_constraint_constructive_witness_count",
+            "zero_length_closure_constructive_witness_count",
+            "anchored_mirror_residual_only_witness_count",
+            "unit_parallel_fixed_angle_residual_only_witness_count",
+            "unit_terminal_two_hop_parallel_angle_residual_only_witness_count",
+            "unit_two_hop_parallel_residual_only_witness_count",
+        ]
+        .into_iter()
+        .map(|key| semantic[key].as_u64().expect("wire counter is u64"))
+        .sum::<u64>();
+        assert_eq!(method_sum, 3);
+    }
 }

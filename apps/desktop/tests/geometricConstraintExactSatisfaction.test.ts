@@ -30,11 +30,15 @@ function exactResult(
   constraintCount: number,
   equationCount: number,
   replayableAcrossRuntimes = true,
+  evidenceKind:
+    | 'current_assignment'
+    | 'detached_constructed_assignment' = 'current_assignment',
 ) {
   return {
     status: 'proven_satisfiable',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
     transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    evidence_kind: evidenceKind,
     constraint_count: constraintCount,
     equation_count: equationCount,
     authorizes_project_mutation: false,
@@ -42,10 +46,10 @@ function exactResult(
   }
 }
 
-test('exact satisfiability DTO accepts both replay scopes and inclusive count boundaries', () => {
+test('exact satisfiability DTO accepts both evidence kinds, replay scopes, and count boundaries', () => {
   for (const result of [
     exactResult(1, 1),
-    exactResult(1, 2, false),
+    exactResult(1, 2, false, 'detached_constructed_assignment'),
     exactResult(
       MAX_GEOMETRIC_CONSTRAINT_RECORDS,
       MAX_GEOMETRIC_CONSTRAINT_RECORDS * 2,
@@ -68,6 +72,8 @@ test('exact satisfiability DTO rejects malformed model and every numeric boundar
     { ...base, model_id: '' },
     { ...base, transcendental_model_id: 'forged_model' },
     { ...base, transcendental_model_id: '' },
+    { ...base, evidence_kind: 'future_evidence' },
+    { ...base, evidence_kind: '' },
     { ...base, constraint_count: 0 },
     { ...base, constraint_count: -1 },
     { ...base, constraint_count: 1.5 },
@@ -122,6 +128,7 @@ test('exact satisfiability DTO rejects inherited symbol non-enumerable and acces
   }), {
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
     transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    evidence_kind: 'current_assignment',
     constraint_count: 1,
     equation_count: 1,
     authorizes_project_mutation: false,
@@ -151,6 +158,10 @@ test('exact satisfiability DTO rejects inherited symbol non-enumerable and acces
     transcendental_model_id: {
       enumerable: true,
       value: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    },
+    evidence_kind: {
+      enumerable: true,
+      value: 'current_assignment',
     },
     constraint_count: {
       enumerable: true,

@@ -1485,6 +1485,24 @@ fn speculative_owned_commit_keeps_deep_profile_current_and_both_history_snapshot
         .editor
         .restore_beginner_design_profile(BeginnerDesignProfileV1::default())
         .expect("replace the restored live snapshot");
+    let stored_forward_profile = match &fixture
+        .editor
+        .redo_stack
+        .last()
+        .expect("the speculative entry must be available for Redo")
+        .forward
+    {
+        Command::ApplyStackedFoldDocument(command) => command.beginner_design_profile.as_ref(),
+        other => panic!("unexpected speculative Redo command: {other:?}"),
+    };
+    assert_eq!(
+        stored_forward_profile, &rich_profile,
+        "the forward history entry owns its independent deep target snapshot"
+    );
+    fixture
+        .editor
+        .restore_beginner_design_profile(rich_profile.clone())
+        .expect("restore the exact source profile required by authenticated Redo");
     fixture
         .editor
         .redo(target_revision + 1)

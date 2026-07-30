@@ -9,6 +9,10 @@ import type {
   BeginnerDesignProfileV1,
   ProjectSnapshot,
 } from './coreClient.ts'
+import {
+  resolveBeginnerProtrusionKindsV1,
+  type BeginnerProtrusionKindAssignmentV1,
+} from './beginnerProtrusionKinds.ts'
 import { resolveBeginnerSkeletonEndpointV1 } from './beginnerSkeletonEndpointClient.ts'
 import { analyzeGenericSkeletonTree } from './genericSkeletonTree.ts'
 
@@ -16,7 +20,6 @@ type Constraints = BeginnerDesignProfileV1['generation_constraints']
 type SkeletonSegments = Constraints['skeleton_segments']
 type ComponentBridgeOverride = Constraints['component_bridge_override']
 type Protrusions = NonNullable<Constraints['protrusions']>
-type ProtrusionKind = Constraints['target_parts'][number]['kind']
 type BulgeTargets = NonNullable<Constraints['bulge_targets']>
 type BodyOutlineMode = 'symmetric' | 'general'
 
@@ -56,7 +59,7 @@ export function useBeginnerEditorState(input: Readonly<{
   const [beginnerBodyOutlineMode, setBeginnerBodyOutlineMode] =
     useState<BodyOutlineMode>('symmetric')
   const [beginnerProtrusionKinds, setBeginnerProtrusionKinds] =
-    useState<ProtrusionKind[]>([])
+    useState<BeginnerProtrusionKindAssignmentV1[]>([])
   const [beginnerBulgeTargets, setBeginnerBulgeTargets] =
     useState<BulgeTargets>([])
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
@@ -108,7 +111,8 @@ export function useBeginnerEditorState(input: Readonly<{
     setBeginnerComponentBridgeOverride(
       constraints?.component_bridge_override,
     )
-    setBeginnerProtrusions(constraints?.protrusions ?? [])
+    const protrusions = constraints?.protrusions ?? []
+    setBeginnerProtrusions(protrusions)
     setBeginnerBodyOutline(
       constraints?.generic_body_outline_tenths_mm
         ?.map((point) => [...point] as [number, number]) ?? [],
@@ -123,10 +127,18 @@ export function useBeginnerEditorState(input: Readonly<{
         ? 'general'
         : 'symmetric',
     )
+    const resolvedKinds = constraints
+      ? resolveBeginnerProtrusionKindsV1(
+          constraints.target_parts,
+          protrusions,
+          {
+            targetCategory: constraints.target_category,
+            allowOrderedGeneric: constraints.target_asset !== null,
+          },
+        )
+      : []
     setBeginnerProtrusionKinds(
-      constraints?.target_parts
-        .filter((part) => part.kind !== 'head' && part.kind !== 'torso')
-        .map((part) => part.kind) ?? [],
+      resolvedKinds ?? protrusions.map(() => null),
     )
     setBeginnerBulgeTargets(constraints?.bulge_targets ?? [])
   }, [snapshotProjectInstanceId, snapshotProjectId, snapshotRevision])
@@ -322,7 +334,7 @@ export function useBeginnerEditorState(input: Readonly<{
     ])
     setBeginnerProtrusionKinds((kinds) => {
       const nextKinds = beginnerProtrusions.map(
-        (_, index) => kinds[index] ?? 'tail',
+        (_, index) => kinds[index] ?? null,
       )
       nextKinds.splice(insertionIndex, 0, 'tail')
       return nextKinds

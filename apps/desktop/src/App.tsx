@@ -878,6 +878,7 @@ function App() {
     beginnerBodyOutlineMode,
     setBeginnerBodyOutlineMode,
     beginnerProtrusionKinds,
+    setBeginnerProtrusionKinds,
     beginnerBulgeTargets,
   } = beginnerEditorState
   const beginnerCandidateWorkflow = useBeginnerCandidateWorkflow({
@@ -910,6 +911,7 @@ function App() {
       setBeginnerBodyOutline,
       setBeginnerBodyOutlineMode,
       setBeginnerProtrusions,
+      setBeginnerProtrusionKinds,
       setBeginnerSkeletonSegments,
       setBeginnerComponentBridgeOverride,
     },
@@ -955,6 +957,7 @@ function App() {
       setBeginnerBodyOutline,
       setBeginnerBodyOutlineMode,
       setBeginnerProtrusions,
+      setBeginnerProtrusionKinds,
     },
     onMissingReference: () => {
       setCoreStatus(appMessage(APP_TEXT.selectAReferenceImageToRecognize))

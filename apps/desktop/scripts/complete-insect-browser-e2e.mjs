@@ -36,7 +36,7 @@ try {
   }
   await page.getByRole('button', { name: 'Recognize complete insect image' }).click()
   await page.getByRole('button', { name: 'Evaluate complete insect grid' }).click()
-  await page.getByRole('button', { name: 'Cancel 27-design evaluation' }).click()
+  await page.getByRole('button', { name: 'Cancel candidate generation' }).click()
   await preview.waitFor({ state: 'detached' })
   await page.waitForFunction(() => document.activeElement?.textContent === 'Evaluate complete insect grid')
   console.log('complete insect browser E2E passed: image/GLB, five bindings, stale/cancel, apply history/save')

@@ -547,12 +547,12 @@ pub enum DirectConstraintConflictKindV1 {
     /// rejects the normalized-cross classes admitted by the accompanying
     /// fixed-length proof.
     ///
-    /// The exact 45-degree three-record form needs a bit-exact unit
-    /// `FixedLength` on either edge. Multiplication by that unit hypot leaves
-    /// the other finite hypot unchanged. A non-zero raw cross that nevertheless
-    /// divides to signed zero is then confined to a few minimum subnormals
-    /// relative to the dot product, disjoint from the frozen 45-degree
-    /// residual's exact-zero enclosure.
+    /// The exact 45- or supplementary 135-degree three-record form needs a
+    /// bit-exact unit `FixedLength` on either edge. Multiplication by that unit
+    /// hypot leaves the other finite hypot unchanged. A non-zero raw cross
+    /// that nevertheless divides to signed zero is then confined to a few
+    /// minimum subnormals relative to the dot product, disjoint from the
+    /// corresponding frozen fixed-angle residual's exact-zero enclosure.
     ///
     /// The legacy four-record form retains bit-exact unit lengths on both
     /// edges. Its normalized denominator is exactly one, so it remains sound

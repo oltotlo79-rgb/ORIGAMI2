@@ -109,6 +109,24 @@ test('rejects malformed and hostile native layer mutation snapshots', () => {
   assert.equal(getterCalls, 0)
 })
 
+test('rejects a native layer mutation that alters only reference consensus', () => {
+  const base = validBaseSnapshot()
+  const response = validSnapshot()
+  const baseConsensus = referenceConsensusV1()
+  const responseConsensus = referenceConsensusV1()
+  Object.assign(base.beginner_design_profile, {
+    reference_consensus_v1: baseConsensus,
+  })
+  Object.assign(response.beginner_design_profile, {
+    reference_consensus_v1: responseConsensus,
+  })
+
+  assert.ok(normalizeProjectLayerMutationSnapshot(response, base))
+
+  responseConsensus.bindings[0]!.sha256[0] = 9
+  assert.equal(normalizeProjectLayerMutationSnapshot(response, base), null)
+})
+
 test('requires the exact native unproven-history summary and preserves it', () => {
   const base = validBaseSnapshot()
   const source = validSnapshot()
@@ -200,16 +218,26 @@ test('requires a refreshed, immutable-geometry boundary length authority', () =>
 test('strictly admits the optional path-certificate DTO and rejects unknown or malformed fields', () => {
   const valid = validSnapshot()
   const validBase = validBaseSnapshot()
-  validBase.instruction_timeline = proofTimeline() as typeof validBase.instruction_timeline
-  assert.notEqual(
-    normalizeProjectLayerMutationSnapshot(valid, validBase),
-    null,
-  )
+  const sourceReference = proofReference()
+  validBase.instruction_timeline = proofTimeline(
+    sourceReference,
+  ) as typeof validBase.instruction_timeline
+  const admitted = normalizeProjectLayerMutationSnapshot(valid, validBase)
+  assert.ok(admitted)
+  const admittedReference = admitted.instruction_timeline.steps[0]!
+    .visual.path_certificate_reference_v1
+  assert.ok(admittedReference)
+  assert.ok(Object.isFrozen(admittedReference))
+  assert.ok(Object.isFrozen(admittedReference.binding_sha256))
+  sourceReference.binding_sha256[0] = 9
+  assert.equal(admittedReference.binding_sha256[0], 1)
 
   for (const reference of [
     { ...proofReference(), future: true },
     { ...proofReference(), transition_count: 0 },
     { ...proofReference(), binding_sha256: [1] },
+    { ...proofReference(), binding_sha256: [-1, ...Array(31).fill(1)] },
+    { ...proofReference(), binding_sha256: Array(32) },
     { ...proofReference(), target_pose_sha256: Array(32).fill(2) },
   ]) {
     const invalid = validBaseSnapshot()
@@ -302,7 +330,8 @@ test('never adopts unverified nested response objects', () => {
   assert.equal(nestedGetterCalls, 0)
   assert.equal(admitted.paper, base.paper)
   assert.equal(admitted.crease_pattern, base.crease_pattern)
-  assert.equal(admitted.instruction_timeline, base.instruction_timeline)
+  assert.deepEqual(admitted.instruction_timeline, base.instruction_timeline)
+  assert.notEqual(admitted.instruction_timeline, base.instruction_timeline)
   assert.equal(admitted.numeric_expressions, base.numeric_expressions)
   assert.equal(admitted.geometric_constraints, base.geometric_constraints)
   assert.notEqual(admitted.project_layers, base.project_layers)
@@ -406,7 +435,7 @@ function validSnapshot() {
         kind: 'mountain',
       }],
     },
-    instruction_timeline: {},
+    instruction_timeline: { steps: [] },
     numeric_expressions: {},
     geometric_constraints: {},
     beginner_design_profile: {
@@ -497,6 +526,27 @@ function proofReference() {
     target_pose_sha256: Array(32).fill(3),
     source_model_binding_sha256: Array(32).fill(4),
     transition_count: 1,
+  }
+}
+
+function referenceConsensusV1() {
+  return {
+    schema_version: 1 as const,
+    bindings: [
+      {
+        kind: 'image' as const,
+        asset_id: '70000000-0000-4000-8000-000000000001',
+        sha256: Array(32).fill(1),
+        quality: 90,
+      },
+      {
+        kind: 'reference_model' as const,
+        asset_id: '80000000-0000-4000-8000-000000000001',
+        sha256: Array(32).fill(2),
+        quality: 80,
+      },
+    ],
+    excluded_asset_id: '80000000-0000-4000-8000-000000000001',
   }
 }
 

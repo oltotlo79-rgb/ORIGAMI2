@@ -43,7 +43,7 @@ test('document, dirty state, normal open, recovery, and history endpoints retain
   )
   assert.match(
     native,
-    /with_all_document_parts_annotations_underlays_memo_and_history_v1\([\s\S]*?project\.document\.layers\.clone\(\)/u,
+    /with_all_document_parts_annotations_underlays_memo_profile_and_history_v1\([\s\S]*?project\.document\.layers\.clone\(\)/u,
   )
   assert.equal(
     native.match(

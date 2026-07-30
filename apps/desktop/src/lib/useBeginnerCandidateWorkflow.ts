@@ -1,4 +1,3 @@
-import { listen } from '@tauri-apps/api/event'
 import {
   useEffect,
   useRef,
@@ -7,77 +6,27 @@ import {
 
 import {
   applyBeginnerGeneratedPlan,
-  applyBeginnerSymmetricParameters,
-  appendGenericTreeInstructionProposal,
-  cancelReferenceConsensus,
-  evaluateBeginnerCandidates,
-  getBeginnerSymmetricParameterEstimate,
-  updateBeginnerDesignProfile,
-  updateBeginnerReferenceConsensus,
   type BeginnerCandidateResponseV1,
   type BeginnerSymmetricParameterEstimateResponse,
   type ProjectSnapshot,
 } from './coreClient.ts'
+import {
+  beginnerCandidatePlanApplyAuthorityIsLiveV1,
+  DEFAULT_CANDIDATE_TRANSPORT,
+  EMPTY_CONSENSUS_PROGRESS,
+  subscribeConsensusProgressByDefault,
+  type BeginnerCandidateRequestStatus,
+  type CandidateTransport,
+  type ConsensusProgress,
+  type ConsensusProgressListener,
+  type ConsensusSelection,
+} from './beginnerCandidateWorkflowSupport.ts'
 import type { LocalizedText } from './i18n.ts'
 import {
   beginnerProjectBinding,
   matchesBeginnerProjectBinding,
   type BeginnerNativeEditRunner,
 } from './beginnerWorkflowSupport.ts'
-
-type ConsensusSelection = Readonly<{
-  kind: 'image' | 'reference_model'
-  asset_id: string
-}>
-
-type ConsensusProgress = Readonly<{
-  processed_assets: number
-  total_assets: number
-  processed_pairs: number
-  total_pairs: number
-}>
-
-type ConsensusProgressListener = (
-  payload: Readonly<Record<string, unknown>>,
-) => void
-
-type CandidateTransport = Readonly<{
-  evaluate: typeof evaluateBeginnerCandidates
-  cancelConsensus: typeof cancelReferenceConsensus
-  estimateSymmetric: typeof getBeginnerSymmetricParameterEstimate
-  applySymmetric: typeof applyBeginnerSymmetricParameters
-  applyPlan: typeof applyBeginnerGeneratedPlan
-  appendInstructions: typeof appendGenericTreeInstructionProposal
-  updateProfile: typeof updateBeginnerDesignProfile
-  updateConsensus: typeof updateBeginnerReferenceConsensus
-}>
-
-const EMPTY_PROGRESS: ConsensusProgress = Object.freeze({
-  processed_assets: 0,
-  total_assets: 0,
-  processed_pairs: 0,
-  total_pairs: 0,
-})
-
-const DEFAULT_TRANSPORT: CandidateTransport = Object.freeze({
-  evaluate: evaluateBeginnerCandidates,
-  cancelConsensus: cancelReferenceConsensus,
-  estimateSymmetric: getBeginnerSymmetricParameterEstimate,
-  applySymmetric: applyBeginnerSymmetricParameters,
-  applyPlan: applyBeginnerGeneratedPlan,
-  appendInstructions: appendGenericTreeInstructionProposal,
-  updateProfile: updateBeginnerDesignProfile,
-  updateConsensus: updateBeginnerReferenceConsensus,
-})
-
-function defaultSubscribeConsensusProgress(
-  listener: ConsensusProgressListener,
-) {
-  return listen<Record<string, unknown>>(
-    'reference-consensus-progress-v1',
-    (event) => listener(event.payload),
-  )
-}
 
 export function useBeginnerCandidateWorkflow(input: Readonly<{
   snapshot: ProjectSnapshot | null
@@ -98,9 +47,19 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
 }>) {
   const [beginnerCandidates, setBeginnerCandidates] =
     useState<BeginnerCandidateResponseV1 | null>(null)
+  const candidateAuthorityRef =
+    useRef<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
+  const [
+    beginnerCandidateApplyBusy,
+    setBeginnerCandidateApplyBusy,
+  ] = useState(false)
+  const [
+    beginnerCandidateRequestStatus,
+    setBeginnerCandidateRequestStatus,
+  ] = useState<BeginnerCandidateRequestStatus>('idle')
   const [consensusProgress, setConsensusProgress] =
-    useState<ConsensusProgress>(EMPTY_PROGRESS)
+    useState<ConsensusProgress>(EMPTY_CONSENSUS_PROGRESS)
   const [selectedConsensusPair, setSelectedConsensusPair] =
     useState<string | null>(null)
   const [consensusSelectionDraft, setConsensusSelectionDraft] =
@@ -110,20 +69,23 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
   const [beginnerSymmetricScale, setBeginnerSymmetricScale] = useState(25)
   const [beginnerSymmetricSpacing, setBeginnerSymmetricSpacing] = useState(35)
   const candidateRequestRef = useRef(0)
+  const candidateApplyRequestRef = useRef(0)
   const symmetricRequestRef = useRef(0)
   const consensusGenerationRef = useRef<string | null>(null)
   const busyRef = useRef(false)
+  const candidateApplyBusyRef = useRef(false)
+  const mountedRef = useRef(true)
   const snapshotRef = useRef(input.snapshot)
   snapshotRef.current = input.snapshot
   const snapshotProjectInstanceId = input.snapshot?.project_instance_id
   const snapshotRevision = input.snapshot?.revision
-  const transport = input.transport ?? DEFAULT_TRANSPORT
+  const transport = input.transport ?? DEFAULT_CANDIDATE_TRANSPORT
   const transportRef = useRef(transport)
   transportRef.current = transport
   const createGenerationId =
     input.createGenerationId ?? (() => crypto.randomUUID())
   const subscribeConsensusProgress = input.subscribeConsensusProgress
-    ?? defaultSubscribeConsensusProgress
+    ?? subscribeConsensusProgressByDefault
 
   useEffect(() => {
     if (input.consensusProgressEnabled === false) return
@@ -165,10 +127,34 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
   }, [input.consensusProgressEnabled, subscribeConsensusProgress])
 
   useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      candidateRequestRef.current += 1
+      candidateApplyRequestRef.current += 1
+      symmetricRequestRef.current += 1
+      busyRef.current = false
+      candidateApplyBusyRef.current = false
+      candidateAuthorityRef.current = null
+      const generationId = consensusGenerationRef.current
+      consensusGenerationRef.current = null
+      if (generationId) {
+        void transportRef.current.cancelConsensus(generationId)
+          .catch(() => undefined)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     candidateRequestRef.current += 1
+    candidateApplyRequestRef.current += 1
     symmetricRequestRef.current += 1
     busyRef.current = false
+    candidateApplyBusyRef.current = false
     setBeginnerCandidateBusy(false)
+    setBeginnerCandidateApplyBusy(false)
+    setBeginnerCandidateRequestStatus('idle')
+    candidateAuthorityRef.current = null
     setBeginnerCandidates(null)
     const generationId = consensusGenerationRef.current
     consensusGenerationRef.current = null
@@ -176,7 +162,7 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
       void transportRef.current.cancelConsensus(generationId)
         .catch(() => undefined)
     }
-    setConsensusProgress(EMPTY_PROGRESS)
+    setConsensusProgress(EMPTY_CONSENSUS_PROGRESS)
     setSelectedConsensusPair(null)
     setConsensusSelectionDraft(
       (snapshotRef.current?.beginner_design_profile.reference_consensus_v1
@@ -189,7 +175,7 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
   }, [snapshotProjectInstanceId, snapshotRevision])
 
   function requestBeginnerCandidates(requestedCandidateCount: number) {
-    if (busyRef.current) return
+    if (busyRef.current || candidateApplyBusyRef.current) return
     const current = input.getCurrentSnapshot()
     if (!current) return
     const binding = beginnerProjectBinding(current)
@@ -197,7 +183,11 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
     const generationId = createGenerationId()
     consensusGenerationRef.current = generationId
     busyRef.current = true
-    setConsensusProgress(EMPTY_PROGRESS)
+    setConsensusProgress(EMPTY_CONSENSUS_PROGRESS)
+    setSelectedConsensusPair(null)
+    candidateAuthorityRef.current = null
+    setBeginnerCandidates(null)
+    setBeginnerCandidateRequestStatus('running')
     setBeginnerCandidateBusy(true)
     void transport.evaluate(
       binding.project_id,
@@ -205,6 +195,7 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
       binding.project_instance_id,
       requestedCandidateCount,
       generationId,
+      current.beginner_design_profile,
     ).then((response) => {
       if (
         candidateRequestRef.current !== requestId
@@ -215,7 +206,11 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
         )
         || !matchesBeginnerProjectBinding(response, current)
       ) return
+      candidateAuthorityRef.current = response
       setBeginnerCandidates(response)
+      setBeginnerCandidateRequestStatus(
+        response.generated_plans.length === 0 ? 'empty' : 'ready',
+      )
     }).catch(() => {
       if (
         candidateRequestRef.current === requestId
@@ -224,7 +219,11 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
           binding,
           input.getCurrentSnapshot(),
         )
-      ) setBeginnerCandidates(null)
+      ) {
+        candidateAuthorityRef.current = null
+        setBeginnerCandidates(null)
+        setBeginnerCandidateRequestStatus('failed')
+      }
     }).finally(() => {
       if (
         candidateRequestRef.current === requestId
@@ -237,11 +236,14 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
     })
   }
 
-  function cancelCandidateRequest(clearCandidates: boolean) {
+  function cancelCandidateRequest() {
     candidateRequestRef.current += 1
     busyRef.current = false
     setBeginnerCandidateBusy(false)
-    if (clearCandidates) setBeginnerCandidates(null)
+    candidateAuthorityRef.current = null
+    setBeginnerCandidates(null)
+    setSelectedConsensusPair(null)
+    setBeginnerCandidateRequestStatus('cancelled')
     const generationId = consensusGenerationRef.current
     consensusGenerationRef.current = null
     if (generationId) {
@@ -251,11 +253,11 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
 
   function cancelConsensusAnalysis() {
     if (!consensusGenerationRef.current) return
-    cancelCandidateRequest(false)
+    cancelCandidateRequest()
   }
 
   function cancelBeginnerCandidates() {
-    cancelCandidateRequest(true)
+    cancelCandidateRequest()
   }
 
   function excludeBeginnerConsensusAsset(assetId: string | null) {
@@ -265,6 +267,8 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
     if (
       !current
       || !consensus
+      || busyRef.current
+      || candidateApplyBusyRef.current
       || (
         assetId !== null
         && !consensus.bindings.some(
@@ -297,6 +301,7 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
     kind: ConsensusSelection['kind'],
     assetId: string,
   ) {
+    if (busyRef.current || candidateApplyBusyRef.current) return
     setConsensusSelectionDraft((current) => {
       const exists = current.some(
         (selection) => selection.asset_id === assetId,
@@ -313,7 +318,9 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
 
   function saveConsensusReferences() {
     if (
-      consensusSelectionDraft.length < 2
+      busyRef.current
+      || candidateApplyBusyRef.current
+      || consensusSelectionDraft.length < 2
       || consensusSelectionDraft.length > 4
     ) return
     const canonical = [...consensusSelectionDraft].sort(
@@ -332,6 +339,7 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
   }
 
   function requestBeginnerSymmetricEstimate() {
+    if (busyRef.current || candidateApplyBusyRef.current) return
     const current = input.getCurrentSnapshot()
     if (!current) return
     const binding = beginnerProjectBinding(current)
@@ -367,6 +375,8 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
     const estimate = beginnerSymmetricEstimate
     if (
       !estimate
+      || busyRef.current
+      || candidateApplyBusyRef.current
       || !matchesBeginnerProjectBinding(
         estimate,
         input.getCurrentSnapshot(),
@@ -394,6 +404,8 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
       .generation_provenance?.generic_tree
     if (
       !tree?.instruction_proposal
+      || busyRef.current
+      || candidateApplyBusyRef.current
       || !input.confirm(input.copy.appendInstructions)
     ) return
     void input.runNativeEdit((
@@ -413,21 +425,22 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
     expectedCandidateEdgeId: string,
   ) {
     const current = input.getCurrentSnapshot()
-    const response = beginnerCandidates
-    const plan = response?.generated_plans.find(
-      (candidate) => (
-        candidate.kind === kind
-        && candidate.crease_pattern.edges[0]?.id === expectedCandidateEdgeId
-      ),
-    )
     if (
       !current
-      || !response
-      || !plan
-      || !matchesBeginnerProjectBinding(response, current)
+      || !beginnerCandidatePlanApplyAuthorityIsLiveV1(
+        beginnerCandidates,
+        candidateAuthorityRef.current,
+        current,
+        kind,
+        expectedCandidateEdgeId,
+        busyRef.current || candidateApplyBusyRef.current,
+      )
       || !input.confirm(input.copy.applyPlan)
     ) return
     const expectedProfile = current.beginner_design_profile
+    const applyRequestId = ++candidateApplyRequestRef.current
+    candidateApplyBusyRef.current = true
+    setBeginnerCandidateApplyBusy(true)
     void input.runNativeEdit((
       projectId,
       revision,
@@ -439,12 +452,31 @@ export function useBeginnerCandidateWorkflow(input: Readonly<{
       expectedProfile,
       kind,
       expectedCandidateEdgeId,
-    ))
+    )).then((applied) => {
+      if (
+        applied
+        && mountedRef.current
+        && candidateApplyRequestRef.current === applyRequestId
+      ) {
+        candidateAuthorityRef.current = null
+        setBeginnerCandidates(null)
+        setSelectedConsensusPair(null)
+        setBeginnerCandidateRequestStatus('idle')
+      }
+      return applied
+    }).catch(() => false).finally(() => {
+      if (candidateApplyRequestRef.current === applyRequestId) {
+        candidateApplyBusyRef.current = false
+        if (mountedRef.current) setBeginnerCandidateApplyBusy(false)
+      }
+    })
   }
 
   return {
     beginnerCandidates,
     beginnerCandidateBusy,
+    beginnerCandidateApplyBusy,
+    beginnerCandidateRequestStatus,
     consensusProgress,
     selectedConsensusPair,
     setSelectedConsensusPair,

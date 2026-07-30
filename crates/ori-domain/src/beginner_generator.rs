@@ -19,6 +19,8 @@ pub const BEGINNER_PARAMETER_GRID_SIZE_V1: usize = 27;
 pub const MAX_BEGINNER_GENERIC_TREE_BARS_V1: usize = 16;
 pub const MAX_BEGINNER_GENERIC_TREE_INTERSECTION_PAIRS_V1: usize = 120;
 pub const MAX_BEGINNER_GENERIC_TREE_NODES_V1: usize = 17;
+pub const MAX_BEGINNER_GENERIC_PROTRUSION_BINDINGS_V1: usize = 14;
+pub const MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1: u8 = 14;
 const MAX_BEGINNER_GENERIC_PROTRUSION_ENDPOINTS_V1: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +86,7 @@ mod parameter_grid_tests {
             generic_tree: None,
             reference_consensus: None,
             reference_consensus_summary: None,
+            document_authority_sha256: None,
         };
         assert!(crate::validate_beginner_generation_provenance_v1(
             &provenance
@@ -750,21 +753,118 @@ pub fn symmetric_parameter_candidates_v1(
     })
 }
 
-#[must_use]
-pub fn estimate_symmetric_parameters_v1(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BeginnerSemanticTemplateV1 {
+    AnimalCompleteWinged,
+    AnimalComplete,
+    AnimalHornTailEar,
+    AnimalTailEar,
+    AnimalHornEar,
+    AnimalHornTail,
+    AnimalFourLeg,
+    AnimalWingPair,
+    AnimalAsymmetricFish,
+    AnimalFinPair,
+    AnimalEarPair,
+    AnimalHornPair,
+    AnimalTail,
+    AnimalHorn,
+    InsectComplete,
+    InsectWingAntenna,
+    InsectAsymmetricLandmarks,
+    InsectWingPair,
+    InsectFourWings,
+    InsectAntennaPair,
+    InsectAntenna,
+    InsectLegPair,
+    InsectSixLeg,
+    General(u8),
+}
+
+impl BeginnerSemanticTemplateV1 {
+    const fn protrusion_count(self) -> u8 {
+        match self {
+            Self::AnimalCompleteWinged | Self::InsectComplete => 10,
+            Self::AnimalComplete => 8,
+            Self::AnimalHornTailEar
+            | Self::InsectWingAntenna
+            | Self::AnimalFourLeg
+            | Self::InsectFourWings => 4,
+            Self::AnimalTailEar | Self::AnimalHornEar | Self::AnimalAsymmetricFish => 3,
+            Self::AnimalHornTail
+            | Self::AnimalWingPair
+            | Self::AnimalFinPair
+            | Self::AnimalEarPair
+            | Self::AnimalHornPair
+            | Self::InsectWingPair
+            | Self::InsectAntennaPair
+            | Self::InsectLegPair => 2,
+            Self::AnimalTail | Self::AnimalHorn | Self::InsectAntenna => 1,
+            Self::InsectAsymmetricLandmarks => 7,
+            Self::InsectSixLeg => 6,
+            Self::General(count) => count,
+        }
+    }
+}
+
+fn exact_target_part_signature_v1(
     constraints: &BeginnerGenerationConstraintsV1,
-) -> Option<BeginnerSymmetricParameterEstimateV1> {
-    let count = |kind| {
+    category: BeginnerTargetCategoryV1,
+    feature_parts: &[(BeginnerTargetPartKindV1, u8)],
+) -> bool {
+    if constraints.target_category != Some(category) {
+        return false;
+    }
+    let expected_records = feature_parts.len()
+        + if category == BeginnerTargetCategoryV1::CustomObject {
+            0
+        } else {
+            2
+        };
+    if constraints.target_parts.len() != expected_records {
+        return false;
+    }
+    let has_exactly_one = |kind, count| {
         constraints
             .target_parts
             .iter()
-            .find(|part| part.kind == kind)
-            .map_or(0, |part| part.count)
+            .filter(|part| part.kind == kind && part.count == count)
+            .count()
+            == 1
     };
-    if count(BeginnerTargetPartKindV1::Head) != 1 || count(BeginnerTargetPartKindV1::Torso) != 1 {
+    (category == BeginnerTargetCategoryV1::CustomObject
+        || has_exactly_one(BeginnerTargetPartKindV1::Head, 1)
+            && has_exactly_one(BeginnerTargetPartKindV1::Torso, 1))
+        && feature_parts
+            .iter()
+            .all(|(kind, count)| has_exactly_one(*kind, *count))
+}
+
+fn general_semantic_protrusion_count_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<u8> {
+    let category = constraints.target_category?;
+    let mut kinds = std::collections::HashSet::with_capacity(constraints.target_parts.len());
+    if !constraints
+        .target_parts
+        .iter()
+        .all(|part| kinds.insert(part.kind))
+    {
         return None;
     }
-    let feature_records = constraints
+    if category != BeginnerTargetCategoryV1::CustomObject
+        && (!constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == BeginnerTargetPartKindV1::Head && part.count == 1)
+            || !constraints
+                .target_parts
+                .iter()
+                .any(|part| part.kind == BeginnerTargetPartKindV1::Torso && part.count == 1))
+    {
+        return None;
+    }
+    let feature_parts = constraints
         .target_parts
         .iter()
         .filter(|part| {
@@ -773,97 +873,184 @@ pub fn estimate_symmetric_parameters_v1(
                 BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
             )
         })
-        .count();
-    let protrusion_count = match constraints.target_category? {
-        BeginnerTargetCategoryV1::Animal
-            if count(BeginnerTargetPartKindV1::Leg) == 4
-                && count(BeginnerTargetPartKindV1::Horn) == 1
-                && count(BeginnerTargetPartKindV1::Tail) == 1
-                && count(BeginnerTargetPartKindV1::Ear) == 2
-                && count(BeginnerTargetPartKindV1::Wing) == 2 =>
-        {
-            10
-        }
-        BeginnerTargetCategoryV1::Animal
-            if count(BeginnerTargetPartKindV1::Leg) == 4
-                && count(BeginnerTargetPartKindV1::Horn) == 1
-                && count(BeginnerTargetPartKindV1::Tail) == 1
-                && count(BeginnerTargetPartKindV1::Ear) == 2 =>
-        {
-            8
-        }
-        BeginnerTargetCategoryV1::Animal
-            if feature_records == 3
-                && count(BeginnerTargetPartKindV1::Horn) == 1
-                && count(BeginnerTargetPartKindV1::Tail) == 1
-                && count(BeginnerTargetPartKindV1::Ear) == 2 =>
-        {
-            4
-        }
-        BeginnerTargetCategoryV1::Animal
-            if feature_records == 2
-                && count(BeginnerTargetPartKindV1::Tail) == 1
-                && count(BeginnerTargetPartKindV1::Ear) == 2 =>
-        {
-            3
-        }
-        BeginnerTargetCategoryV1::Animal
-            if feature_records == 2
-                && count(BeginnerTargetPartKindV1::Horn) == 1
-                && count(BeginnerTargetPartKindV1::Ear) == 2 =>
-        {
-            3
-        }
-        BeginnerTargetCategoryV1::Animal
-            if feature_records == 2
-                && count(BeginnerTargetPartKindV1::Horn) == 1
-                && count(BeginnerTargetPartKindV1::Tail) == 1 =>
-        {
-            2
-        }
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Leg) == 4 => 4,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
-        BeginnerTargetCategoryV1::Animal
-            if feature_records == 2
-                && count(BeginnerTargetPartKindV1::Tail) == 1
-                && count(BeginnerTargetPartKindV1::Fin) == 2 =>
-        {
-            3
-        }
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Fin) == 2 => 2,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Ear) == 2 => 2,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 2 => 2,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Tail) == 1 => 1,
-        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 1 => 1,
-        BeginnerTargetCategoryV1::Insect
-            if count(BeginnerTargetPartKindV1::Wing) == 2
-                && count(BeginnerTargetPartKindV1::Antenna) == 2
-                && count(BeginnerTargetPartKindV1::Leg) == 6 =>
-        {
-            10
-        }
-        BeginnerTargetCategoryV1::Insect
-            if count(BeginnerTargetPartKindV1::Wing) == 2
-                && count(BeginnerTargetPartKindV1::Antenna) == 2 =>
-        {
-            4
-        }
-        BeginnerTargetCategoryV1::Insect
-            if feature_records == 3
-                && count(BeginnerTargetPartKindV1::Tail) == 1
-                && count(BeginnerTargetPartKindV1::Wing) == 2
-                && count(BeginnerTargetPartKindV1::Leg) == 6 =>
-        {
-            7
-        }
-        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 4 => 4,
-        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
-        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
-        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 1 => 1,
-        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Leg) == 2 => 2,
-        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Leg) == 6 => 6,
-        _ => return None,
+        .collect::<Vec<_>>();
+    let feature_count =
+        if category == BeginnerTargetCategoryV1::CustomObject && feature_parts.is_empty() {
+            constraints
+                .protrusions
+                .iter()
+                .try_fold(0_u8, |total, target| total.checked_add(target.count))?
+        } else {
+            feature_parts
+                .into_iter()
+                .try_fold(0_u8, |total, part| total.checked_add(part.count))?
+        };
+    (2..=MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1)
+        .contains(&feature_count)
+        .then_some(feature_count)
+}
+
+fn bounded_generic_physical_endpoint_count_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<usize> {
+    if !(1..=MAX_BEGINNER_GENERIC_PROTRUSION_BINDINGS_V1).contains(&constraints.protrusions.len())
+        || constraints
+            .protrusions
+            .windows(2)
+            .any(|pair| pair[0].id >= pair[1].id)
+    {
+        return None;
+    }
+    let endpoint_count = constraints
+        .protrusions
+        .iter()
+        .try_fold(0_usize, |total, target| {
+            (1..=8)
+                .contains(&target.count)
+                .then(|| total.checked_add(usize::from(target.count)))
+                .flatten()
+        })?;
+    (endpoint_count <= MAX_BEGINNER_GENERIC_PROTRUSION_ENDPOINTS_V1).then_some(endpoint_count)
+}
+
+fn general_semantic_physical_counts_match_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+    semantic_count: u8,
+) -> bool {
+    bounded_generic_physical_endpoint_count_v1(constraints) == Some(usize::from(semantic_count))
+}
+
+fn semantic_template_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerSemanticTemplateV1> {
+    use BeginnerSemanticTemplateV1 as Template;
+    use BeginnerTargetCategoryV1::{Animal, Insect};
+    use BeginnerTargetPartKindV1::{Antenna, Ear, Fin, Horn, Leg, Tail, Wing};
+
+    let exact = |category, parts: &[(BeginnerTargetPartKindV1, u8)]| {
+        exact_target_part_signature_v1(constraints, category, parts)
     };
+    let specialized = match constraints.target_category? {
+        Animal
+            if exact(
+                Animal,
+                &[(Horn, 1), (Tail, 1), (Ear, 2), (Leg, 4), (Wing, 2)],
+            ) =>
+        {
+            Some(Template::AnimalCompleteWinged)
+        }
+        Animal if exact(Animal, &[(Horn, 1), (Tail, 1), (Ear, 2), (Leg, 4)]) => {
+            Some(Template::AnimalComplete)
+        }
+        Animal if exact(Animal, &[(Horn, 1), (Tail, 1), (Ear, 2)]) => {
+            Some(Template::AnimalHornTailEar)
+        }
+        Animal if exact(Animal, &[(Tail, 1), (Ear, 2)]) => Some(Template::AnimalTailEar),
+        Animal if exact(Animal, &[(Horn, 1), (Ear, 2)]) => Some(Template::AnimalHornEar),
+        Animal if exact(Animal, &[(Horn, 1), (Tail, 1)]) => Some(Template::AnimalHornTail),
+        Animal if exact(Animal, &[(Leg, 4)]) => Some(Template::AnimalFourLeg),
+        Animal if exact(Animal, &[(Wing, 2)]) => Some(Template::AnimalWingPair),
+        Animal if exact(Animal, &[(Tail, 1), (Fin, 2)]) => Some(Template::AnimalAsymmetricFish),
+        Animal if exact(Animal, &[(Fin, 2)]) => Some(Template::AnimalFinPair),
+        Animal if exact(Animal, &[(Ear, 2)]) => Some(Template::AnimalEarPair),
+        Animal if exact(Animal, &[(Horn, 2)]) => Some(Template::AnimalHornPair),
+        Animal if exact(Animal, &[(Tail, 1)]) => Some(Template::AnimalTail),
+        Animal if exact(Animal, &[(Horn, 1)]) => Some(Template::AnimalHorn),
+        Insect if exact(Insect, &[(Wing, 2), (Antenna, 2), (Leg, 6)]) => {
+            Some(Template::InsectComplete)
+        }
+        Insect if exact(Insect, &[(Wing, 2), (Antenna, 2)]) => Some(Template::InsectWingAntenna),
+        Insect if exact(Insect, &[(Tail, 1), (Wing, 2), (Leg, 6)]) => {
+            Some(Template::InsectAsymmetricLandmarks)
+        }
+        Insect if exact(Insect, &[(Wing, 4)]) => Some(Template::InsectFourWings),
+        Insect if exact(Insect, &[(Wing, 2)]) => Some(Template::InsectWingPair),
+        Insect if exact(Insect, &[(Antenna, 2)]) => Some(Template::InsectAntennaPair),
+        Insect if exact(Insect, &[(Antenna, 1)]) => Some(Template::InsectAntenna),
+        Insect if exact(Insect, &[(Leg, 2)]) => Some(Template::InsectLegPair),
+        Insect if exact(Insect, &[(Leg, 6)]) => Some(Template::InsectSixLeg),
+        _ => None,
+    };
+    specialized.or_else(|| general_semantic_protrusion_count_v1(constraints).map(Template::General))
+}
+
+/// Returns the plan family selected by the exact semantic target signature.
+///
+/// This is deliberately shared with native grid apply so extra or duplicate part
+/// records cannot be ignored by one runtime while another runtime treats the
+/// same profile as a generic target.
+#[must_use]
+pub fn beginner_expected_generated_plan_kind_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerGeneratedPlanKindV1> {
+    use BeginnerGeneratedPlanKindV1 as Kind;
+    use BeginnerSemanticTemplateV1 as Template;
+
+    if constraints.target_category == Some(BeginnerTargetCategoryV1::CustomObject) {
+        return Some(Kind::CompositeGenericTargetBase);
+    }
+    match semantic_template_v1(constraints)? {
+        Template::AnimalCompleteWinged => Some(Kind::CompositeCompleteWingedAnimalBase),
+        Template::AnimalComplete => Some(Kind::CompositeCompleteAnimalBase),
+        Template::AnimalHornTailEar => Some(Kind::CompositeHornTailEarBase),
+        Template::AnimalTailEar => Some(Kind::CompositeTailEarBase),
+        Template::AnimalHornEar => Some(Kind::CompositeHornEarBase),
+        Template::AnimalHornTail => Some(Kind::CompositeHornTailBase),
+        Template::AnimalFourLeg => Some(
+            if exact_ordered_asymmetric_landmarks_v1(constraints, 4, 3) {
+                Kind::AsymmetricFourLegLandmarkBase
+            } else {
+                Kind::SymmetricFourLegBase
+            },
+        ),
+        Template::AnimalWingPair => Some(
+            if exact_ordered_asymmetric_landmarks_v1(constraints, 2, 2) {
+                Kind::AsymmetricBirdLandmarkBase
+            } else {
+                Kind::SymmetricBirdBase
+            },
+        ),
+        Template::AnimalAsymmetricFish => Some(Kind::AsymmetricFishLandmarkBase),
+        Template::AnimalFinPair => Some(Kind::SymmetricFishBase),
+        Template::AnimalEarPair => Some(Kind::SymmetricEarBase),
+        Template::AnimalHornPair => Some(Kind::SymmetricHornBase),
+        Template::AnimalTail => Some(Kind::CenterAxisTailBase),
+        Template::AnimalHorn => Some(Kind::CenterAxisHornBase),
+        Template::InsectComplete => Some(Kind::CompositeCompleteInsectBase),
+        Template::InsectWingAntenna => Some(Kind::CompositeWingAntennaBase),
+        Template::InsectAsymmetricLandmarks => Some(Kind::AsymmetricInsectLandmarkBase),
+        Template::InsectWingPair | Template::InsectFourWings => Some(Kind::SymmetricWingBase),
+        Template::InsectAntennaPair => Some(Kind::SymmetricAntennaBase),
+        Template::InsectAntenna => Some(Kind::CenterAxisAntennaBase),
+        Template::InsectLegPair => Some(Kind::SymmetricInsectLegPairBase),
+        Template::InsectSixLeg => Some(Kind::SymmetricSixLegBase),
+        Template::General(_) => Some(Kind::CompositeGenericTargetBase),
+    }
+}
+
+const fn beginner_plan_requires_mixed_kawasaki_techniques_v1(
+    kind: BeginnerGeneratedPlanKindV1,
+) -> bool {
+    matches!(
+        kind,
+        BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+            | BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
+            | BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase
+            | BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase
+    )
+}
+
+#[must_use]
+pub fn estimate_symmetric_parameters_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerSymmetricParameterEstimateV1> {
+    let template = semantic_template_v1(constraints)?;
+    let protrusion_count = template.protrusion_count();
+    if matches!(template, BeginnerSemanticTemplateV1::General(_))
+        && !general_semantic_physical_counts_match_v1(constraints, protrusion_count)
+    {
+        return None;
+    }
     let scale_percent = match constraints.detail_level {
         crate::BeginnerDetailLevelV1::Simple => 20,
         crate::BeginnerDetailLevelV1::Standard => 25,
@@ -1013,6 +1200,7 @@ pub fn generate_beginner_plans_v1(
             .find(|part| part.kind == kind)
             .map_or(0, |part| part.count)
     };
+    let semantic_template = semantic_template_v1(constraints);
     if target_category != BeginnerTargetCategoryV1::CustomObject
         && (part_count(BeginnerTargetPartKindV1::Head) != 1
             || part_count(BeginnerTargetPartKindV1::Torso) != 1)
@@ -1073,23 +1261,10 @@ pub fn generate_beginner_plans_v1(
             .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
         }
         BeginnerTargetCategoryV1::Animal => {
-            let feature_records = constraints
-                .target_parts
-                .iter()
-                .filter(|part| {
-                    !matches!(
-                        part.kind,
-                        BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
-                    )
-                })
-                .count();
-            let horn = part_count(BeginnerTargetPartKindV1::Horn) == 1;
-            let tail = part_count(BeginnerTargetPartKindV1::Tail) == 1;
-            let ears = part_count(BeginnerTargetPartKindV1::Ear) == 2;
-            let legs = part_count(BeginnerTargetPartKindV1::Leg) == 4;
-            let wings = part_count(BeginnerTargetPartKindV1::Wing) == 2;
-            let asymmetric_landmark_fish = tail
-                && part_count(BeginnerTargetPartKindV1::Fin) == 2
+            let semantic_template =
+                semantic_template.ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+            let asymmetric_landmark_fish = semantic_template
+                == BeginnerSemanticTemplateV1::AnimalAsymmetricFish
                 && constraints
                     .protrusions
                     .iter()
@@ -1098,28 +1273,7 @@ pub fn generate_beginner_plans_v1(
                     })
                     .count()
                     >= 3;
-            let known_composite = feature_records == 2 && (horn && (tail || ears) || tail && ears)
-                || feature_records == 3 && horn && tail && ears
-                || feature_records == 4 && horn && tail && ears && legs
-                || feature_records == 5 && horn && tail && ears && legs && wings;
-            if asymmetric_landmark_fish {
-                if !exact_ordered_asymmetric_landmarks_v1(constraints, 3, 0) {
-                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
-                }
-                symmetric_template(
-                    namespace,
-                    source,
-                    BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
-                    kind,
-                    min_x,
-                    max_x,
-                    min_y,
-                    max_y,
-                    &[(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)],
-                    "asymmetric_fish_landmark_base",
-                    constraints,
-                )
-            } else if feature_records >= 2 && !known_composite {
+            if matches!(semantic_template, BeginnerSemanticTemplateV1::General(_)) {
                 let tree_ratios =
                     bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)
                         .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
@@ -1156,6 +1310,25 @@ pub fn generate_beginner_plans_v1(
                     max_y,
                 )
                 .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
+            } else if asymmetric_landmark_fish {
+                if !exact_ordered_asymmetric_landmarks_v1(constraints, 3, 0) {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
+                }
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &[(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)],
+                    "asymmetric_fish_landmark_base",
+                    constraints,
+                )
+            } else if semantic_template == BeginnerSemanticTemplateV1::AnimalAsymmetricFish {
+                return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
             } else if part_count(BeginnerTargetPartKindV1::Horn) == 1
                 && part_count(BeginnerTargetPartKindV1::Tail) == 1
                 && part_count(BeginnerTargetPartKindV1::Ear) == 2
@@ -1186,8 +1359,21 @@ pub fn generate_beginner_plans_v1(
                 ear_only
                     .protrusions
                     .retain(|target| target.id == bindings.ear_pair_protrusion_id);
-                let ears = parameterized_symmetric_endpoints(&ear_only, 2, false)
-                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                let ears = if winged_complete.is_some() {
+                    parameterized_symmetric_endpoints_for_target(
+                        ear_only
+                            .protrusions
+                            .first()
+                            .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?,
+                        &ear_only.skeleton_segments,
+                        2,
+                        false,
+                    )
+                    .map(|four| vec![four[1], four[3]])
+                } else {
+                    parameterized_symmetric_endpoints(&ear_only, 2, false).map(Vec::from)
+                }
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
                 let mut endpoints = vec![horn, tail];
                 endpoints.extend(ears);
                 if let Some(complete) = complete.or(winged_complete.map(|binding| binding.animal)) {
@@ -1204,12 +1390,41 @@ pub fn generate_beginner_plans_v1(
                         wing_only
                             .protrusions
                             .retain(|target| target.id == winged.wing_pair_protrusion_id);
-                        endpoints.extend(
-                            parameterized_symmetric_endpoints(&wing_only, 2, false)
+                        let wings = parameterized_symmetric_endpoints_for_target(
+                            wing_only
+                                .protrusions
+                                .first()
                                 .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?,
-                        );
+                            &wing_only.skeleton_segments,
+                            2,
+                            false,
+                        )
+                        .map(|four| [four[0], four[2]])
+                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                        endpoints.extend(wings);
                     }
                 } else if part_count(BeginnerTargetPartKindV1::Leg) != 0 {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
+                }
+                let radial_directions = endpoints
+                    .iter()
+                    .map(|(x, y)| (x - 0.5, y - 0.5))
+                    .collect::<Vec<_>>();
+                if radial_directions
+                    .iter()
+                    .any(|direction| direction.0 == 0.0 && direction.1 == 0.0)
+                    || radial_directions.iter().enumerate().any(|(index, left)| {
+                        radial_directions.iter().skip(index + 1).any(|right| {
+                            let cross = left.0 * right.1 - left.1 * right.0;
+                            let dot = left.0 * right.0 + left.1 * right.1;
+                            cross.abs() <= f64::EPSILON && dot > 0.0
+                        })
+                    })
+                {
+                    // Distinct semantic targets must remain distinct after
+                    // radial extension to the paper boundary. Collinear rays
+                    // in the same direction would otherwise create different
+                    // edge IDs over one geometric hinge.
                     return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                 }
                 symmetric_template(
@@ -1471,21 +1686,10 @@ pub fn generate_beginner_plans_v1(
             }
         }
         BeginnerTargetCategoryV1::Insect => {
-            let feature_records = constraints
-                .target_parts
-                .iter()
-                .filter(|part| {
-                    !matches!(
-                        part.kind,
-                        BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
-                    )
-                })
-                .count();
-            let wing_antenna = part_count(BeginnerTargetPartKindV1::Wing) == 2
-                && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
-            let asymmetric_landmark_insect = part_count(BeginnerTargetPartKindV1::Tail) == 1
-                && part_count(BeginnerTargetPartKindV1::Wing) == 2
-                && part_count(BeginnerTargetPartKindV1::Leg) == 6
+            let semantic_template =
+                semantic_template.ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+            let asymmetric_landmark_insect = semantic_template
+                == BeginnerSemanticTemplateV1::InsectAsymmetricLandmarks
                 && constraints
                     .protrusions
                     .iter()
@@ -1494,29 +1698,7 @@ pub fn generate_beginner_plans_v1(
                     })
                     .count()
                     >= 7;
-            let known_composite = feature_records == 2 && wing_antenna
-                || feature_records == 3
-                    && wing_antenna
-                    && part_count(BeginnerTargetPartKindV1::Leg) == 6;
-            if asymmetric_landmark_insect {
-                if !exact_ordered_asymmetric_landmarks_v1(constraints, 7, 0) {
-                    return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
-                }
-                let endpoints = [(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)];
-                symmetric_template(
-                    namespace,
-                    source,
-                    BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase,
-                    kind,
-                    min_x,
-                    max_x,
-                    min_y,
-                    max_y,
-                    &endpoints,
-                    "asymmetric_insect_landmark_base",
-                    constraints,
-                )
-            } else if feature_records >= 2 && !known_composite {
+            if matches!(semantic_template, BeginnerSemanticTemplateV1::General(_)) {
                 let tree_ratios =
                     bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)
                         .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
@@ -1553,6 +1735,26 @@ pub fn generate_beginner_plans_v1(
                     max_y,
                 )
                 .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?
+            } else if asymmetric_landmark_insect {
+                if !exact_ordered_asymmetric_landmarks_v1(constraints, 7, 0) {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
+                }
+                let endpoints = [(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)];
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    "asymmetric_insect_landmark_base",
+                    constraints,
+                )
+            } else if semantic_template == BeginnerSemanticTemplateV1::InsectAsymmetricLandmarks {
+                return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
             } else if part_count(BeginnerTargetPartKindV1::Wing) == 2
                 && part_count(BeginnerTargetPartKindV1::Antenna) == 2
                 && part_count(BeginnerTargetPartKindV1::Leg) == 6
@@ -1715,6 +1917,11 @@ pub fn generate_beginner_plans_v1(
             }
         }
     };
+    if beginner_plan_requires_mixed_kawasaki_techniques_v1(template.kind)
+        && (!allows_valley || !allows_mountain)
+    {
+        return Err(BeginnerGeneratorErrorV1::UnsupportedTechniques);
+    }
     if template.kind == BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
         let error = match target_category {
             BeginnerTargetCategoryV1::Insect => BeginnerGeneratorErrorV1::UnsupportedInsectTemplate,
@@ -2010,68 +2217,16 @@ fn exact_single_bilateral_template_target_and_endpoints_v1(
     Some((target, endpoints))
 }
 
-fn uses_bounded_generic_target_base_v1(constraints: &BeginnerGenerationConstraintsV1) -> bool {
-    let part_count = |kind| {
-        constraints
-            .target_parts
-            .iter()
-            .find(|part| part.kind == kind)
-            .map_or(0, |part| part.count)
-    };
-    let feature_records = constraints
-        .target_parts
-        .iter()
-        .filter(|part| {
-            !matches!(
-                part.kind,
-                BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
-            )
-        })
-        .count();
+#[must_use]
+pub fn beginner_uses_bounded_generic_target_base_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> bool {
     match constraints.target_category {
         Some(BeginnerTargetCategoryV1::CustomObject) => true,
-        Some(BeginnerTargetCategoryV1::Animal) => {
-            let horn = part_count(BeginnerTargetPartKindV1::Horn) == 1;
-            let tail = part_count(BeginnerTargetPartKindV1::Tail) == 1;
-            let ears = part_count(BeginnerTargetPartKindV1::Ear) == 2;
-            let legs = part_count(BeginnerTargetPartKindV1::Leg) == 4;
-            let wings = part_count(BeginnerTargetPartKindV1::Wing) == 2;
-            let asymmetric_landmark_fish = tail
-                && part_count(BeginnerTargetPartKindV1::Fin) == 2
-                && constraints
-                    .protrusions
-                    .iter()
-                    .filter(|target| {
-                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                    })
-                    .count()
-                    >= 3;
-            let known_composite = feature_records == 2 && (horn && (tail || ears) || tail && ears)
-                || feature_records == 3 && horn && tail && ears
-                || feature_records == 4 && horn && tail && ears && legs
-                || feature_records == 5 && horn && tail && ears && legs && wings;
-            feature_records >= 2 && !asymmetric_landmark_fish && !known_composite
-        }
-        Some(BeginnerTargetCategoryV1::Insect) => {
-            let wing_antenna = part_count(BeginnerTargetPartKindV1::Wing) == 2
-                && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
-            let asymmetric_landmark_insect = part_count(BeginnerTargetPartKindV1::Tail) == 1
-                && part_count(BeginnerTargetPartKindV1::Wing) == 2
-                && part_count(BeginnerTargetPartKindV1::Leg) == 6
-                && constraints
-                    .protrusions
-                    .iter()
-                    .filter(|target| {
-                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                    })
-                    .count()
-                    >= 7;
-            let known_composite = feature_records == 2 && wing_antenna
-                || feature_records == 3
-                    && wing_antenna
-                    && part_count(BeginnerTargetPartKindV1::Leg) == 6;
-            feature_records >= 2 && !asymmetric_landmark_insect && !known_composite
-        }
+        Some(BeginnerTargetCategoryV1::Animal | BeginnerTargetCategoryV1::Insect) => matches!(
+            semantic_template_v1(constraints),
+            Some(BeginnerSemanticTemplateV1::General(_))
+        ),
         None => false,
     }
 }
@@ -2298,6 +2453,13 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
     {
         return 0;
     }
+    if matches!(
+        constraints.target_category,
+        Some(BeginnerTargetCategoryV1::Animal | BeginnerTargetCategoryV1::Insect)
+    ) && semantic_template_v1(constraints).is_none()
+    {
+        return 0;
+    }
     if !constraints
         .allowed_techniques
         .contains(&BeginnerFoldTechniqueV1::ValleyFold)
@@ -2307,10 +2469,21 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
     {
         return 0;
     }
+    if beginner_expected_generated_plan_kind_v1(constraints)
+        .is_some_and(beginner_plan_requires_mixed_kawasaki_techniques_v1)
+        && (!constraints
+            .allowed_techniques
+            .contains(&BeginnerFoldTechniqueV1::ValleyFold)
+            || !constraints
+                .allowed_techniques
+                .contains(&BeginnerFoldTechniqueV1::MountainFold))
+    {
+        return 0;
+    }
     if !generic_body_outline_within_skeleton_bounds_v1(constraints) {
         return 0;
     }
-    let uses_generic_target = uses_bounded_generic_target_base_v1(constraints);
+    let uses_generic_target = beginner_uses_bounded_generic_target_base_v1(constraints);
     let generic_target = if uses_generic_target {
         bounded_generic_composite_endpoints(constraints)
             .and_then(|_| bounded_generic_tree_graph_is_supported_v1(constraints).then_some(()))
@@ -2557,15 +2730,42 @@ fn try_endpoint_candidates_v1<const COUNT: usize>(
     Some(result)
 }
 
+fn parameterized_exact_bilateral_pair_endpoints_v1(
+    target: &BeginnerProtrusionTargetV1,
+    skeleton_segments: &[BeginnerSkeletonSegmentV1],
+    vertical: bool,
+) -> Option<[(f64, f64); 2]> {
+    let four =
+        parameterized_symmetric_endpoints_for_target(target, skeleton_segments, 2, vertical)?;
+    // A bilateral direction denotes an unoriented axis: reversing its sign
+    // must preserve the same canonical pair. Collapse the four-corner width
+    // envelope onto that axis instead of selecting one biased side.
+    let pair = if vertical {
+        [
+            ((four[0].0 + four[1].0) / 2.0, four[0].1),
+            ((four[2].0 + four[3].0) / 2.0, four[2].1),
+        ]
+    } else {
+        [
+            (four[0].0, (four[0].1 + four[1].1) / 2.0),
+            (four[2].0, (four[2].1 + four[3].1) / 2.0),
+        ]
+    };
+    pair.iter()
+        .all(|(x, y)| (0.0..1.0).contains(x) && (0.0..1.0).contains(y))
+        .then_some(pair)
+}
+
 fn bounded_generic_composite_endpoints(
     constraints: &BeginnerGenerationConstraintsV1,
 ) -> Option<Vec<(f64, f64)>> {
     bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)?;
-    if !(2..=8).contains(&constraints.protrusions.len())
-        || constraints
-            .protrusions
-            .windows(2)
-            .any(|pair| pair[0].id >= pair[1].id)
+    let physical_endpoint_count = bounded_generic_physical_endpoint_count_v1(constraints)?;
+    let mut part_kinds = std::collections::HashSet::with_capacity(constraints.target_parts.len());
+    if !constraints
+        .target_parts
+        .iter()
+        .all(|part| part_kinds.insert(part.kind))
     {
         return None;
     }
@@ -2580,20 +2780,11 @@ fn bounded_generic_composite_endpoints(
         })
         .map(|part| usize::from(part.count))
         .sum();
-    let feature_kinds = constraints
-        .target_parts
-        .iter()
-        .filter(|part| {
-            !matches!(
-                part.kind,
-                BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
-            )
-        })
-        .count();
-    if constraints.target_category != Some(BeginnerTargetCategoryV1::CustomObject)
-        && feature_records != constraints.protrusions.len()
-        && feature_kinds != constraints.protrusions.len()
-    {
+    if constraints.target_category == Some(BeginnerTargetCategoryV1::CustomObject) {
+        if feature_records != 0 && feature_records != physical_endpoint_count {
+            return None;
+        }
+    } else if feature_records != physical_endpoint_count {
         return None;
     }
     let (minimum_x, maximum_x, minimum_y, maximum_y) =
@@ -2663,13 +2854,23 @@ fn bounded_generic_composite_endpoints(
                     )
                 })?])?
             }
-            (2 | 4, BeginnerProtrusionSymmetryV1::Bilateral) => {
+            (2, BeginnerProtrusionSymmetryV1::Bilateral) => {
+                let vertical = target.direction_milli[1].unsigned_abs()
+                    > target.direction_milli[0].unsigned_abs();
+                try_endpoint_candidates_v1(parameterized_exact_bilateral_pair_endpoints_v1(
+                    target,
+                    &constraints.skeleton_segments,
+                    vertical,
+                )?)?
+            }
+            (4, BeginnerProtrusionSymmetryV1::Bilateral) => {
+                let vertical = target.direction_milli[1].unsigned_abs()
+                    > target.direction_milli[0].unsigned_abs();
                 try_endpoint_candidates_v1(parameterized_symmetric_endpoints_for_target(
                     target,
                     &constraints.skeleton_segments,
                     target.count,
-                    target.direction_milli[1].unsigned_abs()
-                        > target.direction_milli[0].unsigned_abs(),
+                    vertical,
                 )?)?
             }
             (6 | 8, BeginnerProtrusionSymmetryV1::Bilateral) => {
@@ -2686,10 +2887,11 @@ fn bounded_generic_composite_endpoints(
             }
             _ => return None,
         };
-        if endpoints
-            .len()
-            .checked_add(candidates.len())
-            .is_none_or(|count| count > MAX_BEGINNER_GENERIC_PROTRUSION_ENDPOINTS_V1)
+        if candidates.len() != usize::from(target.count)
+            || endpoints
+                .len()
+                .checked_add(candidates.len())
+                .is_none_or(|count| count > MAX_BEGINNER_GENERIC_PROTRUSION_ENDPOINTS_V1)
             || candidates.iter().enumerate().any(|(index, candidate)| {
                 endpoints
                     .iter()
@@ -2793,6 +2995,314 @@ fn bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
                 || orientations[2] > 0 && orientations[3] < 0))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BeginnerGenericAuxiliaryLayoutV1 {
+    inner_min_x: f64,
+    inner_max_x: f64,
+    inner_min_y: f64,
+    inner_max_y: f64,
+    block_count: usize,
+}
+
+impl BeginnerGenericAuxiliaryLayoutV1 {
+    fn map(self, block_index: usize, x_ratio: f64, y_ratio: f64) -> Option<Point2> {
+        if block_index >= self.block_count
+            || !x_ratio.is_finite()
+            || !y_ratio.is_finite()
+            || !(0.0..=1.0).contains(&x_ratio)
+            || !(0.0..=1.0).contains(&y_ratio)
+        {
+            return None;
+        }
+        let width = self.inner_max_x - self.inner_min_x;
+        let height = self.inner_max_y - self.inner_min_y;
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        let block_width = width / self.block_count as f64;
+        let block_min_x = self.inner_min_x + block_width * (block_index as f64 + 1.0 / 8.0);
+        let block_max_x = self.inner_min_x + block_width * (block_index as f64 + 7.0 / 8.0);
+        let block_min_y = self.inner_min_y + height / 8.0;
+        let block_max_y = self.inner_min_y + height * 7.0 / 8.0;
+        let position = Point2::new(
+            block_min_x + (block_max_x - block_min_x) * x_ratio,
+            block_min_y + (block_max_y - block_min_y) * y_ratio,
+        );
+        (position.x.is_finite() && position.y.is_finite()).then_some(position)
+    }
+}
+
+fn beginner_generic_auxiliary_block_count_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<usize> {
+    // The bounded tree is always the final block. Keeping every contour in a
+    // distinct preceding block makes the full auxiliary graph disjoint while
+    // preserving each contour's independently normalized shape.
+    1_usize
+        .checked_add(usize::from(
+            constraints.generic_body_outline_tenths_mm.is_some(),
+        ))?
+        .checked_add(
+            constraints
+                .protrusions
+                .iter()
+                .filter(|target| target.local_outline_tenths_mm.is_some())
+                .count(),
+        )
+}
+
+fn beginner_generic_radial_center_v1(
+    pattern: &CreasePattern,
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+) -> Option<VertexId> {
+    let physical_edges = pattern
+        .edges
+        .iter()
+        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+        .collect::<Vec<_>>();
+    if !(1..=MAX_BEGINNER_GENERIC_PROTRUSION_ENDPOINTS_V1 + 5).contains(&physical_edges.len()) {
+        return None;
+    }
+    let position_for = |id| {
+        pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == id)
+            .map(|vertex| vertex.position)
+    };
+    let first = physical_edges.first()?;
+    let mut center_candidates = [first.start, first.end].into_iter().filter(|candidate| {
+        physical_edges
+            .iter()
+            .all(|edge| edge.start == *candidate || edge.end == *candidate)
+            && position_for(*candidate).is_some_and(|position| {
+                position.x.is_finite()
+                    && position.y.is_finite()
+                    && (min_x..max_x).contains(&position.x)
+                    && (min_y..max_y).contains(&position.y)
+            })
+    });
+    let center_id = center_candidates.next()?;
+    if center_candidates.next().is_some() {
+        return None;
+    }
+    let center = position_for(center_id)?;
+    if !center.x.is_finite()
+        || !center.y.is_finite()
+        || !(min_x..max_x).contains(&center.x)
+        || !(min_y..max_y).contains(&center.y)
+    {
+        return None;
+    }
+    let mut endpoints = Vec::with_capacity(physical_edges.len());
+    for edge in physical_edges {
+        let endpoint_id = if edge.start == center_id {
+            edge.end
+        } else if edge.end == center_id {
+            edge.start
+        } else {
+            return None;
+        };
+        let endpoint = position_for(endpoint_id)?;
+        if !endpoint.x.is_finite()
+            || !endpoint.y.is_finite()
+            || endpoint == center
+            || !((endpoint.x == min_x || endpoint.x == max_x)
+                && (min_y..=max_y).contains(&endpoint.y)
+                || (endpoint.y == min_y || endpoint.y == max_y)
+                    && (min_x..=max_x).contains(&endpoint.x))
+            || endpoints.contains(&endpoint)
+        {
+            return None;
+        }
+        endpoints.push(endpoint);
+    }
+    Some(center_id)
+}
+
+fn beginner_generic_auxiliary_layout_v1(
+    pattern: &CreasePattern,
+    center_id: VertexId,
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+    block_count: usize,
+) -> Option<BeginnerGenericAuxiliaryLayoutV1> {
+    if block_count == 0 || max_x <= min_x || max_y <= min_y {
+        return None;
+    }
+    let center = pattern
+        .vertices
+        .iter()
+        .find(|vertex| vertex.id == center_id)?
+        .position;
+    let position_for = |id| {
+        pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == id)
+            .map(|vertex| vertex.position)
+    };
+    let mut bottom_ray_x = pattern
+        .edges
+        .iter()
+        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+        .filter_map(|edge| {
+            let endpoint_id = if edge.start == center_id {
+                edge.end
+            } else if edge.end == center_id {
+                edge.start
+            } else {
+                return None;
+            };
+            let endpoint = position_for(endpoint_id)?;
+            (endpoint.y == min_y).then_some(endpoint.x)
+        })
+        .collect::<Vec<_>>();
+    // The paper corners bound the bottom radial sectors. Rays to the other
+    // three sides cannot enter one of these sectors, and every physical bottom
+    // support ray partitions the interval below.
+    bottom_ray_x.extend([min_x, max_x]);
+    bottom_ray_x.sort_unstable_by(f64::total_cmp);
+    bottom_ray_x.dedup();
+    let (gap_min_x, gap_max_x) = bottom_ray_x
+        .windows(2)
+        .filter_map(|pair| {
+            let width = pair[1] - pair[0];
+            (width.is_finite() && width > 0.0).then_some((pair[0], pair[1], width))
+        })
+        .max_by(|left, right| {
+            left.2
+                .total_cmp(&right.2)
+                // Stable tie-break: the leftmost open sector wins.
+                .then_with(|| right.0.total_cmp(&left.0))
+        })
+        .map(|(left, right, _)| (left, right))?;
+
+    // Use a shallow, axis-aligned rectangle strictly inside the open triangle
+    // bounded by the two adjacent bottom rays and the common pivot. Axis-aligned
+    // scaling preserves the independently normalized body/local/tree witnesses.
+    let shallow_depth = 1.0 / 64.0;
+    let deep_depth = 2.0 / 64.0;
+    let ray_x = |boundary_x: f64, depth: f64| boundary_x + (center.x - boundary_x) * depth;
+    let open_min_x = ray_x(gap_min_x, shallow_depth).max(ray_x(gap_min_x, deep_depth));
+    let open_max_x = ray_x(gap_max_x, shallow_depth).min(ray_x(gap_max_x, deep_depth));
+    let open_min_y = min_y + (center.y - min_y) * shallow_depth;
+    let open_max_y = min_y + (center.y - min_y) * deep_depth;
+    let open_width = open_max_x - open_min_x;
+    let open_height = open_max_y - open_min_y;
+    if ![
+        open_min_x,
+        open_max_x,
+        open_min_y,
+        open_max_y,
+        open_width,
+        open_height,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        || open_width <= 0.0
+        || open_height <= 0.0
+    {
+        return None;
+    }
+    let layout = BeginnerGenericAuxiliaryLayoutV1 {
+        inner_min_x: open_min_x + open_width / 16.0,
+        inner_max_x: open_max_x - open_width / 16.0,
+        inner_min_y: open_min_y,
+        inner_max_y: open_max_y,
+        block_count,
+    };
+    (layout.inner_min_x < layout.inner_max_x && layout.inner_min_y < layout.inner_max_y)
+        .then_some(layout)
+}
+
+fn beginner_generated_pattern_is_planar_v1(pattern: &CreasePattern) -> bool {
+    let mut positions = std::collections::HashMap::with_capacity(pattern.vertices.len());
+    let mut occupied_positions = Vec::with_capacity(pattern.vertices.len());
+    for vertex in &pattern.vertices {
+        if !vertex.position.x.is_finite()
+            || !vertex.position.y.is_finite()
+            || positions.insert(vertex.id, vertex.position).is_some()
+            || occupied_positions.contains(&vertex.position)
+        {
+            return false;
+        }
+        occupied_positions.push(vertex.position);
+    }
+    let mut edge_ids = std::collections::HashSet::with_capacity(pattern.edges.len());
+    let mut segments = Vec::with_capacity(pattern.edges.len());
+    for edge in &pattern.edges {
+        let Some(start) = positions.get(&edge.start).copied() else {
+            return false;
+        };
+        let Some(end) = positions.get(&edge.end).copied() else {
+            return false;
+        };
+        if edge.start == edge.end || start == end || !edge_ids.insert(edge.id) {
+            return false;
+        }
+        segments.push((edge, start, end));
+    }
+    let orient = |first: Point2, second: Point2, third: Point2| {
+        (second.x - first.x) * (third.y - first.y) - (second.y - first.y) * (third.x - first.x)
+    };
+    let on_closed_segment = |first: Point2, second: Point2, value: Point2| {
+        orient(first, second, value) == 0.0
+            && (first.x.min(second.x)..=first.x.max(second.x)).contains(&value.x)
+            && (first.y.min(second.y)..=first.y.max(second.y)).contains(&value.y)
+    };
+    let mut checked_pairs = 0_usize;
+    for (index, (left, a, b)) in segments.iter().enumerate() {
+        for (right, c, d) in segments.iter().skip(index + 1) {
+            checked_pairs = match checked_pairs.checked_add(1) {
+                Some(count) if count <= 32_768 => count,
+                _ => return false,
+            };
+            let first_shared = (left.start == right.start || left.start == right.end).then_some(*a);
+            let second_shared = (left.end == right.start || left.end == right.end).then_some(*b);
+            if first_shared.is_some() && second_shared.is_some() {
+                return false;
+            }
+            if let Some(shared) = first_shared.or(second_shared) {
+                let left_other = if *a == shared { *b } else { *a };
+                let right_other = if *c == shared { *d } else { *c };
+                if orient(shared, left_other, right_other) != 0.0 {
+                    continue;
+                }
+                let left_vector = (left_other.x - shared.x, left_other.y - shared.y);
+                let right_vector = (right_other.x - shared.x, right_other.y - shared.y);
+                if left_vector.0 * right_vector.0 + left_vector.1 * right_vector.1 >= 0.0 {
+                    return false;
+                }
+                continue;
+            }
+            let orientations = [
+                orient(*a, *b, *c),
+                orient(*a, *b, *d),
+                orient(*c, *d, *a),
+                orient(*c, *d, *b),
+            ];
+            let intersects = (orientations[0] == 0.0 && on_closed_segment(*a, *b, *c))
+                || (orientations[1] == 0.0 && on_closed_segment(*a, *b, *d))
+                || (orientations[2] == 0.0 && on_closed_segment(*c, *d, *a))
+                || (orientations[3] == 0.0 && on_closed_segment(*c, *d, *b))
+                || ((orientations[0] < 0.0 && orientations[1] > 0.0
+                    || orientations[0] > 0.0 && orientations[1] < 0.0)
+                    && (orientations[2] < 0.0 && orientations[3] > 0.0
+                        || orientations[2] > 0.0 && orientations[3] < 0.0));
+            if intersects {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_bounded_radial_tree_graph(
     mut plan: BeginnerGeneratedPlanV1,
@@ -2847,13 +3357,39 @@ fn append_bounded_radial_tree_graph(
     if source_width <= 0.0 || source_height <= 0.0 || max_x <= min_x || max_y <= min_y {
         return None;
     }
+    let had_physical_edges = plan
+        .crease_pattern
+        .edges
+        .iter()
+        .any(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley));
+    let auxiliary_layout = if had_physical_edges {
+        let center_id =
+            beginner_generic_radial_center_v1(&plan.crease_pattern, min_x, max_x, min_y, max_y)?;
+        Some(beginner_generic_auxiliary_layout_v1(
+            &plan.crease_pattern,
+            center_id,
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            beginner_generic_auxiliary_block_count_v1(constraints)?,
+        )?)
+    } else {
+        None
+    };
+    let tree_block_index = auxiliary_layout.map(|layout| layout.block_count.saturating_sub(1));
     let map = |source: (i32, i32)| {
         let x_ratio = f64::from(source.0.checked_sub(source_min_x)?) / source_width;
         let y_ratio = f64::from(source.1.checked_sub(source_min_y)?) / source_height;
-        Some(Point2::new(
-            min_x + (max_x - min_x) * (0.05 + x_ratio * 0.1),
-            min_y + (max_y - min_y) * (0.05 + y_ratio * 0.1),
-        ))
+        auxiliary_layout.map_or_else(
+            || {
+                Some(Point2::new(
+                    min_x + (max_x - min_x) * (0.05 + x_ratio * 0.1),
+                    min_y + (max_y - min_y) * (0.05 + y_ratio * 0.1),
+                ))
+            },
+            |layout| layout.map(tree_block_index?, x_ratio, y_ratio),
+        )
     };
     let mut vertex_ids = std::collections::BTreeMap::new();
     for source in degree.keys().copied() {
@@ -2889,18 +3425,6 @@ fn append_bounded_radial_tree_graph(
             plan.crease_pattern.vertices.push(Vertex { id, position });
         }
     }
-    let allows_valley = constraints
-        .allowed_techniques
-        .contains(&BeginnerFoldTechniqueV1::ValleyFold);
-    let allows_mountain = constraints
-        .allowed_techniques
-        .contains(&BeginnerFoldTechniqueV1::MountainFold);
-    let single_tree_edge_kind = match (allows_valley, allows_mountain) {
-        (true, true) => None,
-        (true, false) => Some(EdgeKind::Valley),
-        (false, true) => Some(EdgeKind::Mountain),
-        (false, false) => return None,
-    };
     for (index, segment) in segments.iter().enumerate() {
         let start = *vertex_ids.get(&point(segment.start))?;
         let end = *vertex_ids.get(&point(segment.end))?;
@@ -2911,13 +3435,10 @@ fn append_bounded_radial_tree_graph(
             ),
             start,
             end,
-            kind: single_tree_edge_kind.unwrap_or_else(|| {
-                if index % 2 == 0 {
-                    EdgeKind::Valley
-                } else {
-                    EdgeKind::Mountain
-                }
-            }),
+            // This compact corner graph is a bounded tree-method witness, not
+            // a material hinge. Keeping it auxiliary prevents disconnected
+            // planning metadata from entering the physical fold topology.
+            kind: EdgeKind::Auxiliary,
         });
     }
     plan.instruction_codes.push(format!(
@@ -2927,7 +3448,8 @@ fn append_bounded_radial_tree_graph(
         segments.len()
     ));
     plan.skeleton_segments = segments;
-    Some(plan)
+    (!had_physical_edges || beginner_generated_pattern_is_planar_v1(&plan.crease_pattern))
+        .then_some(plan)
 }
 
 fn canonical_bounded_tree_segments(
@@ -2949,6 +3471,17 @@ fn canonical_bounded_tree_segments(
         }
     }
     Some(canonical)
+}
+
+/// Canonicalizes a bounded generic tree exactly as the generator does.
+///
+/// Native provenance and clients that revalidate generated instructions must use
+/// this helper rather than maintaining another sort/orientation implementation.
+#[must_use]
+pub fn canonical_beginner_generic_tree_segments_v1(
+    segments: &[BeginnerSkeletonSegmentV1],
+) -> Option<Vec<BeginnerSkeletonSegmentV1>> {
+    canonical_bounded_tree_segments(segments)
 }
 
 fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -> Option<Vec<u32>> {
@@ -2998,6 +3531,15 @@ fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -
         .into_iter()
         .map(|value| u32::try_from(value.saturating_mul(1_000_000).checked_div(minimum)?).ok())
         .collect()
+}
+
+/// Returns the canonical, integer-normalized squared-length ratios used in the
+/// `bounded_tree_river_axial_v1` instruction.
+#[must_use]
+pub fn beginner_generic_tree_length_ratios_v1(
+    segments: &[BeginnerSkeletonSegmentV1],
+) -> Option<Vec<u32>> {
+    bounded_tree_skeleton_length_ratios(segments)
 }
 
 fn parameterized_landmark_endpoint_for_target(
@@ -3241,7 +3783,7 @@ fn symmetric_template(
         asymmetric_edge_ids.sort_unstable_by_key(EdgeId::canonical_bytes);
     }
     for (index, (x_ratio, y_ratio)) in endpoints.iter().copied().enumerate() {
-        let position = canonical_quad.as_ref().map_or_else(
+        let target_position = canonical_quad.as_ref().map_or_else(
             || {
                 Point2::new(
                     min_x + (max_x - min_x) * x_ratio,
@@ -3250,6 +3792,28 @@ fn symmetric_template(
             },
             |(_, points)| points[index],
         );
+        let position = if canonical_quad.is_some() {
+            target_position
+        } else {
+            let dx = target_position.x - center.x;
+            let dy = target_position.y - center.y;
+            let x_scale = if dx > 0.0 {
+                (max_x - center.x) / dx
+            } else if dx < 0.0 {
+                (min_x - center.x) / dx
+            } else {
+                f64::INFINITY
+            };
+            let y_scale = if dy > 0.0 {
+                (max_y - center.y) / dy
+            } else if dy < 0.0 {
+                (min_y - center.y) / dy
+            } else {
+                f64::INFINITY
+            };
+            let scale = x_scale.min(y_scale);
+            Point2::new(center.x + dx * scale, center.y + dy * scale)
+        };
         let id = source
             .vertices
             .iter()
@@ -3272,6 +3836,167 @@ fn symmetric_template(
             },
         });
     }
+    let mut instruction_codes = vec![instruction.to_owned()];
+    let needs_even_radial_support = endpoints.len() >= 6 && endpoints.len().is_multiple_of(2);
+    let needs_symmetric_four_leg_radial_support =
+        plan_kind == BeginnerGeneratedPlanKindV1::SymmetricFourLegBase && endpoints.len() == 4;
+    let needs_small_generic_radial_support = plan_kind
+        == BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        && matches!(endpoints.len(), 2 | 4);
+    let needs_odd_generic_radial_support = plan_kind
+        == BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        && matches!(endpoints.len(), 3 | 5 | 7 | 9 | 11 | 13);
+    if !asymmetric_landmark
+        && (needs_even_radial_support
+            || needs_symmetric_four_leg_radial_support
+            || needs_small_generic_radial_support
+            || needs_odd_generic_radial_support)
+    {
+        let corners = [
+            Point2::new(min_x, min_y),
+            Point2::new(max_x, min_y),
+            Point2::new(max_x, max_y),
+            Point2::new(min_x, max_y),
+        ];
+        let edge_reaches_position = |edge: &Edge, vertices: &[Vertex], position: Point2| {
+            let position_for = |id| {
+                vertices
+                    .iter()
+                    .find(|vertex| vertex.id == id)
+                    .map(|vertex| vertex.position)
+            };
+            (edge.start == center_id && position_for(edge.end) == Some(position))
+                || (edge.end == center_id && position_for(edge.start) == Some(position))
+        };
+        let mut support_edges = Vec::with_capacity(corners.len() + 1);
+        for (index, corner) in corners.into_iter().enumerate() {
+            let already_covered = edges
+                .iter()
+                .any(|edge| edge_reaches_position(edge, &vertices, corner));
+            if already_covered {
+                continue;
+            }
+            let Some(corner_vertex) = source
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.position == corner)
+                .min_by_key(|vertex| vertex.id.canonical_bytes())
+                .cloned()
+            else {
+                continue;
+            };
+            if !vertices.iter().any(|vertex| vertex.id == corner_vertex.id) {
+                vertices.push(corner_vertex.clone());
+            }
+            support_edges.push(Edge {
+                id: EdgeId::derive_v5(
+                    namespace,
+                    format!("{prefix}-corner-support-e-{index}").as_bytes(),
+                ),
+                start: center_id,
+                end: corner_vertex.id,
+                kind: edge_kind,
+            });
+        }
+        let minimum_radial_hinges =
+            if needs_small_generic_radial_support || needs_symmetric_four_leg_radial_support {
+                6
+            } else {
+                0
+            };
+        loop {
+            let Some(total_radial_hinges) = edges.len().checked_add(support_edges.len()) else {
+                break;
+            };
+            if total_radial_hinges >= minimum_radial_hinges && total_radial_hinges.is_multiple_of(2)
+            {
+                break;
+            }
+            // An odd radial single-vertex cycle cannot carry the strict
+            // opposite-hinge schedule used by the graph certificate. Small
+            // generic fans and the symmetric four-leg family additionally
+            // require at least six distinct rays to enter that theorem.
+            // Deterministic non-corner boundary rays satisfy both bounds
+            // without changing semantic feature order. At most fourteen
+            // semantic rays and four corner supports exist in either bounded
+            // case, so these 63 dyadic positions are sufficient.
+            let extra_support = (1_u8..64).find_map(|slot| {
+                let position = Point2::new(min_x + (max_x - min_x) * f64::from(slot) / 64.0, min_y);
+                let already_covered = edges
+                    .iter()
+                    .chain(&support_edges)
+                    .any(|edge| edge_reaches_position(edge, &vertices, position));
+                (!already_covered).then_some((slot, position))
+            });
+            let Some((slot, position)) = extra_support else {
+                break;
+            };
+            let extra_vertex = vertices
+                .iter()
+                .chain(&source.vertices)
+                .filter(|vertex| vertex.position == position)
+                .min_by_key(|vertex| vertex.id.canonical_bytes())
+                .cloned()
+                .unwrap_or_else(|| Vertex {
+                    id: VertexId::derive_v5(
+                        namespace,
+                        format!("{prefix}-parity-support-v-{slot}").as_bytes(),
+                    ),
+                    position,
+                });
+            if !vertices.iter().any(|vertex| vertex.id == extra_vertex.id) {
+                vertices.push(extra_vertex.clone());
+            }
+            support_edges.push(Edge {
+                id: EdgeId::derive_v5(
+                    namespace,
+                    format!("{prefix}-parity-support-e-{slot}").as_bytes(),
+                ),
+                start: center_id,
+                end: extra_vertex.id,
+                kind: edge_kind,
+            });
+        }
+        let added_supports = support_edges.len();
+        support_edges.append(&mut edges);
+        edges = support_edges;
+        let covered_corners = corners
+            .into_iter()
+            .filter(|corner| {
+                edges
+                    .iter()
+                    .any(|edge| edge_reaches_position(edge, &vertices, *corner))
+            })
+            .count();
+        if covered_corners == corners.len()
+            && edges.len() >= minimum_radial_hinges
+            && edges.len().is_multiple_of(2)
+        {
+            instruction_codes.push(format!(
+                "bounded_radial_corner_support_v1:added={added_supports}:covered={covered_corners}"
+            ));
+        }
+    }
+    let generic_auxiliary_layout = (plan_kind
+        == BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+        .then(|| {
+            let pattern = CreasePattern {
+                vertices: vertices.clone(),
+                edges: edges.clone(),
+            };
+            let center_id =
+                beginner_generic_radial_center_v1(&pattern, min_x, max_x, min_y, max_y)?;
+            beginner_generic_auxiliary_layout_v1(
+                &pattern,
+                center_id,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                beginner_generic_auxiliary_block_count_v1(constraints)?,
+            )
+        })
+        .flatten();
     if let Some(outline) = &constraints.generic_body_outline_tenths_mm {
         let Some((skeleton_min_x, skeleton_max_x, skeleton_min_y, skeleton_max_y)) =
             skeleton_bounds(&constraints.skeleton_segments)
@@ -3280,7 +4005,7 @@ fn symmetric_template(
                 schema_version: BEGINNER_GENERATOR_SCHEMA_VERSION_V1,
                 kind: plan_kind,
                 crease_pattern: CreasePattern { vertices, edges },
-                instruction_codes: vec![instruction.to_owned()],
+                instruction_codes,
                 target_parts: constraints.target_parts.clone(),
                 skeleton_segments: constraints.skeleton_segments.clone(),
                 target_asset: constraints.target_asset,
@@ -3293,12 +4018,16 @@ fn symmetric_template(
             .iter()
             .enumerate()
             .map(|(index, point)| {
-                let position = Point2::new(
-                    min_x
-                        + (max_x - min_x) * f64::from(point[0] - skeleton_min_x) / skeleton_span_x,
-                    min_y
-                        + (max_y - min_y) * f64::from(point[1] - skeleton_min_y) / skeleton_span_y,
-                );
+                let x_ratio = f64::from(point[0] - skeleton_min_x) / skeleton_span_x;
+                let y_ratio = f64::from(point[1] - skeleton_min_y) / skeleton_span_y;
+                let position = generic_auxiliary_layout
+                    .and_then(|layout| layout.map(0, x_ratio, y_ratio))
+                    .unwrap_or_else(|| {
+                        Point2::new(
+                            min_x + (max_x - min_x) * x_ratio,
+                            min_y + (max_y - min_y) * y_ratio,
+                        )
+                    });
                 let id =
                     VertexId::derive_v5(namespace, format!("{prefix}-body-v-{index}").as_bytes());
                 vertices.push(Vertex { id, position });
@@ -3310,7 +4039,9 @@ fn symmetric_template(
                 id: EdgeId::derive_v5(namespace, format!("{prefix}-body-e-{index}").as_bytes()),
                 start: outline_ids[index],
                 end: outline_ids[(index + 1) % outline_ids.len()],
-                kind: edge_kind,
+                // Body contours are placement guides bound by provenance, not
+                // additional disconnected physical hinges.
+                kind: EdgeKind::Auxiliary,
             });
         }
     }
@@ -3319,6 +4050,8 @@ fn symmetric_template(
     {
         let skeleton_span_x = f64::from(skeleton_max_x - skeleton_min_x);
         let skeleton_span_y = f64::from(skeleton_max_y - skeleton_min_y);
+        let local_block_start = usize::from(constraints.generic_body_outline_tenths_mm.is_some());
+        let mut local_block_ordinal = 0_usize;
         for target in &constraints.protrusions {
             let Some(outline) = &target.local_outline_tenths_mm else {
                 continue;
@@ -3329,10 +4062,18 @@ fn symmetric_template(
                 .map(|(index, point)| {
                     let x = target.position_tenths_mm[0] + point[0];
                     let y = target.position_tenths_mm[1] + point[1];
-                    let position = Point2::new(
-                        min_x + (max_x - min_x) * f64::from(x - skeleton_min_x) / skeleton_span_x,
-                        min_y + (max_y - min_y) * f64::from(y - skeleton_min_y) / skeleton_span_y,
-                    );
+                    let x_ratio = f64::from(x - skeleton_min_x) / skeleton_span_x;
+                    let y_ratio = f64::from(y - skeleton_min_y) / skeleton_span_y;
+                    let position = generic_auxiliary_layout
+                        .and_then(|layout| {
+                            layout.map(local_block_start + local_block_ordinal, x_ratio, y_ratio)
+                        })
+                        .unwrap_or_else(|| {
+                            Point2::new(
+                                min_x + (max_x - min_x) * x_ratio,
+                                min_y + (max_y - min_y) * y_ratio,
+                            )
+                        });
                     let id = VertexId::derive_v5(
                         namespace,
                         format!("{prefix}-local-{}-v-{index}", target.id).as_bytes(),
@@ -3349,16 +4090,19 @@ fn symmetric_template(
                     ),
                     start: outline_ids[index],
                     end: outline_ids[(index + 1) % outline_ids.len()],
-                    kind: edge_kind,
+                    // Local protrusion contours remain exact guide cycles and
+                    // are excluded from the material fold graph.
+                    kind: EdgeKind::Auxiliary,
                 });
             }
+            local_block_ordinal += 1;
         }
     }
     BeginnerGeneratedPlanV1 {
         schema_version: BEGINNER_GENERATOR_SCHEMA_VERSION_V1,
         kind: plan_kind,
         crease_pattern: CreasePattern { vertices, edges },
-        instruction_codes: vec![instruction.to_owned()],
+        instruction_codes,
         target_parts: constraints.target_parts.clone(),
         skeleton_segments: constraints.skeleton_segments.clone(),
         target_asset: constraints.target_asset,
@@ -3423,6 +4167,225 @@ fn asymmetric_insect_semantic_provenance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn radial_corner_support_added(plan: &BeginnerGeneratedPlanV1) -> usize {
+        let support_codes = plan
+            .instruction_codes
+            .iter()
+            .filter(|code| code.starts_with("bounded_radial_corner_support_v1:"))
+            .collect::<Vec<_>>();
+        let [support_code] = support_codes.as_slice() else {
+            panic!("one canonical radial-corner support instruction is required");
+        };
+        let (added, covered) = support_code
+            .strip_prefix("bounded_radial_corner_support_v1:added=")
+            .and_then(|payload| payload.split_once(":covered="))
+            .expect("canonical radial-corner support instruction");
+        let added = added.parse::<usize>().expect("bounded support count");
+        assert!(added <= 5);
+        assert_eq!(covered, "4");
+        added
+    }
+
+    #[test]
+    fn radial_corner_support_is_canonical_and_duplicate_corner_safe() {
+        let namespace = ProjectId::schema_namespace([0x73; 16]);
+        let (_ids, mut source) = square_source(namespace);
+        source.vertices.push(Vertex {
+            id: VertexId::derive_v5(namespace, b"duplicate-bottom-left"),
+            position: Point2::new(0.0, 0.0),
+        });
+        source.vertices.extend(
+            [
+                b"duplicate-parity-a".as_slice(),
+                b"duplicate-parity-b".as_slice(),
+            ]
+            .map(|seed| Vertex {
+                id: VertexId::derive_v5(namespace, seed),
+                position: Point2::new(10.0 / 64.0, 0.0),
+            }),
+        );
+        let endpoints = [
+            (0.0, 0.4),
+            (1.0, 0.6),
+            (0.4, 0.0),
+            (0.6, 1.0),
+            (0.2, 0.3),
+            (0.8, 0.7),
+        ];
+        let generate = |source: &CreasePattern| {
+            symmetric_template(
+                namespace,
+                source,
+                BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+                EdgeKind::Valley,
+                0.0,
+                10.0,
+                0.0,
+                10.0,
+                &endpoints,
+                "bounded_test_radial_fan",
+                &BeginnerGenerationConstraintsV1::default(),
+            )
+        };
+        let plan = generate(&source);
+        let mut reordered_source = source.clone();
+        reordered_source.vertices.reverse();
+        assert_eq!(generate(&reordered_source), plan);
+        assert_eq!(radial_corner_support_added(&plan), 4);
+        assert_eq!(plan.crease_pattern.vertices.len(), 11);
+        assert_eq!(plan.crease_pattern.edges.len(), 10);
+
+        let center = Point2::new(5.0, 5.0);
+        let center_id = plan
+            .crease_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.position == center)
+            .expect("radial center")
+            .id;
+        for (index, corner) in [
+            Point2::new(0.0, 0.0),
+            Point2::new(10.0, 0.0),
+            Point2::new(10.0, 10.0),
+            Point2::new(0.0, 10.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let edge = &plan.crease_pattern.edges[index];
+            assert_eq!(
+                edge.id,
+                EdgeId::derive_v5(
+                    namespace,
+                    format!(
+                        "beginner-plan-{:?}-corner-support-e-{index}",
+                        BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+                    )
+                    .as_bytes(),
+                )
+            );
+            assert_eq!(edge.start, center_id);
+            assert_eq!(edge.kind, EdgeKind::Valley);
+            let expected_corner_id = source
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.position == corner)
+                .min_by_key(|vertex| vertex.id.canonical_bytes())
+                .expect("source paper corner")
+                .id;
+            assert_eq!(edge.end, expected_corner_id);
+        }
+
+        let odd_endpoints = [endpoints[0], endpoints[1], endpoints[2]];
+        let generate_odd = |source: &CreasePattern| {
+            symmetric_template(
+                namespace,
+                source,
+                BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+                EdgeKind::Valley,
+                0.0,
+                10.0,
+                0.0,
+                10.0,
+                &odd_endpoints,
+                "bounded_test_odd_radial_fan",
+                &BeginnerGenerationConstraintsV1::default(),
+            )
+        };
+        let odd_plan = generate_odd(&source);
+        assert_eq!(generate_odd(&reordered_source), odd_plan);
+        assert_eq!(radial_corner_support_added(&odd_plan), 5);
+        assert_eq!(odd_plan.crease_pattern.vertices.len(), 9);
+        assert_eq!(odd_plan.crease_pattern.edges.len(), 8);
+        let parity_edge = &odd_plan.crease_pattern.edges[4];
+        assert_eq!(
+            parity_edge.id,
+            EdgeId::derive_v5(
+                namespace,
+                format!(
+                    "beginner-plan-{:?}-parity-support-e-1",
+                    BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+                )
+                .as_bytes(),
+            )
+        );
+        assert_eq!(parity_edge.start, center_id);
+        assert_eq!(parity_edge.kind, EdgeKind::Valley);
+        assert_ne!(parity_edge.start, parity_edge.end);
+        assert_eq!(
+            parity_edge.end,
+            source
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.position == Point2::new(10.0 / 64.0, 0.0))
+                .min_by_key(|vertex| vertex.id.canonical_bytes())
+                .expect("canonical duplicate parity support vertex")
+                .id
+        );
+        let parity_position = odd_plan
+            .crease_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == parity_edge.end)
+            .expect("canonical odd-fan parity support vertex")
+            .position;
+        assert_eq!(parity_position, Point2::new(10.0 / 64.0, 0.0));
+        assert!(
+            ![
+                Point2::new(0.0, 0.0),
+                Point2::new(10.0, 0.0),
+                Point2::new(10.0, 10.0),
+                Point2::new(0.0, 10.0),
+            ]
+            .contains(&parity_position)
+        );
+
+        let (_clean_ids, clean_source) = square_source(namespace);
+        let colliding_endpoints = [(1.0 / 64.0, 0.0), endpoints[0], endpoints[1]];
+        let collision_safe = symmetric_template(
+            namespace,
+            &clean_source,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+            EdgeKind::Valley,
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            &colliding_endpoints,
+            "bounded_test_collision_safe_odd_radial_fan",
+            &BeginnerGenerationConstraintsV1::default(),
+        );
+        assert_eq!(radial_corner_support_added(&collision_safe), 5);
+        assert_eq!(
+            collision_safe.crease_pattern.edges[4].id,
+            EdgeId::derive_v5(
+                namespace,
+                format!(
+                    "beginner-plan-{:?}-parity-support-e-2",
+                    BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+                )
+                .as_bytes(),
+            )
+        );
+        assert!(
+            collision_safe
+                .crease_pattern
+                .edges
+                .iter()
+                .all(|edge| edge.start != edge.end)
+        );
+        assert_eq!(
+            collision_safe
+                .crease_pattern
+                .edges
+                .iter()
+                .map(|edge| edge.end)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            collision_safe.crease_pattern.edges.len()
+        );
+    }
 
     #[test]
     fn bounded_tree_ratios_reject_cycles_limits_and_degenerate_bars() {
@@ -3582,10 +4545,10 @@ mod tests {
                 .map(|edge| edge.kind)
                 .collect::<Vec<_>>(),
             [
-                EdgeKind::Valley,
-                EdgeKind::Mountain,
-                EdgeKind::Valley,
-                EdgeKind::Mountain,
+                EdgeKind::Auxiliary,
+                EdgeKind::Auxiliary,
+                EdgeKind::Auxiliary,
+                EdgeKind::Auxiliary,
             ]
         );
         assert_eq!(
@@ -3599,11 +4562,11 @@ mod tests {
         assert_eq!(
             <[u8; 32]>::from(Sha256::digest(json.as_bytes())),
             [
-                0xbc, 0x33, 0x6f, 0x7c, 0xbf, 0xa6, 0xf4, 0x17, 0x86, 0x31, 0x9f, 0x5c, 0x99, 0xdd,
-                0xde, 0x02, 0x24, 0xc7, 0xe6, 0xf6, 0x86, 0xbb, 0xc4, 0xaf, 0x54, 0x22, 0xa1, 0xb8,
-                0x18, 0x75, 0x05, 0xee,
+                0x9d, 0xb0, 0xcc, 0x67, 0x47, 0x32, 0x4c, 0x3c, 0xd0, 0x56, 0xb0, 0x76, 0x54, 0x64,
+                0xb1, 0xc7, 0x99, 0x47, 0x4a, 0x68, 0xc3, 0xe5, 0x22, 0x99, 0x5a, 0xf0, 0x60, 0x8c,
+                0xd4, 0x6d, 0x2f, 0xac,
             ],
-            "the previously accepted sorted plan JSON, including edge IDs, must stay bit-exact"
+            "the current generator-v1 auxiliary tree-guide checkpoint, including edge IDs, must stay bit-exact"
         );
 
         let mut reversed = constraints.clone();
@@ -3703,9 +4666,15 @@ mod tests {
             generated[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
         );
-        assert_eq!(generated[0].crease_pattern.edges.len(), 7);
+        assert!(
+            beginner_generated_pattern_is_planar_v1(&generated[0].crease_pattern),
+            "support-complete generic fan and its relocated tree must be planar"
+        );
+        let support_count = radial_corner_support_added(&generated[0]);
+        assert_eq!(support_count, 5);
+        assert_eq!(generated[0].crease_pattern.edges.len(), 7 + support_count);
         assert_eq!(
-            generated[0].instruction_codes[1],
+            generated[0].instruction_codes[2],
             "bounded_tree_branch_topology_v1:nodes=3:leaves=2:bars=2"
         );
 
@@ -3729,6 +4698,51 @@ mod tests {
             })
             .collect();
         assert!(bounded_generic_composite_endpoints(&over_endpoint_limit).is_none());
+    }
+
+    #[test]
+    fn generic_exact_bilateral_pair_is_axis_centered_and_sign_canonical() {
+        let segments = vec![
+            skeleton(10, -100, -100, 100, -100),
+            skeleton(20, 100, -100, 100, 100),
+        ];
+        let endpoints = |direction| {
+            let mut target = bilateral_protrusion(1, 2);
+            target.length_tenths_mm = 20;
+            target.thickness_tenths_mm = 10;
+            target.position_tenths_mm = [0, 0, 0];
+            target.direction_milli = direction;
+            bounded_generic_composite_endpoints(&BeginnerGenerationConstraintsV1 {
+                target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+                skeleton_segments: segments.clone(),
+                protrusions: vec![target],
+                ..BeginnerGenerationConstraintsV1::default()
+            })
+            .expect("exact bilateral pair endpoints")
+        };
+
+        let horizontal = endpoints([1_000, 0, 0]);
+        assert_eq!(horizontal.len(), 2);
+        assert_eq!(
+            horizontal
+                .iter()
+                .map(|(_, y)| y.to_bits())
+                .collect::<Vec<_>>(),
+            vec![0.5_f64.to_bits(); 2]
+        );
+        assert_eq!(endpoints([-1_000, 0, 0]), horizontal);
+
+        let vertical = endpoints([0, 1_000, 0]);
+        assert_eq!(vertical.len(), 2);
+        assert_eq!(
+            vertical
+                .iter()
+                .map(|(x, _)| x.to_bits())
+                .collect::<Vec<_>>(),
+            vec![0.5_f64.to_bits(); 2]
+        );
+        assert_eq!(endpoints([0, -1_000, 0]), vertical);
+        assert_ne!(horizontal, vertical);
     }
 
     #[test]
@@ -3789,7 +4803,14 @@ mod tests {
             generated[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
         );
-        assert_eq!(generated[0].crease_pattern.edges.len(), 16);
+        assert!(
+            beginner_generated_pattern_is_planar_v1(&generated[0].crease_pattern),
+            "the larger support-complete generic fan must retain planar auxiliary placement"
+        );
+        assert_eq!(
+            generated[0].crease_pattern.edges.len(),
+            16 + radial_corner_support_added(&generated[0])
+        );
 
         let mut reversed = constraints.clone();
         reversed.skeleton_segments.reverse();
@@ -3977,52 +4998,78 @@ mod tests {
         assert!(crate::validate_beginner_generation_constraints_v1(
             &constraints
         ));
-        assert!(uses_bounded_generic_target_base_v1(&constraints));
+        assert!(beginner_uses_bounded_generic_target_base_v1(&constraints));
         assert_eq!(beginner_target_approximation_score_v1(&constraints), 92);
         let generated = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
         assert_eq!(
             generated[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
         );
-        assert_eq!(generated[0].crease_pattern.edges.len(), 4);
-        assert_eq!(generated[0].instruction_codes.len(), 2);
+        assert_eq!(radial_corner_support_added(&generated[0]), 4);
+        assert_eq!(generated[0].crease_pattern.edges.len(), 8);
+        assert!(
+            generated[0].crease_pattern.edges[..4]
+                .iter()
+                .all(|edge| ids.contains(&edge.end)),
+            "the four canonical paper-corner supports must prefix semantic feature rays"
+        );
+        assert!(
+            generated[0].crease_pattern.edges[4..6].iter().all(|edge| {
+                matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley)
+                    && !ids.contains(&edge.end)
+            }),
+            "the two semantic feature rays must follow the support prefix"
+        );
+        assert!(
+            generated[0].crease_pattern.edges[6..]
+                .iter()
+                .all(|edge| edge.kind == EdgeKind::Auxiliary),
+            "the two bounded-tree bars must remain the final auxiliary suffix"
+        );
+        assert_eq!(generated[0].instruction_codes.len(), 3);
         assert_eq!(
             generated[0].instruction_codes[1],
+            "bounded_radial_corner_support_v1:added=4:covered=4"
+        );
+        assert_eq!(
+            generated[0].instruction_codes[2],
             "bounded_tree_branch_topology_v1:nodes=3:leaves=2:bars=2"
         );
 
-        for (allowed_techniques, expected_tree_kinds) in [
-            (
-                vec![BeginnerFoldTechniqueV1::ValleyFold],
-                [EdgeKind::Valley, EdgeKind::Valley],
-            ),
-            (
-                vec![BeginnerFoldTechniqueV1::MountainFold],
-                [EdgeKind::Mountain, EdgeKind::Mountain],
-            ),
-            (
-                vec![
-                    BeginnerFoldTechniqueV1::ValleyFold,
-                    BeginnerFoldTechniqueV1::MountainFold,
-                ],
-                [EdgeKind::Valley, EdgeKind::Mountain],
-            ),
+        for allowed_techniques in [
+            vec![BeginnerFoldTechniqueV1::ValleyFold],
+            vec![BeginnerFoldTechniqueV1::MountainFold],
+            vec![
+                BeginnerFoldTechniqueV1::ValleyFold,
+                BeginnerFoldTechniqueV1::MountainFold,
+            ],
         ] {
             let mut technique_case = constraints.clone();
             technique_case.allowed_techniques = allowed_techniques;
             let technique_plans =
                 generate_beginner_plans_v1(namespace, &source, &ids, &technique_case).unwrap();
+            assert_eq!(radial_corner_support_added(&technique_plans[0]), 4);
+            assert!(
+                technique_plans[0].crease_pattern.edges[..6]
+                    .iter()
+                    .all(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley)),
+                "support-prefixed count-two features are the complete physical hinge prefix"
+            );
             assert_eq!(
-                technique_plans[0].crease_pattern.edges[2..]
+                technique_plans[0].crease_pattern.edges[6..]
                     .iter()
                     .map(|edge| edge.kind)
                     .collect::<Vec<_>>(),
-                expected_tree_kinds
+                [EdgeKind::Auxiliary, EdgeKind::Auxiliary],
+                "skeleton bars are topology/provenance guides, not extra physical hinges"
             );
         }
         let mut no_tree_fold = constraints.clone();
         no_tree_fold.allowed_techniques = vec![BeginnerFoldTechniqueV1::InsideReverseFold];
-        assert!(!bounded_generic_tree_graph_is_supported_v1(&no_tree_fold));
+        assert!(
+            bounded_generic_tree_graph_is_supported_v1(&no_tree_fold),
+            "tree geometry support is independent of the physical fold-technique preflight"
+        );
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &no_tree_fold),
             Err(BeginnerGeneratorErrorV1::UnsupportedTechniques)
@@ -4087,7 +5134,7 @@ mod tests {
             },
         ];
         assert!(crate::validate_beginner_generation_constraints_v1(&animal));
-        assert!(uses_bounded_generic_target_base_v1(&animal));
+        assert!(beginner_uses_bounded_generic_target_base_v1(&animal));
         assert_eq!(beginner_target_approximation_score_v1(&animal), 92);
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &animal).unwrap()[0].kind,
@@ -4517,7 +5564,47 @@ mod tests {
             first[0].kind,
             BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
         );
-        assert_eq!(first[0].crease_pattern.edges.len(), 4);
+        assert_eq!(radial_corner_support_added(&first[0]), 4);
+        assert_eq!(first[0].crease_pattern.edges.len(), 8);
+        assert!(
+            first[0].crease_pattern.edges[..4]
+                .iter()
+                .all(|edge| ids.contains(&edge.end)),
+            "the four deterministic paper-corner support creases must prefix the four semantic leg rays"
+        );
+        assert!(
+            first[0].crease_pattern.edges[4..]
+                .iter()
+                .all(|edge| !ids.contains(&edge.end)),
+            "the semantic four-leg target remains the exact four-edge suffix"
+        );
+        assert!(
+            first[0]
+                .crease_pattern
+                .edges
+                .iter()
+                .all(|edge| edge.kind == EdgeKind::Valley),
+            "the default valley-first choice applies uniformly to semantic and support creases"
+        );
+        for (technique, expected_kind) in [
+            (BeginnerFoldTechniqueV1::ValleyFold, EdgeKind::Valley),
+            (BeginnerFoldTechniqueV1::MountainFold, EdgeKind::Mountain),
+        ] {
+            let mut single_technique = constraints.clone();
+            single_technique.allowed_techniques = vec![technique];
+            let plan =
+                generate_beginner_plans_v1(namespace, &source, &ids, &single_technique).unwrap();
+            assert_eq!(radial_corner_support_added(&plan[0]), 4);
+            assert_eq!(plan[0].crease_pattern.edges.len(), 8);
+            assert!(
+                plan[0]
+                    .crease_pattern
+                    .edges
+                    .iter()
+                    .all(|edge| edge.kind == expected_kind),
+                "the symmetric four-leg template must honor its sole allowed fold technique"
+            );
+        }
         assert!(
             first[1..]
                 .iter()
@@ -4659,22 +5746,75 @@ mod tests {
                 Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
             );
         }
-        let mut unsupported_animal_family = constraints.clone();
-        unsupported_animal_family.target_parts[2] = BeginnerTargetPartRecordV1 {
+        let mut general_animal_family = constraints.clone();
+        general_animal_family.target_parts[2] = BeginnerTargetPartRecordV1 {
             kind: BeginnerTargetPartKindV1::Antenna,
             count: 2,
         };
-        unsupported_animal_family.skeleton_segments.truncate(2);
-        unsupported_animal_family.protrusions[0] = bilateral_protrusion(1, 2);
+        general_animal_family.skeleton_segments.truncate(2);
+        general_animal_family.protrusions[0] = bilateral_protrusion(1, 2);
         assert!(crate::validate_beginner_generation_constraints_v1(
-            &unsupported_animal_family
+            &general_animal_family
+        ));
+        let general_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &general_animal_family).unwrap();
+        assert_eq!(
+            general_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        );
+        assert_eq!(radial_corner_support_added(&general_plans[0]), 4);
+        assert_eq!(general_plans[0].crease_pattern.edges.len(), 8);
+        assert!(
+            general_plans[0].crease_pattern.edges[..4]
+                .iter()
+                .all(|edge| ids.contains(&edge.end)),
+            "general count-two support must occupy the four-edge paper-corner prefix"
+        );
+        assert!(
+            general_plans[0].crease_pattern.edges[4..6]
+                .iter()
+                .all(|edge| {
+                    matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley)
+                        && !ids.contains(&edge.end)
+                }),
+            "both semantic antenna rays must follow the support prefix"
+        );
+        assert!(
+            general_plans[0].crease_pattern.edges[6..]
+                .iter()
+                .all(|edge| edge.kind == EdgeKind::Auxiliary),
+            "the bounded-tree bars must remain the final auxiliary suffix"
+        );
+        assert!(
+            general_plans[0]
+                .instruction_codes
+                .iter()
+                .any(|code| code == "bounded_radial_corner_support_v1:added=4:covered=4")
+        );
+        assert_eq!(
+            beginner_target_approximation_score_v1(&general_animal_family),
+            92
+        );
+        let mut duplicate_general = general_animal_family;
+        duplicate_general
+            .target_parts
+            .push(BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Antenna,
+                count: 2,
+            });
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &duplicate_general
         ));
         assert_eq!(
-            beginner_target_approximation_score_v1(&unsupported_animal_family),
+            beginner_expected_generated_plan_kind_v1(&duplicate_general),
+            None
+        );
+        assert_eq!(
+            beginner_target_approximation_score_v1(&duplicate_general),
             0
         );
         assert_eq!(
-            generate_beginner_plans_v1(namespace, &source, &ids, &unsupported_animal_family),
+            generate_beginner_plans_v1(namespace, &source, &ids, &duplicate_general),
             Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
         let mut tail = constraints.clone();
@@ -4829,8 +5969,15 @@ mod tests {
             triple_plans[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase
         );
-        assert_eq!(triple_plans[0].crease_pattern.vertices.len(), 7);
-        assert_eq!(triple_plans[0].crease_pattern.edges.len(), 6);
+        let triple_supports = radial_corner_support_added(&triple_plans[0]);
+        assert_eq!(
+            triple_plans[0].crease_pattern.vertices.len(),
+            7 + triple_supports
+        );
+        assert_eq!(
+            triple_plans[0].crease_pattern.edges.len(),
+            6 + triple_supports
+        );
         assert_eq!(
             animal_horn_tail_ear_bindings_v1(&triple),
             Some(BeginnerHornTailEarBindingV1 {
@@ -4878,8 +6025,15 @@ mod tests {
             complete_animal_plans[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
         );
-        assert_eq!(complete_animal_plans[0].crease_pattern.vertices.len(), 11);
-        assert_eq!(complete_animal_plans[0].crease_pattern.edges.len(), 10);
+        let complete_animal_supports = radial_corner_support_added(&complete_animal_plans[0]);
+        assert_eq!(
+            complete_animal_plans[0].crease_pattern.vertices.len(),
+            11 + complete_animal_supports
+        );
+        assert_eq!(
+            complete_animal_plans[0].crease_pattern.edges.len(),
+            10 + complete_animal_supports
+        );
         assert_eq!(
             animal_complete_bindings_v1(&complete_animal),
             Some(BeginnerCompleteAnimalBindingV1 {
@@ -4923,8 +6077,48 @@ mod tests {
             winged_plans[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase
         );
-        assert_eq!(winged_plans[0].crease_pattern.vertices.len(), 15);
-        assert_eq!(winged_plans[0].crease_pattern.edges.len(), 14);
+        let winged_supports = radial_corner_support_added(&winged_plans[0]);
+        assert_eq!(
+            winged_plans[0].crease_pattern.vertices.len(),
+            11 + winged_supports
+        );
+        assert_eq!(
+            winged_plans[0].crease_pattern.edges.len(),
+            10 + winged_supports
+        );
+        let semantic_endpoints = winged_plans[0].crease_pattern.edges
+            [winged_supports..winged_supports + 10]
+            .iter()
+            .map(|edge| {
+                let endpoint_id = if winged_plans[0]
+                    .crease_pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == edge.start)
+                    .is_some_and(|vertex| vertex.position == Point2::new(5.0, 5.0))
+                {
+                    edge.end
+                } else {
+                    edge.start
+                };
+                winged_plans[0]
+                    .crease_pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == endpoint_id)
+                    .expect("winged semantic endpoint")
+                    .position
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            semantic_endpoints.iter().enumerate().all(|(index, point)| {
+                semantic_endpoints
+                    .iter()
+                    .skip(index + 1)
+                    .all(|other| point != other)
+            }),
+            "all ten winged-animal semantic rays must reach distinct boundary positions"
+        );
         assert_eq!(
             animal_complete_winged_bindings_v1(&winged_animal),
             Some(BeginnerCompleteWingedAnimalBindingV1 {
@@ -4938,6 +6132,19 @@ mod tests {
             })
         );
         assert_eq!(beginner_target_approximation_score_v1(&winged_animal), 92);
+        let mut collapsed_semantic_rays = winged_animal.clone();
+        collapsed_semantic_rays.protrusions[2].position_tenths_mm[1] = -4;
+        collapsed_semantic_rays.protrusions[4].position_tenths_mm[1] = 4;
+        collapsed_semantic_rays.protrusions[4].priority =
+            collapsed_semantic_rays.protrusions[2].priority;
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &collapsed_semantic_rays
+        ));
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &collapsed_semantic_rays),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate),
+            "meaning-distinct ear and wing IDs must not authorize coincident boundary rays"
+        );
         let mut invalid_wings = winged_animal.clone();
         invalid_wings.protrusions[4].position_tenths_mm[0] = 1;
         assert!(animal_complete_winged_bindings_v1(&invalid_wings).is_some());
@@ -5008,10 +6215,22 @@ mod tests {
             generic_plans[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
         );
-        assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 13);
-        assert_eq!(generic_plans[0].crease_pattern.edges.len(), 11);
+        // A grouped bilateral count=2 contributes exactly two physical
+        // endpoints; the former four-endpoint expansion double-counted it.
+        let generic_supports = radial_corner_support_added(&generic_plans[0]);
+        assert_eq!(
+            generic_plans[0].crease_pattern.vertices.len(),
+            11 + generic_supports
+        );
+        assert_eq!(
+            generic_plans[0].crease_pattern.edges.len(),
+            9 + generic_supports
+        );
         for (position, direction) in [([10, 0, 0], [-1_000, 0, 0]), ([1, 10, 0], [0, -1_000, 0])] {
             let mut boundary_landmark_root = generic.clone();
+            // Keep the compact semantic total synchronized with the physical
+            // grouped records while changing the first group into one landmark.
+            boundary_landmark_root.target_parts[2].count = 1;
             boundary_landmark_root.protrusions[0].count = 1;
             boundary_landmark_root.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::None;
             boundary_landmark_root.protrusions[0].position_tenths_mm = position;
@@ -5032,6 +6251,7 @@ mod tests {
         }
         for (position, direction) in [([11, 0, 0], [-1_000, 0, 0]), ([1, 11, 0], [0, -1_000, 0])] {
             let mut outside_landmark_root = generic.clone();
+            outside_landmark_root.target_parts[2].count = 1;
             outside_landmark_root.protrusions[0].count = 1;
             outside_landmark_root.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::None;
             outside_landmark_root.protrusions[0].position_tenths_mm = position;
@@ -5039,7 +6259,9 @@ mod tests {
             assert!(crate::validate_beginner_generation_constraints_v1(
                 &outside_landmark_root
             ));
-            assert!(uses_bounded_generic_target_base_v1(&outside_landmark_root));
+            assert!(beginner_uses_bounded_generic_target_base_v1(
+                &outside_landmark_root
+            ));
             assert_eq!(
                 beginner_target_approximation_score_v1(&outside_landmark_root),
                 0
@@ -5086,8 +6308,17 @@ mod tests {
             Some(vec![[-2, -1], [0, -2], [2, -1], [1, 2], [-1, 2]]);
         let local_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &locally_outlined).unwrap();
-        assert_eq!(local_plans[0].crease_pattern.vertices.len(), 18);
-        assert_eq!(local_plans[0].crease_pattern.edges.len(), 16);
+        // The five-point local outline is additive to the corrected
+        // count=2 physical endpoint base (not the former duplicated four).
+        let local_supports = radial_corner_support_added(&local_plans[0]);
+        assert_eq!(
+            local_plans[0].crease_pattern.vertices.len(),
+            16 + local_supports
+        );
+        assert_eq!(
+            local_plans[0].crease_pattern.edges.len(),
+            14 + local_supports
+        );
         assert!(
             beginner_target_approximation_score_v1(&locally_outlined)
                 > beginner_target_approximation_score_v1(&generic)
@@ -5119,24 +6350,40 @@ mod tests {
             Some(vec![[-5, -5], [-5, 5], [5, 5], [5, -5]]);
         let outlined_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &outlined_generic).unwrap();
-        assert_eq!(outlined_plans[0].crease_pattern.vertices.len(), 17);
-        assert_eq!(outlined_plans[0].crease_pattern.edges.len(), 15);
+        // Four body-outline records are additive to the same corrected
+        // count=2 physical endpoint base.
+        let outlined_supports = radial_corner_support_added(&outlined_plans[0]);
+        assert_eq!(
+            outlined_plans[0].crease_pattern.vertices.len(),
+            15 + outlined_supports
+        );
+        assert_eq!(
+            outlined_plans[0].crease_pattern.edges.len(),
+            13 + outlined_supports
+        );
         let mut general_outline = generic.clone();
         general_outline.generic_body_outline_mode = crate::BeginnerBodyOutlineModeV1::General;
         general_outline.generic_body_outline_tenths_mm =
             Some(vec![[-5, -5], [5, -5], [4, 5], [-3, 5]]);
         let general_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &general_outline).unwrap();
-        assert_eq!(general_plans[0].crease_pattern.vertices.len(), 17);
-        assert_eq!(general_plans[0].crease_pattern.edges.len(), 15);
+        let general_supports = radial_corner_support_added(&general_plans[0]);
+        assert_eq!(
+            general_plans[0].crease_pattern.vertices.len(),
+            15 + general_supports
+        );
+        assert_eq!(
+            general_plans[0].crease_pattern.edges.len(),
+            13 + general_supports
+        );
         let mut tapered_generic = generic.clone();
         tapered_generic.protrusions[1].root_width_tenths_mm = Some(1);
         tapered_generic.protrusions[1].tip_width_tenths_mm = Some(1);
         let tapered_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &tapered_generic).unwrap();
-        assert_ne!(
-            tapered_plans[0].crease_pattern.vertices,
-            generic_plans[0].crease_pattern.vertices
+        assert_eq!(
+            tapered_plans, generic_plans,
+            "explicit root/tip widths equal to the canonical implicit thickness must normalize identically"
         );
         tapered_generic.protrusions[1].tip_width_tenths_mm = Some(2);
         assert_eq!(
@@ -5523,18 +6770,30 @@ mod tests {
             BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
         );
         assert_eq!(beginner_target_approximation_score_v1(&antenna), 92);
-        let mut unsupported_insect_family = constraints.clone();
-        unsupported_insect_family.target_parts[2].kind = BeginnerTargetPartKindV1::Fin;
+        let mut general_insect_family = constraints.clone();
+        general_insect_family.target_parts[2].kind = BeginnerTargetPartKindV1::Fin;
+        general_insect_family.target_parts[2].count = 3;
+        general_insect_family.skeleton_segments = vec![
+            skeleton(10, -100, -100, 100, -100),
+            skeleton(20, 100, -100, 100, 100),
+        ];
+        general_insect_family.protrusions = vec![
+            single_protrusion(1, [0, -50, 0], [1_000, 0, 0]),
+            single_protrusion(2, [0, 0, 0], [-1_000, 0, 0]),
+            single_protrusion(3, [0, 50, 0], [1_000, 0, 0]),
+        ];
         assert!(crate::validate_beginner_generation_constraints_v1(
-            &unsupported_insect_family
+            &general_insect_family
         ));
         assert_eq!(
-            beginner_target_approximation_score_v1(&unsupported_insect_family),
-            0
+            beginner_target_approximation_score_v1(&general_insect_family),
+            92
         );
         assert_eq!(
-            generate_beginner_plans_v1(namespace, &source, &ids, &unsupported_insect_family),
-            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+            generate_beginner_plans_v1(namespace, &source, &ids, &general_insect_family).unwrap()
+                [0]
+            .kind,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
         );
         let mut wing_antenna = constraints.clone();
         wing_antenna.target_parts.push(BeginnerTargetPartRecordV1 {
@@ -5545,7 +6804,7 @@ mod tests {
         antenna_target.direction_milli = [0, -1_000, 0];
         antenna_target.length_tenths_mm = 4;
         wing_antenna.protrusions.push(antenna_target);
-        assert!(!uses_bounded_generic_target_base_v1(&wing_antenna));
+        assert!(!beginner_uses_bounded_generic_target_base_v1(&wing_antenna));
         assert_eq!(beginner_target_approximation_score_v1(&wing_antenna), 92);
         let composite_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &wing_antenna).unwrap();
@@ -5553,8 +6812,15 @@ mod tests {
             composite_plans[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase
         );
-        assert_eq!(composite_plans[0].crease_pattern.vertices.len(), 9);
-        assert_eq!(composite_plans[0].crease_pattern.edges.len(), 8);
+        let composite_supports = radial_corner_support_added(&composite_plans[0]);
+        assert_eq!(
+            composite_plans[0].crease_pattern.vertices.len(),
+            9 + composite_supports
+        );
+        assert_eq!(
+            composite_plans[0].crease_pattern.edges.len(),
+            8 + composite_supports
+        );
         assert_eq!(
             insect_wing_antenna_bindings_v1(&wing_antenna),
             Some(BeginnerWingAntennaBindingV1 {
@@ -5630,8 +6896,15 @@ mod tests {
             complete_plans[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
         );
-        assert_eq!(complete_plans[0].crease_pattern.vertices.len(), 21);
-        assert_eq!(complete_plans[0].crease_pattern.edges.len(), 20);
+        let complete_supports = radial_corner_support_added(&complete_plans[0]);
+        assert_eq!(
+            complete_plans[0].crease_pattern.vertices.len(),
+            21 + complete_supports
+        );
+        assert_eq!(
+            complete_plans[0].crease_pattern.edges.len(),
+            20 + complete_supports
+        );
         assert_eq!(
             insect_complete_bindings_v1(&complete)
                 .unwrap()
@@ -5768,8 +7041,15 @@ mod tests {
             complete_plans[0].kind,
             BeginnerGeneratedPlanKindV1::SymmetricSixLegBase
         );
-        assert_eq!(complete_plans[0].crease_pattern.vertices.len(), 13);
-        assert_eq!(complete_plans[0].crease_pattern.edges.len(), 12);
+        let complete_supports = radial_corner_support_added(&complete_plans[0]);
+        assert_eq!(
+            complete_plans[0].crease_pattern.vertices.len(),
+            13 + complete_supports
+        );
+        assert_eq!(
+            complete_plans[0].crease_pattern.edges.len(),
+            12 + complete_supports
+        );
 
         let mut priority_order = complete_legs.clone();
         for (target, priority) in priority_order.protrusions.iter_mut().zip([40, 70, 100]) {
@@ -5853,6 +7133,10 @@ mod tests {
         let mut ambiguous = constraints;
         ambiguous.target_parts[2].count = 3;
         assert_eq!(estimate_symmetric_parameters_v1(&ambiguous), None);
+        assert_eq!(
+            beginner_expected_generated_plan_kind_v1(&ambiguous),
+            Some(BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+        );
 
         let candidates = symmetric_parameter_candidates_v1(BeginnerSymmetricParameterEstimateV1 {
             protrusion_count: 4,
@@ -5863,6 +7147,491 @@ mod tests {
         assert_eq!(candidates[0].approximation_score, 100);
         assert!(candidates[1].approximation_score < candidates[0].approximation_score);
         assert!(candidates[2].complexity_score > candidates[0].complexity_score);
+    }
+
+    #[test]
+    fn aggregate_general_signatures_two_through_fourteen_reach_generation() {
+        let namespace = ProjectId::schema_namespace([0x6a; 16]);
+        let (ids, source) = square_source(namespace);
+        for category in [
+            BeginnerTargetCategoryV1::CustomObject,
+            BeginnerTargetCategoryV1::Animal,
+            BeginnerTargetCategoryV1::Insect,
+        ] {
+            for count in 2_u8..=MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1 {
+                let mut target_parts = Vec::new();
+                if category != BeginnerTargetCategoryV1::CustomObject {
+                    target_parts.extend([
+                        BeginnerTargetPartRecordV1 {
+                            kind: BeginnerTargetPartKindV1::Head,
+                            count: 1,
+                        },
+                        BeginnerTargetPartRecordV1 {
+                            kind: BeginnerTargetPartKindV1::Torso,
+                            count: 1,
+                        },
+                    ]);
+                }
+                if count == 2 {
+                    target_parts.extend([
+                        BeginnerTargetPartRecordV1 {
+                            kind: BeginnerTargetPartKindV1::Fin,
+                            count: 1,
+                        },
+                        BeginnerTargetPartRecordV1 {
+                            kind: BeginnerTargetPartKindV1::Tail,
+                            count: 1,
+                        },
+                    ]);
+                } else {
+                    target_parts.push(BeginnerTargetPartRecordV1 {
+                        kind: BeginnerTargetPartKindV1::Fin,
+                        count: count.min(crate::MAX_BEGINNER_TARGET_PART_COUNT_V1),
+                    });
+                    if count > crate::MAX_BEGINNER_TARGET_PART_COUNT_V1 {
+                        target_parts.push(BeginnerTargetPartRecordV1 {
+                            kind: BeginnerTargetPartKindV1::Tail,
+                            count: count - crate::MAX_BEGINNER_TARGET_PART_COUNT_V1,
+                        });
+                    }
+                }
+                let protrusions = (0..count)
+                    .map(|index| {
+                        single_protrusion(
+                            u16::from(index) + 1,
+                            [
+                                0,
+                                -100 + (i32::from(index) + 1) * 200 / (i32::from(count) + 1),
+                                0,
+                            ],
+                            if index % 2 == 0 {
+                                [1_000, 0, 0]
+                            } else {
+                                [-1_000, 0, 0]
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let constraints = BeginnerGenerationConstraintsV1 {
+                    target_category: Some(category),
+                    target_parts: target_parts.clone(),
+                    skeleton_segments: vec![
+                        skeleton(10, -100, -100, 100, -100),
+                        skeleton(20, 100, -100, 100, 100),
+                    ],
+                    protrusions,
+                    ..BeginnerGenerationConstraintsV1::default()
+                };
+                assert!(crate::validate_beginner_generation_constraints_v1(
+                    &constraints
+                ));
+                assert_eq!(
+                    estimate_symmetric_parameters_v1(&constraints)
+                        .map(|estimate| estimate.protrusion_count),
+                    Some(count),
+                    "{category:?} compact count {count}"
+                );
+                assert_eq!(
+                    beginner_expected_generated_plan_kind_v1(&constraints),
+                    Some(BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+                );
+                assert!(beginner_uses_bounded_generic_target_base_v1(&constraints));
+                let plans =
+                    generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
+                assert_eq!(
+                    plans[0].kind,
+                    BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+                );
+                assert_eq!(plans[0].target_parts, target_parts);
+                let supports = radial_corner_support_added(&plans[0]);
+                let expected_instruction_count = 3;
+                if matches!(count, 2 | 4) {
+                    assert_eq!(
+                        supports, 4,
+                        "small even generic fans must add every paper corner before certification"
+                    );
+                    assert_eq!(
+                        plans[0]
+                            .crease_pattern
+                            .edges
+                            .iter()
+                            .filter(|edge| {
+                                matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley)
+                            })
+                            .count(),
+                        usize::from(count) + supports,
+                        "small even generic fans must preserve every semantic ray after the support prefix"
+                    );
+                    assert!(
+                        usize::from(count) + supports >= 6
+                            && (usize::from(count) + supports).is_multiple_of(2),
+                        "small generic fans must enter the six-or-more even radial theorem"
+                    );
+                }
+                if count == 13 {
+                    assert_eq!(
+                        supports, 5,
+                        "count thirteen must add one parity ray after the four corner supports"
+                    );
+                    assert_eq!(
+                        plans[0]
+                            .crease_pattern
+                            .edges
+                            .iter()
+                            .filter(|edge| {
+                                matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley)
+                            })
+                            .count(),
+                        18,
+                        "count thirteen must enter the existing even radial theorem"
+                    );
+                }
+                if count == MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1 {
+                    assert_eq!(
+                        supports, 4,
+                        "count fourteen must consume the four bounded corner-support slots"
+                    );
+                    assert_eq!(
+                        plans[0]
+                            .crease_pattern
+                            .edges
+                            .iter()
+                            .filter(|edge| {
+                                matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley)
+                            })
+                            .count(),
+                        18,
+                        "count fourteen must remain below the native radial theorem boundary"
+                    );
+                }
+                assert_eq!(plans[0].instruction_codes.len(), expected_instruction_count);
+                assert_eq!(
+                    plans[0].crease_pattern.edges.len(),
+                    usize::from(count) + 2 + supports
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn direct_custom_grouped_targets_two_through_eight_preserve_endpoint_count() {
+        let namespace = ProjectId::schema_namespace([0x6b; 16]);
+        let (ids, source) = square_source(namespace);
+        for count in 2_u8..=8 {
+            let mut grouped = single_protrusion(65_535, [500, 500, 0], [1_000, 0, 0]);
+            grouped.count = count;
+            grouped.length_tenths_mm = 100;
+            grouped.thickness_tenths_mm = 10;
+            grouped.symmetry = if count % 2 == 0 {
+                BeginnerProtrusionSymmetryV1::Bilateral
+            } else {
+                BeginnerProtrusionSymmetryV1::Radial
+            };
+            let constraints = BeginnerGenerationConstraintsV1 {
+                target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+                target_parts: vec![BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Fin,
+                    count,
+                }],
+                skeleton_segments: vec![
+                    skeleton(1, 0, 0, 1_000, 0),
+                    skeleton(2, 1_000, 0, 1_000, 1_000),
+                ],
+                protrusions: vec![grouped],
+                ..BeginnerGenerationConstraintsV1::default()
+            };
+            assert_eq!(
+                estimate_symmetric_parameters_v1(&constraints)
+                    .map(|estimate| estimate.protrusion_count),
+                Some(count)
+            );
+            assert!(beginner_target_approximation_score_v1(&constraints) > 0);
+            let plan = &generate_beginner_plans_v1(namespace, &source, &ids, &constraints)
+                .expect("grouped custom target")[0];
+            assert_eq!(
+                plan.kind,
+                BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+            );
+            assert!(
+                beginner_generated_pattern_is_planar_v1(&plan.crease_pattern),
+                "generic count {count} must relocate its tree away from every physical ray"
+            );
+            assert_eq!(
+                plan.crease_pattern.edges.len(),
+                usize::from(count)
+                    + constraints.skeleton_segments.len()
+                    + if matches!(count, 2 | 3 | 4 | 5 | 6 | 7 | 8) {
+                        radial_corner_support_added(plan)
+                    } else {
+                        0
+                    }
+            );
+        }
+
+        let mut mismatched = single_protrusion(1, [500, 500, 0], [1_000, 0, 0]);
+        mismatched.count = 3;
+        mismatched.length_tenths_mm = 100;
+        mismatched.thickness_tenths_mm = 10;
+        mismatched.symmetry = BeginnerProtrusionSymmetryV1::Radial;
+        let mismatch = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+            target_parts: vec![BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Fin,
+                count: 5,
+            }],
+            skeleton_segments: vec![
+                skeleton(1, 0, 0, 1_000, 0),
+                skeleton(2, 1_000, 0, 1_000, 1_000),
+            ],
+            protrusions: vec![mismatched],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert_eq!(estimate_symmetric_parameters_v1(&mismatch), None);
+        assert_eq!(beginner_target_approximation_score_v1(&mismatch), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &mismatch),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+    }
+
+    #[test]
+    fn custom_single_feature_preview_relocates_tree_but_stays_outside_grid_domain() {
+        let namespace = ProjectId::schema_namespace([0x6e; 16]);
+        let (ids, source) = square_source(namespace);
+        let mut target = single_protrusion(1, [500, 500, 0], [1_000, 0, 0]);
+        target.length_tenths_mm = 100;
+        target.thickness_tenths_mm = 10;
+        let constraints = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+            target_parts: vec![BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Fin,
+                count: 1,
+            }],
+            skeleton_segments: vec![
+                skeleton(1, 0, 0, 1_000, 0),
+                skeleton(2, 1_000, 0, 1_000, 1_000),
+            ],
+            protrusions: vec![target],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &constraints
+        ));
+        assert_eq!(estimate_symmetric_parameters_v1(&constraints), None);
+        let plan = &generate_beginner_plans_v1(namespace, &source, &ids, &constraints)
+            .expect("single-feature custom preview")[0];
+        assert_eq!(
+            plan.kind,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        );
+        assert_eq!(plan.crease_pattern.edges.len(), 3);
+        assert!(beginner_generated_pattern_is_planar_v1(
+            &plan.crease_pattern
+        ));
+        assert!(
+            plan.instruction_codes
+                .iter()
+                .all(|code| !code.starts_with("bounded_radial_corner_support_v1:"))
+        );
+    }
+
+    #[test]
+    fn general_semantic_count_fifteen_remains_outside_the_v1_parameter_domain() {
+        let namespace = ProjectId::schema_namespace([0x6d; 16]);
+        let (ids, source) = square_source(namespace);
+        let constraints = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::Animal),
+            target_parts: [
+                (BeginnerTargetPartKindV1::Head, 1),
+                (BeginnerTargetPartKindV1::Torso, 1),
+                (BeginnerTargetPartKindV1::Fin, 8),
+                (BeginnerTargetPartKindV1::Tail, 7),
+            ]
+            .into_iter()
+            .map(|(kind, count)| BeginnerTargetPartRecordV1 { kind, count })
+            .collect(),
+            skeleton_segments: vec![
+                skeleton(10, -100, -100, 100, -100),
+                skeleton(20, 100, -100, 100, 100),
+            ],
+            protrusions: (0_u16..15)
+                .map(|index| {
+                    single_protrusion(
+                        index + 1,
+                        [0, -90 + i32::from(index) * 16, 0],
+                        if index % 2 == 0 {
+                            [1_000, 0, 0]
+                        } else {
+                            [-1_000, 0, 0]
+                        },
+                    )
+                })
+                .collect(),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &constraints
+        ));
+        assert_eq!(general_semantic_protrusion_count_v1(&constraints), None);
+        assert_eq!(estimate_symmetric_parameters_v1(&constraints), None);
+        assert_eq!(beginner_expected_generated_plan_kind_v1(&constraints), None);
+        assert_eq!(beginner_target_approximation_score_v1(&constraints), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+    }
+
+    #[test]
+    fn custom_generic_binding_record_cap_accepts_fourteen_and_rejects_fifteen() {
+        let namespace = ProjectId::schema_namespace([0x6c; 16]);
+        let (ids, source) = square_source(namespace);
+        let constraints = |bindings: u16| BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+            skeleton_segments: vec![
+                skeleton(1, 0, 0, 1_000, 0),
+                skeleton(2, 1_000, 0, 1_000, 1_000),
+            ],
+            protrusions: (0..bindings)
+                .map(|index| {
+                    let mut target = single_protrusion(
+                        index,
+                        [500, 100 + i32::from(index) * 60, 0],
+                        if index % 2 == 0 {
+                            [1_000, 0, 0]
+                        } else {
+                            [-1_000, 0, 0]
+                        },
+                    );
+                    target.length_tenths_mm = 100;
+                    target.thickness_tenths_mm = 10;
+                    target
+                })
+                .collect(),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        let fourteen = constraints(14);
+        assert!(beginner_target_approximation_score_v1(&fourteen) > 0);
+        let plan =
+            generate_beginner_plans_v1(namespace, &source, &ids, &fourteen).expect("14 bindings");
+        assert!(beginner_generated_pattern_is_planar_v1(
+            &plan[0].crease_pattern
+        ));
+        assert_eq!(
+            plan[0].crease_pattern.edges.len(),
+            16 + radial_corner_support_added(&plan[0])
+        );
+
+        let fifteen = constraints(15);
+        assert_eq!(beginner_target_approximation_score_v1(&fifteen), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &fifteen),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+    }
+
+    #[test]
+    fn custom_estimate_uses_explicit_features_then_physical_fallback() {
+        let physical = vec![
+            single_protrusion(0, [0, -50, 0], [1_000, 0, 0]),
+            single_protrusion(255, [0, 0, 0], [-1_000, 0, 0]),
+            single_protrusion(u16::MAX, [0, 50, 0], [1_000, 0, 0]),
+        ];
+        for target_parts in [
+            Vec::new(),
+            vec![
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Head,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Torso,
+                    count: 1,
+                },
+            ],
+            vec![BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Torso,
+                count: 1,
+            }],
+        ] {
+            let constraints = BeginnerGenerationConstraintsV1 {
+                target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+                target_parts,
+                protrusions: physical.clone(),
+                ..BeginnerGenerationConstraintsV1::default()
+            };
+            assert_eq!(
+                estimate_symmetric_parameters_v1(&constraints)
+                    .map(|estimate| estimate.protrusion_count),
+                Some(3)
+            );
+            assert_eq!(
+                beginner_expected_generated_plan_kind_v1(&constraints),
+                Some(BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+            );
+        }
+
+        let explicit = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+            target_parts: vec![BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Fin,
+                count: 5,
+            }],
+            protrusions: physical,
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert_eq!(
+            estimate_symmetric_parameters_v1(&explicit).map(|estimate| estimate.protrusion_count),
+            None
+        );
+    }
+
+    #[test]
+    fn exact_specialized_signatures_do_not_ignore_duplicates_or_extra_parts() {
+        let parts = |features: &[(BeginnerTargetPartKindV1, u8)]| {
+            [
+                &[
+                    (BeginnerTargetPartKindV1::Head, 1),
+                    (BeginnerTargetPartKindV1::Torso, 1),
+                ][..],
+                features,
+            ]
+            .concat()
+            .into_iter()
+            .map(|(kind, count)| BeginnerTargetPartRecordV1 { kind, count })
+            .collect::<Vec<_>>()
+        };
+        let specialized = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::Animal),
+            target_parts: parts(&[(BeginnerTargetPartKindV1::Wing, 2)]),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert_eq!(
+            beginner_expected_generated_plan_kind_v1(&specialized),
+            Some(BeginnerGeneratedPlanKindV1::SymmetricBirdBase)
+        );
+
+        let mut with_extra = specialized.clone();
+        with_extra.target_parts.push(BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Fin,
+            count: 3,
+        });
+        assert_eq!(
+            beginner_expected_generated_plan_kind_v1(&with_extra),
+            Some(BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+        );
+        assert_eq!(
+            estimate_symmetric_parameters_v1(&with_extra).map(|estimate| estimate.protrusion_count),
+            None
+        );
+
+        let mut duplicate = specialized;
+        duplicate.target_parts.push(BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Wing,
+            count: 2,
+        });
+        assert_eq!(beginner_expected_generated_plan_kind_v1(&duplicate), None);
+        assert_eq!(estimate_symmetric_parameters_v1(&duplicate), None);
     }
 
     #[test]

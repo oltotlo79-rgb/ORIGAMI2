@@ -1,7 +1,7 @@
 use super::*;
 
-/// Adds the exact single-unit 45-degree proof and the retained two-unit legacy
-/// proof for one canonical parallel edge pair.
+/// Adds the exact single-unit 45/135-degree proof and the retained two-unit
+/// legacy proof for one canonical parallel edge pair.
 pub(super) fn collect_conflicts_v1(
     conflicts: &mut Vec<DirectConstraintConflictV1>,
     pair: EdgePairKey,
@@ -18,24 +18,30 @@ pub(super) fn collect_conflicts_v1(
         .get(&pair.second)
         .and_then(ScalarGroupSummary::consistent_assignment)
         .filter(|assignment| assignment.value.to_bits() == 1.0_f64.to_bits());
-    let exact_forty_five = fixed_angles_by_pair.get(&pair).and_then(|assignments| {
+    let exact_single_unit_angle = fixed_angles_by_pair.get(&pair).and_then(|assignments| {
         assignments
             .iter()
-            .find(|assignment| assignment.value.to_bits() == 45.0_f64.to_bits())
+            .filter(|assignment| is_exact_single_unit_parallel_angle_v1(assignment.value))
+            .min_by_key(|assignment| assignment.id.canonical_bytes())
     });
     let canonical_unit = [first_unit, second_unit]
         .into_iter()
         .flatten()
         .min_by_key(|assignment| assignment.id.canonical_bytes());
-    if let (Some(parallel_id), Some(angle_assignment), Some(unit)) =
-        (parallel_ids.first(), exact_forty_five, canonical_unit)
-    {
+    if let (Some(parallel_id), Some(angle_assignment), Some(unit)) = (
+        parallel_ids.first(),
+        exact_single_unit_angle,
+        canonical_unit,
+    ) {
         // With one pinned unit hypot, the normalized parallel denominator is
         // exactly the other finite hypot. If a non-zero raw cross still divides
         // to signed zero, binary64 product/add error bounds force the
-        // corresponding dot to dominate it by more than the frozen 45-degree
-        // exact-zero enclosure permits. Exact raw zero reaches only the
-        // separately rejected zero/pi atan2 branches.
+        // corresponding dot to dominate it by more than the frozen 45- or
+        // 135-degree exact-zero enclosure permits. Negating either vector
+        // changes the dot sign without changing the absolute cross or hypot
+        // bounds, so the supplementary case has the same proof boundary.
+        // Exact raw zero reaches only the separately rejected zero/pi atan2
+        // branches.
         push_conflict(
             conflicts,
             DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
@@ -45,7 +51,7 @@ pub(super) fn collect_conflicts_v1(
             [*parallel_id, angle_assignment.id, unit.id],
         );
     }
-    let legacy_angle = exact_forty_five
+    let legacy_angle = exact_single_unit_angle
         .is_none()
         .then(|| {
             fixed_angles_by_pair.get(&pair).and_then(|assignments| {
@@ -80,6 +86,12 @@ pub(super) fn collect_conflicts_v1(
     }
 }
 
+fn is_exact_single_unit_parallel_angle_v1(angle_degrees: f64) -> bool {
+    [45.0_f64, 135.0_f64]
+        .into_iter()
+        .any(|angle| angle_degrees.to_bits() == angle.to_bits())
+}
+
 /// Returns whether the shared production residual rejects every result class
 /// reachable when the production absolute cross term is exactly `+0.0`.
 ///
@@ -112,12 +124,15 @@ pub(super) fn fixed_angle_rejects_zero_cross_binary64_v1(angle_degrees: f64) -> 
 }
 
 /// Independently replays the exact three-record grammar admitted by the
-/// single-unit 45-degree parallel/angle proof.
+/// single-unit 45/135-degree parallel/angle proof.
 ///
 /// Full preparation has already proved that every referenced edge exists and
 /// that the fixed-angle vertex is common to both edges. This verifier does not
 /// trust candidate construction for record roles, scalar bits, canonical
 /// ordering, or the reported edge pair.
+// The historical function name is retained because it is cited by the
+// evidence manifest. Its accepted grammar now includes the exact
+// supplementary 135-degree case as well as 45 degrees.
 pub(super) fn is_proven_exact_forty_five_single_unit_parallel_angle_shape_v1(
     candidate: &DirectConstraintConflictV1,
     records: &[GeometricConstraintRecordV1],
@@ -177,7 +192,7 @@ pub(super) fn is_proven_exact_forty_five_single_unit_parallel_angle_shape_v1(
                 angle_degrees,
                 ..
             } if !saw_angle
-                && angle_degrees.to_bits() == 45.0_f64.to_bits()
+                && is_exact_single_unit_parallel_angle_v1(*angle_degrees)
                 && EdgePairKey::unordered(*first_edge, *second_edge) == reported_pair =>
             {
                 saw_angle = true;
@@ -215,7 +230,8 @@ pub(crate) fn is_proven_exact_forty_five_single_unit_parallel_angle_shape_for_te
     )
 }
 
-/// Revalidates the legacy four-record form retained for non-45-degree angles.
+/// Revalidates the legacy four-record form retained outside the exact
+/// single-unit supplementary pair.
 pub(super) fn is_proven_legacy_two_unit_parallel_angle_shape_v1(
     candidate: &DirectConstraintConflictV1,
     records: &[GeometricConstraintRecordV1],
@@ -275,7 +291,7 @@ pub(super) fn is_proven_legacy_two_unit_parallel_angle_shape_v1(
                 angle_degrees,
                 ..
             } if !saw_angle
-                && angle_degrees.to_bits() != 45.0_f64.to_bits()
+                && !is_exact_single_unit_parallel_angle_v1(*angle_degrees)
                 && fixed_angle_rejects_zero_cross_binary64_v1(*angle_degrees)
                 && EdgePairKey::unordered(*first_edge, *second_edge) == reported_pair =>
             {

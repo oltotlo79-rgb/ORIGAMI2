@@ -124,6 +124,16 @@ describe('ProtrusionDimensionEditor', () => {
     fireEvent.change(screen.getByLabelText('Part kind binding 1'), { target: { value: 'wing' } })
     expect(kindChange).toHaveBeenCalledWith('wing')
   })
+  it('keeps an unresolved part kind explicit until the user assigns it', () => {
+    const kindChange = vi.fn()
+    render(<ul><ProtrusionDimensionEditor locale="en" target={target}
+      onKindChange={kindChange} onChange={() => {}} onRemove={() => {}} /></ul>)
+    const kind = screen.getByLabelText('Part kind binding 1') as HTMLSelectElement
+    expect(kind.value).toBe('')
+    expect(kind.selectedOptions[0]?.textContent).toBe('Unassigned')
+    fireEvent.change(kind, { target: { value: 'fin' } })
+    expect(kindChange).toHaveBeenCalledWith('fin')
+  })
   it('bounds mount position and direction edits and labels bilateral spacing', () => {
     const change = vi.fn()
     render(<ul><ProtrusionDimensionEditor locale="en"

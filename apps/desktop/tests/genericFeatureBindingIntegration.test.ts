@@ -4,7 +4,14 @@ import { test } from 'node:test'
 
 import { readDesktopRustUnitTestSources } from './testRustSource.ts'
 
-const client = readFileSync('src/lib/coreClient.ts', 'utf8')
+const client = [
+  readFileSync('src/lib/coreClient.ts', 'utf8'),
+  readFileSync('src/lib/beginnerGridResponse.ts', 'utf8'),
+].join('\n')
+const generatedPlanContract = [
+  readFileSync('src/lib/beginnerGeneratedPlanContract.ts', 'utf8'),
+  readFileSync('src/lib/beginnerGenericFeatureBindingContract.ts', 'utf8'),
+].join('\n')
 const app = [
   readFileSync('src/App.tsx', 'utf8'),
   readFileSync('src/lib/appText.ts', 'utf8'),
@@ -21,12 +28,56 @@ const generator = readFileSync('../../crates/ori-domain/src/beginner_generator.r
 const skeletonTree = readFileSync('src/lib/genericSkeletonTree.ts', 'utf8')
 
 test('generic feature bindings cross the exact frontend DTO boundary', () => {
+  assert.match(
+    generator,
+    /MAX_BEGINNER_GENERIC_PROTRUSION_BINDINGS_V1: usize = 14/u,
+  )
+  assert.match(
+    generator,
+    /MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1: u8 = 14/u,
+  )
+  assert.match(
+    generatedPlanContract,
+    /MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1 = 14/u,
+  )
+  assert.match(
+    generatedPlanContract,
+    /MAX_BEGINNER_GENERAL_FEATURE_ENDPOINTS_V1 = 14/u,
+  )
+  assert.match(
+    beginnerDesignNative,
+    /MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1: usize =\s*ori_domain::MAX_BEGINNER_GENERIC_PROTRUSION_BINDINGS_V1/u,
+  )
+  assert.match(
+    beginnerDesignNative,
+    /MAX_BEGINNER_RADIAL_SECTORS_V1: usize = 24/u,
+  )
   assert.match(client, /generic_feature_bindings: ReadonlyArray/u)
-  assert.match(client, /'crease_authority_sha256', 'skeleton_segment_id', 'skeleton_endpoint'/u)
-  assert.match(client, /featureBindings\.length < 2/u)
-  assert.match(client, /!\[1, 2, 4\]\.includes\(Number\(binding\.endpoint_count\)\)/u)
+  assert.match(
+    client,
+    /'crease_start',\s*'crease_authority_sha256',\s*'skeleton_segment_id',\s*'skeleton_endpoint'/u,
+  )
+  assert.match(client, /featureBindings\.length < 1/u)
+  assert.match(client, /Number\(binding\.endpoint_count\) > 8/u)
+  assert.match(client, /beginnerGenericFeatureBindingIdentityIsCanonicalV1/u)
+  assert.match(
+    generatedPlanContract,
+    /snapshotDensePlainArray\(\s*featureBindings,\s*MAX_BEGINNER_GENERIC_FEATURE_BINDINGS_V1,\s*\)/u,
+  )
+  assert.match(
+    generatedPlanContract,
+    /binding\.generated_feature_id !== index \+ 1/u,
+  )
+  assert.match(client, /Number\(binding\.generated_feature_id\) !== bindingIndex \+ 1/u)
+  assert.doesNotMatch(
+    generatedPlanContract,
+    /binding\.generated_feature_id !== binding\.protrusion_id/u,
+  )
   assert.match(client, /Number\(binding\.crease_start\) \+ Number\(binding\.endpoint_count\)/u)
-  assert.match(client, /normalizedPlans\.generated_plans\[index\]\.kind === 'composite_generic_target_base'/u)
+  assert.match(
+    client,
+    /const genericPlan =[\s\S]*=== 'composite_generic_target_base'/u,
+  )
 })
 
 test('generic feature topology is visible and browser-covered through persistence', () => {
@@ -116,7 +167,7 @@ test('image and GLB skeletons admit only bounded acyclic river-axial proposals',
   assert.match(native, /assess_beginner_generated_plan_with_deadline/u)
   assert.match(native, /beginner_plan_paper_efficiency_score_v1/u)
   assert.match(native, /MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1: usize = 2/u)
-  assert.match(native, /MAX_BEGINNER_GENERIC_TREE_PRIMARY_WORK_V1/u)
+  assert.match(native, /control\.checkpoint\(\)\?/u)
   assert.match(native, /bounded_tree_paper_orientation_v1:horizontal/u)
   assert.match(native, /bounded_tree_paper_orientation_v1:vertical/u)
   assert.match(native, /\.take\(MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1\)/u)
@@ -132,7 +183,10 @@ test('applied generic trees persist inert versioned source provenance', () => {
   assert.match(beginnerDesignNative, /generator_version: 1/u)
   assert.match(beginnerDesignNative, /authorizes_apply: false/u)
   assert.match(client, /generic_tree/u)
-  assert.match(client, /genericTree\.generator_version !== 1 \|\| genericTree\.authorizes_apply !== false/u)
+  assert.match(
+    client,
+    /genericTree\.generator_version !== 1[\s\S]*genericTree\.authorizes_apply !== false/u,
+  )
   assert.match(app, /display only; no apply authority/u)
   assert.doesNotMatch(app, /asset_content_sha256.*slice/u)
   assert.match(native, /live_asset_sha256 != tree\.asset_content_sha256/u)

@@ -102,6 +102,54 @@ impl EditorHistoryV1 {
             && self.speculative_unproven_applied_base_v1.is_empty()
     }
 
+    /// Returns whether applied history independently carries the authority
+    /// edge for the current positive beginner-generation provenance.
+    ///
+    /// Only Undo entries have already been applied to the persisted document;
+    /// a matching Apply that exists solely in Redo cannot authorize its
+    /// current profile. Later profile-bearing no-ops may preserve the same
+    /// provenance, but a different replacement terminates the authority chain.
+    /// Callers must first semantically validate this history against the
+    /// current document; this method only identifies the persisted authority
+    /// chain and is not a standalone history validator.
+    #[must_use]
+    pub fn authenticates_current_beginner_generation_provenance_v1(
+        &self,
+        current_profile: &BeginnerDesignProfileV1,
+    ) -> bool {
+        let Some(current_provenance) = current_profile.generation_provenance.as_ref() else {
+            return false;
+        };
+
+        for entry in self.undo_stack.iter().rev() {
+            let replacement_profile = match &entry.forward {
+                CommandV1::ApplyBeginnerGeneratedDocument {
+                    beginner_design_profile,
+                    ..
+                } => {
+                    return beginner_design_profile.generation_provenance.as_ref()
+                        == Some(current_provenance);
+                }
+                CommandV1::UpdateBeginnerDesignProfile { profile } => profile,
+                CommandV1::ApplyStackedFoldDocument {
+                    beginner_design_profile,
+                    ..
+                }
+                | CommandV1::ApplyStackedFoldDocumentV2 {
+                    beginner_design_profile,
+                    ..
+                } => beginner_design_profile,
+                _ => continue,
+            };
+
+            if replacement_profile.generation_provenance.as_ref() != Some(current_provenance) {
+                return false;
+            }
+        }
+
+        false
+    }
+
     /// True when the containing format must advertise the
     /// `speculative_unproven_fold_v1` required feature.
     #[must_use]
@@ -482,6 +530,21 @@ enum InverseV1 {
         memo: String,
     },
     RestoreBeginnerDesignProfile {
+        profile: Box<BeginnerDesignProfileV1>,
+    },
+    RestoreBeginnerGenerationProvenance {
+        /// Legacy V1 payload. New writers emit the compact authority binding
+        /// below, while readers retain this field for old archives.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<Box<BeginnerDesignProfileV1>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_authority_sha256: Option<[u8; 32]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provenance: Option<Box<BeginnerGenerationProvenanceV1>>,
+        inner: Box<InverseV1>,
+    },
+    RestoreUnderlaysAndBeginnerDesignProfile {
+        underlays: UnderlayDocumentV1,
         profile: Box<BeginnerDesignProfileV1>,
     },
     RestoreElementMetadata {
@@ -1415,6 +1478,30 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
                 profile: profile.clone(),
             }
         }
+        Inverse::RestoreBeginnerGenerationProvenance {
+            profile_authority_sha256,
+            provenance,
+            inner,
+        } => {
+            if matches!(
+                inner.as_ref(),
+                Inverse::RestoreBeginnerGenerationProvenance { .. }
+            ) {
+                return Err(EditorHistoryErrorV1::InvalidInverse);
+            }
+            InverseV1::RestoreBeginnerGenerationProvenance {
+                profile: None,
+                profile_authority_sha256: Some(*profile_authority_sha256),
+                provenance: Some(provenance.clone()),
+                inner: Box::new(inverse_to_wire(inner)?),
+            }
+        }
+        Inverse::RestoreUnderlaysAndBeginnerDesignProfile { underlays, profile } => {
+            InverseV1::RestoreUnderlaysAndBeginnerDesignProfile {
+                underlays: underlays.clone(),
+                profile: profile.clone(),
+            }
+        }
         Inverse::RestoreElementMetadata { target, metadata } => InverseV1::RestoreElementMetadata {
             target: *target,
             metadata: metadata.clone(),
@@ -1670,6 +1757,49 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
         InverseV1::RestoreProjectMemo { memo } => Inverse::RestoreProjectMemo { memo },
         InverseV1::RestoreBeginnerDesignProfile { profile } => {
             Inverse::RestoreBeginnerDesignProfile { profile }
+        }
+        InverseV1::RestoreBeginnerGenerationProvenance {
+            profile,
+            profile_authority_sha256,
+            provenance,
+            inner,
+        } => {
+            if matches!(
+                inner.as_ref(),
+                InverseV1::RestoreBeginnerGenerationProvenance { .. }
+            ) {
+                return Err(EditorHistoryErrorV1::InvalidInverse);
+            }
+            let (profile_authority_sha256, provenance) =
+                match (profile, profile_authority_sha256, provenance) {
+                    (Some(profile), None, None)
+                        if validate_beginner_design_profile_v1(&profile)
+                            && profile.generation_provenance.is_some() =>
+                    {
+                        (
+                            beginner_design_profile_authority_sha256_v1(&profile),
+                            Box::new(
+                                profile
+                                    .generation_provenance
+                                    .expect("the guarded legacy profile carries provenance"),
+                            ),
+                        )
+                    }
+                    (None, Some(profile_authority_sha256), Some(provenance))
+                        if validate_beginner_generation_provenance_v1(&provenance) =>
+                    {
+                        (profile_authority_sha256, provenance)
+                    }
+                    _ => return Err(EditorHistoryErrorV1::InvalidInverse),
+                };
+            Inverse::RestoreBeginnerGenerationProvenance {
+                profile_authority_sha256,
+                provenance,
+                inner: Box::new(inverse_from_wire(*inner)?),
+            }
+        }
+        InverseV1::RestoreUnderlaysAndBeginnerDesignProfile { underlays, profile } => {
+            Inverse::RestoreUnderlaysAndBeginnerDesignProfile { underlays, profile }
         }
         InverseV1::RestoreElementMetadata { target, metadata } => {
             Inverse::RestoreElementMetadata { target, metadata }
@@ -2254,6 +2384,55 @@ fn validate_vertex_finite(vertex: &Vertex) -> Result<(), EditorHistoryErrorV1> {
     }
 }
 
+fn validate_combined_underlay_profile_inverse_v1(
+    underlays: &UnderlayDocumentV1,
+    profile: &BeginnerDesignProfileV1,
+) -> Result<(), EditorHistoryErrorV1> {
+    let invalid = || EditorHistoryErrorV1::InvalidInverse;
+    if profile.generation_provenance.is_none()
+        || underlays.underlays.iter().any(|record| {
+            record.id.canonical_bytes() == [0; 16]
+                || record.asset.canonical_bytes() == [0; 16]
+                || record.layer.canonical_bytes() == [0; 16]
+        })
+    {
+        return Err(invalid());
+    }
+    let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
+        underlay_id,
+        asset_id,
+    }) = profile.generation_constraints.target_asset
+    else {
+        return Err(invalid());
+    };
+    if underlay_id.canonical_bytes() == [0; 16] || asset_id.canonical_bytes() == [0; 16] {
+        return Err(invalid());
+    }
+    let mut bound_records = underlays
+        .underlays
+        .iter()
+        .filter(|record| record.id == underlay_id);
+    let Some(bound_record) = bound_records.next() else {
+        return Err(invalid());
+    };
+    if bound_records.next().is_some() || bound_record.asset != asset_id {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn underlays_reference_live_layers_v1(
+    underlays: &UnderlayDocumentV1,
+    project_layers: &ProjectLayerDocumentV1,
+) -> bool {
+    underlays.underlays.iter().all(|underlay| {
+        project_layers.layers.iter().any(|layer| {
+            layer.id == underlay.layer
+                && layer.content_kind == ori_domain::LayerContentKindV1::Underlay
+        })
+    })
+}
+
 fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1> {
     match inverse {
         Inverse::RestoreMirrorSelection {
@@ -2293,6 +2472,29 @@ fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1
             if !validate_beginner_design_profile_v1(profile) {
                 return Err(EditorHistoryErrorV1::InvalidInverse);
             }
+        }
+        Inverse::RestoreBeginnerGenerationProvenance {
+            profile_authority_sha256: _,
+            provenance,
+            inner,
+        } => {
+            if matches!(
+                inner.as_ref(),
+                Inverse::RestoreBeginnerGenerationProvenance { .. }
+            ) || inverse_changes_beginner_design_profile(inner)
+                || !validate_beginner_generation_provenance_v1(provenance)
+            {
+                return Err(EditorHistoryErrorV1::InvalidInverse);
+            }
+            validate_inverse_finite(inner)?;
+        }
+        Inverse::RestoreUnderlaysAndBeginnerDesignProfile { underlays, profile } => {
+            validate_underlay_document_v1(underlays)
+                .map_err(|_| EditorHistoryErrorV1::InvalidInverse)?;
+            if !validate_beginner_design_profile_v1(profile) {
+                return Err(EditorHistoryErrorV1::InvalidInverse);
+            }
+            validate_combined_underlay_profile_inverse_v1(underlays, profile)?;
         }
         Inverse::RestoreElementMetadata { metadata, .. } => {
             if let Some(metadata) = metadata {
@@ -2366,6 +2568,9 @@ fn validate_editor_finite(editor: &EditorState) -> Result<(), EditorHistoryError
         .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
     validate_underlay_document_v1(&editor.underlays)
         .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
+    if !underlays_reference_live_layers_v1(&editor.underlays, &editor.project_layers) {
+        return Err(EditorHistoryErrorV1::InvalidCommand);
+    }
     Ok(())
 }
 
@@ -2446,6 +2651,33 @@ fn validate_inverse_application(
         Inverse::RestoreStackedFoldDocument { .. } => {}
         Inverse::RestoreProjectMemo { .. } => {}
         Inverse::RestoreBeginnerDesignProfile { .. } => {}
+        Inverse::RestoreBeginnerGenerationProvenance {
+            profile_authority_sha256,
+            provenance,
+            inner,
+        } => {
+            if matches!(
+                inner.as_ref(),
+                Inverse::RestoreBeginnerGenerationProvenance { .. }
+            ) || inverse_changes_beginner_design_profile(inner)
+                || editor
+                    .beginner_design_profile
+                    .generation_provenance
+                    .is_some()
+                || beginner_design_profile_authority_sha256_v1(&editor.beginner_design_profile)
+                    != *profile_authority_sha256
+                || !beginner_reference_binding_is_live_after_inverse(editor, inner)
+                || !validate_beginner_generation_provenance_v1(provenance)
+            {
+                return Err(invalid());
+            }
+            validate_inverse_application(editor, inner)?;
+        }
+        Inverse::RestoreUnderlaysAndBeginnerDesignProfile { underlays, .. } => {
+            if !underlays_reference_live_layers_v1(underlays, &editor.project_layers) {
+                return Err(invalid());
+            }
+        }
         Inverse::RestoreElementMetadata { .. } => {}
         Inverse::Command(_) => {}
         Inverse::RestoreVertex { index, vertex } => {
@@ -2779,15 +3011,68 @@ fn validate_inverse_application(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProfileReplayStateV1 {
+    known: bool,
+    provenance_trusted: bool,
+}
+
+impl ProfileReplayStateV1 {
+    const fn without_current_profile() -> Self {
+        Self {
+            known: false,
+            provenance_trusted: false,
+        }
+    }
+
+    const fn with_current_profile() -> Self {
+        Self {
+            known: true,
+            provenance_trusted: true,
+        }
+    }
+
+    fn note_untrusted_profile_replacement(&mut self, profile: &BeginnerDesignProfileV1) {
+        self.known = true;
+        // Absence cannot grant authority. Persisted positive evidence must be
+        // reproduced by an authorized ApplyBeginnerGeneratedDocument edge.
+        self.provenance_trusted = profile.generation_provenance.is_none();
+    }
+}
+
 fn apply_persisted_inverse(
     editor: &mut EditorState,
     inverse: &Inverse,
+    profile_state: &mut ProfileReplayStateV1,
 ) -> Result<(), EditorHistoryErrorV1> {
     validate_inverse_finite(inverse)?;
+    if matches!(inverse, Inverse::RestoreBeginnerGenerationProvenance { .. })
+        && !profile_state.known
+    {
+        // A digest is only a comparison value. It must never be used to
+        // synthesize the omitted profile authority.
+        return Err(EditorHistoryErrorV1::InvalidInverse);
+    }
     validate_inverse_application(editor, inverse)?;
     editor
         .apply_inverse(inverse)
         .map_err(|_| EditorHistoryErrorV1::InvalidInverse)?;
+    match inverse {
+        Inverse::RestoreBeginnerGenerationProvenance { .. } => {
+            // Positive evidence recovered from untrusted history remains
+            // untrusted until forward replay reproduces an authorized mint.
+            profile_state.provenance_trusted = false;
+        }
+        Inverse::RestoreStackedFoldDocument {
+            beginner_design_profile,
+            ..
+        } => profile_state.note_untrusted_profile_replacement(beginner_design_profile),
+        Inverse::RestoreBeginnerDesignProfile { profile }
+        | Inverse::RestoreUnderlaysAndBeginnerDesignProfile { profile, .. } => {
+            profile_state.note_untrusted_profile_replacement(profile);
+        }
+        _ => {}
+    }
     validate_project_layer_document_against_pattern_v1(&editor.project_layers, &editor.pattern)
         .map_err(|_| EditorHistoryErrorV1::InvalidInverse)
 }
@@ -2795,8 +3080,18 @@ fn apply_persisted_inverse(
 fn replay_forward(
     editor: &mut EditorState,
     forward: Command,
+    profile_state: &mut ProfileReplayStateV1,
 ) -> Result<HistoryEntry, EditorHistoryErrorV1> {
     validate_command_finite(&forward)?;
+    let before_provenance = editor.beginner_design_profile.generation_provenance.clone();
+    let applies_authorized_beginner_generation =
+        matches!(&forward, Command::ApplyBeginnerGeneratedDocument { .. });
+    let replaces_profile = matches!(
+        &forward,
+        Command::UpdateBeginnerDesignProfile { .. }
+            | Command::ApplyStackedFoldDocument(..)
+            | Command::ApplyBeginnerGeneratedDocument { .. }
+    );
     let geometry_before = forward
         .may_change_kinematic_geometry()
         .then(|| editor.fold_model_fingerprint_v1());
@@ -2814,6 +3109,22 @@ fn replay_forward(
         } else {
             AppliedPoseHistoryTransition::PreserveCurrent
         };
+    if replaces_profile {
+        profile_state.known = true;
+    }
+    let after_provenance = editor
+        .beginner_design_profile
+        .generation_provenance
+        .as_ref();
+    profile_state.provenance_trusted = if after_provenance.is_none() {
+        true
+    } else if applies_authorized_beginner_generation {
+        true
+    } else if before_provenance.as_ref() == after_provenance {
+        profile_state.provenance_trusted
+    } else {
+        false
+    };
     Ok(HistoryEntry {
         forward,
         inverse,
@@ -2823,8 +3134,126 @@ fn replay_forward(
     })
 }
 
+/// The persisted project document owns the current beginner profile, which
+/// complete-project reopen callers install before history validation. Legacy
+/// partial constructors may instead establish an exact profile only from a
+/// legitimate full-profile transition. A compact digest is never treated as a
+/// profile source.
+fn bind_redo_profile_from_expected_inverse_v1(
+    editor: &mut EditorState,
+    expected_inverse: &Inverse,
+    profile_state: &mut ProfileReplayStateV1,
+) -> Result<(), EditorHistoryErrorV1> {
+    if let Inverse::RestoreBeginnerGenerationProvenance {
+        profile_authority_sha256,
+        provenance,
+        ..
+    } = expected_inverse
+    {
+        if !profile_state.known
+            || !profile_state.provenance_trusted
+            || beginner_design_profile_authority_sha256_v1(&editor.beginner_design_profile)
+                != *profile_authority_sha256
+            || editor
+                .beginner_design_profile
+                .generation_provenance
+                .as_ref()
+                != Some(provenance.as_ref())
+        {
+            return Err(EditorHistoryErrorV1::InverseMismatch);
+        }
+        return Ok(());
+    }
+    let expected_profile = match expected_inverse {
+        Inverse::RestoreStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+        } => {
+            if editor.pattern != *pattern
+                || editor.paper != *paper
+                || editor.instruction_timeline != *instruction_timeline
+                || editor.project_layers != *project_layers
+            {
+                return Err(EditorHistoryErrorV1::InverseMismatch);
+            }
+            beginner_design_profile.as_ref()
+        }
+        Inverse::RestoreBeginnerDesignProfile { profile } => profile.as_ref(),
+        Inverse::RestoreUnderlaysAndBeginnerDesignProfile { underlays, profile } => {
+            if editor.underlays != *underlays {
+                return Err(EditorHistoryErrorV1::InverseMismatch);
+            }
+            profile.as_ref()
+        }
+        _ => return Ok(()),
+    };
+    if profile_state.known && editor.beginner_design_profile != *expected_profile {
+        return Err(EditorHistoryErrorV1::InverseMismatch);
+    }
+    editor.beginner_design_profile.clone_from(expected_profile);
+    if !profile_state.known {
+        profile_state.note_untrusted_profile_replacement(expected_profile);
+    }
+    Ok(())
+}
+
 fn inverse_is_exact(first: &Inverse, second: &Inverse) -> Result<bool, EditorHistoryErrorV1> {
-    Ok(inverse_bytes(first)? == inverse_bytes(second)?)
+    if inverse_bytes(first)? == inverse_bytes(second)? {
+        return Ok(true);
+    }
+    let Inverse::RestoreBeginnerGenerationProvenance {
+        profile_authority_sha256,
+        provenance,
+        ..
+    } = first
+    else {
+        return Ok(false);
+    };
+    let legacy_profile = match second {
+        Inverse::RestoreStackedFoldDocument {
+            beginner_design_profile,
+            ..
+        } => beginner_design_profile.as_ref(),
+        Inverse::RestoreUnderlaysAndBeginnerDesignProfile { profile, .. } => profile.as_ref(),
+        _ => return Ok(false),
+    };
+    Ok(
+        *profile_authority_sha256 == beginner_design_profile_authority_sha256_v1(legacy_profile)
+            && legacy_profile.generation_provenance.as_ref() == Some(provenance.as_ref()),
+    )
+}
+
+fn validate_profile_bearing_inverse_pre_state_v1(
+    editor: &EditorState,
+    inverse: &Inverse,
+) -> Result<(), EditorHistoryErrorV1> {
+    let exact = match inverse {
+        Inverse::RestoreStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile,
+        } => {
+            editor.pattern == *pattern
+                && editor.paper == *paper
+                && editor.instruction_timeline == *instruction_timeline
+                && editor.project_layers == *project_layers
+                && editor.beginner_design_profile == **beginner_design_profile
+        }
+        Inverse::RestoreUnderlaysAndBeginnerDesignProfile { underlays, profile } => {
+            editor.underlays == *underlays && editor.beginner_design_profile == **profile
+        }
+        _ => true,
+    };
+    if exact {
+        Ok(())
+    } else {
+        Err(EditorHistoryErrorV1::InverseMismatch)
+    }
 }
 
 impl EditorState {
@@ -2984,6 +3413,70 @@ impl EditorState {
         project_memo: String,
         history: EditorHistoryV1,
     ) -> Result<Self, EditorHistoryErrorV1> {
+        Self::with_all_document_parts_annotations_underlays_memo_profile_and_history_internal_v1(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            element_metadata,
+            annotations,
+            underlays,
+            project_memo,
+            None,
+            history,
+        )
+    }
+
+    /// Restores history while binding compact provenance inverses to the
+    /// separately persisted current beginner profile.
+    ///
+    /// Callers loading a complete project document should use this entry
+    /// point. The profile is installed before any untrusted history replay and
+    /// must be reproduced exactly by the admitted Undo stack.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_all_document_parts_annotations_underlays_memo_profile_and_history_v1(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+        annotations: AnnotationDocumentV1,
+        underlays: UnderlayDocumentV1,
+        project_memo: String,
+        beginner_design_profile: BeginnerDesignProfileV1,
+        history: EditorHistoryV1,
+    ) -> Result<Self, EditorHistoryErrorV1> {
+        Self::with_all_document_parts_annotations_underlays_memo_profile_and_history_internal_v1(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            element_metadata,
+            annotations,
+            underlays,
+            project_memo,
+            Some(beginner_design_profile),
+            history,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_all_document_parts_annotations_underlays_memo_profile_and_history_internal_v1(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+        annotations: AnnotationDocumentV1,
+        underlays: UnderlayDocumentV1,
+        project_memo: String,
+        current_beginner_design_profile: Option<BeginnerDesignProfileV1>,
+        history: EditorHistoryV1,
+    ) -> Result<Self, EditorHistoryErrorV1> {
         let limit = history.validate_shape()?;
         let mut current = Self::with_all_document_parts_annotations_underlays_and_memo(
             pattern,
@@ -2996,8 +3489,15 @@ impl EditorState {
             underlays,
             project_memo,
         );
+        if let Some(profile) = current_beginner_design_profile.as_ref() {
+            if !validate_beginner_design_profile_v1(profile) {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
+            }
+            current.beginner_design_profile.clone_from(profile);
+        }
         validate_editor_finite(&current)?;
         let expected_current = editor_document_parts_bytes(&current)?;
+        let expected_current_profile = current_beginner_design_profile.clone();
         let applied_base =
             applied_base_from_wire(history.speculative_unproven_applied_base_v1.clone())?;
 
@@ -3013,14 +3513,26 @@ impl EditorState {
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut base = current.clone();
+        let mut base_profile_state = if current_beginner_design_profile.is_some() {
+            ProfileReplayStateV1::with_current_profile()
+        } else {
+            ProfileReplayStateV1::without_current_profile()
+        };
         for (_, inverse, _, _) in undo_wire.iter().rev() {
-            apply_persisted_inverse(&mut base, inverse)?;
+            apply_persisted_inverse(&mut base, inverse, &mut base_profile_state)?;
         }
 
         let mut rebuilt = base;
+        let mut rebuilt_profile_state = base_profile_state;
         let mut undo_stack = Vec::with_capacity(undo_wire.len());
         for (forward, expected_inverse, mark, persistence_provenance) in undo_wire {
-            let mut generated = replay_forward(&mut rebuilt, forward)?;
+            bind_redo_profile_from_expected_inverse_v1(
+                &mut rebuilt,
+                &expected_inverse,
+                &mut rebuilt_profile_state,
+            )?;
+            validate_profile_bearing_inverse_pre_state_v1(&rebuilt, &expected_inverse)?;
+            let mut generated = replay_forward(&mut rebuilt, forward, &mut rebuilt_profile_state)?;
             if !inverse_is_exact(&generated.inverse, &expected_inverse)? {
                 return Err(EditorHistoryErrorV1::InverseMismatch);
             }
@@ -3031,12 +3543,29 @@ impl EditorState {
         if editor_document_parts_bytes(&rebuilt)? != expected_current {
             return Err(EditorHistoryErrorV1::CurrentDocumentMismatch);
         }
+        if expected_current_profile
+            .as_ref()
+            .is_some_and(|expected| rebuilt.beginner_design_profile != *expected)
+        {
+            return Err(EditorHistoryErrorV1::CurrentDocumentMismatch);
+        }
 
         let mut redo_cursor = current.clone();
         let mut redo_application_order = Vec::with_capacity(redo_wire.len());
+        let mut redo_profile_state = if current_beginner_design_profile.is_some() {
+            ProfileReplayStateV1::with_current_profile()
+        } else {
+            ProfileReplayStateV1::without_current_profile()
+        };
         for (forward, expected_inverse, mark, persistence_provenance) in redo_wire.into_iter().rev()
         {
-            let mut generated = replay_forward(&mut redo_cursor, forward)?;
+            bind_redo_profile_from_expected_inverse_v1(
+                &mut redo_cursor,
+                &expected_inverse,
+                &mut redo_profile_state,
+            )?;
+            validate_profile_bearing_inverse_pre_state_v1(&redo_cursor, &expected_inverse)?;
+            let mut generated = replay_forward(&mut redo_cursor, forward, &mut redo_profile_state)?;
             if !inverse_is_exact(&generated.inverse, &expected_inverse)? {
                 return Err(EditorHistoryErrorV1::InverseMismatch);
             }
@@ -3114,6 +3643,23 @@ mod tests {
             constraint: GeometricConstraintKindV1::Horizontal {
                 edge: EdgeId::new(),
             },
+        }
+    }
+
+    fn generation_provenance() -> BeginnerGenerationProvenanceV1 {
+        BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [1; 32],
+            fold_path_certificate_sha256: None,
+            document_authority_sha256: None,
+            confidence_score: 80,
+            confidence_reasons: vec!["history_test".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint: "history-test-asset".to_owned(),
+            semantic_landmark_provenance: None,
+            generic_tree: None,
+            reference_consensus: None,
+            reference_consensus_summary: None,
         }
     }
 
@@ -3500,6 +4046,17 @@ mod tests {
                 },
                 assignments: vec![(1, assignment(edge))],
             },
+            Inverse::RestoreBeginnerGenerationProvenance {
+                profile_authority_sha256: beginner_design_profile_authority_sha256_v1(
+                    &BeginnerDesignProfileV1::default(),
+                ),
+                provenance: Box::new(generation_provenance()),
+                inner: Box::new(Inverse::Command(Command::RemoveVertex { id: vertex })),
+            },
+            Inverse::RestoreUnderlaysAndBeginnerDesignProfile {
+                underlays: UnderlayDocumentV1::default(),
+                profile: Box::default(),
+            },
         ]
     }
 
@@ -3537,6 +4094,8 @@ mod tests {
             "restore_removed_instruction_step",
             "restore_instruction_step_order",
             "restore_deleted_layer",
+            "restore_beginner_generation_provenance",
+            "restore_underlays_and_beginner_design_profile",
         ];
         assert_eq!(inverses.len(), expected_tags.len());
 
@@ -3552,6 +4111,9 @@ mod tests {
             );
         }
     }
+
+    #[path = "generation_provenance.rs"]
+    mod generation_provenance;
 
     #[test]
     fn public_history_type_is_owned_deserializable_and_serializable() {
@@ -3736,12 +4298,39 @@ mod tests {
             project_layers: legacy_project_layers,
             beginner_design_profile: legacy_beginner_design_profile,
         };
-        let legacy_reopened = restore(&editor, legacy_history).unwrap();
+        let legacy_reopened = restore(&editor, legacy_history.clone()).unwrap();
         assert!(
             legacy_reopened
                 .clone_predecessor_if_last_stacked_fold_v1()
                 .is_none()
         );
+
+        let mut legacy_redo_editor = editor.clone();
+        legacy_redo_editor
+            .undo(legacy_redo_editor.revision())
+            .expect("move legacy-compatible command to Redo");
+        let mut legacy_redo_history = legacy_redo_editor
+            .export_history_v1(ProjectId::new())
+            .expect("export legacy-compatible Redo history");
+        assert_eq!(legacy_redo_history.redo_len(), 1);
+        legacy_redo_history.redo_stack[0].forward = legacy_history.undo_stack[0].forward.clone();
+        let mut legacy_redo_reopened = restore(&legacy_redo_editor, legacy_redo_history).unwrap();
+        legacy_redo_reopened
+            .redo(0)
+            .expect("replay legacy beginner-generated Redo entry");
+        assert_eq!(legacy_redo_reopened.pattern(), &target_pattern);
+        assert!(
+            legacy_redo_reopened
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none()
+        );
+        let legacy_redo_reexported = legacy_redo_reopened
+            .export_history_v1(ProjectId::new())
+            .expect("re-export legacy Redo replay");
+        assert!(matches!(
+            &legacy_redo_reexported.undo_stack[0].forward,
+            CommandV1::ApplyStackedFoldDocument { .. }
+        ));
 
         let mut reopened = restore(&editor, history).unwrap();
         reopened.undo(0).unwrap();

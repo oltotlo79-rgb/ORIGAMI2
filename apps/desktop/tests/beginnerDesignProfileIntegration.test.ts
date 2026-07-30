@@ -107,13 +107,36 @@ test('custom object is versioned, bounded, and routed only to the generic tree c
 test('AUT-002 composes a bounded explicit target from supported parts', () => {
   assert.match(generation, /Head[\s\S]*Torso[\s\S]*Leg[\s\S]*Horn[\s\S]*Ear[\s\S]*Wing[\s\S]*Tail/u)
   assert.match(generation, /MAX_BEGINNER_TARGET_PARTS_TOTAL_V1: u16 = 32/u)
-  assert.match(client, /record\.target_parts\.length > 8/u)
+  assert.match(
+    client,
+    /!beginnerTargetPartRecordCountIsAdmissibleV1\(record\.target_parts\)/u,
+  )
   assert.doesNotMatch(client, /partKinds\.has/u)
   assert.match(client, /partTotal > 32/u)
   assert.match(app, /name=\{`target_part_\$\{kind\}`\}/u)
   assert.match(app, /One head and one torso are required/u)
   assert.match(app, /Total parts: \{total\} \/ 32/u)
   assert.match(app, /候補に使用した目標部品/u)
+})
+
+test('general target authoring matches the compact semantic classifier contract', () => {
+  assert.match(generator, /fn general_semantic_protrusion_count_v1/u)
+  assert.match(
+    generator,
+    /\.all\(\|part\| kinds\.insert\(part\.kind\)\)/u,
+  )
+  assert.match(app, /selectBeginnerTargetPartsForProfileV1/u)
+  assert.match(app, /const countsByKind = new Map/u)
+  assert.match(
+    app,
+    /const compactKindOrder = beginnerProtrusions\.length === 0[\s\S]*\? TARGET_PART_KIND_ORDER_V1/u,
+  )
+  assert.match(app, /compactKindOrder\.flatMap/u)
+  assert.match(app, /aggregate > 8/u)
+  assert.match(
+    app,
+    /compact\.reduce\(\(sum, part\) => sum \+ part\.count, 0\) > 32/u,
+  )
 })
 
 test('AUT-003 stores and previews bounded stick skeleton bars with explicit dimensions', () => {
@@ -227,6 +250,10 @@ test('general GLB target proposal is offline bounded read-only and explicitly co
   assert.match(app, /Review and copy general 3D proposal to editor/u)
   assert.match(app, /setBeginnerSkeletonSegments\(\s*suggestion\.stick_bars/u)
   assert.match(app, /setBeginnerProtrusions\(\s*suggestion\.general_protrusion_candidates/u)
+  assert.match(
+    app,
+    /const targetCategory = suggestion\.inferred_component_bridges[\s\S]*?'custom_object'/u,
+  )
 })
 
 test('disconnected GLB components form only one bounded custom tree proposal', () => {

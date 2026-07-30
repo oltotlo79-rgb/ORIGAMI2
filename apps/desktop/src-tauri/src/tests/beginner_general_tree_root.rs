@@ -7,8 +7,7 @@ fn id_root_general_tree_profile() -> ori_domain::BeginnerDesignProfileV1 {
     profile.generation_constraints.target_parts = [
         (ori_domain::BeginnerTargetPartKindV1::Head, 1),
         (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
-        (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
-        (ori_domain::BeginnerTargetPartKindV1::Fin, 2),
+        (ori_domain::BeginnerTargetPartKindV1::Fin, 3),
     ]
     .into_iter()
     .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
@@ -16,21 +15,13 @@ fn id_root_general_tree_profile() -> ori_domain::BeginnerDesignProfileV1 {
     configure_symmetric_profile(
         &mut profile,
         ori_domain::BeginnerSymmetricParameterEstimateV1 {
-            protrusion_count: 1,
+            protrusion_count: 3,
             scale_percent: 27,
             spacing_percent: 50,
         },
         27,
         50,
     );
-    let mut fin = profile.generation_constraints.protrusions[0].clone();
-    fin.id = 2;
-    fin.count = 2;
-    fin.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
-    fin.direction_milli = [1000, 0, 0];
-    fin.priority = 60;
-    profile.generation_constraints.protrusions.push(fin);
-
     for segment in &mut profile.generation_constraints.skeleton_segments {
         let start = (segment.start.x_tenths_mm, segment.start.y_tenths_mm);
         let end = (segment.end.x_tenths_mm, segment.end.y_tenths_mm);
@@ -95,11 +86,11 @@ fn generic_tree_uses_lowest_id_canonical_start_as_compatible_root() {
     assert_eq!(
         baseline_witness.skeleton_tree_authority_sha256,
         [
-            0x92, 0xf8, 0x46, 0x6a, 0x4c, 0x43, 0x58, 0x39, 0x87, 0x31, 0x5a, 0x82, 0x90, 0x3e,
-            0x9c, 0x17, 0xe5, 0xfe, 0xa7, 0xb4, 0x87, 0x60, 0x63, 0x74, 0xdd, 0x16, 0x3f, 0xc9,
-            0x7d, 0x78, 0xd3, 0xe1,
+            0xc0, 0x53, 0xda, 0x21, 0xc1, 0x09, 0xb8, 0xe0, 0x4f, 0x85, 0xa2, 0x16, 0xa8, 0x1f,
+            0x94, 0xd3, 0x99, 0xbc, 0x17, 0x9e, 0x2b, 0xf9, 0xda, 0xd5, 0x55, 0x3b, 0xcd, 0x73,
+            0xc7, 0xf7, 0x9f, 0xa8,
         ],
-        "the old-HEAD semantic tree authority excludes project-scoped generated UUIDs"
+        "the canonical semantic tree authority excludes project-scoped generated UUIDs"
     );
     assert_eq!(
         baseline_witness
@@ -114,9 +105,9 @@ fn generic_tree_uses_lowest_id_canonical_start_as_compatible_root() {
             ))
             .collect::<Vec<_>>(),
         [
-            (1, None, None, None, [1, 2].as_slice()),
+            (1, None, None, None, [2, 3].as_slice()),
             (2, Some(1), Some("start"), Some("end"), [].as_slice()),
-            (3, Some(1), Some("start"), Some("end"), [].as_slice()),
+            (3, Some(1), Some("start"), Some("end"), [1].as_slice()),
         ],
     );
     let baseline_witness_json = serde_json::to_vec(&baseline_witness).unwrap();
@@ -166,12 +157,17 @@ fn generic_tree_uses_lowest_id_canonical_start_as_compatible_root() {
         },
     )
     .unwrap();
+    let configured =
+        temporary_symmetric_profile_for_grid(project.editor.beginner_design_profile(), point)
+            .unwrap();
     apply_grid_plan_document(
         &mut project,
         instance_id,
         project_id,
         saved.revision,
         plan.clone(),
+        configured,
+        None,
     )
     .unwrap();
     let generic_tree = project

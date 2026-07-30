@@ -277,21 +277,60 @@ fn layer_evidence_archive_fixture(with_history: bool) -> Vec<u8> {
 }
 
 fn version_matrix_archive_fixture() -> Ori2ProjectArchive {
-    let mut document = sample_document();
-    document.beginner_design_profile.generation_provenance =
-        Some(ori_domain::BeginnerGenerationProvenanceV1 {
-            schema_version: 1,
-            topology_authority_sha256: [0x31; 32],
-            fold_path_certificate_sha256: Some([0x62; 32]),
-            confidence_score: 93,
-            confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
-            explicit_override: false,
-            source_asset_fingerprint: "asset:version-matrix".to_owned(),
-            semantic_landmark_provenance: None,
-            generic_tree: None,
-            reference_consensus: None,
-            reference_consensus_summary: None,
-        });
+    let sheet =
+        ori_core::create_rectangular_sheet(80.0, 60.0, false).expect("valid version matrix sheet");
+    let (pattern, paper) = sheet.into_parts();
+    let mut document = ProjectDocument::new("ORI2 version matrix", pattern.clone());
+    document.paper = paper.clone();
+    let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+    profile.generation_provenance = Some(ori_domain::BeginnerGenerationProvenanceV1 {
+        schema_version: 1,
+        topology_authority_sha256: [0x31; 32],
+        fold_path_certificate_sha256: Some([0x62; 32]),
+        document_authority_sha256: None,
+        confidence_score: 93,
+        confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+        explicit_override: false,
+        source_asset_fingerprint: "asset:version-matrix".to_owned(),
+        semantic_landmark_provenance: None,
+        generic_tree: None,
+        reference_consensus: None,
+        reference_consensus_summary: None,
+    });
+    let mut editor = EditorState::with_paper(pattern, paper);
+    editor.set_history_entry_limit(17).unwrap();
+    let mut instruction_timeline = editor.instruction_timeline().clone();
+    instruction_timeline.steps.push(InstructionStep {
+        id: InstructionStepId::new(),
+        title: "Version matrix authority".to_owned(),
+        description: "Authenticated provenance migration fixture".to_owned(),
+        caution: String::new(),
+        duration_ms: 1_000,
+        visual: Default::default(),
+        pose: InstructionPose {
+            model: InstructionPoseModel::DeclarativeOnlyV1,
+            source_model_fingerprint: editor.fold_model_fingerprint_v1(),
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        },
+    });
+    editor
+        .execute(
+            0,
+            Command::ApplyBeginnerGeneratedDocument {
+                pattern: editor.pattern().clone(),
+                paper: editor.paper().clone(),
+                instruction_timeline,
+                project_layers: editor.project_layers().clone(),
+                beginner_design_profile: Box::new(profile),
+            },
+        )
+        .expect("mint typed provenance through an authenticated history edge");
+    document.crease_pattern = editor.pattern().clone();
+    document.paper = editor.paper().clone();
+    document.instruction_timeline = editor.instruction_timeline().clone();
+    document.layers = editor.project_layers().clone();
+    document.beginner_design_profile = editor.beginner_design_profile().clone();
     document.texture_assets.push(crate::ProjectTextureAssetV1 {
         id: AssetId::new(),
         media_type: crate::ProjectTextureMediaTypeV1::Png,
@@ -303,24 +342,6 @@ fn version_matrix_archive_fixture() -> Ori2ProjectArchive {
             id: AssetId::new(),
             bytes: minimal_reference_glb(),
         });
-    let mut editor = EditorState::with_document_parts_and_constraints(
-        document.crease_pattern.clone(),
-        document.paper.clone(),
-        document.instruction_timeline.clone(),
-        document.geometric_constraints.clone(),
-    );
-    editor.set_history_entry_limit(17).unwrap();
-    let vertex = editor.pattern().vertices[0].id;
-    editor
-        .execute(
-            editor.revision(),
-            Command::MoveVertex {
-                id: vertex,
-                position: Point2::new(2.0, 3.0),
-            },
-        )
-        .unwrap();
-    document.crease_pattern = editor.pattern().clone();
     let history = editor.export_history_v1(document.project_id).unwrap();
     Ori2ProjectArchive {
         document,
@@ -433,6 +454,7 @@ fn ori2_round_trip_preserves_typed_fold_path_provenance() {
             schema_version: 1,
             topology_authority_sha256: [0x21; 32],
             fold_path_certificate_sha256: Some([0x42; 32]),
+            document_authority_sha256: None,
             confidence_score: 88,
             confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
             explicit_override: false,
@@ -442,6 +464,12 @@ fn ori2_round_trip_preserves_typed_fold_path_provenance() {
             reference_consensus: None,
             reference_consensus_summary: None,
         });
+    ori_core::bind_beginner_generation_document_authority_v1(
+        &document.crease_pattern,
+        &document.paper,
+        &mut document.beginner_design_profile,
+    )
+    .expect("bind typed provenance to final document");
     let archive = Ori2ProjectArchive::document_only(document);
     let bytes = write_project_archive_ori2(&archive).expect("write typed provenance");
     let reopened = read_project_archive_ori2(&bytes).expect("read typed provenance");
@@ -455,11 +483,26 @@ fn ori2_round_trip_preserves_typed_fold_path_provenance() {
             .and_then(|value| value.fold_path_certificate_sha256),
         Some([0x42; 32])
     );
-    let legacy = Ori2ProjectArchive::document_only(sample_document());
-    let legacy = read_project_archive_ori2(
-        &write_project_archive_ori2(&legacy).expect("write legacy archive"),
-    )
-    .expect("read legacy archive");
+    let mut legacy_document = archive.document.clone();
+    legacy_document
+        .beginner_design_profile
+        .generation_provenance
+        .as_mut()
+        .unwrap()
+        .document_authority_sha256 = None;
+    let mut unsupported = legacy_document.clone();
+    unsupported.format_version = crate::CURRENT_FORMAT_VERSION + 1;
+    assert!(matches!(
+        write_project_ori2(&unsupported),
+        Err(FormatError::UnsupportedVersion { .. })
+    ));
+    let legacy_project = serde_json::to_vec_pretty(&legacy_document).unwrap();
+    let legacy_manifest = manifest_for(&legacy_project);
+    let legacy_bytes = raw_zip(&[
+        (ORI2_MANIFEST_PATH, &legacy_manifest),
+        (ORI2_PROJECT_PATH, &legacy_project),
+    ]);
+    let legacy = read_project_archive_ori2(&legacy_bytes).expect("read legacy archive");
     assert!(
         legacy
             .document
@@ -467,6 +510,23 @@ fn ori2_round_trip_preserves_typed_fold_path_provenance() {
             .generation_provenance
             .is_none()
     );
+
+    let mut stale = archive.document.clone();
+    stale.crease_pattern.vertices[0].position.x += 0.001;
+    assert!(matches!(
+        write_project_ori2(&stale),
+        Err(FormatError::InvalidBeginnerDesignProfile)
+    ));
+    let stale_project = serde_json::to_vec_pretty(&stale).unwrap();
+    let stale_manifest = manifest_for(&stale_project);
+    let stale_bytes = raw_zip(&[
+        (ORI2_MANIFEST_PATH, &stale_manifest),
+        (ORI2_PROJECT_PATH, &stale_project),
+    ]);
+    assert!(matches!(
+        read_project_ori2(&stale_bytes),
+        Err(FormatError::InvalidBeginnerDesignProfile)
+    ));
 }
 
 #[test]

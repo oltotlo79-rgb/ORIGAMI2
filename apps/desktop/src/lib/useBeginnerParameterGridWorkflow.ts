@@ -7,6 +7,7 @@ import {
 
 import {
   applyBeginnerParameterGridCandidate,
+  beginnerGeneratedPlanAssessmentAllowsApplyV1,
   cancelBeginnerParameterGrid,
   evaluateBeginnerParameterGrid,
   getBeginnerParameterGridProgress,
@@ -23,12 +24,21 @@ import {
   matchesBeginnerProjectBinding,
   type BeginnerNativeEditRunner,
 } from './beginnerWorkflowSupport.ts'
+import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 
 type GridProgress = Readonly<{
   enumerated: number
   globalChecked: number
   refined: number
 }>
+
+type BeginnerGridRequestStatus =
+  | 'idle'
+  | 'running'
+  | 'ready'
+  | 'empty'
+  | 'cancelled'
+  | 'failed'
 
 type GridTransport = Readonly<{
   evaluate: typeof evaluateBeginnerParameterGrid
@@ -64,18 +74,28 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
 }>) {
   const [beginnerGrid, setBeginnerGrid] =
     useState<BeginnerGridEvaluationResponse | null>(null)
+  const gridAuthorityRef =
+    useRef<BeginnerGridEvaluationResponse | null>(null)
   const [
     beginnerGridSelectedPointId,
     setBeginnerGridSelectedPointId,
   ] = useState<number | null>(null)
   const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
+  const [beginnerGridApplyBusy, setBeginnerGridApplyBusy] = useState(false)
+  const [
+    beginnerGridRequestStatus,
+    setBeginnerGridRequestStatus,
+  ] = useState<BeginnerGridRequestStatus>('idle')
   const [beginnerGridProgress, setBeginnerGridProgress] =
     useState<GridProgress>(EMPTY_PROGRESS)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const requestRef = useRef(0)
+  const applyRequestRef = useRef(0)
   const generationRef = useRef<string | null>(null)
   const pollRef = useRef<number | null>(null)
   const busyRef = useRef(false)
+  const applyBusyRef = useRef(false)
+  const mountedRef = useRef(true)
   const transport = input.transport ?? DEFAULT_TRANSPORT
   const createGenerationId =
     input.createGenerationId ?? (() => crypto.randomUUID())
@@ -101,29 +121,48 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
   }
 
   function restoreFocus() {
+    if (!mountedRef.current) return
     scheduleFocus(() => buttonRef.current?.focus())
   }
 
   function invalidateBeginnerGridForProjectReplacement() {
     requestRef.current += 1
+    applyRequestRef.current += 1
     busyRef.current = false
+    applyBusyRef.current = false
     stopProgressPolling()
     cancelGeneration()
     setBeginnerGridBusy(false)
+    setBeginnerGridApplyBusy(false)
+    setBeginnerGridRequestStatus('idle')
+    gridAuthorityRef.current = null
     setBeginnerGrid(null)
     setBeginnerGridSelectedPointId(null)
+    setBeginnerGridProgress(EMPTY_PROGRESS)
   }
 
   const cleanupGridOnUnmount = useEffectEvent(() => {
+    mountedRef.current = false
     requestRef.current += 1
+    applyRequestRef.current += 1
+    busyRef.current = false
+    applyBusyRef.current = false
+    gridAuthorityRef.current = null
     stopProgressPolling()
     cancelGeneration()
   })
 
-  useEffect(() => () => cleanupGridOnUnmount(), [])
+  useEffect(() => {
+    mountedRef.current = true
+    return () => cleanupGridOnUnmount()
+  }, [])
 
   function requestBeginnerGrid() {
-    if (busyRef.current || input.skeletonTreeStatus !== 'tree') return
+    if (
+      busyRef.current
+      || applyBusyRef.current
+      || input.skeletonTreeStatus !== 'tree'
+    ) return
     const current = input.getCurrentSnapshot()
     if (!current) return
     const binding = beginnerProjectBinding(current)
@@ -132,6 +171,10 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
     generationRef.current = generationId
     busyRef.current = true
     setBeginnerGridProgress(EMPTY_PROGRESS)
+    gridAuthorityRef.current = null
+    setBeginnerGrid(null)
+    setBeginnerGridSelectedPointId(null)
+    setBeginnerGridRequestStatus('running')
     setBeginnerGridBusy(true)
     stopProgressPolling()
     pollRef.current = startPolling(() => {
@@ -161,6 +204,7 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
       binding.revision,
       binding.project_instance_id,
       generationId,
+      current.beginner_design_profile,
     ).then((response) => {
       if (
         requestId === requestRef.current
@@ -174,13 +218,24 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
           input.getCurrentSnapshot(),
         )
       ) {
-        setBeginnerGrid(response)
-        setBeginnerGridSelectedPointId(
-          response.candidates[0]?.point.id ?? null,
+        const firstCandidate = isCanonicalNonNilUuid(
+          response.authority_token,
+        )
+          ? response.candidates[0]
+          : undefined
+        gridAuthorityRef.current = firstCandidate ? response : null
+        setBeginnerGrid(firstCandidate ? response : null)
+        setBeginnerGridSelectedPointId(firstCandidate?.point.id ?? null)
+        setBeginnerGridRequestStatus(
+          firstCandidate
+            ? 'ready'
+            : response.candidates.length === 0
+              ? 'empty'
+              : 'failed',
         )
         setBeginnerGridProgress({
-          enumerated: 27,
-          globalChecked: 3,
+          enumerated: response.evaluated_grid_points,
+          globalChecked: response.global_checked_candidates,
           refined: response.refinement_iterations,
         })
       }
@@ -188,7 +243,12 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
       if (
         requestId === requestRef.current
         && generationRef.current === generationId
-      ) setBeginnerGrid(null)
+      ) {
+        gridAuthorityRef.current = null
+        setBeginnerGrid(null)
+        setBeginnerGridSelectedPointId(null)
+        setBeginnerGridRequestStatus('failed')
+      }
     }).finally(() => {
       if (
         requestId === requestRef.current
@@ -208,6 +268,9 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
     stopProgressPolling()
     cancelGeneration()
     setBeginnerGridBusy(false)
+    setBeginnerGridProgress(EMPTY_PROGRESS)
+    setBeginnerGridRequestStatus('cancelled')
+    gridAuthorityRef.current = null
     finishBeginnerGridCancellation(
       () => {
         setBeginnerGrid(null)
@@ -225,10 +288,19 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
     if (
       !grid
       || !current
+      || applyBusyRef.current
+      || gridAuthorityRef.current !== grid
+      || !isCanonicalNonNilUuid(grid.authority_token)
       || !grid.candidates.includes(candidate)
+      || !beginnerGeneratedPlanAssessmentAllowsApplyV1(
+        candidate.assessment,
+      )
       || !matchesBeginnerProjectBinding(grid, current)
     ) return
     const expectedProfile = current.beginner_design_profile
+    const applyRequestId = ++applyRequestRef.current
+    applyBusyRef.current = true
+    setBeginnerGridApplyBusy(true)
     void runBeginnerGridApplyWorkflow({
       confirm: () => input.confirm(input.applyConfirmation),
       apply: () => input.runNativeEdit((
@@ -244,11 +316,24 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
         candidate,
       )),
       clearPreview: () => {
+        if (
+          !mountedRef.current
+          || applyRequestRef.current !== applyRequestId
+        ) return
         requestRef.current += 1
+        gridAuthorityRef.current = null
         setBeginnerGrid(null)
         setBeginnerGridSelectedPointId(null)
+        setBeginnerGridRequestStatus('idle')
       },
-      restoreFocus,
+      restoreFocus: () => {
+        if (applyRequestRef.current === applyRequestId) restoreFocus()
+      },
+    }).catch(() => false).finally(() => {
+      if (applyRequestRef.current === applyRequestId) {
+        applyBusyRef.current = false
+        if (mountedRef.current) setBeginnerGridApplyBusy(false)
+      }
     })
   }
 
@@ -257,6 +342,8 @@ export function useBeginnerParameterGridWorkflow(input: Readonly<{
     beginnerGridSelectedPointId,
     setBeginnerGridSelectedPointId,
     beginnerGridBusy,
+    beginnerGridApplyBusy,
+    beginnerGridRequestStatus,
     beginnerGridProgress,
     beginnerGridButtonRef: buttonRef,
     requestBeginnerGrid,

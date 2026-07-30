@@ -53,18 +53,22 @@ mod stacked_fold_transaction;
 mod svg_import_commands;
 #[cfg(test)]
 use beginner_design_commands::{
-    BeginnerGridWork, BeginnerReferenceModelSuggestionV1, BeginnerReferenceSurfaceAssignmentV1,
-    BeginnerReferenceSurfaceEditV1, MAX_BEGINNER_FOLDED_LANDMARKS_V1, ReferenceConsensusWorkV1,
+    BeginnerGenericFeatureBindingWitness, BeginnerGridApplyAuthorityV1,
+    BeginnerGridCandidateAuthorityV1, BeginnerGridWork, BeginnerReferenceModelSuggestionV1,
+    BeginnerReferenceSurfaceAssignmentV1, BeginnerReferenceSurfaceEditV1,
+    MAX_BEGINNER_FOLDED_LANDMARKS_V1, ReferenceConsensusWorkV1,
     apply_beginner_generated_plan_document, apply_grid_plan_document,
     assess_beginner_generated_plan, assess_beginner_generated_plan_with_deadline,
-    beginner_contour_placement_witness, beginner_grid_work, bounded_folded_pose_landmark_score_v1,
-    certify_beginner_fold_path_v1, configure_symmetric_profile,
-    derive_reference_model_suggestion_v1, disconnected_glb_stick_tree_v1, grid_template_plan,
-    normalized_contour_error_millionths, preset_weighted_refinement_score_v1,
-    reference_consensus_work_v1, reference_model_suggestion_matches_live_v1,
-    reference_model_surface_range_is_connected_v1,
-    reference_model_surface_selection_matches_live_v1, temporary_symmetric_profile_for_grid,
-    validate_beginner_manufacturability_v1,
+    beginner_contour_placement_witness, beginner_grid_authority_allows_candidate_v1,
+    beginner_grid_work, bounded_folded_pose_landmark_score_v1,
+    build_beginner_generic_tree_provenance_v1, certify_beginner_fold_path_v1,
+    certify_beginner_fold_path_with_control_v1, configure_symmetric_profile,
+    derive_reference_model_suggestion_v1, disconnected_glb_stick_tree_v1,
+    generic_feature_binding_contract_v1, grid_template_plan, normalized_contour_error_millionths,
+    preset_weighted_refinement_score_v1, reference_consensus_work_v1,
+    reference_model_suggestion_matches_live_v1, reference_model_surface_range_is_connected_v1,
+    reference_model_surface_selection_matches_live_v1, run_registered_beginner_grid_work_v1,
+    temporary_symmetric_profile_for_grid, validate_beginner_manufacturability_v1,
 };
 use beginner_design_commands::{
     activate_beginner_reference_model_asset, apply_beginner_generated_plan,
@@ -1129,7 +1133,7 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             if history.project_id() != project.document.project_id {
                 return Err(());
             }
-            EditorState::with_all_document_parts_annotations_underlays_memo_and_history_v1(
+            EditorState::with_all_document_parts_annotations_underlays_memo_profile_and_history_v1(
                 project.document.crease_pattern.clone(),
                 project.document.paper.clone(),
                 project.document.instruction_timeline.clone(),
@@ -1139,6 +1143,7 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
                 project.document.annotations.clone(),
                 project.document.underlays.clone(),
                 project.document.memo.clone(),
+                project.document.beginner_design_profile.clone(),
                 history.clone(),
             )
             .map_err(|_| ())
@@ -1157,9 +1162,11 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             ),
         ),
     }?;
-    editor
-        .restore_beginner_design_profile(project.document.beginner_design_profile.clone())
-        .map_err(|_| ())?;
+    if project.editor_history.is_none() {
+        editor
+            .restore_beginner_design_profile(project.document.beginner_design_profile.clone())
+            .map_err(|_| ())?;
+    }
     validate_reachable_history_instruction_poses(&project.document, &editor)?;
     Ok(editor)
 }

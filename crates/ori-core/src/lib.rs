@@ -4,6 +4,7 @@ use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId
 
 mod annotation_editor;
 mod applied_pose;
+mod beginner_document_authority;
 #[cfg(test)]
 mod constraint_exact_satisfaction_adversarial_tests;
 #[cfg(test)]
@@ -36,8 +37,16 @@ pub use applied_pose::{
     AppliedPoseResourceV1, AppliedPoseV1, CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1,
     prepare_applied_pose_v1, prepare_closed_graph_applied_pose_v1,
 };
+pub use beginner_document_authority::{
+    BeginnerGenerationDocumentAuthorityStatusV1, beginner_generation_document_authority_status_v1,
+    bind_beginner_generation_document_authority_v1,
+    expected_beginner_generation_document_authority_sha256_v1,
+};
 pub use constraint_exactification::{
-    CurrentRuntimeExactConstraintAssignmentV1, construct_single_constraint_exact_assignment_v1,
+    CurrentRuntimeExactConstraintAssignmentV1, MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    construct_bounded_singleton_composition_exact_assignment_v1,
+    construct_four_constraint_exact_assignment_v1, construct_single_constraint_exact_assignment_v1,
+    construct_three_constraint_exact_assignment_v1, construct_two_constraint_exact_assignment_v1,
     exactify_axis_aligned_constraint_preview_v1,
 };
 pub use constraint_semantic_mus::{

@@ -15,6 +15,7 @@ import {
   type BeginnerReferenceModelSuggestionV1,
   type ProjectSnapshot,
 } from './coreClient.ts'
+import { resolveBeginnerProtrusionKindsV1 } from './beginnerProtrusionKinds.ts'
 import type { LocalizedText } from './i18n.ts'
 import {
   beginnerProjectBinding,
@@ -71,6 +72,7 @@ export function useBeginnerReferenceWorkflow(input: Readonly<{
     | 'setBeginnerBodyOutline'
     | 'setBeginnerBodyOutlineMode'
     | 'setBeginnerProtrusions'
+    | 'setBeginnerProtrusionKinds'
     | 'setBeginnerSkeletonSegments'
     | 'setBeginnerComponentBridgeOverride'
   >
@@ -294,14 +296,27 @@ export function useBeginnerReferenceWorkflow(input: Readonly<{
           : {}),
       })),
     )
+    input.editor.setBeginnerProtrusionKinds(
+      resolveBeginnerProtrusionKindsV1(
+        current.beginner_design_profile.generation_constraints.target_parts,
+        suggestion.protrusions,
+        {
+          targetCategory: current.beginner_design_profile
+            .generation_constraints.target_category,
+          allowOrderedGeneric: true,
+        },
+      ) ?? suggestion.protrusions.map(() => null),
+    )
   }
 
   function copyBeginnerGeneralReferenceTarget() {
     const suggestion = beginnerReferenceSuggestion
-    const targetAsset = input.getCurrentSnapshot()?.beginner_design_profile
+    const current = input.getCurrentSnapshot()
+    const targetAsset = current?.beginner_design_profile
       .generation_constraints.target_asset
     if (
       !suggestion
+      || !current
       || targetAsset?.kind !== 'reference_model'
       || targetAsset.asset_id !== suggestion.asset_id
       || (
@@ -335,6 +350,20 @@ export function useBeginnerReferenceWorkflow(input: Readonly<{
       suggestion.general_protrusion_candidates.map(
         (target) => ({ ...target }),
       ),
+    )
+    const targetCategory = suggestion.inferred_component_bridges
+      ? 'custom_object'
+      : current.beginner_design_profile.generation_constraints
+          .target_category
+    input.editor.setBeginnerProtrusionKinds(
+      resolveBeginnerProtrusionKindsV1(
+        current.beginner_design_profile.generation_constraints.target_parts,
+        suggestion.general_protrusion_candidates,
+        {
+          targetCategory,
+          allowOrderedGeneric: true,
+        },
+      ) ?? suggestion.general_protrusion_candidates.map(() => null),
     )
     input.editor.setBeginnerSkeletonSegments(
       suggestion.stick_bars.filter(

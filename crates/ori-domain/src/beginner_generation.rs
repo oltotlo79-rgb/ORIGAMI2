@@ -8,7 +8,12 @@ pub const BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1: u32 = 1;
 pub const MIN_BEGINNER_GENERATION_STEPS_V1: u16 = 1;
 pub const MAX_BEGINNER_GENERATION_STEPS_V1: u16 = 500;
 pub const MAX_BEGINNER_ALLOWED_TECHNIQUES_V1: usize = 8;
-pub const MAX_BEGINNER_TARGET_PART_RECORDS_V1: usize = 8;
+/// Bounded wire/persistence admission ceiling for compact target-part records.
+///
+/// This does not authorize duplicate semantic kinds: the general classifier
+/// and generator reject duplicates rather than treating repeated records as
+/// separate physical protrusions.
+pub const MAX_BEGINNER_TARGET_PART_RECORDS_V1: usize = 10;
 pub const MAX_BEGINNER_TARGET_PART_COUNT_V1: u8 = 8;
 pub const MAX_BEGINNER_TARGET_PARTS_TOTAL_V1: u16 = 32;
 pub const MAX_BEGINNER_SKELETON_SEGMENTS_V1: usize = 64;
@@ -676,6 +681,14 @@ mod tests {
         parts.target_parts[2].count = 8;
         assert!(validate_beginner_generation_constraints_v1(&parts));
         parts.target_parts[2].count = 9;
+        assert!(!validate_beginner_generation_constraints_v1(&parts));
+        parts.target_parts[2].count = 1;
+        let filler = parts.target_parts[0];
+        parts
+            .target_parts
+            .resize(MAX_BEGINNER_TARGET_PART_RECORDS_V1, filler);
+        assert!(validate_beginner_generation_constraints_v1(&parts));
+        parts.target_parts.push(filler);
         assert!(!validate_beginner_generation_constraints_v1(&parts));
 
         let custom = BeginnerGenerationConstraintsV1 {

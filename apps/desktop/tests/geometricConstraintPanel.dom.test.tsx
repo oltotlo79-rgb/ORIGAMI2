@@ -884,6 +884,7 @@ describe('GeometricConstraintPanel', () => {
         model_id:
           GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
         transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+        evidence_kind: 'current_assignment',
         constraint_count: 11,
         equation_count: 14,
         authorizes_project_mutation: false,
@@ -904,6 +905,45 @@ describe('GeometricConstraintPanel', () => {
     expect(status.textContent).not.toContain('未証明')
     expect(status.classList.contains('is-clear')).toBe(true)
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('labels a detached constructed witness without claiming the current assignment satisfies it', () => {
+    const preflight = {
+      status: 'proven_satisfiable',
+      model_id:
+        GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+      evidence_kind: 'detached_constructed_assignment',
+      constraint_count: 8,
+      equation_count: 8,
+      authorizes_project_mutation: false,
+      replayable_across_runtimes: true,
+    } as const
+    renderPanel({ preflight })
+
+    let status = screen.getByRole('status')
+    expect(status.textContent).toContain(
+      '現在配置とは別の厳密配置が構成・再認証されました（全8件・8方程式）。',
+    )
+    expect(status.textContent).toContain(
+      'この証拠はプロジェクト変更を認可しません。',
+    )
+    expect(status.textContent).not.toContain('現在の配置は')
+    expect(status.classList.contains('is-clear')).toBe(true)
+
+    cleanup()
+    renderPanel({
+      preflight,
+      localeStore: localeFixture('en'),
+    })
+    status = screen.getByRole('status')
+    expect(status.textContent).toContain(
+      'A detached exact assignment was constructed and re-certified for all 8 constraints and 8 deterministic binary64 residual equations.',
+    )
+    expect(status.textContent).toContain(
+      'This evidence does not authorize project mutation.',
+    )
+    expect(status.textContent).not.toContain('The current assignment')
   })
 
   it('shortens canonical constraint IDs without restricting UUID version or variant bits', () => {

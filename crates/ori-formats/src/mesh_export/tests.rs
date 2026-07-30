@@ -333,6 +333,7 @@ fn glb_generation_provenance_extension_round_trips_and_legacy_is_absent() {
         schema_version: 1,
         topology_authority_sha256: [0x17; 32],
         fold_path_certificate_sha256: Some([0x71; 32]),
+        document_authority_sha256: None,
         confidence_score: 90,
         confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
         explicit_override: false,

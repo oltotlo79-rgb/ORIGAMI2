@@ -7,6 +7,38 @@ try {
   for (let i = 0; i < 150; i += 1) { try { if ((await fetch(origin)).ok) break } catch {}; await new Promise((r) => setTimeout(r, 100)) }
   browser = await chromium.launch({ headless: true }); const page = await browser.newPage()
   await page.goto(`${origin}/scripts/generic-target-browser-harness.html`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Preview general semantic count 14' }).click()
+  await page.getByText('General semantic count 14 preview admitted by strict native DTO', { exact: true }).waitFor()
+  const general14Preview = page.getByRole('region', { name: 'General semantic count 14 preview' })
+  const general14PreviewBindings = general14Preview.getByRole('list', { name: 'General semantic count 14 preview bindings' })
+  if (await general14PreviewBindings.getByRole('listitem').count() !== 14) throw new Error('general semantic count 14 preview lost a strict feature binding')
+  await general14PreviewBindings.getByText('Binding 14: protrusion 14, endpoints 1', { exact: true }).waitFor()
+  if (await general14PreviewBindings.getByText(/Binding 15:/).count()) throw new Error('general semantic count 15 escaped the declared bound')
+  await general14Preview.getByRole('button', { name: 'Apply general semantic count 14' }).click()
+  await page.getByText('General semantic count 14 applied with 14 persisted bindings', { exact: true }).waitFor()
+  const general14History = page.getByRole('region', { name: 'General semantic count 14 history' })
+  const persistedGeneral14Bindings = general14History.getByRole('list', { name: 'Persisted general semantic count 14 bindings' })
+  if (await persistedGeneral14Bindings.getByRole('listitem').count() !== 14) throw new Error('general semantic count 14 apply lost a persisted binding')
+  await general14History.getByRole('button', { name: 'Undo general semantic count 14' }).click()
+  await page.getByText('General semantic count 14 undone', { exact: true }).waitFor()
+  if (await persistedGeneral14Bindings.getByRole('listitem').count() !== 0) throw new Error('general semantic count 14 undo retained applied bindings')
+  await general14History.getByRole('button', { name: 'Redo general semantic count 14' }).click()
+  await page.getByText('General semantic count 14 redone with 14 persisted bindings', { exact: true }).waitFor()
+  if (await persistedGeneral14Bindings.getByRole('listitem').count() !== 14) throw new Error('general semantic count 14 redo lost bindings')
+  await general14History.getByRole('button', { name: 'Reopen general semantic count 14 snapshot' }).click()
+  await page.getByText('General semantic count 14 reopened from project snapshot with 14 persisted bindings', { exact: true }).waitFor()
+  if (await persistedGeneral14Bindings.getByRole('listitem').count() !== 14) throw new Error('general semantic count 14 reopen lost bindings')
+  const general14Evidence = await page.evaluate(() => window.__ORIGAMI2_GENERIC_TARGET_GENERAL14_EVIDENCE__)
+  if (general14Evidence.evaluations !== 1 || general14Evidence.applies !== 1
+    || general14Evidence.undos !== 1 || general14Evidence.redos !== 1
+    || general14Evidence.reopens !== 1 || general14Evidence.strictEvaluateDto !== true
+    || general14Evidence.strictApplyDto !== true
+    || general14Evidence.maximumDeclaredSemanticCount !== 14) {
+    throw new Error(`general semantic count 14 IPC evidence drifted: ${JSON.stringify(general14Evidence)}`)
+  }
+  await general14History.getByRole('button', { name: 'Reset general semantic count 14 lifecycle' }).click()
+  await page.getByText('General semantic count 14 lifecycle reset', { exact: true }).waitFor()
+  await general14History.waitFor({ state: 'detached' })
   await page.getByRole('button', { name: 'Recognize image with noise candidate' }).click()
   await page.getByText('Image outline proposal contains 2 parts + 1 possible noise candidate', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Exclude unconfirmed image noise' }).click()

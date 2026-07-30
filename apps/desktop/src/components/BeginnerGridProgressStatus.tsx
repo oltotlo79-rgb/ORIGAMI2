@@ -26,7 +26,7 @@ export function BeginnerGridProgressStatus({ locale, busy, enumerated, checked, 
     <button type="button" onClick={onCancel}>
       {selectLocalizedText(locale, TEXT.cancel)}
     </button>
-    <p role="status">
+    <p role="status" aria-live="polite" aria-atomic="true">
       {formatLocalizedText(locale, TEXT.progress, {
         enumerated: safeEnumerated,
         refined: safeRefined,

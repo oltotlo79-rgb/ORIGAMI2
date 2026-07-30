@@ -39,18 +39,18 @@ describe('GenericTargetBindingList', () => {
       .toBe('Binding 2 · bilateral · count 2 · length 200 · thickness 20')
   })
 
-  it('accepts the inclusive upper bound with canonical bilateral quadruples', () => {
+  it('accepts the domain binding-cap upper bound with canonical bilateral quadruples', () => {
     const maximum = Array.from(
-      { length: 8 },
+      { length: 14 },
       (_, index) => target(index + 1, 4, 'bilateral'),
     )
     render(<GenericTargetBindingList locale="en" protrusions={maximum} />)
     const list = screen.getByRole('list', {
       name: 'Bounded generic target binding dimensions',
     })
-    expect(list.children).toHaveLength(8)
-    expect(list.children[7]?.textContent)
-      .toBe('Binding 8 · bilateral · count 4 · length 800 · thickness 80')
+    expect(list.children).toHaveLength(14)
+    expect(list.children[13]?.textContent)
+      .toBe('Binding 14 · bilateral · count 4 · length 1400 · thickness 140')
   })
 
   it('accepts radial and all domain-supported bilateral counts', () => {
@@ -93,7 +93,7 @@ describe('GenericTargetBindingList', () => {
   it('rejects out-of-range and unsupported symmetry/count combinations', () => {
     for (const forged of [
       valid.slice(0, 1),
-      Array.from({ length: 9 }, (_, i) => target(i + 1, 2, 'bilateral')),
+      Array.from({ length: 15 }, (_, i) => target(i + 1, 2, 'bilateral')),
       [valid[1], valid[0]],
       [target(2, 4, 'bilateral'), target(2, 2, 'bilateral')],
       [target(1, 1, 'radial'), valid[1]],

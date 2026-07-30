@@ -12,9 +12,12 @@ const nativeInvoke = vi.hoisted(() => vi.fn())
 vi.mock('@tauri-apps/api/core', () => ({ invoke: nativeInvoke }))
 
 import { BeginnerDesignConstraints } from '../src/components/BeginnerDesignConstraints'
-import type {
-  BeginnerRecognitionProposalV1,
-  ProjectSnapshot,
+import {
+  applyBeginnerPartAssignments,
+  recognizeBeginnerPartSuggestions,
+  type BeginnerRecognitionProposalV1,
+  type BeginnerOutlineCandidatesResponse,
+  type ProjectSnapshot,
 } from '../src/lib/coreClient'
 import { useBeginnerEditorState } from '../src/lib/useBeginnerEditorState'
 import { useBeginnerProfileWorkflow } from '../src/lib/useBeginnerProfileWorkflow'
@@ -110,6 +113,41 @@ function markerProposal(): BeginnerRecognitionProposalV1 {
       { kind: 'head', count: 1 },
     ],
     skeleton_segments: [],
+  }
+}
+
+function outlineCandidates(): BeginnerOutlineCandidatesResponse {
+  return {
+    project_instance_id: '11111111-1111-4111-8111-111111111111',
+    project_id: '22222222-2222-4222-8222-222222222222',
+    revision: 4,
+    underlay_id: 'underlay-1',
+    asset_id: 'asset-1',
+    source_sha256: Array(32).fill(7),
+    candidates: Array.from({ length: 16 }, (_, id) => ({
+      id,
+      bounds: { min_x: id * 3, min_y: 0, max_x: id * 3 + 1, max_y: 1 },
+      area_pixels: 4,
+      confidence_reason: id === 0 ? 'solid_component' : 'small_component',
+    })),
+  }
+}
+
+function partSuggestions(count: number) {
+  return {
+    project_instance_id: '11111111-1111-4111-8111-111111111111',
+    project_id: '22222222-2222-4222-8222-222222222222',
+    revision: 4,
+    underlay_id: 'underlay-1',
+    asset_id: 'asset-1',
+    selected_outline_id: 0,
+    suggestions: Array.from({ length: count }, (_, candidateId) => ({
+      candidate_id: candidateId,
+      suggested_kind: candidateId === 0 ? 'torso' : candidateId === 1 ? 'head' : 'leg',
+      confidence_reason: candidateId === 0
+        ? 'selected_primary_outline'
+        : 'small_secondary_outline',
+    })),
   }
 }
 
@@ -277,12 +315,6 @@ describe('beginner recognition part fields', () => {
       ['target_part_tail', '1'],
     ]))
 
-    const fin = screen.getByLabelText('Fin') as HTMLInputElement
-    fireEvent.change(fin, { target: { value: '9' } })
-    fireEvent.submit(screen.getByRole('button', { name: 'Save profile' }).form!)
-    expect(nativeInvoke).not.toHaveBeenCalled()
-
-    fireEvent.change(fin, { target: { value: '8' } })
     fireEvent.submit(screen.getByRole('button', { name: 'Save profile' }).form!)
     await waitFor(() => {
       expect(nativeInvoke).toHaveBeenCalledWith(
@@ -302,5 +334,81 @@ describe('beginner recognition part fields', () => {
         }),
       )
     })
+  })
+
+  it('rejects a recognized part count above the per-kind bound', async () => {
+    render(<Harness />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recognize' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('proposal-state').textContent).toBe('ready')
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Copy proposal' }))
+    fireEvent.change(screen.getByLabelText('Fin'), {
+      target: { value: '9' },
+    })
+    fireEvent.submit(screen.getByRole('button', { name: 'Save profile' }).form!)
+
+    expect(nativeInvoke).not.toHaveBeenCalled()
+  })
+})
+
+describe('beginner part suggestion transport bounds', () => {
+  it.each([8, 9, 16])(
+    'accepts a strict native suggestion response with %i records',
+    async (count) => {
+      const outline = outlineCandidates()
+      nativeInvoke.mockResolvedValueOnce(partSuggestions(count))
+
+      const response = await recognizeBeginnerPartSuggestions(
+        outline,
+        outline.candidates[0],
+      )
+
+      expect(response.suggestions).toHaveLength(count)
+    },
+  )
+
+  it('rejects a seventeenth suggestion at the shared frontend cap', async () => {
+    const outline = outlineCandidates()
+    nativeInvoke.mockResolvedValueOnce(partSuggestions(17))
+
+    await expect(recognizeBeginnerPartSuggestions(
+      outline,
+      outline.candidates[0],
+    )).rejects.toMatchObject({ reason: 'native_failure' })
+  })
+
+  it('invokes apply at sixteen assignments and rejects seventeen before invoke', async () => {
+    const outline = outlineCandidates()
+    const assignments = Array.from({ length: 16 }, (_, candidateId) => ({
+      candidate_id: candidateId,
+      kind: candidateId === 0
+        ? 'torso' as const
+        : candidateId === 1
+          ? 'head' as const
+          : candidateId < 9
+            ? 'leg' as const
+            : 'wing' as const,
+    }))
+
+    await applyBeginnerPartAssignments(
+      outline,
+      outline.candidates[0],
+      assignments,
+    )
+    expect(nativeInvoke).toHaveBeenCalledOnce()
+    expect(nativeInvoke).toHaveBeenCalledWith(
+      'apply_beginner_part_assignments',
+      expect.any(Object),
+    )
+
+    nativeInvoke.mockClear()
+    await expect(applyBeginnerPartAssignments(
+      outline,
+      outline.candidates[0],
+      [...assignments, { candidate_id: 16, kind: 'tail' }],
+    )).rejects.toMatchObject({ reason: 'native_failure' })
+    expect(nativeInvoke).not.toHaveBeenCalled()
   })
 })

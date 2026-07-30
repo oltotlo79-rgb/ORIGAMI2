@@ -6,7 +6,12 @@ use ori_domain::{
     Vertex, VertexId,
 };
 
-use super::construct_single_constraint_exact_assignment_v1;
+use super::{
+    MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    construct_bounded_singleton_composition_exact_assignment_v1,
+    construct_four_constraint_exact_assignment_v1, construct_single_constraint_exact_assignment_v1,
+    construct_three_constraint_exact_assignment_v1, construct_two_constraint_exact_assignment_v1,
+};
 use crate::certify_binary64_exact_geometric_constraint_satisfaction_v1;
 
 struct FixtureBuilder {
@@ -376,5 +381,468 @@ fn modifying_a_returned_assignment_is_not_covered_by_its_certificate() {
             .expect("one-ULP modification remains structurally valid")
             .is_none(),
         "the opaque certificate cannot authorize a modified assignment",
+    );
+}
+
+#[test]
+fn two_vertex_disjoint_singleton_assignments_are_merged_and_recertified() {
+    let mut builder = FixtureBuilder::new();
+    let first_start = builder.vertex();
+    let first_end = builder.vertex();
+    let second_start = builder.vertex();
+    let second_end = builder.vertex();
+    let first = builder.edge(first_start, first_end);
+    let second = builder.edge(second_start, second_end);
+    let pattern = CreasePattern {
+        vertices: builder.vertices,
+        edges: builder.edges,
+    };
+    let source = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: second,
+            length_mm: 3.0,
+        }),
+    ]);
+    let pattern_before = pattern.clone();
+    let source_before = source.clone();
+
+    let assignment = construct_two_constraint_exact_assignment_v1(&pattern, &source)
+        .expect("vertex-disjoint singleton assignments must compose");
+    assert_eq!(pattern, pattern_before);
+    assert_eq!(source, source_before);
+    assert_eq!(assignment.certificate().constraint_count(), 2);
+    assert_eq!(assignment.certificate().equation_count(), 2);
+    assert!(!assignment.authorizes_project_mutation());
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(assignment.pattern(), &source,)
+            .expect("the composed pattern remains structurally valid")
+            .is_some(),
+    );
+
+    let mut reordered_pattern = pattern.clone();
+    reordered_pattern.vertices.reverse();
+    reordered_pattern.edges.reverse();
+    let mut reordered_source = source.clone();
+    reordered_source.constraints.reverse();
+    let reordered =
+        construct_two_constraint_exact_assignment_v1(&reordered_pattern, &reordered_source)
+            .expect("storage and document order must not change composition");
+    assert_eq!(
+        position_bits(assignment.pattern()),
+        position_bits(reordered.pattern()),
+    );
+}
+
+#[test]
+fn every_singleton_kind_composes_with_a_vertex_disjoint_record() {
+    for (name, mut case) in positive_cases() {
+        let companion = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
+        case.pattern.vertices.extend(companion.pattern.vertices);
+        case.pattern.edges.extend(companion.pattern.edges);
+        case.document
+            .constraints
+            .push(companion.document.constraints[0].clone());
+
+        let assignment =
+            construct_two_constraint_exact_assignment_v1(&case.pattern, &case.document)
+                .unwrap_or_else(|| panic!("{name} must compose across vertex-disjoint components"));
+        assert_eq!(assignment.certificate().constraint_count(), 2, "{name}");
+        assert!(!assignment.authorizes_project_mutation(), "{name}");
+        assert!(
+            certify_binary64_exact_geometric_constraint_satisfaction_v1(
+                assignment.pattern(),
+                &case.document,
+            )
+            .expect("the composed full document remains valid")
+            .is_some(),
+            "{name}",
+        );
+    }
+}
+
+#[test]
+fn every_singleton_kind_composes_in_bounded_three_through_eight_record_documents() {
+    for (name, mut case) in positive_cases() {
+        let horizontal = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
+        let vertical = one_edge(|edge| GeometricConstraintKindV1::Vertical { edge });
+        for companion in [horizontal, vertical] {
+            case.pattern.vertices.extend(companion.pattern.vertices);
+            case.pattern.edges.extend(companion.pattern.edges);
+            case.document
+                .constraints
+                .push(companion.document.constraints[0].clone());
+        }
+
+        let assignment =
+            construct_three_constraint_exact_assignment_v1(&case.pattern, &case.document)
+                .unwrap_or_else(|| panic!("{name} must compose with two vertex-disjoint records"));
+        assert_eq!(assignment.certificate().constraint_count(), 3, "{name}");
+        assert!(!assignment.authorizes_project_mutation(), "{name}");
+        assert!(
+            certify_binary64_exact_geometric_constraint_satisfaction_v1(
+                assignment.pattern(),
+                &case.document,
+            )
+            .expect("the three-record full document remains valid")
+            .is_some(),
+            "{name}",
+        );
+
+        let mut reordered_pattern = case.pattern.clone();
+        reordered_pattern.vertices.reverse();
+        reordered_pattern.edges.reverse();
+        let mut reordered_document = case.document.clone();
+        reordered_document.constraints.reverse();
+        let reordered =
+            construct_three_constraint_exact_assignment_v1(&reordered_pattern, &reordered_document)
+                .unwrap_or_else(|| panic!("{name} reordered three-record composition"));
+        assert_eq!(
+            position_bits(assignment.pattern()),
+            position_bits(reordered.pattern()),
+            "{name}",
+        );
+
+        let fixed = one_edge(|edge| GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 2.0,
+        });
+        case.pattern.vertices.extend(fixed.pattern.vertices);
+        case.pattern.edges.extend(fixed.pattern.edges);
+        case.document
+            .constraints
+            .push(fixed.document.constraints[0].clone());
+
+        let four_assignment =
+            construct_four_constraint_exact_assignment_v1(&case.pattern, &case.document)
+                .unwrap_or_else(|| {
+                    panic!("{name} must compose with three vertex-disjoint records")
+                });
+        assert_eq!(
+            four_assignment.certificate().constraint_count(),
+            4,
+            "{name}"
+        );
+        assert!(!four_assignment.authorizes_project_mutation(), "{name}");
+        assert!(
+            certify_binary64_exact_geometric_constraint_satisfaction_v1(
+                four_assignment.pattern(),
+                &case.document,
+            )
+            .expect("the four-record full document remains valid")
+            .is_some(),
+            "{name}",
+        );
+
+        let mut boundary_assignment = four_assignment;
+        for expected_count in 5..=MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 {
+            let companion = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
+            case.pattern.vertices.extend(companion.pattern.vertices);
+            case.pattern.edges.extend(companion.pattern.edges);
+            case.document
+                .constraints
+                .push(companion.document.constraints[0].clone());
+            boundary_assignment = construct_bounded_singleton_composition_exact_assignment_v1(
+                &case.pattern,
+                &case.document,
+            )
+            .unwrap_or_else(|| panic!("{name} must compose at bounded count {expected_count}"));
+            assert_eq!(
+                boundary_assignment.certificate().constraint_count(),
+                expected_count,
+                "{name}",
+            );
+            assert!(!boundary_assignment.authorizes_project_mutation(), "{name}");
+            assert!(
+                certify_binary64_exact_geometric_constraint_satisfaction_v1(
+                    boundary_assignment.pattern(),
+                    &case.document,
+                )
+                .expect("the bounded full document remains valid")
+                .is_some(),
+                "{name} count {expected_count}",
+            );
+        }
+
+        let mut reordered_pattern = case.pattern.clone();
+        reordered_pattern.vertices.reverse();
+        reordered_pattern.edges.reverse();
+        let mut reordered_document = case.document.clone();
+        reordered_document.constraints.reverse();
+        let reordered = construct_bounded_singleton_composition_exact_assignment_v1(
+            &reordered_pattern,
+            &reordered_document,
+        )
+        .unwrap_or_else(|| panic!("{name} reordered eight-record composition"));
+        assert_eq!(
+            position_bits(boundary_assignment.pattern()),
+            position_bits(reordered.pattern()),
+            "{name}",
+        );
+    }
+}
+
+#[test]
+fn shared_vertices_require_bit_identical_singleton_assignments() {
+    let mut compatible = FixtureBuilder::new();
+    let start = compatible.vertex();
+    let end = compatible.vertex();
+    let edge = compatible.edge(start, end);
+    let compatible_pattern = CreasePattern {
+        vertices: compatible.vertices,
+        edges: compatible.edges,
+    };
+    let compatible_document = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 1.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+    ]);
+    assert!(
+        construct_two_constraint_exact_assignment_v1(&compatible_pattern, &compatible_document,)
+            .is_some(),
+        "bit-identical assignments for the same two endpoints may compose",
+    );
+
+    let mut conflicting = FixtureBuilder::new();
+    let first_start = conflicting.vertex();
+    let shared = conflicting.vertex();
+    let second_end = conflicting.vertex();
+    let first = conflicting.edge(first_start, shared);
+    let second = conflicting.edge(shared, second_end);
+    let conflicting_pattern = CreasePattern {
+        vertices: conflicting.vertices,
+        edges: conflicting.edges,
+    };
+    let conflicting_document = document([
+        record(GeometricConstraintKindV1::Horizontal { edge: first }),
+        record(GeometricConstraintKindV1::Vertical { edge: second }),
+    ]);
+    assert!(
+        construct_two_constraint_exact_assignment_v1(&conflicting_pattern, &conflicting_document,)
+            .is_none(),
+        "a shared vertex assigned different coordinate bits must fail closed",
+    );
+}
+
+#[test]
+fn bounded_shared_assignments_must_all_be_bit_identical_through_eight_records() {
+    let mut compatible = FixtureBuilder::new();
+    let start = compatible.vertex();
+    let end = compatible.vertex();
+    let edge = compatible.edge(start, end);
+    let compatible_pattern = CreasePattern {
+        vertices: compatible.vertices,
+        edges: compatible.edges,
+    };
+    let mut compatible_document = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 1.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+    ]);
+    let compatible_assignment =
+        construct_three_constraint_exact_assignment_v1(&compatible_pattern, &compatible_document)
+            .expect("three bit-identical endpoint assignments may compose");
+    assert_eq!(compatible_assignment.certificate().constraint_count(), 3,);
+    compatible_document
+        .constraints
+        .push(record(GeometricConstraintKindV1::Horizontal { edge }));
+    let compatible_assignment =
+        construct_four_constraint_exact_assignment_v1(&compatible_pattern, &compatible_document)
+            .expect("four bit-identical endpoint assignments may compose");
+    assert_eq!(compatible_assignment.certificate().constraint_count(), 4);
+    while compatible_document.constraints.len() < MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 {
+        compatible_document
+            .constraints
+            .push(record(GeometricConstraintKindV1::Horizontal { edge }));
+    }
+    let compatible_assignment = construct_bounded_singleton_composition_exact_assignment_v1(
+        &compatible_pattern,
+        &compatible_document,
+    )
+    .expect("eight bit-identical endpoint assignments may compose");
+    assert_eq!(
+        compatible_assignment.certificate().constraint_count(),
+        MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    );
+
+    let mut conflicting = FixtureBuilder::new();
+    let first_start = conflicting.vertex();
+    let shared = conflicting.vertex();
+    let second_end = conflicting.vertex();
+    let detached_start = conflicting.vertex();
+    let detached_end = conflicting.vertex();
+    let first = conflicting.edge(first_start, shared);
+    let second = conflicting.edge(shared, second_end);
+    let detached = conflicting.edge(detached_start, detached_end);
+    let conflicting_pattern = CreasePattern {
+        vertices: conflicting.vertices,
+        edges: conflicting.edges,
+    };
+    let mut conflicting_document = document([
+        record(GeometricConstraintKindV1::Horizontal { edge: first }),
+        record(GeometricConstraintKindV1::Vertical { edge: second }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: detached,
+            length_mm: 1.0,
+        }),
+    ]);
+    assert!(
+        construct_three_constraint_exact_assignment_v1(
+            &conflicting_pattern,
+            &conflicting_document,
+        )
+        .is_none(),
+        "one shared-coordinate disagreement must reject the full composition",
+    );
+    conflicting_document
+        .constraints
+        .push(record(GeometricConstraintKindV1::Horizontal {
+            edge: detached,
+        }));
+    assert!(
+        construct_four_constraint_exact_assignment_v1(&conflicting_pattern, &conflicting_document,)
+            .is_none(),
+        "one shared-coordinate disagreement must reject all four records",
+    );
+    while conflicting_document.constraints.len() < MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1
+    {
+        conflicting_document
+            .constraints
+            .push(record(GeometricConstraintKindV1::Horizontal {
+                edge: detached,
+            }));
+    }
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(
+            &conflicting_pattern,
+            &conflicting_document,
+        )
+        .is_none(),
+        "one shared-coordinate disagreement must reject the eight-record boundary",
+    );
+}
+
+#[test]
+fn two_constraint_composition_is_bounded_to_exactly_two_nondirect_records() {
+    let case = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
+    assert!(construct_two_constraint_exact_assignment_v1(&case.pattern, &case.document).is_none(),);
+
+    let edge = case.pattern.edges[0].id;
+    let incompatible = document([
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+        record(GeometricConstraintKindV1::Vertical { edge }),
+    ]);
+    assert!(construct_two_constraint_exact_assignment_v1(&case.pattern, &incompatible).is_none(),);
+
+    let direct = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 1.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 2.0,
+        }),
+    ]);
+    assert!(construct_two_constraint_exact_assignment_v1(&case.pattern, &direct).is_none(),);
+}
+
+#[test]
+fn bounded_composition_accepts_two_through_eight_and_rejects_nine_or_direct() {
+    assert_eq!(MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1, 8);
+    let case = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
+    assert!(
+        construct_three_constraint_exact_assignment_v1(&case.pattern, &case.document).is_none(),
+    );
+    assert!(construct_four_constraint_exact_assignment_v1(&case.pattern, &case.document).is_none(),);
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(&case.pattern, &case.document,)
+            .is_none(),
+    );
+
+    let edge = case.pattern.edges[0].id;
+    let direct = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 1.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+    ]);
+    assert!(construct_three_constraint_exact_assignment_v1(&case.pattern, &direct).is_none(),);
+    assert!(construct_four_constraint_exact_assignment_v1(&case.pattern, &direct).is_none(),);
+
+    let mut four_records = document([
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+    ]);
+    assert!(construct_three_constraint_exact_assignment_v1(&case.pattern, &four_records).is_none(),);
+    assert!(construct_four_constraint_exact_assignment_v1(&case.pattern, &four_records).is_some(),);
+
+    four_records
+        .constraints
+        .push(record(GeometricConstraintKindV1::Horizontal { edge }));
+    assert!(construct_four_constraint_exact_assignment_v1(&case.pattern, &four_records).is_none(),);
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(&case.pattern, &four_records,)
+            .is_some(),
+    );
+    while four_records.constraints.len() < MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 {
+        four_records
+            .constraints
+            .push(record(GeometricConstraintKindV1::Horizontal { edge }));
+        assert!(
+            construct_bounded_singleton_composition_exact_assignment_v1(
+                &case.pattern,
+                &four_records,
+            )
+            .is_some(),
+        );
+    }
+    four_records
+        .constraints
+        .push(record(GeometricConstraintKindV1::Horizontal { edge }));
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(&case.pattern, &four_records,)
+            .is_none(),
+        "nine records must remain outside the bounded constructor",
+    );
+
+    let mut direct_at_boundary = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 1.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+    ]);
+    while direct_at_boundary.constraints.len() < MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 {
+        direct_at_boundary
+            .constraints
+            .push(record(GeometricConstraintKindV1::Horizontal { edge }));
+    }
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(
+            &case.pattern,
+            &direct_at_boundary,
+        )
+        .is_none(),
     );
 }

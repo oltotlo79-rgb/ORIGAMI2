@@ -602,6 +602,7 @@ fn clear_beginner_work_registries_for_test() {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
     consensus_registry.clear_poison();
+    beginner_design_commands::clear_beginner_work_generation_tombstones_for_test_v1();
 }
 
 fn serial_beginner_grid_test() -> BeginnerGridTestGuard {

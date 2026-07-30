@@ -24,9 +24,9 @@ const CURRENT_SEMANTIC_MUS_MODEL_ID
 const CURRENT_SEMANTIC_INVENTORY_HEADING
   = '## 2026-07-30 EDT-009 semantic MUS 現行正本訂正（v4・24/24）'
 const EDT_009_LIMITATION
-  = 'Semantic MUS v4 covers all 24 wire variants only inside bounded, shape-specific proof families. The two newest families accept only common-center-star cores: exact two-hop Parallel plus 90 degrees with two unit terminals, and Parallel plus 45 degrees with one canonical unit terminal. Nonexact, nonunit, longer, nonstar, and generic variants fail closed; certificates never authorize mutation.'
+  = 'Semantic MUS v4 covers all 24 wire variants only in bounded, shape-specific families. Its newest cores require a common-center star: exact two-hop Parallel plus 90 degrees and two unit terminals, or Parallel plus exact 45/135 degrees and one unit terminal. Detached constructive SAT covers only one through eight bit-compatible singleton records, publishes no coordinates, and never authorizes mutation. Other angles, nonexact, nonunit, longer, nonstar, and generic variants fail closed.'
 const EDT_009_MISSING_ACCEPTANCE
-  = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including arbitrary-length parallel components and generic or non-star angle topologies.'
+  = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including nine or more singleton compositions, arbitrary-length parallel components, and generic or non-star angle topologies.'
 
 test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]
@@ -147,7 +147,7 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
     )
     assert.match(
       currentSection,
-      /部分実装[\s\S]*実装済み85 \/ 部分実装2 \/ 未着手0[\s\S]*数式・幾何制約は85%[\s\S]*全体は81\.96%（表示82\.0%）/u,
+      /部分実装[\s\S]*実装済み85 \/ 部分実装2 \/ 未着手0[\s\S]*次期反映headのCI発効までは数式・幾何制約85%[\s\S]*81\.96%（表示82\.0%）[\s\S]*発効条件成立後だけ数式・幾何制約86%[\s\S]*82\.29%（表示82\.3%）/u,
     )
   }
   assert.match(statusRow, /canonical 5-IDのunit-terminal two-hop core/u)

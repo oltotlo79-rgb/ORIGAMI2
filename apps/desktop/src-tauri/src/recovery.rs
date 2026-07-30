@@ -2723,6 +2723,8 @@ mod tests {
             let saved_document = project.document();
             project.saved_revision = Some(project.editor.revision());
             project.saved_document = Some(saved_document);
+            project.saved_speculative_unproven_state =
+                Some(project.editor.speculative_unproven_fold_state_marker_v1());
             let completed = snapshot(&project);
             project
                 .editor
@@ -3531,6 +3533,8 @@ mod tests {
         let saved_document = project.document();
         project.saved_revision = Some(project.editor.revision());
         project.saved_document = Some(saved_document);
+        project.saved_speculative_unproven_state =
+            Some(project.editor.speculative_unproven_fold_state_marker_v1());
         let saved_snapshot = snapshot(&project);
         assert!(!saved_snapshot.is_dirty);
         drop(project);

@@ -7,6 +7,9 @@ use crate::{
 };
 
 pub const BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1: u32 = 1;
+/// Domain prefix for the V1 beginner-profile authority digest.
+pub const BEGINNER_DESIGN_PROFILE_AUTHORITY_SHA256_V1_DOMAIN: &[u8] =
+    b"ORIGAMI2\0beginner-design-profile-authority\0v1\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +99,14 @@ pub struct BeginnerGenerationProvenanceV1 {
     pub topology_authority_sha256: [u8; 32],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fold_path_certificate_sha256: Option<[u8; 32]>,
+    /// Binds positive generation evidence to the final persisted fold model
+    /// and the authoritative beginner-profile inputs.
+    ///
+    /// Archives created before this binding was introduced omit the field.
+    /// Persistence admission must treat that legacy shape as unproven rather
+    /// than minting a binding while loading or saving it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_authority_sha256: Option<[u8; 32]>,
     pub confidence_score: u8,
     pub confidence_reasons: Vec<String>,
     pub explicit_override: bool,
@@ -214,6 +225,71 @@ impl BeginnerDesignProfileV1 {
     pub fn is_default(&self) -> bool {
         self == &Self::default()
     }
+}
+
+#[derive(Serialize)]
+struct BeginnerDesignProfileAuthorityRefV1<'a> {
+    schema_version: u32,
+    preset: BeginnerDesignPresetV1,
+    shape_fidelity_weight: u8,
+    foldability_weight: u8,
+    step_count_weight: u8,
+    paper_efficiency_weight: u8,
+    generation_constraints: &'a BeginnerGenerationConstraintsV1,
+    reference_surface_landmarks_tenths_mm: &'a Option<Vec<[i32; 3]>>,
+    outline_edit_authority: &'a Option<BeginnerOutlineEditAuthorityV1>,
+    reference_consensus_v1: &'a Option<BeginnerReferenceConsensusV1>,
+}
+
+struct Sha256Writer<'a>(&'a mut Sha256);
+
+impl std::io::Write for Sha256Writer<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Returns the stable SHA-256 binding of all candidate-selection and
+/// generation-authority fields in a beginner profile.
+///
+/// V1 hashes
+/// [`BEGINNER_DESIGN_PROFILE_AUTHORITY_SHA256_V1_DOMAIN`] followed immediately
+/// by compact UTF-8 JSON for the private authority view in its declared struct
+/// field order. There is no whitespace or intermediate allocation; enum and
+/// option spellings are their Serde V1 wire spellings, integers use
+/// `serde_json`'s decimal representation, and vector order is
+/// authority-significant.
+///
+/// Generation provenance is excluded because it is the evidence being
+/// restored. Archived reference-model IDs are bookkeeping and are also
+/// excluded. Callers admitting untrusted input must first use
+/// [`validate_beginner_design_profile_v1`], which bounds every collection in
+/// the hashed view (including at most 32 bulges and 40,000 distinct triangle
+/// indices per reference-surface binding).
+#[must_use]
+pub fn beginner_design_profile_authority_sha256_v1(profile: &BeginnerDesignProfileV1) -> [u8; 32] {
+    let authority = BeginnerDesignProfileAuthorityRefV1 {
+        schema_version: profile.schema_version,
+        preset: profile.preset,
+        shape_fidelity_weight: profile.shape_fidelity_weight,
+        foldability_weight: profile.foldability_weight,
+        step_count_weight: profile.step_count_weight,
+        paper_efficiency_weight: profile.paper_efficiency_weight,
+        generation_constraints: &profile.generation_constraints,
+        reference_surface_landmarks_tenths_mm: &profile.reference_surface_landmarks_tenths_mm,
+        outline_edit_authority: &profile.outline_edit_authority,
+        reference_consensus_v1: &profile.reference_consensus_v1,
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(BEGINNER_DESIGN_PROFILE_AUTHORITY_SHA256_V1_DOMAIN);
+    serde_json::to_writer(Sha256Writer(&mut hasher), &authority)
+        .expect("serializing a bounded beginner authority into SHA-256 cannot fail");
+    hasher.finalize().into()
 }
 
 #[must_use]
@@ -492,6 +568,7 @@ mod tests {
                 schema_version: 1,
                 topology_authority_sha256: [1; 32],
                 fold_path_certificate_sha256: None,
+                document_authority_sha256: None,
                 confidence_score: 80,
                 confidence_reasons: vec!["bounded_tree".into()],
                 explicit_override: false,
@@ -633,6 +710,31 @@ mod tests {
                 .expect("generation provenance")
                 .generic_tree
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn profile_authority_sha256_is_stable_and_ignores_only_evidence_and_archives() {
+        let profile = profile_with_generic_tree();
+        let expected = beginner_design_profile_authority_sha256_v1(&profile);
+        assert_eq!(
+            beginner_design_profile_authority_sha256_v1(&profile.clone()),
+            expected
+        );
+
+        let mut bookkeeping_only = profile.clone();
+        bookkeeping_only.generation_provenance = None;
+        bookkeeping_only.archived_reference_model_asset_ids = vec![AssetId::new()];
+        assert_eq!(
+            beginner_design_profile_authority_sha256_v1(&bookkeeping_only),
+            expected
+        );
+
+        let mut changed_authority = profile;
+        changed_authority.preset = BeginnerDesignPresetV1::ShapePriority;
+        assert_ne!(
+            beginner_design_profile_authority_sha256_v1(&changed_authority),
+            expected
         );
     }
 }

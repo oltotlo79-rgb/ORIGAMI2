@@ -134,7 +134,7 @@ export function BeginnerProtrusionEditor({
               {beginnerProtrusions.map((target, index) => (
                 <tr key={target.id}>
                   <td>
-                    {beginnerProtrusionKinds[index] ?? 'tail'} #{target.id}
+                    {beginnerProtrusionKinds[index] ?? '—'} #{target.id}
                   </td>
                   <td>{target.length_tenths_mm / 10} mm</td>
                   <td>{target.thickness_tenths_mm / 10} mm</td>
@@ -153,14 +153,13 @@ export function BeginnerProtrusionEditor({
               key={target.id}
               locale={locale}
               target={target}
-              kind={beginnerProtrusionKinds[index] ?? 'tail'}
+              kind={beginnerProtrusionKinds[index] ?? undefined}
               onKindChange={(kind) =>
                 setBeginnerProtrusionKinds((kinds) =>
-                  kinds.length === beginnerProtrusions.length
-                    ? kinds.map((item, kindIndex) =>
-                        kindIndex === index ? kind : item)
-                    : beginnerProtrusions.map((_, kindIndex) =>
-                        kindIndex === index ? kind : 'tail'))}
+                  beginnerProtrusions.map((_, kindIndex) =>
+                    kindIndex === index
+                      ? kind
+                      : kinds[kindIndex] ?? null))}
               onChange={(changed) =>
                 setBeginnerProtrusions((targets) => targets.map(
                   (item) => item.id === changed.id ? changed : item,

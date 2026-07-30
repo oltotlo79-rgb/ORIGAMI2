@@ -257,6 +257,9 @@ pub(crate) struct BeginnerPartSuggestionsResponse {
     suggestions: Vec<BeginnerPartSuggestionV1>,
 }
 
+const MAX_BEGINNER_PART_ASSIGNMENTS_V1: usize =
+    ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1 as usize + 2;
+
 fn requested_bilateral_part_kind_v1(
     target_category: Option<ori_domain::BeginnerTargetCategoryV1>,
     target_parts: &[ori_domain::BeginnerTargetPartRecordV1],
@@ -388,7 +391,7 @@ pub(crate) fn recognize_beginner_part_suggestions(
     let others = candidates
         .iter()
         .filter(|candidate| candidate.id != request.candidate.id)
-        .take(7)
+        .take(MAX_BEGINNER_PART_ASSIGNMENTS_V1 - 1)
         .collect::<Vec<_>>();
     if others.is_empty() {
         return Err("part_suggestion_ambiguous".to_owned());
@@ -499,12 +502,260 @@ fn candidate_pair_is_symmetric(
         && left.max_y - left.min_y == right.max_y - right.min_y
 }
 
+fn compact_beginner_target_parts_v1(
+    assignments: &[BeginnerPartAssignmentV1],
+) -> Option<Vec<ori_domain::BeginnerTargetPartRecordV1>> {
+    if assignments.is_empty() || assignments.len() > MAX_BEGINNER_PART_ASSIGNMENTS_V1 {
+        return None;
+    }
+    let mut counts = [0_u8; 9];
+    for assignment in assignments {
+        let index = match assignment.kind {
+            ori_domain::BeginnerTargetPartKindV1::Torso => 0,
+            ori_domain::BeginnerTargetPartKindV1::Head => 1,
+            ori_domain::BeginnerTargetPartKindV1::Leg => 2,
+            ori_domain::BeginnerTargetPartKindV1::Wing => 3,
+            ori_domain::BeginnerTargetPartKindV1::Tail => 4,
+            ori_domain::BeginnerTargetPartKindV1::Horn => 5,
+            ori_domain::BeginnerTargetPartKindV1::Antenna => 6,
+            ori_domain::BeginnerTargetPartKindV1::Ear => 7,
+            ori_domain::BeginnerTargetPartKindV1::Fin => 8,
+        };
+        counts[index] = counts[index].checked_add(1)?;
+    }
+    [
+        ori_domain::BeginnerTargetPartKindV1::Torso,
+        ori_domain::BeginnerTargetPartKindV1::Head,
+        ori_domain::BeginnerTargetPartKindV1::Leg,
+        ori_domain::BeginnerTargetPartKindV1::Wing,
+        ori_domain::BeginnerTargetPartKindV1::Tail,
+        ori_domain::BeginnerTargetPartKindV1::Horn,
+        ori_domain::BeginnerTargetPartKindV1::Antenna,
+        ori_domain::BeginnerTargetPartKindV1::Ear,
+        ori_domain::BeginnerTargetPartKindV1::Fin,
+    ]
+    .into_iter()
+    .zip(counts)
+    .filter(|(_, count)| *count > 0)
+    .map(|(kind, count)| {
+        (count <= ori_domain::MAX_BEGINNER_TARGET_PART_COUNT_V1)
+            .then_some(ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+    })
+    .collect()
+}
+
+fn effective_beginner_part_assignment_bounds_v1(
+    assignment: &BeginnerPartAssignmentV1,
+    candidates: &[ori_domain::BeginnerOutlineCandidateV1],
+) -> Option<ori_domain::BeginnerRecognitionBoundsV1> {
+    let bounds_for = |id| {
+        candidates
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .map(|candidate| candidate.bounds)
+    };
+    match assignment.source_candidate_ids.as_slice() {
+        [] => bounds_for(assignment.candidate_id),
+        [source] => {
+            let mut bounds = bounds_for(*source)?;
+            let split_x = assignment.split_x?;
+            match assignment.split_fragment? {
+                0 if split_x > bounds.min_x && split_x <= bounds.max_x => {
+                    bounds.max_x = split_x.checked_sub(1)?;
+                }
+                1 if split_x > bounds.min_x && split_x <= bounds.max_x => {
+                    bounds.min_x = split_x;
+                }
+                _ => return None,
+            }
+            Some(bounds)
+        }
+        [first, second] if first < second => {
+            let first = bounds_for(*first)?;
+            let second = bounds_for(*second)?;
+            Some(ori_domain::BeginnerRecognitionBoundsV1 {
+                min_x: first.min_x.min(second.min_x),
+                min_y: first.min_y.min(second.min_y),
+                max_x: first.max_x.max(second.max_x),
+                max_y: first.max_y.max(second.max_y),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn generic_singleton_protrusions_from_assignments_v1(
+    assignments: &[BeginnerPartAssignmentV1],
+    candidates: &[ori_domain::BeginnerOutlineCandidateV1],
+    torso_bounds: ori_domain::BeginnerRecognitionBoundsV1,
+    expected_feature_count: u8,
+) -> Option<Vec<ori_domain::BeginnerProtrusionTargetV1>> {
+    let rank = |kind| match kind {
+        ori_domain::BeginnerTargetPartKindV1::Leg => 0_u8,
+        ori_domain::BeginnerTargetPartKindV1::Wing => 1,
+        ori_domain::BeginnerTargetPartKindV1::Tail => 2,
+        ori_domain::BeginnerTargetPartKindV1::Horn => 3,
+        ori_domain::BeginnerTargetPartKindV1::Antenna => 4,
+        ori_domain::BeginnerTargetPartKindV1::Ear => 5,
+        ori_domain::BeginnerTargetPartKindV1::Fin => 6,
+        ori_domain::BeginnerTargetPartKindV1::Head
+        | ori_domain::BeginnerTargetPartKindV1::Torso => 7,
+    };
+    let mut features = assignments
+        .iter()
+        .filter(|assignment| {
+            !matches!(
+                assignment.kind,
+                ori_domain::BeginnerTargetPartKindV1::Head
+                    | ori_domain::BeginnerTargetPartKindV1::Torso
+            )
+        })
+        .map(|assignment| {
+            effective_beginner_part_assignment_bounds_v1(assignment, candidates)
+                .map(|bounds| (assignment, bounds))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if features.len() != usize::from(expected_feature_count) {
+        return None;
+    }
+    features.sort_by(|(left, left_bounds), (right, right_bounds)| {
+        (
+            rank(left.kind),
+            left_bounds.min_y,
+            left_bounds.min_x,
+            left_bounds.max_y,
+            left_bounds.max_x,
+            left.candidate_id,
+            left.split_fragment,
+            &left.source_candidate_ids,
+        )
+            .cmp(&(
+                rank(right.kind),
+                right_bounds.min_y,
+                right_bounds.min_x,
+                right_bounds.max_y,
+                right_bounds.max_x,
+                right.candidate_id,
+                right.split_fragment,
+                &right.source_candidate_ids,
+            ))
+    });
+    let torso_center_x_twice = i64::from(torso_bounds.min_x) + i64::from(torso_bounds.max_x);
+    let torso_center_y_twice = i64::from(torso_bounds.min_y) + i64::from(torso_bounds.max_y);
+    let torso_min_x = i64::from(torso_bounds.min_x).checked_mul(10)?;
+    let torso_max_x = i64::from(torso_bounds.max_x).checked_mul(10)?;
+    let torso_min_y = i64::from(torso_bounds.min_y).checked_mul(10)?;
+    let torso_max_y = i64::from(torso_bounds.max_y).checked_mul(10)?;
+    let torso_width = u32::try_from(torso_max_x.checked_sub(torso_min_x)?).ok()?;
+    let torso_height = u32::try_from(torso_max_y.checked_sub(torso_min_y)?).ok()?;
+    if torso_width == 0 || torso_height == 0 {
+        return None;
+    }
+    features
+        .into_iter()
+        .enumerate()
+        .map(|(index, (assignment, bounds))| {
+            let width = bounds.max_x.checked_sub(bounds.min_x)?.checked_add(1)?;
+            let height = bounds.max_y.checked_sub(bounds.min_y)?.checked_add(1)?;
+            let center_x_twice = i64::from(bounds.min_x) + i64::from(bounds.max_x);
+            let center_y_twice = i64::from(bounds.min_y) + i64::from(bounds.max_y);
+            let vertical = matches!(
+                assignment.kind,
+                ori_domain::BeginnerTargetPartKindV1::Leg
+                    | ori_domain::BeginnerTargetPartKindV1::Horn
+                    | ori_domain::BeginnerTargetPartKindV1::Antenna
+            );
+            let primary_direction = if vertical {
+                if center_y_twice < torso_center_y_twice {
+                    -1_000
+                } else {
+                    1_000
+                }
+            } else if center_x_twice < torso_center_x_twice {
+                -1_000
+            } else {
+                1_000
+            };
+            let root_x = center_x_twice
+                .checked_mul(5)?
+                .clamp(torso_min_x, torso_max_x);
+            let root_y = center_y_twice
+                .checked_mul(5)?
+                .clamp(torso_min_y, torso_max_y);
+            let available_half_width =
+                u32::try_from((root_x - torso_min_x).min(torso_max_x - root_x)).ok()?;
+            let available_half_height =
+                u32::try_from((root_y - torso_min_y).min(torso_max_y - root_y)).ok()?;
+            let half_width = width
+                .saturating_mul(5)
+                .min(available_half_width)
+                .min(10_000);
+            let half_height = height
+                .saturating_mul(5)
+                .min(available_half_height)
+                .min(10_000);
+            let local_outline_tenths_mm = if half_width > 0 && half_height > 0 {
+                let half_width = i32::try_from(half_width).ok()?;
+                let half_height = i32::try_from(half_height).ok()?;
+                Some(vec![
+                    [-half_width, -half_height],
+                    [half_width, -half_height],
+                    [half_width, half_height],
+                    [-half_width, half_height],
+                ])
+            } else {
+                None
+            };
+            let primary_span = if vertical { torso_height } else { torso_width };
+            let minimum_length = primary_span.saturating_mul(2).checked_div(100)?.max(1);
+            let maximum_length = primary_span
+                .saturating_mul(45)
+                .checked_div(100)?
+                .max(minimum_length);
+            let length_tenths_mm = (if vertical { height } else { width })
+                .saturating_mul(10)
+                .clamp(minimum_length, maximum_length);
+            Some(ori_domain::BeginnerProtrusionTargetV1 {
+                id: u16::try_from(index + 1).ok()?,
+                count: 1,
+                length_tenths_mm,
+                thickness_tenths_mm: u16::try_from(
+                    width
+                        .min(height)
+                        .saturating_mul(10)
+                        .min(torso_width.min(torso_height))
+                        .clamp(1, 10_000),
+                )
+                .ok()?,
+                root_width_tenths_mm: None,
+                tip_width_tenths_mm: None,
+                local_outline_tenths_mm,
+                position_tenths_mm: [i32::try_from(root_x).ok()?, i32::try_from(root_y).ok()?, 0],
+                direction_milli: if vertical {
+                    [0, primary_direction, 0]
+                } else {
+                    [primary_direction, 0, 0]
+                },
+                symmetry: ori_domain::BeginnerProtrusionSymmetryV1::None,
+                curvature_degrees: 0,
+                joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+                motion_degrees: [0, 0],
+                side: ori_domain::BeginnerProtrusionSideV1::Either,
+                priority: 50_u8.saturating_add(u8::try_from(index).ok()?.saturating_mul(5)),
+            })
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub(crate) fn apply_beginner_part_assignments(
     state: State<'_, AppState>,
     request: ApplyBeginnerPartAssignmentsRequest,
 ) -> Result<ProjectSnapshot, String> {
-    if !request.confirmed || request.assignments.is_empty() || request.assignments.len() > 10 {
+    if !request.confirmed
+        || request.assignments.is_empty()
+        || request.assignments.len() > MAX_BEGINNER_PART_ASSIGNMENTS_V1
+    {
         return Err("part_assignment_confirmation_required".to_owned());
     }
     let binding = RecognizeBeginnerTargetRequest {
@@ -675,50 +926,8 @@ pub(crate) fn apply_beginner_part_assignments(
         .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Ear)
         .map(|assignment| assignment.candidate_id)
         .collect::<Vec<_>>();
-    let mut counts = [0_u8; 9];
-    for assignment in &request.assignments {
-        let index = match assignment.kind {
-            ori_domain::BeginnerTargetPartKindV1::Torso => 0,
-            ori_domain::BeginnerTargetPartKindV1::Head => 1,
-            ori_domain::BeginnerTargetPartKindV1::Leg => 2,
-            ori_domain::BeginnerTargetPartKindV1::Wing => 3,
-            ori_domain::BeginnerTargetPartKindV1::Tail => 4,
-            ori_domain::BeginnerTargetPartKindV1::Horn => 5,
-            ori_domain::BeginnerTargetPartKindV1::Antenna => 6,
-            ori_domain::BeginnerTargetPartKindV1::Ear => 7,
-            ori_domain::BeginnerTargetPartKindV1::Fin => 8,
-        };
-        counts[index] += 1;
-    }
-    let target_parts = [
-        ori_domain::BeginnerTargetPartKindV1::Torso,
-        ori_domain::BeginnerTargetPartKindV1::Head,
-        ori_domain::BeginnerTargetPartKindV1::Leg,
-        ori_domain::BeginnerTargetPartKindV1::Wing,
-        ori_domain::BeginnerTargetPartKindV1::Tail,
-        ori_domain::BeginnerTargetPartKindV1::Horn,
-        ori_domain::BeginnerTargetPartKindV1::Antenna,
-        ori_domain::BeginnerTargetPartKindV1::Ear,
-        ori_domain::BeginnerTargetPartKindV1::Fin,
-    ]
-    .into_iter()
-    .zip(counts)
-    .filter(|(_, count)| *count > 0)
-    .flat_map(|(kind, count)| {
-        // Nonstandard repeated semantics remain individually addressable.
-        // This lets exact image candidate IDs map one-to-one to generic
-        // topology features instead of inventing bilateral authority.
-        let records = if matches!(count, 3 | 5 | 7 | 8) {
-            usize::from(count)
-        } else {
-            1
-        };
-        (0..records).map(move |_| ori_domain::BeginnerTargetPartRecordV1 {
-            kind,
-            count: if records == 1 { count } else { 1 },
-        })
-    })
-    .collect();
+    let target_parts = compact_beginner_target_parts_v1(&request.assignments)
+        .ok_or_else(|| "part_assignment_generic_binding_invalid".to_owned())?;
     let mut project = lock_project(&state)?;
     ensure_recognition_binding(&project, binding)?;
     let live = project
@@ -731,7 +940,13 @@ pub(crate) fn apply_beginner_part_assignments(
     }
     let mut profile = project.editor.beginner_design_profile().clone();
     profile.generation_constraints.target_parts = target_parts;
-    if wing_candidate_ids.len() == 2
+    let expected_plan_kind =
+        ori_domain::beginner_expected_generated_plan_kind_v1(&profile.generation_constraints)
+            .ok_or_else(|| "part_assignment_generic_binding_invalid".to_owned())?;
+    let is_general =
+        expected_plan_kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase;
+    if !is_general
+        && wing_candidate_ids.len() == 2
         && antenna_candidate_ids.len() == 2
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
@@ -800,12 +1015,14 @@ pub(crate) fn apply_beginner_part_assignments(
             return Err("part_assignment_wing_antenna_binding_invalid".to_owned());
         }
     }
-    let vertical_candidate_ids = if horn_candidate_ids.len() == 1
+    let vertical_candidate_ids = if !is_general
+        && horn_candidate_ids.len() == 1
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
     {
         Some(&horn_candidate_ids)
-    } else if antenna_candidate_ids.len() == 1
+    } else if !is_general
+        && antenna_candidate_ids.len() == 1
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
     {
@@ -922,10 +1139,11 @@ pub(crate) fn apply_beginner_part_assignments(
             }
         }
     }
-    let recognized_horn = (horn_candidate_ids.len() == 1)
+    let recognized_horn = (!is_general && horn_candidate_ids.len() == 1)
         .then(|| profile.generation_constraints.protrusions.first().cloned())
         .flatten();
-    if tail_candidate_ids.len() == 1
+    if !is_general
+        && tail_candidate_ids.len() == 1
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
     {
@@ -1059,7 +1277,8 @@ pub(crate) fn apply_beginner_part_assignments(
             }
         }
     }
-    if leg_candidate_ids.len() == 4
+    if !is_general
+        && leg_candidate_ids.len() == 4
         && horn_candidate_ids.len() == 1
         && tail_candidate_ids.len() == 1
         && ear_candidate_ids.len() == 2
@@ -1157,10 +1376,11 @@ pub(crate) fn apply_beginner_part_assignments(
             return Err("part_assignment_complete_animal_binding_invalid".to_owned());
         }
     }
-    let recognized_wing_antenna = (wing_candidate_ids.len() == 2
-        && antenna_candidate_ids.len() == 2)
-        .then(|| profile.generation_constraints.protrusions.clone());
-    if leg_candidate_ids.len() == 6
+    let recognized_wing_antenna =
+        (!is_general && wing_candidate_ids.len() == 2 && antenna_candidate_ids.len() == 2)
+            .then(|| profile.generation_constraints.protrusions.clone());
+    if !is_general
+        && leg_candidate_ids.len() == 6
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
     {
@@ -1253,137 +1473,28 @@ pub(crate) fn apply_beginner_part_assignments(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let specialized = ori_domain::animal_complete_bindings_v1(&profile.generation_constraints)
-        .is_some()
-        || ori_domain::animal_complete_winged_bindings_v1(&profile.generation_constraints)
-            .is_some()
-        || ori_domain::insect_complete_bindings_v1(&profile.generation_constraints).is_some()
-        || ori_domain::animal_horn_tail_ear_bindings_v1(&profile.generation_constraints).is_some()
-        || ori_domain::animal_horn_tail_bindings_v1(&profile.generation_constraints).is_some()
-        || ori_domain::animal_horn_ear_bindings_v1(&profile.generation_constraints).is_some()
-        || ori_domain::animal_tail_ear_bindings_v1(&profile.generation_constraints).is_some()
-        || ori_domain::insect_wing_antenna_bindings_v1(&profile.generation_constraints).is_some();
-    if !specialized && (2..=8).contains(&feature_parts.len()) {
-        let axis_twice = i64::from(request.selected_outline.bounds.min_x)
-            + i64::from(request.selected_outline.bounds.max_x);
-        let mut generic = Vec::with_capacity(feature_parts.len());
-        for (index, part) in feature_parts.iter().enumerate() {
-            if !matches!(part.count, 1 | 2 | 4) {
-                return Err("part_assignment_generic_binding_invalid".to_owned());
-            }
-            let mut members = request
-                .assignments
-                .iter()
-                .filter(|assignment| assignment.kind == part.kind)
-                .filter_map(|assignment| {
-                    candidates
-                        .iter()
-                        .find(|candidate| candidate.id == assignment.candidate_id)
-                })
-                .collect::<Vec<_>>();
-            members.sort_by_key(|candidate| {
-                (candidate.bounds.min_y, candidate.bounds.min_x, candidate.id)
-            });
-            let repeated_single_rank = feature_parts[..index]
-                .iter()
-                .filter(|previous| previous.kind == part.kind && previous.count == 1)
-                .count();
-            if part.count == 1 && members.len() > 1 {
-                members = members
-                    .get(repeated_single_rank)
-                    .copied()
-                    .into_iter()
-                    .collect();
-            }
-            if members.len() != usize::from(part.count)
-                || part.count > 1
-                    && members.chunks_exact(2).any(|pair| {
-                        !candidate_pair_is_symmetric(axis_twice, &pair[0].bounds, &pair[1].bounds)
-                    })
-            {
-                return Err("part_assignment_generic_binding_invalid".to_owned());
-            }
-            let min_x = members
-                .iter()
-                .map(|candidate| candidate.bounds.min_x)
-                .min()
-                .unwrap();
-            let max_x = members
-                .iter()
-                .map(|candidate| candidate.bounds.max_x)
-                .max()
-                .unwrap();
-            let min_y = members
-                .iter()
-                .map(|candidate| candidate.bounds.min_y)
-                .min()
-                .unwrap();
-            let max_y = members
-                .iter()
-                .map(|candidate| candidate.bounds.max_y)
-                .max()
-                .unwrap();
-            let vertical = matches!(
-                part.kind,
-                ori_domain::BeginnerTargetPartKindV1::Leg
-                    | ori_domain::BeginnerTargetPartKindV1::Horn
-                    | ori_domain::BeginnerTargetPartKindV1::Antenna
-            );
-            let half_width = i32::try_from(max_x.saturating_sub(min_x).saturating_add(1))
-                .unwrap_or(2_000)
-                .saturating_mul(5)
-                .clamp(1, 10_000);
-            let half_height = i32::try_from(max_y.saturating_sub(min_y).saturating_add(1))
-                .unwrap_or(2_000)
-                .saturating_mul(5)
-                .clamp(1, 10_000);
-            generic.push(ori_domain::BeginnerProtrusionTargetV1 {
-                id: index as u16 + 1,
-                count: part.count,
-                length_tenths_mm: (if vertical {
-                    max_y.saturating_sub(min_y).saturating_add(1)
-                } else {
-                    max_x.saturating_sub(min_x).saturating_add(1)
-                })
-                .saturating_mul(10)
-                .clamp(1, 1_000_000),
-                thickness_tenths_mm: u16::try_from(
-                    max_y
-                        .saturating_sub(min_y)
-                        .saturating_add(1)
-                        .saturating_mul(10),
-                )
-                .unwrap_or(10_000)
-                .clamp(1, 10_000),
-                root_width_tenths_mm: None,
-                tip_width_tenths_mm: None,
-                local_outline_tenths_mm: Some(vec![
-                    [-half_width, -half_height],
-                    [half_width, -half_height],
-                    [half_width, half_height],
-                    [-half_width, half_height],
-                ]),
-                position_tenths_mm: [
-                    i32::try_from(axis_twice.saturating_mul(5))
-                        .map_err(|_| "part_assignment_generic_binding_invalid")?,
-                    i32::try_from(min_y.saturating_add(max_y).saturating_mul(5))
-                        .map_err(|_| "part_assignment_generic_binding_invalid")?,
-                    0,
-                ],
-                direction_milli: if vertical { [0, 1000, 0] } else { [1000, 0, 0] },
-                symmetry: if part.count == 1 {
-                    ori_domain::BeginnerProtrusionSymmetryV1::None
-                } else {
-                    ori_domain::BeginnerProtrusionSymmetryV1::Bilateral
-                },
-                curvature_degrees: 0,
-                joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
-                motion_degrees: [0, 0],
-                side: ori_domain::BeginnerProtrusionSideV1::Either,
-                priority: 50_u8.saturating_add(index as u8 * 5),
-            });
+    if is_general {
+        let feature_count = feature_parts
+            .iter()
+            .try_fold(0_u8, |total, part| total.checked_add(part.count));
+        let Some(feature_count) = feature_count.filter(|count| {
+            (2..=ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1).contains(count)
+        }) else {
+            return Err("part_assignment_generic_binding_invalid".to_owned());
+        };
+        profile.generation_constraints.protrusions =
+            generic_singleton_protrusions_from_assignments_v1(
+                &request.assignments,
+                &candidates,
+                request.selected_outline.bounds,
+                feature_count,
+            )
+            .ok_or_else(|| "part_assignment_generic_binding_invalid".to_owned())?;
+        if ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
+            .is_none_or(|estimate| estimate.protrusion_count != feature_count)
+        {
+            return Err("part_assignment_generic_binding_invalid".to_owned());
         }
-        profile.generation_constraints.protrusions = generic;
     }
     let mut edit_records = Vec::new();
     let mut recorded_splits = std::collections::BTreeSet::new();
@@ -1803,9 +1914,283 @@ fn decode_general_jpeg(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_pair_is_symmetric, decode_general_image, decode_general_png, decode_marker_png,
-        requested_bilateral_part_kind_v1,
+        BeginnerPartAssignmentV1, MAX_BEGINNER_PART_ASSIGNMENTS_V1, candidate_pair_is_symmetric,
+        compact_beginner_target_parts_v1, decode_general_image, decode_general_png,
+        decode_marker_png, effective_beginner_part_assignment_bounds_v1,
+        generic_singleton_protrusions_from_assignments_v1, requested_bilateral_part_kind_v1,
     };
+
+    fn outline_candidate(
+        id: u8,
+        bounds: ori_domain::BeginnerRecognitionBoundsV1,
+    ) -> ori_domain::BeginnerOutlineCandidateV1 {
+        ori_domain::BeginnerOutlineCandidateV1 {
+            id,
+            area_pixels: (bounds.max_x - bounds.min_x + 1) * (bounds.max_y - bounds.min_y + 1),
+            bounds,
+            confidence_reason: ori_domain::BeginnerOutlineConfidenceReasonV1::SolidComponent,
+        }
+    }
+
+    fn assignment(id: u8, kind: ori_domain::BeginnerTargetPartKindV1) -> BeginnerPartAssignmentV1 {
+        BeginnerPartAssignmentV1 {
+            candidate_id: id,
+            kind,
+            source_candidate_ids: Vec::new(),
+            split_fragment: None,
+            split_x: None,
+        }
+    }
+
+    fn aggregate_general_assignment_fixture(
+        count: u8,
+    ) -> (
+        Vec<BeginnerPartAssignmentV1>,
+        Vec<ori_domain::BeginnerOutlineCandidateV1>,
+    ) {
+        use ori_domain::BeginnerTargetPartKindV1::{Fin, Head, Horn, Tail, Torso};
+
+        assert!((2..=ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1).contains(&count));
+        let feature_kinds = if count == 3 {
+            vec![Fin, Fin, Horn]
+        } else {
+            let fin_count = count.saturating_sub(1).min(8);
+            std::iter::repeat_n(Fin, usize::from(fin_count))
+                .chain(std::iter::repeat_n(Tail, usize::from(count - fin_count)))
+                .collect()
+        };
+        let mut assignments = feature_kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| assignment(u8::try_from(index + 2).unwrap(), kind))
+            .collect::<Vec<_>>();
+        assignments.reverse();
+        assignments.insert(1, assignment(0, Torso));
+        assignments.push(assignment(1, Head));
+
+        let mut candidates = vec![
+            outline_candidate(
+                0,
+                ori_domain::BeginnerRecognitionBoundsV1 {
+                    min_x: 0,
+                    min_y: 0,
+                    max_x: 100,
+                    max_y: 100,
+                },
+            ),
+            outline_candidate(
+                1,
+                ori_domain::BeginnerRecognitionBoundsV1 {
+                    min_x: 45,
+                    min_y: 0,
+                    max_x: 55,
+                    max_y: 8,
+                },
+            ),
+        ];
+        candidates.extend((2_u8..count + 2).map(|id| {
+            let coordinate = 8 + u32::from(id - 2) * 7;
+            outline_candidate(
+                id,
+                ori_domain::BeginnerRecognitionBoundsV1 {
+                    min_x: coordinate,
+                    min_y: coordinate,
+                    max_x: coordinate + 4,
+                    max_y: coordinate + 4,
+                },
+            )
+        }));
+        (assignments, candidates)
+    }
+
+    #[test]
+    fn aggregate_general_image_assignments_two_through_fourteen_are_order_stable_and_fail_closed() {
+        use ori_domain::BeginnerTargetPartKindV1::{Fin, Head, Tail, Torso};
+
+        assert_eq!(MAX_BEGINNER_PART_ASSIGNMENTS_V1, 16);
+        for count in 2_u8..=ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1 {
+            let (assignments, candidates) = aggregate_general_assignment_fixture(count);
+            if count == ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1 {
+                assert_eq!(assignments.len(), 16);
+                assert_eq!(candidates.len(), assignments.len());
+            }
+            let target_parts = compact_beginner_target_parts_v1(&assignments)
+                .expect("bounded aggregate general assignments");
+            assert_eq!(target_parts[0].kind, Torso);
+            assert_eq!(target_parts[1].kind, Head);
+            assert_eq!(
+                target_parts
+                    .iter()
+                    .filter(|part| !matches!(part.kind, Torso | Head))
+                    .map(|part| part.count)
+                    .sum::<u8>(),
+                count
+            );
+            if count == 2 {
+                assert_eq!(
+                    target_parts,
+                    [(Torso, 1), (Head, 1), (Tail, 1), (Fin, 1),]
+                        .into_iter()
+                        .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+                        .collect::<Vec<_>>(),
+                    "the lower general boundary must retain one independently evidenced fin and tail"
+                );
+            }
+            let protrusions = generic_singleton_protrusions_from_assignments_v1(
+                &assignments,
+                &candidates,
+                candidates[0].bounds,
+                count,
+            )
+            .expect("individually evidenced aggregate general targets");
+            assert_eq!(protrusions.len(), usize::from(count));
+            assert!(protrusions.iter().enumerate().all(|(index, target)| {
+                target.id == index as u16 + 1
+                    && target.count == 1
+                    && target.symmetry == ori_domain::BeginnerProtrusionSymmetryV1::None
+            }));
+            let constraints = ori_domain::BeginnerGenerationConstraintsV1 {
+                target_category: Some(ori_domain::BeginnerTargetCategoryV1::Animal),
+                target_parts: target_parts.clone(),
+                protrusions: protrusions.clone(),
+                ..ori_domain::BeginnerGenerationConstraintsV1::default()
+            };
+            assert_eq!(
+                ori_domain::beginner_expected_generated_plan_kind_v1(&constraints),
+                Some(ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+            );
+            assert_eq!(
+                ori_domain::estimate_symmetric_parameters_v1(&constraints)
+                    .map(|estimate| estimate.protrusion_count),
+                Some(count)
+            );
+
+            let (mut reordered, _) = aggregate_general_assignment_fixture(count);
+            reordered.reverse();
+            assert_eq!(
+                compact_beginner_target_parts_v1(&reordered),
+                Some(target_parts)
+            );
+            assert_eq!(
+                generic_singleton_protrusions_from_assignments_v1(
+                    &reordered,
+                    &candidates,
+                    candidates[0].bounds,
+                    count,
+                ),
+                Some(protrusions)
+            );
+            let mut unknown_candidate = assignments;
+            unknown_candidate
+                .iter_mut()
+                .find(|assignment| !matches!(assignment.kind, Torso | Head))
+                .unwrap()
+                .candidate_id = u8::MAX;
+            assert!(
+                generic_singleton_protrusions_from_assignments_v1(
+                    &unknown_candidate,
+                    &candidates,
+                    candidates[0].bounds,
+                    count,
+                )
+                .is_none()
+            );
+            assert!(
+                generic_singleton_protrusions_from_assignments_v1(
+                    &reordered,
+                    &candidates,
+                    candidates[0].bounds,
+                    count - 1,
+                )
+                .is_none(),
+                "semantic endpoint-count tampering must fail closed"
+            );
+        }
+
+        let (mut seventeen, _) = aggregate_general_assignment_fixture(
+            ori_domain::MAX_BEGINNER_GENERAL_PROTRUSION_COUNT_V1,
+        );
+        seventeen.push(assignment(16, Tail));
+        assert!(compact_beginner_target_parts_v1(&seventeen).is_none());
+        let same_kind_nine = (0_u8..9).map(|id| assignment(id, Fin)).collect::<Vec<_>>();
+        assert!(compact_beginner_target_parts_v1(&same_kind_nine).is_none());
+    }
+
+    #[test]
+    fn generic_assignment_geometry_is_order_stable_and_split_aware() {
+        use ori_domain::BeginnerTargetPartKindV1::{Fin, Head, Tail, Torso};
+
+        let candidates = vec![
+            outline_candidate(
+                0,
+                ori_domain::BeginnerRecognitionBoundsV1 {
+                    min_x: 0,
+                    min_y: 0,
+                    max_x: 40,
+                    max_y: 40,
+                },
+            ),
+            outline_candidate(
+                1,
+                ori_domain::BeginnerRecognitionBoundsV1 {
+                    min_x: 10,
+                    min_y: 10,
+                    max_x: 19,
+                    max_y: 19,
+                },
+            ),
+            outline_candidate(
+                2,
+                ori_domain::BeginnerRecognitionBoundsV1 {
+                    min_x: 25,
+                    min_y: 20,
+                    max_x: 28,
+                    max_y: 23,
+                },
+            ),
+        ];
+        let mut assignments = vec![
+            assignment(0, Torso),
+            assignment(2, Head),
+            BeginnerPartAssignmentV1 {
+                candidate_id: 1,
+                kind: Fin,
+                source_candidate_ids: vec![1],
+                split_fragment: Some(0),
+                split_x: Some(15),
+            },
+            BeginnerPartAssignmentV1 {
+                candidate_id: 1,
+                kind: Tail,
+                source_candidate_ids: vec![1],
+                split_fragment: Some(1),
+                split_x: Some(15),
+            },
+        ];
+        let left =
+            effective_beginner_part_assignment_bounds_v1(&assignments[2], &candidates).unwrap();
+        let right =
+            effective_beginner_part_assignment_bounds_v1(&assignments[3], &candidates).unwrap();
+        assert_eq!((left.min_x, left.max_x), (10, 14));
+        assert_eq!((right.min_x, right.max_x), (15, 19));
+        let canonical = generic_singleton_protrusions_from_assignments_v1(
+            &assignments,
+            &candidates,
+            candidates[0].bounds,
+            2,
+        )
+        .unwrap();
+        assignments.reverse();
+        assert_eq!(
+            generic_singleton_protrusions_from_assignments_v1(
+                &assignments,
+                &candidates,
+                candidates[0].bounds,
+                2,
+            ),
+            Some(canonical)
+        );
+    }
 
     #[test]
     fn standalone_six_leg_recognition_requests_leg_pair_semantics() {

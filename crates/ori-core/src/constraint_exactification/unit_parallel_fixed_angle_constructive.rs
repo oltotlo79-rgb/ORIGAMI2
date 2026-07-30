@@ -18,6 +18,7 @@ struct CoreShape {
     center: VertexId,
     first_edge: EdgeId,
     second_edge: EdgeId,
+    angle_degrees: f64,
 }
 
 impl CoreShape {
@@ -26,8 +27,8 @@ impl CoreShape {
     }
 }
 
-/// Constructs the three deletion witnesses for the exact unit/parallel/45°
-/// theorem.
+/// Constructs the three deletion witnesses for the exact
+/// unit/parallel/45°-or-135° theorem.
 ///
 /// The semantic theorem is deliberately narrower than the direct theorem: the
 /// two distinct edges must form a three-vertex star at the declared angle
@@ -58,17 +59,28 @@ pub(crate) fn construct_unit_parallel_fixed_angle_residual_exact_deletion_assign
 
     let diagonal_unit = f64::from_bits(0x3fe6_a09e_667f_3bcd);
     let overflow_scale = f64::from_bits(0x5fec_0000_0000_0000);
+    let supplementary_sign = if shape.angle_degrees.to_bits() == 135.0_f64.to_bits() {
+        -1.0
+    } else {
+        1.0
+    };
     let (first_vector, second_vector) = if removed == shape.parallel_id {
         (
             Point2::new(1.0, 0.0),
-            Point2::new(diagonal_unit, diagonal_unit),
+            Point2::new(
+                supplementary_sign * diagonal_unit,
+                supplementary_sign * diagonal_unit,
+            ),
         )
     } else if removed == shape.angle_id {
         (Point2::new(1.0, 0.0), Point2::new(-1.0, 0.0))
     } else if removed == shape.fixed_length_id {
         (
             Point2::new(overflow_scale, 0.0),
-            Point2::new(overflow_scale, overflow_scale),
+            Point2::new(
+                supplementary_sign * overflow_scale,
+                supplementary_sign * overflow_scale,
+            ),
         )
     } else {
         return None;
@@ -122,9 +134,17 @@ fn classify_core(core: &[GeometricConstraintRecordV1]) -> Option<CoreShape> {
                 angle_degrees,
             } if angle.is_none()
                 && first_edge != second_edge
-                && angle_degrees.to_bits() == 45.0_f64.to_bits() =>
+                && [45.0_f64, 135.0_f64]
+                    .into_iter()
+                    .any(|angle| angle_degrees.to_bits() == angle.to_bits()) =>
             {
-                angle = Some((record.id, *vertex, *first_edge, *second_edge));
+                angle = Some((
+                    record.id,
+                    *vertex,
+                    *first_edge,
+                    *second_edge,
+                    *angle_degrees,
+                ));
             }
             GeometricConstraintKindV1::FixedLength { edge, length_mm }
                 if fixed_length.is_none() && length_mm.to_bits() == 1.0_f64.to_bits() =>
@@ -135,7 +155,7 @@ fn classify_core(core: &[GeometricConstraintRecordV1]) -> Option<CoreShape> {
         }
     }
     let (parallel_id, first_edge, second_edge) = parallel?;
-    let (angle_id, center, angle_first, angle_second) = angle?;
+    let (angle_id, center, angle_first, angle_second, angle_degrees) = angle?;
     let (fixed_length_id, fixed_edge) = fixed_length?;
     if !same_unordered_pair(first_edge, second_edge, angle_first, angle_second)
         || (fixed_edge != first_edge && fixed_edge != second_edge)
@@ -149,6 +169,7 @@ fn classify_core(core: &[GeometricConstraintRecordV1]) -> Option<CoreShape> {
         center,
         first_edge,
         second_edge,
+        angle_degrees,
     })
 }
 

@@ -5,15 +5,19 @@
 2026-07-30 authoritative semantic inventory correction: `DirectConstraintConflictKindV1` の24 wire-compatible variantすべてに、限定形の各原因削除後を独立exact SAT witnessで再認証する24/24 sound semantic proof familyがある。現行model IDは `geometric_constraint_deterministic_binary64_semantic_mus_v4` である。本節が以下の22/24・v3記録を上書きする現行正本であり、過去の記録自体は履歴として保持する。
 
 - 23番目の `NonParallelFixedAngleInParallelComponent` は、異なる3実在辺に対するexact 2-hopの `Parallel` 2件、両terminal間のbit-exact `FixedAngle(90.0)`、両terminalのbit-exact `FixedLength(1.0)` 2件から成るcanonical 5-ID causeだけを対象とする。semantic MUSへの昇格はsource topologyがcommon-center starで、5件すべての単独削除に専用finite production residual-only witnessがある場合に限る。非単位長、固定長欠落、90度の非exact値、1-hop・3-hop以上・任意長pathはsolver-required `Unknown`を維持し、nonstar topologyはdirect theoremを保持しても専用semantic constructorではfail closedとする。
-- 24番目の `ParallelWithFixedNonParallelAngle` は、同じ2実在辺に対する `Parallel`、bit-exact `FixedAngle(45.0)`、どちらか片側のbit-exact `FixedLength(1.0)` 1件から成るcanonical 3-ID causeだけを対象とする。両側にunit lengthがある場合も最小 `ConstraintId` の1件だけをcanonicalに選び、semantic MUSへの昇格はcommon-center starと3件すべての単独削除witnessを要求する。45度またはunit長の非exact値、one-sidedなgeneric angle、nonstar topologyはfail closedとし、generic angleの既存4-ID direct boundaryは両側unit lengthを要求したまま維持する。
+- 24番目の `ParallelWithFixedNonParallelAngle` は、同じ2実在辺に対する `Parallel`、bit-exact `FixedAngle(45.0)` または `FixedAngle(135.0)`、どちらか片側のbit-exact `FixedLength(1.0)` 1件から成るcanonical 3-ID causeだけを対象とする。両側にunit lengthがある場合も最小 `ConstraintId` の1件だけをcanonicalに選び、semantic MUSへの昇格はcommon-center starと3件すべての単独削除witnessを要求する。45/135度以外または45/135度の非exact値、unit長の非exact値、one-sidedなgeneric angle、nonstar topologyはfail closedとし、generic angleの既存4-ID direct boundaryは両側unit lengthを要求したまま維持する。
 
-EDT-009は一般11制約種の完全SAT/UNSAT決定、完全な一般矛盾原因、一般MUS探索をまだ提供しないため部分実装のままである。MUST集計は実装済み85 / 部分実装2 / 未着手0、数式・幾何制約は85%、全体は81.96%（表示82.0%）から変更しない。
+2026-07-30 EDT-009 bounded constructive SAT追補: 現在配置がexact residualを満たさない場合でも、全11種のsingleton制約を個別にproduction exact certificateへ通し、相互に共有する頂点座標がbit一致する1..=8件の文書だけ、detachedな候補配置を構成して文書全体のproduction residualを再認証する。native DTOは`current_assignment`と`detached_constructed_assignment`を明示的に分離し、strict TypeScript parserはこの2値以外を拒否する。日英UIもdetached証拠を「現在配置が満たす」と表示せず、別配置の存在証拠でproject mutationを認可しないことを表示する。候補座標はDTOへ公開せず、DirectConflictを常に優先し、9件以上、共有座標不一致、resource、取消、deadlineは肯定しない。
+
+EDT-009は一般11制約種の完全SAT/UNSAT決定、完全な一般矛盾原因、一般MUS探索をまだ提供しないため部分実装のままである。MUST集計は実装済み85 / 部分実装2 / 未着手0から変更しない。次期反映headのCI発効までは数式・幾何制約85%、全体81.96%（表示82.0%）を維持し、発効条件成立後だけ数式・幾何制約86%、全体82.29%（表示82.3%）を採用する。
 
 履歴（2026-07-23 checkpoint）: SIM-010静的遷移列証拠`469cbf9`は、正厚みのboundedな離散sample列を非認可opaque chainへ封印した。各sampleのnative静的proofだけを保持し、連続運動・project mutationを認可しないため、このcheckpointではSIM-010を部分実装、全体完成度を79.3%据え置きとした。
 
 ## 完成率
 
-**全体完成率:** 下記の正本発効条件が成立していれば **81.96%（表示82.0%）**、成立前は **79.32%（表示79.3%）**。
+**全体完成率:** 現行正本は **81.96%（表示82.0%）**。下記の次期反映head自身に対する発効条件が成立した場合だけ **82.29%（表示82.3%）** を正本として発効する。
+
+「次期反映head」は、数式・幾何制約86%、初心者向け自動設計38%および本発効規則を含むremote `main` headを指す。次期反映headとexactに同じ`head_sha`の単一CI run attemptで、必須7 job（`dependency-advisory-audit`、`frontend`、`slicer-acceptance`、`rust (macos-latest)`、`rust (windows-latest)`、`windows-bundle`、`macos-bundle`）がすべてterminalの`conclusion=success`となり、同じrunの`rustsec-warning-review`、`sample-viewer-runtime-log`、`ORIGAMI2-windows-nsis-${run_id}`、`ORIGAMI2-macos-app-${run_id}`の4 artifactが監査時に生成済みかつ`expired=false`であることを確認するまで、81.96%（表示82.0%）を維持する。`frontend` jobにはgeneral count 14、complete animal、complete insectの3 browser lifecycleを含める。別head・別attempt・skip・cancel・failure・artifact欠落・計上対象の未push差分を混在させない。
 
 「反映head」は、下記81.96%重み表と本発効規則を含むremote `main` headを指す。反映headとexactに同じ`head_sha`の単一CI run attemptで、必須7 job（`dependency-advisory-audit`、`frontend`、`slicer-acceptance`、`rust (macos-latest)`、`rust (windows-latest)`、`windows-bundle`、`macos-bundle`）がすべてterminalの`conclusion=success`となり、`rustsec-warning-review`、`sample-viewer-runtime-log`、`ORIGAMI2-windows-nsis-${run_id}`、`ORIGAMI2-macos-app-${run_id}`の4 artifactが発効監査時に生成済みかつ`expired=false`であることを確認した時点で、81.96%（表示82.0%）を正本として発効する。queued / in-progress、job未生成、success以外、artifact欠落のいずれかがある間は79.32%（表示79.3%）を維持する。失敗したheadは発効せず、後続headはそのexact `head_sha`で全条件を満たす必要がある。一度記録した発効はartifact retention期限後も失効せず、green後の文書追記commitを要求しない。
 
@@ -25,9 +29,9 @@ EDT-009は一般11制約種の完全SAT/UNSAT決定、完全な一般矛盾原�
 
 現行のcross-runtime replay境界は、`ori_binary64_libm_0_2_16_no_arch_cardinal_v1`へ束縛した証明権威とschema v2永続生成である。`libm` 0.2.16を`default-features=false`で固定し、`libm/arch`をrelease feature-tree gateで拒否したうえで、x86-64 Windows/MSVC、x86-64 Linux/GNU、AArch64 macOSのgolden bit corpusが通るtargetだけ`replayable_across_runtimes=true`とする。その他のtarget（ARM Linux/WSLを含む）は同じkernelをcompileできても`false`へfail-closedとし、数値solverのplatform超越関数はpreview専用の非権威経路に隔離する。この契約は凍結pure-Rust kernelのtested triple間bit replayを保証するが、有理区間/Zivによる全入力の正しい丸めの形式証明や、未検証targetへの一般化は主張しない。Windows単独releaseとWindows/macOS正式release matrixはartifactと同じrelease profileでgolden corpusをbuild前に実行し、Linux CIのdebug-profile gateも維持する。この境界追加は堅牢化であり、全体81.96%（表示82.0%）を変更しない。
 
-下表は2026-07-23監査で旧79.32%の領域入力を全件再評価し、反映前base CIを通過した81.96%の発効対象値である。監査では「3D 75%・制約85%・初心者向け自動設計35%」へ過大計上を是正する一方、「保存94%・経路78%・折り手順92%」の利用者経路を再評価した。根拠と二重計上監査は`docs/progress-reassessment-pending-ci-2026-07-22.md`に記録する。
+下表は2026-07-23監査で発効した81.96%を基準に、2026-07-30の一般判定・一般自動設計sliceを再評価した次期候補である。数式・幾何制約は、1..=8件の互換singletonからdetachedな厳密配置を構成・全残差再認証し、現在配置の充足証拠とnative DTO・strict frontend・日英UIで明確に分離した範囲だけ85%から86%へ更新する。初心者向け自動設計は、general semantic count 2..=14の生成・Apply・Undo/Redo・再読込、count 15のfail-closed、認識parser/applyの16件境界、production frontendを通るcount 14 browser lifecycleを一つの能力bundleとして35%から38%へ更新する。根拠と二重計上監査は`docs/progress-reassessment-pending-ci-2026-07-22.md`に記録する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。旧79.32%への単純な差分加算は行わず、10領域を再合計して81.96%とした。入力値自体が概数なので、81.96%は追跡用の計算値であって測定誤差のない精密値ではない。任意topologyの一般経路、一般正厚・一般物理motion、一般目標からの一枚紙設計、実際の署名済みGitHub Release公開は引き続き未完了である。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。旧値への単純な差分加算やbrowser・境界testの二重加算は行わず、10領域を再合計して82.29%とした。入力値自体が概数なので、82.29%は追跡用の計算値であって測定誤差のない精密値ではない。任意topologyの一般経路、一般正厚・一般物理motion、一般目標からの一枚紙設計、実際の署名済みGitHub Release公開は引き続き未完了である。
 
 ## 重み付け
 
@@ -36,23 +40,23 @@ EDT-009は一般11制約種の完全SAT/UNSAT決定、完全な一般矛盾原�
 | 要件・基本設計・技術検証 | 5% | 85% | 4.25% | trust・proof・resource・persistence境界をversion固定したcodeと回帰へ接続。一般物理・一般自動設計の証明範囲は未完成 |
 | プロジェクト・保存・履歴 | 8% | 94% | 7.52% | strictな`.ori2`・展開folder・recovery、認証済みUndo/Redo、autosave authorityを実装。Windowsオーナー実機障害matrixと正式schema compatibility policyを残す |
 | 2D展開図エディター | 15% | 100% | 15.00% | 基本編集、9種スナップ、5線種、layer文書・edge assignment・管理UI、表示・lock・透明度、注釈・下絵object、面属性編集、複数選択の移動・複製・任意軸対称編集を保存・復旧・履歴・native IPC・Canvasへ接続 |
-| 数式・幾何制約 | 9% | 85% | 7.65% | 数式入力、11種制約、有界solver、原子的Apply、保存・履歴・10,000件境界、現在配置の全11種exact-zero一般肯定判定とaxis制約の候補exact化を実装。完全な一般SAT/UNSAT決定と一般MUSは未完成 |
+| 数式・幾何制約 | 9% | 86% | 7.74% | 数式入力、11種制約、有界solver、原子的Apply、保存・履歴・10,000件境界、現在配置の全11種exact-zero一般肯定判定、axis制約の候補exact化、互換singleton 1..=8件のdetached厳密配置構成と全残差再認証を実装。完全な一般SAT/UNSAT決定と一般MUSは未完成 |
 | 3D折り・紙厚・衝突 | 17% | 75% | 12.75% | Tree・限定cycle・限定正厚のproof、preview、原子的Apply、限定層順viewerを実装。一般正厚・一般多面・任意self-contact・一般物理motionは未証明 |
 | 折り可能性・経路探索 | 18% | 78% | 14.04% | dyadic 3/5/9、Tree/cycle issuer proof、preview、atomic Applyを実装。任意non-tree・dense・multi-cycleの一般経路と安全なcycle mutationを残す |
 | 折り手順・PDF | 10% | 92% | 9.20% | named compiler、認証済みpreview/Apply、保存、PDF/SVG ZIPを実装。未証明技法の連続3D certificate付きcompilerを残す |
 | 入出力・互換性 | 5% | 100% | 5.00% | `.ori2`、FOLD/SVG取込・展開図/手順/3D書出し、PBR・表裏texture、複数hinge watertight union、animation、FOLD 3D複数frame、正厚manifold reportを実装。独立reader、Khronos validator/Sample Viewer、Blender LTS、PrusaSlicer実機受入をCIへ固定 |
 | 多言語・設定・配布・QA | 5% | 75% | 3.75% | frontend/Rust自動回帰、Windows/macOS CI、診断、テーマ・shortcut・レイアウト、日英切替、更新確認に加え、署名・SBOM・checksum・provenance・prerelease/stable promotionを持つ正式版workflowを実装。実際のGitHub Release公開を残す |
-| 初心者向け自動設計 | 8% | 35% | 2.80% | bounded custom target・一般木候補・画像/GLB consensusを実装。一般treeの平坦可解性合成、一般画像/GLB認識、一般目標からの一枚紙生成を残す |
-| **合計** | **100%** | — | **81.96%** | **表示82.0%** |
+| 初心者向け自動設計 | 8% | 38% | 3.04% | bounded custom target・一般木候補・画像/GLB consensusに加え、general semantic count 2..=14の生成・Apply・Undo/Redo・再読込とcount 14 browser lifecycleを実装。count 15以上、一般treeの平坦可解性合成、一般画像/GLB認識、一般目標からの一枚紙生成を残す |
+| **合計** | **100%** | — | **82.29%** | **表示82.3%（同一head CI発効待ち）** |
 
-## 81.96%時点でも残る未完境界
+## 82.29%候補時点でも残る未完境界
 
-- EDT-009はlegacy 21 variantのwire互換を維持し、binary64 exact-zero implication closure専用tag 2件と二固定root比率domain専用tag 1件を加えて`DirectConstraintConflictKindV1`を合計24 variantとした。現在配置の全11種一般肯定判定、限定exact witness生成、削除ごとの独立SAT証人を持つ22 familyのsemantic MUS再認証は`geometric_constraint_deterministic_binary64_semantic_mus_v3`と凍結超越関数modelを使い、検証済みtargetではcross-runtime replay可能である。22番目の`PerpendicularOrientationsInParallelComponent`は、異なる3実在辺`e0`・`e1`・`e2`に対する`Horizontal(e0)`、`Parallel(e0,e1)`、`Parallel(e1,e2)`、`Vertical(e2)`、bit-exactな`FixedLength(e2, 1.0)`というcanonical 5-IDのunit-terminal two-hop coreだけを対象とし、semantic MUSは3辺がsource topologyでcommon-center starを成す場合に5件すべての削除をproduction residual-only overlayで独立再認証できる範囲へ限定する。非単位終端、固定長欠落、3-hop以上または任意長のparallel pathはsolver-required `Unknown`を維持し、nonstar topologyはdirect theoremを保持しても専用semantic constructorでは肯定しない。残る2 familyの`NonParallelFixedAngleInParallelComponent`と`ParallelWithFixedNonParallelAngle`もsemantic MUS境界で`Unknown`へfail-closedとする。ただし任意の近似解のexact化、任意入力の完全なSAT/UNSAT決定、認識外の完全な一般矛盾原因、一般MUS探索は未完成である。
+- EDT-009は24 wire-compatible direct conflict variantを維持し、24 familyすべてを限定shape内の削除ごとの独立exact SAT witnessで再認証するsemantic MUS v4を持つ。`ParallelWithFixedNonParallelAngle`の専用familyはcommon-center star、片側unit terminal、bit-exact 45度または135度に限定する。加えて、単独または相互にbit互換な2..=8件のsingleton制約についてdetachedな厳密配置を構成し、全production residualを再認証するが、その座標をDTOへ公開せずproject mutationも認可しない。9件以上の互換合成、任意近似解のexact化、任意入力の完全なSAT/UNSAT決定、認識外の完全な一般矛盾原因、一般MUS探索は未完成である。
 - 任意のnon-tree・dense・multi-cycle topologyに対する一般経路探索と安全なcycle mutation。
 - 任意角度・分岐・self-contactを含む一般正厚continuous motion、衝突回避、一般複数層transport、層順証明。
 - 摩擦、弾性、塑性、圧縮、手指把持を含む一般物理motion。
 - 花弁等の未証明技法を連続3D certificate付きcompilerへ昇格すること。
-- 任意の一般画像・一般GLBから意味部位・surfaceを認識し、一般的な一枚紙展開図と折り手順を生成すること。
+- count 15以上のgeneral semantic target、任意の一般画像・一般GLBからの意味部位・surface認識、一般的な一枚紙展開図と折り手順の生成。
 - 展開folderのWindowsオーナー実機E2E、権限・容量枯渇・同期softwareを含む障害matrix。
 - 複数世代schema migrationの正式compatibility policy。
 - 実際の署名済みGitHub Release公開、外部配布authority、stable promotionの運用実績。

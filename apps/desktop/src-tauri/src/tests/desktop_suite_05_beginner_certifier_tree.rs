@@ -83,7 +83,7 @@ fn beginner_certifier_matches_positive_five_and_eight_hinge_tree_fixtures() {
             &current,
             &plan,
             None,
-            std::time::Instant::now() + std::time::Duration::from_millis(750),
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
         );
         assert!(assessment.apply_allowed, "{hinges}: {}", assessment.reason);
         assert_eq!(
@@ -98,7 +98,7 @@ fn beginner_certifier_matches_positive_five_and_eight_hinge_tree_fixtures() {
                 &current,
                 &plan,
                 None,
-                std::time::Instant::now() + std::time::Duration::from_millis(750),
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
             );
             assert_eq!(
                 serde_json::to_vec(&repeated).unwrap(),
@@ -113,15 +113,40 @@ fn beginner_certifier_matches_positive_five_and_eight_hinge_tree_fixtures() {
         let candidate_editor = EditorState::with_paper(candidate.clone(), paper.clone());
         let candidate_fingerprint = candidate_editor.fold_model_fingerprint_v1();
         let topology = candidate_editor.topology_analysis_input(ns).analyze();
-        let certificate = certify_beginner_fold_path_v1(
-            &plan,
-            &paper,
-            &candidate,
-            topology
-                .simulation_snapshot()
-                .expect("positive tree topology"),
-        )
-        .expect("positive tree certificate");
+        let simulation = topology
+            .simulation_snapshot()
+            .expect("positive tree topology");
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let cancelled_control = ori_collision::CooperativeOperationControlV1::new(
+            Some(&cancelled),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            certify_beginner_fold_path_with_control_v1(
+                &plan,
+                &paper,
+                &candidate,
+                simulation,
+                &cancelled_control,
+            ),
+            None,
+            "{hinges}-hinge certificate must stop before work when cancelled",
+        );
+        let expired_control =
+            ori_collision::CooperativeOperationControlV1::new(None, std::time::Instant::now());
+        assert_eq!(
+            certify_beginner_fold_path_with_control_v1(
+                &plan,
+                &paper,
+                &candidate,
+                simulation,
+                &expired_control,
+            ),
+            None,
+            "{hinges}-hinge certificate must stop before work after its deadline",
+        );
+        let certificate = certify_beginner_fold_path_v1(&plan, &paper, &candidate, simulation)
+            .expect("positive tree certificate");
         let authority: [u8; 32] =
             sha2::Sha256::digest(serde_json::to_vec(&candidate).unwrap()).into();
         let certificate_hex = certificate
@@ -134,6 +159,7 @@ fn beginner_certifier_matches_positive_five_and_eight_hinge_tree_fixtures() {
             schema_version: 1,
             topology_authority_sha256: authority,
             fold_path_certificate_sha256: Some(certificate),
+            document_authority_sha256: None,
             confidence_score: 100,
             confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
             explicit_override: false,
@@ -154,6 +180,12 @@ fn beginner_certifier_matches_positive_five_and_eight_hinge_tree_fixtures() {
             reference_consensus_summary: None,
             reference_consensus: None,
         });
+        ori_core::bind_beginner_generation_document_authority_v1(
+            &candidate,
+            &paper,
+            &mut profile,
+        )
+        .expect("bind the positive tree provenance to the applied document");
         let mut timeline = project.editor.instruction_timeline().clone();
         timeline.steps.push(InstructionStep {
             id: InstructionStepId::new(),

@@ -98,6 +98,53 @@ fn grid_profile_is_temporary_canonical_and_does_not_change_free_parameters() {
     .into_iter()
     .find(|plan| plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase)
     .unwrap();
+    assert_eq!(
+        plan.crease_pattern
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Valley)
+            .count(),
+        8,
+        "the default valley-first choice must cover four semantic rays and four support creases"
+    );
+    assert!(
+        plan.crease_pattern
+            .edges
+            .iter()
+            .all(|edge| edge.kind != EdgeKind::Mountain),
+        "corner support must not introduce a fold assignment outside the valley-first choice"
+    );
+    assert!(
+        plan.instruction_codes
+            .iter()
+            .any(|code| code == "bounded_radial_corner_support_v1:added=4:covered=4"),
+        "the support/semantic distinction must be explicitly bound"
+    );
+    assert!(
+        plan.crease_pattern.edges[..4].iter().all(|edge| project
+            .editor
+            .paper()
+            .boundary_vertices
+            .contains(&edge.end)),
+        "the deterministic four-corner support prefix must use the live paper corners"
+    );
+    assert_eq!(
+        plan.crease_pattern.edges[4..]
+            .iter()
+            .map(|edge| edge.id)
+            .collect::<Vec<_>>(),
+        (0..4)
+            .map(|index| EdgeId::derive_v5(
+                project.project_id,
+                format!(
+                    "beginner-plan-{:?}-e-{index}",
+                    ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
+                )
+                .as_bytes(),
+            ))
+            .collect::<Vec<_>>(),
+        "the exact four semantic leg bindings must remain the suffix after support insertion"
+    );
     let project_id = project.project_id;
     let instance_id = project.instance_id;
     let revision = project.editor.revision();
@@ -107,11 +154,22 @@ fn grid_profile_is_temporary_canonical_and_does_not_change_free_parameters() {
         project_id,
         revision,
         plan.clone(),
+        temporary.clone(),
+        None,
     )
     .unwrap();
     assert_eq!(snapshot.revision, revision + 1);
     assert!(
-        apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan,).is_err()
+        apply_grid_plan_document(
+            &mut project,
+            instance_id,
+            project_id,
+            revision,
+            plan,
+            temporary,
+            None,
+        )
+        .is_err()
     );
     let undone = execute_undo(&mut project, project_id, snapshot.revision).unwrap();
     assert_eq!(undone.revision, snapshot.revision + 1);
@@ -224,6 +282,7 @@ fn complete_insect_grid_preserves_all_five_pair_dimensions_and_bindings() {
     .unwrap();
     let project_id = project.project_id;
     let instance_id = project.instance_id;
+    let configured = temporary_symmetric_profile_for_grid(&generatable, point).unwrap();
     let profile_revision = project.editor.revision();
     let profile_saved = execute_command(
         &mut project,
@@ -241,6 +300,8 @@ fn complete_insect_grid_preserves_all_five_pair_dimensions_and_bindings() {
         project_id,
         revision,
         plan.clone(),
+        configured.clone(),
+        None,
     )
     .unwrap();
     let generated_steps = &project.editor.instruction_timeline().steps;
@@ -250,7 +311,16 @@ fn complete_insect_grid_preserves_all_five_pair_dimensions_and_bindings() {
         "Complete composite insect grid candidate"
     );
     assert!(
-        apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan).is_err()
+        apply_grid_plan_document(
+            &mut project,
+            instance_id,
+            project_id,
+            revision,
+            plan,
+            configured,
+            None,
+        )
+        .is_err()
     );
     let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
     let redone = execute_redo(&mut project, project_id, undone.revision).unwrap();

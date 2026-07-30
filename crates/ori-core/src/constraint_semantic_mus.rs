@@ -897,7 +897,9 @@ fn is_unit_parallel_fixed_angle_core_shape(core: &[GeometricConstraintRecordV1])
                 fixed_unit_count += 1;
             }
             GeometricConstraintKindV1::FixedAngle { angle_degrees, .. }
-                if angle_degrees.to_bits() == 45.0_f64.to_bits() =>
+                if [45.0_f64, 135.0_f64]
+                    .into_iter()
+                    .any(|angle| angle_degrees.to_bits() == angle.to_bits()) =>
             {
                 fixed_angle_count += 1;
             }

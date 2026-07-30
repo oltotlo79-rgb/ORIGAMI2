@@ -3,10 +3,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     BeginnerDetailLevelV1, BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1,
-    BeginnerProtrusionSymmetryV1, BeginnerSkeletonPointV1, BeginnerSkeletonSegmentV1,
-    BeginnerTargetAssetReferenceV1, BeginnerTargetCategoryV1, BeginnerTargetPartKindV1,
-    BeginnerTargetPartRecordV1, CreasePattern, Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex,
-    VertexId,
+    BeginnerProtrusionSymmetryV1, BeginnerProtrusionTargetV1, BeginnerSkeletonPointV1,
+    BeginnerSkeletonSegmentV1, BeginnerTargetAssetReferenceV1, BeginnerTargetCategoryV1,
+    BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, CreasePattern, Edge, EdgeId, EdgeKind,
+    Point2, ProjectId, Vertex, VertexId,
 };
 
 mod extended_bilateral_endpoints;
@@ -1726,8 +1726,18 @@ fn parameterized_center_axis_endpoint(
     let target = constraints.protrusions.iter().find(|target| {
         target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
     })?;
-    let (minimum_x, maximum_x, minimum_y, maximum_y) =
-        skeleton_bounds(&constraints.skeleton_segments)?;
+    parameterized_center_axis_endpoint_for_target(target, &constraints.skeleton_segments, vertical)
+}
+
+fn parameterized_center_axis_endpoint_for_target(
+    target: &BeginnerProtrusionTargetV1,
+    skeleton_segments: &[BeginnerSkeletonSegmentV1],
+    vertical: bool,
+) -> Option<(f64, f64)> {
+    if target.count != 1 || target.symmetry != BeginnerProtrusionSymmetryV1::None {
+        return None;
+    }
+    let (minimum_x, maximum_x, minimum_y, maximum_y) = skeleton_bounds(skeleton_segments)?;
     let span_x = maximum_x.checked_sub(minimum_x)?;
     let span_y = maximum_y.checked_sub(minimum_y)?;
     if span_x <= 0
@@ -1742,12 +1752,13 @@ fn parameterized_center_axis_endpoint(
     } else {
         target.direction_milli[0]
     };
-    let length_ratio = f64::from(target.length_tenths_mm) / f64::from(primary_span as u32);
+    let length_ratio =
+        f64::from(target.length_tenths_mm) / f64::from(u32::try_from(primary_span).ok()?);
     if !(0.02..=0.45).contains(&length_ratio) || primary_direction == 0 {
         return None;
     }
-    let center_y =
-        f64::from(target.position_tenths_mm[1].checked_sub(minimum_y)?) / f64::from(span_y as u32);
+    let center_y = f64::from(target.position_tenths_mm[1].checked_sub(minimum_y)?)
+        / f64::from(u32::try_from(span_y).ok()?);
     let reach = length_ratio
         * (0.75 + f64::from(target.priority) / 400.0)
         * f64::from(primary_direction.unsigned_abs())
@@ -1975,6 +1986,15 @@ fn has_bilateral_skeleton(constraints: &BeginnerGenerationConstraintsV1) -> bool
     })
 }
 
+fn try_endpoint_candidates_v1<const COUNT: usize>(
+    candidates: [(f64, f64); COUNT],
+) -> Option<Vec<(f64, f64)>> {
+    let mut result = Vec::new();
+    result.try_reserve_exact(COUNT).ok()?;
+    result.extend(candidates);
+    Some(result)
+}
+
 fn bounded_generic_composite_endpoints(
     constraints: &BeginnerGenerationConstraintsV1,
 ) -> Option<Vec<(f64, f64)>> {
@@ -2077,27 +2097,30 @@ fn bounded_generic_composite_endpoints(
         {
             return None;
         }
-        let mut isolated = constraints.clone();
-        isolated
-            .protrusions
-            .retain(|candidate| candidate.id == target.id);
         let candidates = match (target.count, target.symmetry) {
             (1, BeginnerProtrusionSymmetryV1::None) => {
-                vec![
-                    parameterized_center_axis_endpoint(
-                        &isolated,
-                        target.direction_milli[1].unsigned_abs()
-                            >= target.direction_milli[0].unsigned_abs(),
+                try_endpoint_candidates_v1([parameterized_center_axis_endpoint_for_target(
+                    target,
+                    &constraints.skeleton_segments,
+                    target.direction_milli[1].unsigned_abs()
+                        >= target.direction_milli[0].unsigned_abs(),
+                )
+                .or_else(|| {
+                    parameterized_landmark_endpoint_for_target(
+                        target,
+                        &constraints.skeleton_segments,
                     )
-                    .or_else(|| parameterized_landmark_endpoint(&isolated))?,
-                ]
+                })?])?
             }
-            (2 | 4, BeginnerProtrusionSymmetryV1::Bilateral) => parameterized_symmetric_endpoints(
-                &isolated,
-                target.count,
-                target.direction_milli[1].unsigned_abs() > target.direction_milli[0].unsigned_abs(),
-            )?
-            .to_vec(),
+            (2 | 4, BeginnerProtrusionSymmetryV1::Bilateral) => {
+                try_endpoint_candidates_v1(parameterized_symmetric_endpoints_for_target(
+                    target,
+                    &constraints.skeleton_segments,
+                    target.count,
+                    target.direction_milli[1].unsigned_abs()
+                        > target.direction_milli[0].unsigned_abs(),
+                )?)?
+            }
             (6 | 8, BeginnerProtrusionSymmetryV1::Bilateral) => {
                 extended_bilateral_endpoints::parameterized_extended_bilateral_endpoints_v1(
                     target,
@@ -2346,14 +2369,14 @@ fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -
         .collect()
 }
 
-fn parameterized_landmark_endpoint(
-    constraints: &BeginnerGenerationConstraintsV1,
+fn parameterized_landmark_endpoint_for_target(
+    target: &BeginnerProtrusionTargetV1,
+    skeleton_segments: &[BeginnerSkeletonSegmentV1],
 ) -> Option<(f64, f64)> {
-    let target = constraints.protrusions.iter().find(|target| {
-        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
-    })?;
-    let (minimum_x, maximum_x, minimum_y, maximum_y) =
-        skeleton_bounds(&constraints.skeleton_segments)?;
+    if target.count != 1 || target.symmetry != BeginnerProtrusionSymmetryV1::None {
+        return None;
+    }
+    let (minimum_x, maximum_x, minimum_y, maximum_y) = skeleton_bounds(skeleton_segments)?;
     let span_x = maximum_x.checked_sub(minimum_x)?;
     let span_y = maximum_y.checked_sub(minimum_y)?;
     if span_x <= 0 || span_y <= 0 {
@@ -2367,14 +2390,15 @@ fn parameterized_landmark_endpoint(
     } else {
         target.direction_milli[0]
     };
-    let length_ratio = f64::from(target.length_tenths_mm) / f64::from(primary_span as u32);
+    let length_ratio =
+        f64::from(target.length_tenths_mm) / f64::from(u32::try_from(primary_span).ok()?);
     if !(0.02..=0.45).contains(&length_ratio) || primary_direction == 0 {
         return None;
     }
-    let x =
-        f64::from(target.position_tenths_mm[0].checked_sub(minimum_x)?) / f64::from(span_x as u32);
-    let y =
-        f64::from(target.position_tenths_mm[1].checked_sub(minimum_y)?) / f64::from(span_y as u32);
+    let x = f64::from(target.position_tenths_mm[0].checked_sub(minimum_x)?)
+        / f64::from(u32::try_from(span_x).ok()?);
+    let y = f64::from(target.position_tenths_mm[1].checked_sub(minimum_y)?)
+        / f64::from(u32::try_from(span_y).ok()?);
     let reach = length_ratio
         * (0.75 + f64::from(target.priority) / 400.0)
         * f64::from(primary_direction.unsigned_abs())
@@ -2409,8 +2433,24 @@ fn parameterized_symmetric_endpoints(
     let target = constraints.protrusions.iter().find(|target| {
         target.count == count && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
     })?;
-    let (minimum_x, maximum_x, minimum_y, maximum_y) =
-        skeleton_bounds(constraints.skeleton_segments.as_slice())?;
+    parameterized_symmetric_endpoints_for_target(
+        target,
+        constraints.skeleton_segments.as_slice(),
+        count,
+        vertical,
+    )
+}
+
+fn parameterized_symmetric_endpoints_for_target(
+    target: &BeginnerProtrusionTargetV1,
+    skeleton_segments: &[BeginnerSkeletonSegmentV1],
+    count: u8,
+    vertical: bool,
+) -> Option<[(f64, f64); 4]> {
+    if target.count != count || target.symmetry != BeginnerProtrusionSymmetryV1::Bilateral {
+        return None;
+    }
+    let (minimum_x, maximum_x, minimum_y, maximum_y) = skeleton_bounds(skeleton_segments)?;
     let span_x = maximum_x.checked_sub(minimum_x)?;
     let span_y = maximum_y.checked_sub(minimum_y)?;
     if span_x <= 0 || span_y <= 0 {
@@ -2431,12 +2471,13 @@ fn parameterized_symmetric_endpoints(
         return None;
     }
     let primary_span = if vertical { span_y } else { span_x };
-    let length_ratio = f64::from(target.length_tenths_mm) / f64::from(primary_span as u32);
+    let length_ratio =
+        f64::from(target.length_tenths_mm) / f64::from(u32::try_from(primary_span).ok()?);
     let root_width = target
         .root_width_tenths_mm
         .unwrap_or(u32::from(target.thickness_tenths_mm));
     let tip_width = target.tip_width_tenths_mm.unwrap_or(root_width);
-    let width_ratio = f64::from(root_width.saturating_add(tip_width))
+    let width_ratio = f64::from(root_width.checked_add(tip_width)?)
         / 2.0
         / f64::from(u32::try_from(span_x.min(span_y)).ok()?);
     if !(0.02..=0.45).contains(&length_ratio) || !(0.001..=0.25).contains(&width_ratio) {
@@ -2447,7 +2488,7 @@ fn parameterized_symmetric_endpoints(
     let reach = length_ratio * priority_scale * direction_scale;
     let spread = (width_ratio * 2.0).clamp(0.05, 0.2);
     let center_offset = target.position_tenths_mm[1].checked_sub(minimum_y)?;
-    let center_y = f64::from(center_offset) / f64::from(span_y as u32);
+    let center_y = f64::from(center_offset) / f64::from(u32::try_from(span_y).ok()?);
     let endpoints = if vertical {
         [
             (0.5 - spread, center_y - reach),
@@ -3127,6 +3168,73 @@ mod tests {
             generate_beginner_plans_v1(namespace, &source, &ids, &off_axis),
             Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
+    }
+
+    #[test]
+    fn generic_legacy_candidate_buffers_are_bounded_and_arithmetic_fail_closed() {
+        let single = try_endpoint_candidates_v1([(0.25, 0.75)]).expect("one bounded candidate");
+        assert_eq!(single.as_slice(), &[(0.25, 0.75)]);
+        let four =
+            try_endpoint_candidates_v1([(0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75)])
+                .expect("four bounded candidates");
+        assert_eq!(four.len(), 4);
+        assert_eq!(four[0], (0.25, 0.25));
+        assert_eq!(four[3], (0.75, 0.75));
+
+        for count in [2, 4] {
+            let mut target = bilateral_protrusion(1, count);
+            target.length_tenths_mm = 5;
+            target.position_tenths_mm = [0, 0, 0];
+            let constraints = BeginnerGenerationConstraintsV1 {
+                skeleton_segments: vec![
+                    skeleton(10, -100, -100, 100, -100),
+                    skeleton(20, 100, -100, 100, 100),
+                ],
+                protrusions: vec![target],
+                ..BeginnerGenerationConstraintsV1::default()
+            };
+            let vertical = count == 4;
+            let candidates = parameterized_symmetric_endpoints(&constraints, count, vertical)
+                .expect("legacy bilateral candidates");
+            assert_eq!(
+                parameterized_symmetric_endpoints_for_target(
+                    &constraints.protrusions[0],
+                    &constraints.skeleton_segments,
+                    count,
+                    vertical,
+                ),
+                Some(candidates)
+            );
+            let buffered =
+                try_endpoint_candidates_v1(candidates).expect("bounded legacy candidate buffer");
+            assert_eq!(buffered.len(), 4);
+            assert_eq!(buffered.as_slice(), candidates.as_slice());
+
+            let mut width_overflow = constraints;
+            width_overflow.protrusions[0].root_width_tenths_mm = Some(u32::MAX);
+            width_overflow.protrusions[0].tip_width_tenths_mm = Some(u32::MAX);
+            assert!(parameterized_symmetric_endpoints(&width_overflow, count, vertical).is_none());
+        }
+
+        let axis_overflow = BeginnerGenerationConstraintsV1 {
+            skeleton_segments: vec![
+                skeleton(10, 1, 0, i32::MAX, 0),
+                skeleton(20, i32::MAX, 0, i32::MAX, 100),
+            ],
+            protrusions: vec![bilateral_protrusion(1, 2)],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(parameterized_symmetric_endpoints(&axis_overflow, 2, false).is_none());
+
+        let span_overflow = BeginnerGenerationConstraintsV1 {
+            skeleton_segments: vec![
+                skeleton(10, i32::MIN, 0, i32::MAX, 0),
+                skeleton(20, i32::MAX, 0, i32::MAX, 100),
+            ],
+            protrusions: vec![bilateral_protrusion(1, 2)],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(parameterized_symmetric_endpoints(&span_overflow, 2, false).is_none());
     }
 
     #[test]

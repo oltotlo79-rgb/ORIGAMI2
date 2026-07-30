@@ -225,7 +225,8 @@
         "b5ca7e2c4ac0bba124a96e5c04922f34153fcddd",
         "0fa0203e11a726cb66332143d7ac8c656de380ea",
         "77033836b063b9d62dbc06f46dea2babbaf6f50b",
-        "daa556fe67f24322681ba6c215cdf28280f0ef49"
+        "daa556fe67f24322681ba6c215cdf28280f0ef49",
+        "5c8693a539d3edea6accb13465e0bbf80b5a56ab"
       ],
       "evidence": [
         {
@@ -260,12 +261,12 @@
         },
         {
           "kind": "test",
-          "path": "apps/desktop/src-tauri/src/tests.rs",
+          "path": "apps/desktop/src-tauri/src/tests/desktop_suite_09_geometric_constraint_worker_gates.rs",
           "selector": "fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation()"
         },
         {
           "kind": "test",
-          "path": "apps/desktop/src-tauri/src/tests.rs",
+          "path": "apps/desktop/src-tauri/src/tests/desktop_suite_09_geometric_constraint_worker_gates.rs",
           "selector": "fn geometric_constraint_pre_cancel_ledger_is_bounded_and_evicts_oldest_only()"
         },
         {

@@ -1795,6 +1795,72 @@ fn parameterized_center_axis_endpoint_for_target(
     ((0.0..1.0).contains(&point.0) && (0.0..1.0).contains(&point.1)).then_some(point)
 }
 
+fn uses_bounded_generic_target_base_v1(constraints: &BeginnerGenerationConstraintsV1) -> bool {
+    let part_count = |kind| {
+        constraints
+            .target_parts
+            .iter()
+            .find(|part| part.kind == kind)
+            .map_or(0, |part| part.count)
+    };
+    let feature_records = constraints
+        .target_parts
+        .iter()
+        .filter(|part| {
+            !matches!(
+                part.kind,
+                BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
+            )
+        })
+        .count();
+    match constraints.target_category {
+        Some(BeginnerTargetCategoryV1::CustomObject) => true,
+        Some(BeginnerTargetCategoryV1::Animal) => {
+            let horn = part_count(BeginnerTargetPartKindV1::Horn) == 1;
+            let tail = part_count(BeginnerTargetPartKindV1::Tail) == 1;
+            let ears = part_count(BeginnerTargetPartKindV1::Ear) == 2;
+            let legs = part_count(BeginnerTargetPartKindV1::Leg) == 4;
+            let wings = part_count(BeginnerTargetPartKindV1::Wing) == 2;
+            let asymmetric_landmark_fish = tail
+                && part_count(BeginnerTargetPartKindV1::Fin) == 2
+                && constraints
+                    .protrusions
+                    .iter()
+                    .filter(|target| {
+                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                    })
+                    .count()
+                    >= 3;
+            let known_composite = feature_records == 2 && (horn && (tail || ears) || tail && ears)
+                || feature_records == 3 && horn && tail && ears
+                || feature_records == 4 && horn && tail && ears && legs
+                || feature_records == 5 && horn && tail && ears && legs && wings;
+            feature_records >= 2 && !asymmetric_landmark_fish && !known_composite
+        }
+        Some(BeginnerTargetCategoryV1::Insect) => {
+            let wing_antenna = part_count(BeginnerTargetPartKindV1::Wing) == 2
+                && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
+            let asymmetric_landmark_insect = part_count(BeginnerTargetPartKindV1::Tail) == 1
+                && part_count(BeginnerTargetPartKindV1::Wing) == 2
+                && part_count(BeginnerTargetPartKindV1::Leg) == 6
+                && constraints
+                    .protrusions
+                    .iter()
+                    .filter(|target| {
+                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                    })
+                    .count()
+                    >= 7;
+            let known_composite = feature_records == 2 && wing_antenna
+                || feature_records == 3
+                    && wing_antenna
+                    && part_count(BeginnerTargetPartKindV1::Leg) == 6;
+            feature_records >= 2 && !asymmetric_landmark_insect && !known_composite
+        }
+        None => false,
+    }
+}
+
 #[must_use]
 pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationConstraintsV1) -> u8 {
     if !crate::validate_beginner_generation_constraints_v1(constraints) {
@@ -1817,99 +1883,109 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
     {
         return 0;
     }
-    let target = match constraints.target_category {
-        Some(BeginnerTargetCategoryV1::Animal) => {
-            if constraints
-                .target_parts
-                .iter()
-                .any(|part| part.kind == BeginnerTargetPartKindV1::Horn && part.count == 1)
-            {
-                parameterized_center_axis_endpoint(constraints, true).and_then(|_| {
-                    constraints.protrusions.iter().find(|target| {
-                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                    })
-                })
-            } else if constraints
-                .target_parts
-                .iter()
-                .any(|part| part.kind == BeginnerTargetPartKindV1::Tail && part.count == 1)
-            {
-                parameterized_center_axis_endpoint(constraints, false).and_then(|_| {
-                    constraints.protrusions.iter().find(|target| {
-                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                    })
-                })
-            } else {
-                let (count, vertical) = if constraints
+    let uses_generic_target = uses_bounded_generic_target_base_v1(constraints);
+    let generic_target = if uses_generic_target {
+        bounded_generic_composite_endpoints(constraints)
+            .and_then(|_| bounded_generic_tree_graph_is_supported_v1(constraints).then_some(()))
+            .and_then(|()| {
+                constraints
+                    .protrusions
+                    .iter()
+                    .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
+            })
+    } else {
+        None
+    };
+    let target = if uses_generic_target {
+        generic_target
+    } else {
+        match constraints.target_category {
+            Some(BeginnerTargetCategoryV1::Animal) => {
+                if constraints
                     .target_parts
                     .iter()
-                    .any(|part| part.kind == BeginnerTargetPartKindV1::Leg && part.count == 4)
+                    .any(|part| part.kind == BeginnerTargetPartKindV1::Horn && part.count == 1)
                 {
-                    (4, true)
-                } else {
-                    (2, false)
-                };
-                parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
-                    constraints
-                        .protrusions
-                        .iter()
-                        .find(|target| target.count == count)
-                })
-            }
-        }
-        Some(BeginnerTargetCategoryV1::Insect) => {
-            if let Some(bindings) = insect_complete_bindings_v1(constraints) {
-                let ordered = [
-                    (bindings.wing_pair_protrusion_id, false),
-                    (bindings.antenna_pair_protrusion_id, true),
-                    (bindings.leg_pair_protrusion_ids[0], false),
-                    (bindings.leg_pair_protrusion_ids[1], false),
-                    (bindings.leg_pair_protrusion_ids[2], false),
-                ];
-                ordered
-                    .into_iter()
-                    .all(|(id, vertical)| {
-                        let mut isolated = constraints.clone();
-                        isolated.protrusions.retain(|target| target.id == id);
-                        parameterized_symmetric_endpoints(&isolated, 2, vertical).is_some()
+                    parameterized_center_axis_endpoint(constraints, true).and_then(|_| {
+                        constraints.protrusions.iter().find(|target| {
+                            target.count == 1
+                                && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                        })
                     })
-                    .then(|| {
+                } else if constraints
+                    .target_parts
+                    .iter()
+                    .any(|part| part.kind == BeginnerTargetPartKindV1::Tail && part.count == 1)
+                {
+                    parameterized_center_axis_endpoint(constraints, false).and_then(|_| {
+                        constraints.protrusions.iter().find(|target| {
+                            target.count == 1
+                                && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                        })
+                    })
+                } else {
+                    let (count, vertical) =
+                        if constraints.target_parts.iter().any(|part| {
+                            part.kind == BeginnerTargetPartKindV1::Leg && part.count == 4
+                        }) {
+                            (4, true)
+                        } else {
+                            (2, false)
+                        };
+                    parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
                         constraints
                             .protrusions
                             .iter()
-                            .find(|target| target.id == bindings.wing_pair_protrusion_id)
+                            .find(|target| target.count == count)
                     })
-                    .flatten()
-            } else if constraints
-                .target_parts
-                .iter()
-                .any(|part| part.kind == BeginnerTargetPartKindV1::Antenna && part.count == 1)
-            {
-                parameterized_center_axis_endpoint(constraints, true).and_then(|_| {
-                    constraints.protrusions.iter().find(|target| {
-                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                    })
-                })
-            } else {
-                parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
-                    constraints
-                        .protrusions
-                        .iter()
-                        .find(|target| target.count == 2)
-                })
+                }
             }
+            Some(BeginnerTargetCategoryV1::Insect) => {
+                if let Some(bindings) = insect_complete_bindings_v1(constraints) {
+                    let ordered = [
+                        (bindings.wing_pair_protrusion_id, false),
+                        (bindings.antenna_pair_protrusion_id, true),
+                        (bindings.leg_pair_protrusion_ids[0], false),
+                        (bindings.leg_pair_protrusion_ids[1], false),
+                        (bindings.leg_pair_protrusion_ids[2], false),
+                    ];
+                    ordered
+                        .into_iter()
+                        .all(|(id, vertical)| {
+                            let mut isolated = constraints.clone();
+                            isolated.protrusions.retain(|target| target.id == id);
+                            parameterized_symmetric_endpoints(&isolated, 2, vertical).is_some()
+                        })
+                        .then(|| {
+                            constraints
+                                .protrusions
+                                .iter()
+                                .find(|target| target.id == bindings.wing_pair_protrusion_id)
+                        })
+                        .flatten()
+                } else if constraints
+                    .target_parts
+                    .iter()
+                    .any(|part| part.kind == BeginnerTargetPartKindV1::Antenna && part.count == 1)
+                {
+                    parameterized_center_axis_endpoint(constraints, true).and_then(|_| {
+                        constraints.protrusions.iter().find(|target| {
+                            target.count == 1
+                                && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                        })
+                    })
+                } else {
+                    parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
+                        constraints
+                            .protrusions
+                            .iter()
+                            .find(|target| target.count == 2)
+                    })
+                }
+            }
+            Some(BeginnerTargetCategoryV1::CustomObject) => None,
+            None => None,
         }
-        Some(BeginnerTargetCategoryV1::CustomObject) => {
-            bounded_generic_composite_endpoints(constraints)
-                .and_then(|_| bounded_generic_tree_graph_is_supported_v1(constraints).then_some(()))
-                .and_then(|()| {
-                    constraints
-                        .protrusions
-                        .iter()
-                        .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
-                })
-        }
-        None => None,
     };
     let base = target.map_or_else(
         || {
@@ -3430,6 +3506,8 @@ mod tests {
         assert!(crate::validate_beginner_generation_constraints_v1(
             &constraints
         ));
+        assert!(uses_bounded_generic_target_base_v1(&constraints));
+        assert_eq!(beginner_target_approximation_score_v1(&constraints), 92);
         let generated = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
         assert_eq!(
             generated[0].kind,
@@ -3490,6 +3568,7 @@ mod tests {
         ));
         assert!(bounded_generic_composite_endpoints(&crossing).is_some());
         assert!(!bounded_generic_tree_graph_is_supported_v1(&crossing));
+        assert_eq!(beginner_target_approximation_score_v1(&crossing), 0);
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &crossing),
             Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
@@ -3516,20 +3595,7 @@ mod tests {
         assert_eq!(beginner_target_approximation_score_v1(&custom), 92);
         assert!(generate_beginner_plans_v1(namespace, &source, &ids, &custom).is_ok());
 
-        custom.skeleton_segments = vec![
-            skeleton(10, -100, 0, 100, 0),
-            skeleton(20, 0, -100, 0, 100),
-            skeleton(30, 100, 0, 0, 100),
-        ];
-        assert!(bounded_generic_composite_endpoints(&custom).is_some());
-        assert!(!bounded_generic_tree_graph_is_supported_v1(&custom));
-        assert_eq!(beginner_target_approximation_score_v1(&custom), 0);
-        assert_eq!(
-            generate_beginner_plans_v1(namespace, &source, &ids, &custom),
-            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
-        );
-
-        let mut animal = custom;
+        let mut animal = custom.clone();
         animal.target_category = Some(BeginnerTargetCategoryV1::Animal);
         animal.target_parts = vec![
             BeginnerTargetPartRecordV1 {
@@ -3550,6 +3616,29 @@ mod tests {
             },
         ];
         assert!(crate::validate_beginner_generation_constraints_v1(&animal));
+        assert!(uses_bounded_generic_target_base_v1(&animal));
+        assert_eq!(beginner_target_approximation_score_v1(&animal), 92);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &animal).unwrap()[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        );
+
+        custom.skeleton_segments = vec![
+            skeleton(10, -100, 0, 100, 0),
+            skeleton(20, 0, -100, 0, 100),
+            skeleton(30, 100, 0, 0, 100),
+        ];
+        assert!(bounded_generic_composite_endpoints(&custom).is_some());
+        assert!(!bounded_generic_tree_graph_is_supported_v1(&custom));
+        assert_eq!(beginner_target_approximation_score_v1(&custom), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &custom),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+
+        animal.skeleton_segments = custom.skeleton_segments;
+        assert!(crate::validate_beginner_generation_constraints_v1(&animal));
+        assert_eq!(beginner_target_approximation_score_v1(&animal), 0);
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &animal),
             Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
@@ -4067,6 +4156,8 @@ mod tests {
         antenna_target.direction_milli = [0, -1_000, 0];
         antenna_target.length_tenths_mm = 4;
         wing_antenna.protrusions.push(antenna_target);
+        assert!(!uses_bounded_generic_target_base_v1(&wing_antenna));
+        assert_eq!(beginner_target_approximation_score_v1(&wing_antenna), 92);
         let composite_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &wing_antenna).unwrap();
         assert_eq!(

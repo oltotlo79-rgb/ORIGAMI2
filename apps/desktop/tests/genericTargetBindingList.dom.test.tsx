@@ -2,7 +2,11 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { GenericTargetBindingList } from '../src/components/GenericTargetBindingList'
 
-const target = (id: number, count: 1 | 2 | 4, symmetry: 'none' | 'bilateral') => ({
+const target = (
+  id: number,
+  count: number,
+  symmetry: 'none' | 'bilateral' | 'radial',
+) => ({
   id, count, symmetry, length_tenths_mm: id * 100, thickness_tenths_mm: id * 10,
   position_tenths_mm: [0, 0, 0] as [number, number, number],
   direction_milli: [1000, 0, 0] as [number, number, number], curvature_degrees: 0,
@@ -49,10 +53,56 @@ describe('GenericTargetBindingList', () => {
       .toBe('Binding 8 · bilateral · count 4 · length 800 · thickness 80')
   })
 
-  it('rejects singleton, overflow, noncanonical, and unsupported radial input', () => {
-    for (const forged of [valid.slice(0, 1), Array.from({ length: 9 }, (_, i) => target(i + 1, 2, 'bilateral')),
-      [valid[1], valid[0]], [target(1, 2, 'none'), valid[1]],
-      [target(1, 1, 'bilateral'), valid[1]], [target(1, 4, 'none'), valid[1]]]) {
+  it('accepts radial and all domain-supported bilateral counts', () => {
+    const radial = [target(1, 3, 'radial'), target(2, 2, 'radial')]
+    const { unmount } = render(
+      <GenericTargetBindingList locale="en" protrusions={radial} />,
+    )
+    let list = screen.getByRole('list', {
+      name: 'Bounded generic target binding dimensions',
+    })
+    expect(list.children[0]?.textContent)
+      .toBe('Binding 1 · radial · count 3 · length 100 · thickness 10')
+    expect(list.children[1]?.textContent)
+      .toBe('Binding 2 · radial · count 2 · length 200 · thickness 20')
+    unmount()
+
+    const bilateral = [target(1, 6, 'bilateral'), target(2, 8, 'bilateral')]
+    render(<GenericTargetBindingList locale="en" protrusions={bilateral} />)
+    list = screen.getByRole('list', {
+      name: 'Bounded generic target binding dimensions',
+    })
+    expect(list.children[0]?.textContent)
+      .toBe('Binding 1 · bilateral · count 6 · length 100 · thickness 10')
+    expect(list.children[1]?.textContent)
+      .toBe('Binding 2 · bilateral · count 8 · length 200 · thickness 20')
+  })
+
+  it('accepts strictly increasing nonconsecutive binding ids', () => {
+    const sparse = [target(2, 3, 'radial'), target(7, 6, 'bilateral')]
+    render(<GenericTargetBindingList locale="en" protrusions={sparse} />)
+    const list = screen.getByRole('list', {
+      name: 'Bounded generic target binding dimensions',
+    })
+    expect(list.children[0]?.textContent)
+      .toBe('Binding 2 · radial · count 3 · length 200 · thickness 20')
+    expect(list.children[1]?.textContent)
+      .toBe('Binding 7 · bilateral · count 6 · length 700 · thickness 70')
+  })
+
+  it('rejects out-of-range and unsupported symmetry/count combinations', () => {
+    for (const forged of [
+      valid.slice(0, 1),
+      Array.from({ length: 9 }, (_, i) => target(i + 1, 2, 'bilateral')),
+      [valid[1], valid[0]],
+      [target(2, 4, 'bilateral'), target(2, 2, 'bilateral')],
+      [target(1, 1, 'radial'), valid[1]],
+      [target(1, 9, 'radial'), valid[1]],
+      [target(1, 3, 'bilateral'), valid[1]],
+      [target(1, 5, 'bilateral'), valid[1]],
+      [target(1, 7, 'bilateral'), valid[1]],
+      [target(1, 2, 'none'), valid[1]],
+    ]) {
       const { unmount } = render(<GenericTargetBindingList locale="en" protrusions={forged} />)
       expect(screen.queryByRole('list')).toBeNull(); unmount()
     }

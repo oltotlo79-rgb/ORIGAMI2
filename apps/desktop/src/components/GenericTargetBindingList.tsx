@@ -14,9 +14,11 @@ export function GenericTargetBindingList({ locale, protrusions }: {
   protrusions: readonly Protrusion[]
 }) {
   const valid = protrusions.length >= 2 && protrusions.length <= 8
-    && protrusions.every((target, index) => target.id === index + 1
+    && protrusions.every((target, index) =>
+      (index === 0 || (protrusions[index - 1]?.id ?? target.id) < target.id)
       && (target.count === 1 && target.symmetry === 'none'
-        || (target.count === 2 || target.count === 4) && target.symmetry === 'bilateral'))
+        || [2, 4, 6, 8].includes(target.count) && target.symmetry === 'bilateral'
+        || target.count >= 2 && target.count <= 8 && target.symmetry === 'radial'))
   if (!valid) return null
   return <ol aria-label={selectLocalizedText(locale, TEXT.ariaLabel)}>
     {protrusions.map((target) => <li key={target.id}>
@@ -24,7 +26,9 @@ export function GenericTargetBindingList({ locale, protrusions }: {
         id: target.id,
         symmetry: selectLocalizedText(locale, target.symmetry === 'none'
           ? TEXT.symmetryAsymmetric
-          : TEXT.symmetryBilateral),
+          : target.symmetry === 'bilateral'
+            ? TEXT.symmetryBilateral
+            : TEXT.symmetryRadial),
         count: target.count,
         length: target.length_tenths_mm,
         thickness: target.thickness_tenths_mm,

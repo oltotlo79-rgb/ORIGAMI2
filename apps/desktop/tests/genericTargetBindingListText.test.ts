@@ -15,6 +15,7 @@ const KEYS = [
   'bindingRow',
   'symmetryAsymmetric',
   'symmetryBilateral',
+  'symmetryRadial',
 ] as const
 
 test('generic target binding list catalog is closed and deeply frozen', () => {
@@ -40,6 +41,14 @@ test('generic target binding list catalog is closed and deeply frozen', () => {
     selectLocalizedText('en', TEXT.symmetryBilateral),
     'bilateral',
   )
+  assert.equal(
+    selectLocalizedText('ja', TEXT.symmetryRadial),
+    '放射対称',
+  )
+  assert.equal(
+    selectLocalizedText('en', TEXT.symmetryRadial),
+    'radial',
+  )
 })
 
 test('generic target binding row placeholders are locale-equivalent', () => {
@@ -59,6 +68,10 @@ test('generic target binding rows stay byte-exact in both locales', () => {
   assert.equal(
     bindingRow('en', 2, 'symmetryBilateral', 4, 250, 25),
     'Binding 2 · bilateral · count 4 · length 250 · thickness 25',
+  )
+  assert.equal(
+    bindingRow('en', 3, 'symmetryRadial', 3, 300, 30),
+    'Binding 3 · radial · count 3 · length 300 · thickness 30',
   )
 })
 
@@ -85,7 +98,7 @@ test('generic target binding list keeps all display copy in the catalog', () => 
 function bindingRow(
   locale: 'ja' | 'en',
   id: number,
-  symmetryKey: 'symmetryAsymmetric' | 'symmetryBilateral',
+  symmetryKey: 'symmetryAsymmetric' | 'symmetryBilateral' | 'symmetryRadial',
   count: number,
   length: number,
   thickness: number,

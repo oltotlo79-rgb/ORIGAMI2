@@ -4,7 +4,8 @@ export type GenericTargetBindingListText = Readonly<Record<
   | 'ariaLabel'
   | 'bindingRow'
   | 'symmetryAsymmetric'
-  | 'symmetryBilateral',
+  | 'symmetryBilateral'
+  | 'symmetryRadial',
   LocalizedText
 >>
 
@@ -23,4 +24,5 @@ export const GENERIC_TARGET_BINDING_LIST_TEXT =
     ),
     symmetryAsymmetric: text('非対称単独', 'asymmetric single'),
     symmetryBilateral: text('左右対称', 'bilateral'),
+    symmetryRadial: text('放射対称', 'radial'),
   }) satisfies GenericTargetBindingListText

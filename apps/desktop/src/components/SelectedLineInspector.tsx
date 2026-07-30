@@ -45,6 +45,7 @@ export type SelectedLineInspectorProps = Readonly<{
   parallelReferenceEdgeId: string | null
   linearArrayPreview: LinearPreview | null
   radialArrayPreview: RadialPreview | null
+  radialArrayCenterVertexIds: readonly string[]
   onDeleteBenchmarkLine: (lineId: string) => void
   onSubmitMove: FormEventHandler<HTMLFormElement>
   onSubmitMirror: FormEventHandler<HTMLFormElement>
@@ -70,6 +71,7 @@ export function SelectedLineInspector({
   parallelReferenceEdgeId,
   linearArrayPreview,
   radialArrayPreview,
+  radialArrayCenterVertexIds,
   onDeleteBenchmarkLine,
   onSubmitMove,
   onSubmitMirror,
@@ -92,6 +94,17 @@ export function SelectedLineInspector({
     variables: Parameters<typeof formatLocalizedText>[2],
   ) => formatLocalizedText(locale, localized, variables)
   const measurement = measureCreaseLine(line)
+  const radialArrayCenterOptions = [
+    {
+      id: line.startVertexId,
+      label: text(APP_TEXT.startVertex),
+    },
+    {
+      id: line.endVertexId,
+      label: text(APP_TEXT.endVertex),
+    },
+  ].filter(({ id }) => radialArrayCenterVertexIds.includes(id))
+  const radialArrayCenterAvailable = radialArrayCenterOptions.length > 0
 
   return (
     <>
@@ -310,11 +323,24 @@ export function SelectedLineInspector({
               onInput={onInvalidateRadialArray}
               data-testid="radial-array-panel"
             >
-              <fieldset disabled={coreBusy || line.locked}>
+              <fieldset disabled={coreBusy || line.locked || !radialArrayCenterAvailable}>
                 <legend>{text(APP_TEXT.radialArray)}</legend>
-                <p className="muted">
-                  {text(APP_TEXT.usesTheStartVertexOfTheSelectedLineAsThe)}
-                </p>
+                <label className="field">
+                  {text(
+                    APP_TEXT.onlyNonBoundaryEndpointsOfTheSelectedLineCanBeUsedAsRotationCenter,
+                  )}
+                  <select
+                    key={`${line.id}:${radialArrayCenterOptions.map(({ id }) => id).join(':')}`}
+                    name="radial_array_center"
+                    defaultValue={radialArrayCenterOptions[0]?.id ?? ''}
+                  >
+                    {radialArrayCenterOptions.length === 0 ? (
+                      <option value="">{text(APP_TEXT.unavailable)}</option>
+                    ) : radialArrayCenterOptions.map(({ id, label }) => (
+                      <option key={id} value={id}>{label}</option>
+                    ))}
+                  </select>
+                </label>
                 <label className="field">
                   {text(APP_TEXT.additionalCopies)}
                   <input

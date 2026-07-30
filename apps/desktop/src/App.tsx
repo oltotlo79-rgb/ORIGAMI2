@@ -1485,6 +1485,11 @@ function App() {
   const selectedLine = selectedLineId
     ? firstDisplayedLineById.get(selectedLineId)
     : undefined
+  const radialArrayCenterVertexIds = selectedLine && nativeSnapshot
+    ? [selectedLine.startVertexId, selectedLine.endVertexId].filter(
+        (vertexId) => !nativeSnapshot.paper.boundary_vertices.includes(vertexId),
+      )
+    : []
   const parallelReferenceLine = useMemo(
     () => resolveUniqueParallelReference(nativeLines, parallelReferenceEdgeId),
     [nativeLines, parallelReferenceEdgeId],
@@ -2523,13 +2528,16 @@ function App() {
     const form = new FormData(event.currentTarget)
     const copies = Number(form.get('radial_array_copies'))
     const angle = Number(form.get('radial_array_angle'))
+    const center = String(form.get('radial_array_center') ?? '')
     if (!Number.isInteger(copies) || copies < 1 || copies > 3
-      || ![90, 180, 270].includes(angle) || (angle === 180 && copies !== 1)) {
+      || ![90, 180, 270].includes(angle) || (angle === 180 && copies !== 1)
+      || ![selectedLine.startVertexId, selectedLine.endVertexId].includes(center)
+      || current.paper.boundary_vertices.includes(center)) {
       setRadialArrayPreview(null)
       return
     }
     const request: RadialArrayRequest = {
-      center: selectedLine.startVertexId,
+      center,
       vertices: [selectedLine.startVertexId, selectedLine.endVertexId].sort(),
       edges: [selectedLine.id], additional_copies: copies,
       angle_microdegrees: angle * 1_000_000,
@@ -5050,6 +5058,7 @@ function App() {
                 parallelReferenceEdgeId={parallelReferenceEdgeId}
                 linearArrayPreview={linearArrayPreview}
                 radialArrayPreview={radialArrayPreview}
+                radialArrayCenterVertexIds={radialArrayCenterVertexIds}
                 onDeleteBenchmarkLine={deleteBenchmarkLine}
                 onSubmitMove={(event) => void submitMoveSelectedEdge(event)}
                 onSubmitMirror={(event) => void submitMirrorSelectedEdge(event)}

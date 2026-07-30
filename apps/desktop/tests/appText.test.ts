@@ -121,6 +121,6 @@ test('App and its extracted helpers reference the catalog for every fixed locali
       ),
       0,
     ),
-    934,
+    937,
   )
 })

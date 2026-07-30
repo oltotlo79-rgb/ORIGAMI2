@@ -718,9 +718,9 @@ export const APP_TEXT = Object.freeze({
   confirmArray: localized('配列を確定', 'Confirm array'),
   cancel2: localized('キャンセル', 'Cancel'),
   radialArray: localized('放射配列', 'Radial array'),
-  usesTheStartVertexOfTheSelectedLineAsThe: localized(
-    '選択線の始点を回転中心として使用します。',
-    'Uses the start vertex of the selected line as the rotation center.',
+  onlyNonBoundaryEndpointsOfTheSelectedLineCanBeUsedAsRotationCenter: localized(
+    '選択線の非境界端点を回転中心として選択できます。候補がない場合は利用できません。',
+    'Select a non-boundary endpoint of the selected line as the rotation center. This is unavailable when neither endpoint qualifies.',
   ),
   rotationAngle2: localized('回転角度', 'Rotation angle'),
   previewRadialArray: localized('放射配列をプレビュー', 'Preview radial array'),

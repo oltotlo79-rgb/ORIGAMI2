@@ -9,6 +9,8 @@ use crate::{
     VertexId,
 };
 
+mod radial_endpoints;
+
 pub const BEGINNER_GENERATOR_SCHEMA_VERSION_V1: u32 = 1;
 pub const MAX_BEGINNER_GENERATED_CANDIDATES_V1: usize = 3;
 pub const MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1: usize = 10_000;
@@ -16,6 +18,7 @@ pub const BEGINNER_PARAMETER_GRID_SIZE_V1: usize = 27;
 pub const MAX_BEGINNER_GENERIC_TREE_BARS_V1: usize = 16;
 pub const MAX_BEGINNER_GENERIC_TREE_INTERSECTION_PAIRS_V1: usize = 120;
 pub const MAX_BEGINNER_GENERIC_TREE_NODES_V1: usize = 17;
+const MAX_BEGINNER_GENERIC_PROTRUSION_ENDPOINTS_V1: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1874,7 +1877,14 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                 })
             }
         }
-        Some(BeginnerTargetCategoryV1::CustomObject) => None,
+        Some(BeginnerTargetCategoryV1::CustomObject) => {
+            bounded_generic_composite_endpoints(constraints).and_then(|_| {
+                constraints
+                    .protrusions
+                    .iter()
+                    .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
+            })
+        }
         None => None,
     };
     let base = target.map_or_else(
@@ -2037,7 +2047,10 @@ fn bounded_generic_composite_endpoints(
     {
         return None;
     }
-    let mut endpoints = Vec::with_capacity(constraints.protrusions.len() * 4);
+    let mut endpoints = Vec::new();
+    endpoints
+        .try_reserve_exact(MAX_BEGINNER_GENERIC_PROTRUSION_ENDPOINTS_V1)
+        .ok()?;
     for target in &constraints.protrusions {
         let root_width = target
             .root_width_tenths_mm
@@ -2084,14 +2097,28 @@ fn bounded_generic_composite_endpoints(
                 target.direction_milli[1].unsigned_abs() > target.direction_milli[0].unsigned_abs(),
             )?
             .to_vec(),
+            (2..=8, BeginnerProtrusionSymmetryV1::Radial) => {
+                radial_endpoints::parameterized_radial_endpoints_v1(
+                    target,
+                    &constraints.skeleton_segments,
+                )?
+            }
             _ => return None,
         };
-        if candidates.iter().any(|candidate| {
-            endpoints.iter().any(|existing: &(f64, f64)| {
-                (existing.0 - candidate.0).abs() < f64::EPSILON
-                    && (existing.1 - candidate.1).abs() < f64::EPSILON
+        if endpoints
+            .len()
+            .checked_add(candidates.len())
+            .is_none_or(|count| count > MAX_BEGINNER_GENERIC_PROTRUSION_ENDPOINTS_V1)
+            || candidates.iter().enumerate().any(|(index, candidate)| {
+                endpoints
+                    .iter()
+                    .chain(&candidates[..index])
+                    .any(|existing: &(f64, f64)| {
+                        (existing.0 - candidate.0).abs() < f64::EPSILON
+                            && (existing.1 - candidate.1).abs() < f64::EPSILON
+                    })
             })
-        }) {
+        {
             return None;
         }
         endpoints.extend(candidates);
@@ -2916,6 +2943,105 @@ mod tests {
         let mut duplicate = constraints;
         duplicate.skeleton_segments[1].id = duplicate.skeleton_segments[0].id;
         assert!(generate(&duplicate).is_none());
+    }
+
+    #[test]
+    fn generic_custom_tree_generates_bounded_radial_protrusion_groups() {
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x09, 0x92,
+        ]);
+        let ids = ["a", "b", "c", "d"].map(|name| VertexId::derive_v5(namespace, name.as_bytes()));
+        let source = CreasePattern {
+            vertices: ids
+                .iter()
+                .copied()
+                .zip([
+                    Point2::new(0.0, 0.0),
+                    Point2::new(10.0, 0.0),
+                    Point2::new(10.0, 10.0),
+                    Point2::new(0.0, 10.0),
+                ])
+                .map(|(id, position)| Vertex { id, position })
+                .collect(),
+            edges: Vec::new(),
+        };
+        let radial =
+            |id: u16, count: u8, position: (i32, i32), direction: (i16, i16), length: u32| {
+                crate::BeginnerProtrusionTargetV1 {
+                    id,
+                    count,
+                    length_tenths_mm: length,
+                    thickness_tenths_mm: 10,
+                    root_width_tenths_mm: None,
+                    tip_width_tenths_mm: None,
+                    local_outline_tenths_mm: None,
+                    position_tenths_mm: [position.0, position.1, 0],
+                    direction_milli: [direction.0, direction.1, 0],
+                    symmetry: BeginnerProtrusionSymmetryV1::Radial,
+                    curvature_degrees: 0,
+                    joint: crate::BeginnerProtrusionJointV1::Fixed,
+                    motion_degrees: [0, 0],
+                    side: crate::BeginnerProtrusionSideV1::Either,
+                    priority: 100,
+                }
+            };
+        let constraints = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+            skeleton_segments: vec![
+                skeleton(10, 0, 0, 1_000, 0),
+                skeleton(20, 1_000, 0, 1_000, 1_000),
+            ],
+            protrusions: vec![
+                radial(1, 3, (400, 400), (1_000, 0), 100),
+                radial(2, 2, (650, 650), (0, 1_000), 80),
+            ],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &constraints
+        ));
+        assert_eq!(beginner_target_approximation_score_v1(&constraints), 100);
+        let endpoints =
+            bounded_generic_composite_endpoints(&constraints).expect("radial target endpoints");
+        assert_eq!(endpoints.len(), 5);
+        assert!((endpoints[0].0 - 0.5).abs() <= f64::EPSILON);
+        assert!((endpoints[0].1 - 0.4).abs() <= f64::EPSILON);
+        assert!((endpoints[3].0 - 0.65).abs() <= f64::EPSILON);
+        assert!((endpoints[3].1 - 0.73).abs() <= f64::EPSILON);
+
+        let generated = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
+        assert_eq!(generated.len(), 1);
+        assert_eq!(
+            generated[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        );
+        assert_eq!(generated[0].crease_pattern.edges.len(), 7);
+        assert_eq!(
+            generated[0].instruction_codes[1],
+            "bounded_tree_branch_topology_v1:nodes=3:leaves=2:bars=2"
+        );
+
+        let mut reversed = constraints.clone();
+        reversed.skeleton_segments.reverse();
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &reversed),
+            Ok(generated)
+        );
+
+        let mut over_endpoint_limit = constraints;
+        over_endpoint_limit.protrusions = (0_u16..5)
+            .map(|index| {
+                radial(
+                    index + 1,
+                    8,
+                    (200 + i32::from(index) * 150, 200 + i32::from(index) * 120),
+                    (1_000, 0),
+                    20,
+                )
+            })
+            .collect();
+        assert!(bounded_generic_composite_endpoints(&over_endpoint_limit).is_none());
     }
 
     #[test]

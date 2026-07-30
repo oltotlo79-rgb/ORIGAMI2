@@ -36,6 +36,7 @@ export function AnnotationPanel({
     selectLocalizedText(locale, ANNOTATION_PANEL_TEXT[key])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState<AnnotationRecordV1 | null>(null)
+  const [pendingCreatedId, setPendingCreatedId] = useState<string | null>(null)
   const selected = annotations.find(({ id }) => id === selectedId) ?? null
   const layer = layers.find(({ id }) => id === draft?.layer)
   const locked = layer?.locked ?? false
@@ -50,8 +51,18 @@ export function AnnotationPanel({
     }
   }, [selected, selectedId])
 
+  useEffect(() => {
+    if (!pendingCreatedId) return
+    const created = annotations.find(({ id }) => id === pendingCreatedId)
+    if (!created) return
+    setPendingCreatedId(null)
+    setSelectedId(created.id)
+    setDraft(structuredClone(created))
+  }, [annotations, pendingCreatedId])
+
   function createDraft() {
     if (!firstUnlockedAnnotationLayer) return
+    setPendingCreatedId(null)
     setSelectedId(null)
     setDraft({
       id: crypto.randomUUID(),
@@ -67,7 +78,10 @@ export function AnnotationPanel({
     if (!draft || !draft.text.trim() || locked) return
     const record = { ...draft, text: draft.text.trim() }
     if (selected) onUpdate(record)
-    else onAdd(record)
+    else {
+      setPendingCreatedId(record.id)
+      onAdd(record)
+    }
   }
 
   return <section className="panel" aria-labelledby="annotation-panel-title">
@@ -83,7 +97,10 @@ export function AnnotationPanel({
     <ul aria-label={text('list')}>
       {annotations.map((annotation) => <li key={annotation.id}>
         <button type="button" aria-pressed={annotation.id === selectedId}
-          onClick={() => setSelectedId(annotation.id)}>
+          onClick={() => {
+            setPendingCreatedId(null)
+            setSelectedId(annotation.id)
+          }}>
           {annotation.text}
         </button>
       </li>)}

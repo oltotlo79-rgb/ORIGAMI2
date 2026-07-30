@@ -110,4 +110,45 @@ describe('UnderlayPanel', () => {
       (screen.getByRole('option', { name: 'Writable second' }) as HTMLOptionElement).disabled,
     ).toBe(false)
   })
+
+  it('removes an accepted native deletion from edit mode instead of retaining a stale ID', () => {
+    const layer = {
+      id: '10000000-0000-4000-8000-000000000001',
+      name: 'Writable',
+      content_kind: 'underlay' as const,
+      visible: true,
+      locked: false,
+      opacity: 1,
+    }
+    const underlay = {
+      id: '20000000-0000-4000-8000-000000000001',
+      asset: '30000000-0000-4000-8000-000000000001',
+      transform: {
+        position: { x: 1, y: 2 },
+        scale_x: 0.1,
+        scale_y: 0.2,
+        rotation_degrees: 5,
+      },
+      opacity: 0.8,
+      layer: layer.id,
+    }
+    const onRemove = vi.fn()
+    const props = {
+      locale: 'en' as const,
+      layers: [layer],
+      onImport: vi.fn(),
+      onUpdate: vi.fn(),
+      onRemove,
+    }
+    const view = render(<UnderlayPanel underlays={[underlay]} {...props} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Underlay 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(onRemove).toHaveBeenCalledOnce()
+    expect(onRemove).toHaveBeenCalledWith(underlay.id)
+
+    view.rerender(<UnderlayPanel underlays={[]} {...props} />)
+    expect(screen.queryByRole('form', { name: 'Underlay placement and transform' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull()
+  })
 })

@@ -92,4 +92,44 @@ describe('AnnotationPanel new annotation layer selection', () => {
       (screen.getByRole('combobox', { name: 'Layer' }) as HTMLSelectElement).value,
     ).toBe(FIRST_UNLOCKED_LAYER_ID)
   })
+
+  it('promotes a native-accepted new annotation to edit mode instead of adding its ID twice', () => {
+    const layer = annotationLayer(
+      FIRST_UNLOCKED_LAYER_ID,
+      'Writable',
+      false,
+    )
+    const onAdd = vi.fn()
+    const onUpdate = vi.fn()
+    const props = {
+      locale: 'en' as const,
+      layers: [layer],
+      vertices: [],
+      onAdd,
+      onUpdate,
+      onRemove: vi.fn(),
+    }
+    const view = render(<AnnotationPanel annotations={[]} {...props} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'New' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Text' }), {
+      target: { value: 'Accepted annotation' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const accepted = onAdd.mock.calls[0]?.[0]
+    expect(accepted?.layer).toBe(FIRST_UNLOCKED_LAYER_ID)
+
+    view.rerender(<AnnotationPanel annotations={[accepted]} {...props} />)
+    expect(
+      screen.getByRole('button', { name: 'Accepted annotation' }).getAttribute('aria-pressed'),
+    ).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onAdd).toHaveBeenCalledOnce()
+    expect(onUpdate).toHaveBeenCalledOnce()
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      id: accepted.id,
+      layer: FIRST_UNLOCKED_LAYER_ID,
+    }))
+  })
 })

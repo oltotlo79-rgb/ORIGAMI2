@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import type { UnderlayRecordV1 } from '../lib/coreClient'
 import type { LayerRecordV1 } from '../lib/projectLayers'
 import { formatLocalizedText, selectLocalizedText, type Locale } from '../lib/i18n'
@@ -23,6 +23,15 @@ export function UnderlayPanel({ locale, underlays, layers, disabled, onImport, o
   const underlayLayers = layers.filter(({ content_kind }) => content_kind === 'underlay')
   const layer = underlayLayers.find(({ id }) => id === draft?.layer)
   const locked = layer?.locked ?? false
+
+  useEffect(() => {
+    if (selected) setDraft(structuredClone(selected))
+    else if (selectedId) {
+      setSelectedId(null)
+      setDraft(null)
+    }
+  }, [selected, selectedId])
+
   function select(record: UnderlayRecordV1) {
     setSelectedId(record.id)
     setDraft(structuredClone(record))

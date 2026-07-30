@@ -4416,6 +4416,7 @@ impl EditorState {
                         .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
                 }
                 self.ensure_normalized_edge_document_layers_allow(pattern, project_layers)?;
+                self.ensure_annotation_anchors_survive_pattern(pattern)?;
                 Ok(Inverse::RestoreMirrorSelection {
                     pattern: std::mem::replace(&mut self.pattern, pattern.clone()),
                     project_layers: std::mem::replace(
@@ -6208,6 +6209,7 @@ impl EditorState {
                     .vertex_index(vertex_id)
                     .ok_or(CommandError::VertexNotFound(vertex_id))?;
                 let vertex = self.pattern.vertices[vertex_index].clone();
+                self.ensure_annotation_vertex_not_anchored(vertex_id)?;
                 self.pattern.edges.remove(edge_index);
                 self.pattern.vertices.remove(vertex_index);
                 Ok(Inverse::Command(Command::AddConnectedVertex {
@@ -6370,13 +6372,15 @@ impl EditorState {
             }
             Command::UpdateAnnotation { ref record } => {
                 self.validate_annotation_record(record)?;
-                let current = self
+                let index = self
                     .annotations
                     .annotations
-                    .iter_mut()
-                    .find(|item| item.id == record.id)
+                    .iter()
+                    .position(|item| item.id == record.id)
                     .ok_or(CommandError::AnnotationNotFound(record.id))?;
-                let previous = std::mem::replace(current, record.clone());
+                self.ensure_layer_unlocked(self.annotations.annotations[index].layer)?;
+                let previous =
+                    std::mem::replace(&mut self.annotations.annotations[index], record.clone());
                 Ok(Inverse::Command(Command::UpdateAnnotation {
                     record: previous,
                 }))
@@ -6409,13 +6413,15 @@ impl EditorState {
             }
             Command::UpdateUnderlay { ref record } => {
                 self.validate_underlay_record(record)?;
-                let current = self
+                let index = self
                     .underlays
                     .underlays
-                    .iter_mut()
-                    .find(|item| item.id == record.id)
+                    .iter()
+                    .position(|item| item.id == record.id)
                     .ok_or(CommandError::UnderlayNotFound(record.id))?;
-                let previous = std::mem::replace(current, record.clone());
+                self.ensure_layer_unlocked(self.underlays.underlays[index].layer)?;
+                let previous =
+                    std::mem::replace(&mut self.underlays.underlays[index], record.clone());
                 Ok(Inverse::Command(Command::UpdateUnderlay {
                     record: previous,
                 }))
@@ -7408,6 +7414,39 @@ impl EditorState {
             .map_err(|_| CommandError::InvalidAnnotation)
     }
 
+    fn ensure_annotation_vertex_not_anchored(&self, vertex: VertexId) -> Result<(), CommandError> {
+        if self.annotations.annotations.iter().any(|annotation| {
+            matches!(
+                annotation.anchor,
+                ori_domain::AnnotationAnchorV1::Vertex {
+                    vertex: anchor,
+                    ..
+                } if anchor == vertex
+            )
+        }) {
+            Err(CommandError::InvalidAnnotation)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_annotation_anchors_survive_pattern(
+        &self,
+        pattern: &CreasePattern,
+    ) -> Result<(), CommandError> {
+        if self.annotations.annotations.iter().any(|annotation| {
+            matches!(
+                annotation.anchor,
+                ori_domain::AnnotationAnchorV1::Vertex { vertex, .. }
+                    if !pattern.vertices.iter().any(|candidate| candidate.id == vertex)
+            )
+        }) {
+            Err(CommandError::InvalidAnnotation)
+        } else {
+            Ok(())
+        }
+    }
+
     fn validate_underlay_record(&self, record: &UnderlayRecordV1) -> Result<(), CommandError> {
         self.project_layers
             .layers
@@ -7718,6 +7757,7 @@ impl EditorState {
             }
         }
 
+        self.ensure_annotation_vertex_not_anchored(vertex_id)?;
         let removed_edge_assignment = self.explicit_layer_assignment(removed_edge.id);
         apply_boundary_vertex_removal(
             &mut self.pattern,
@@ -20127,6 +20167,9 @@ mod tests {
 
     #[path = "editor_layer_assignment_tests.rs"]
     mod layer_assignment_tests;
+
+    #[path = "editor_annotation_layer_guard_tests.rs"]
+    mod annotation_layer_guard_tests;
 
     #[test]
     fn boundary_split_and_vertex_removal_preserve_source_layer_lineage() {

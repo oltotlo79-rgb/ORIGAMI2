@@ -78,6 +78,14 @@ test('candidate UI is bilingual, accessible, single-flight, and rejects stale AB
   assert.match(app, /matchesBeginnerProjectBinding\(\s*binding,\s*input\.getCurrentSnapshot\(\)/u)
 })
 
+test('manual protrusion profiles keep semantic bindings within the target-part record bound', () => {
+  assert.match(
+    app,
+    /beginnerProtrusionKinds\.length === beginnerProtrusions\.length[\s\S]*oneSemanticPartPerProtrusion\.length <= 8/u,
+  )
+  assert.match(app, /\|\| targetParts\.length > 8/u)
+})
+
 test('AUT-107 fixes the initial bulge and elasticity policy in native, IPC, and UI', () => {
   assert.match(native, /TargetShapeApproximation/)
   assert.match(native, /BeginnerElasticityModelV1::NotComputed/)

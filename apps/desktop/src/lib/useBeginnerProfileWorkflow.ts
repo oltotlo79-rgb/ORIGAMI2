@@ -91,17 +91,19 @@ export function useBeginnerProfileWorkflow(input: Readonly<{
       kind,
       count: Number(data.get(`target_part_${kind}`)),
     })).filter((part) => part.count > 0)
+    const oneSemanticPartPerProtrusion = [
+      ...formTargetParts.filter(
+        (part) => part.kind === 'head' || part.kind === 'torso',
+      ),
+      ...beginnerProtrusions.map((target, index) => ({
+        kind: beginnerProtrusionKinds[index]!,
+        count: target.count,
+      })),
+    ]
     const targetParts = beginnerProtrusions.length >= 2
       && beginnerProtrusionKinds.length === beginnerProtrusions.length
-      ? [
-          ...formTargetParts.filter(
-            (part) => part.kind === 'head' || part.kind === 'torso',
-          ),
-          ...beginnerProtrusions.map((target, index) => ({
-            kind: beginnerProtrusionKinds[index]!,
-            count: target.count,
-          })),
-        ]
+      && oneSemanticPartPerProtrusion.length <= 8
+      ? oneSemanticPartPerProtrusion
       : formTargetParts
     const allowedTechniques = data.getAll('allowed_techniques').map(String)
     const generationConstraints: Constraints = {
@@ -177,6 +179,7 @@ export function useBeginnerProfileWorkflow(input: Readonly<{
       || targetParts.some(
         (part) => !Number.isInteger(part.count) || part.count > 8,
       )
+      || targetParts.length > 8
       || targetParts.reduce((sum, part) => sum + part.count, 0) > 32
       || allowedTechniques.length < 1
       || allowedTechniques.length > 8

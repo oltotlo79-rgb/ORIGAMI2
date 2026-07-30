@@ -275,13 +275,14 @@ fn derive_strict_speculative_crossing_line_v1(
         .iter()
         .flat_map(|subdivision| subdivision.target_edges().iter().copied())
         .collect::<Vec<_>>();
+    let path_limits = StackedFoldPathDiagnosticLimitsV1::default();
     let baseline = diagnose_collective_hinge_path_v1(
         prepared_initial_pose.target().model(),
         prepared_initial_pose.pose(),
         &moving_hinges,
         37.0,
         project.editor.paper().thickness_mm,
-        StackedFoldPathDiagnosticLimitsV1::default(),
+        path_limits,
     )
     .expect("typed bounded path diagnostic");
     assert_eq!(
@@ -303,7 +304,7 @@ fn derive_strict_speculative_crossing_line_v1(
     let diagnostic = diagnose_stacked_fold_requested_path_with_initial_layer_order_v1(
         &prepared_requested_pose,
         project.editor.paper().thickness_mm,
-        StackedFoldPathDiagnosticLimitsV1::default(),
+        path_limits,
         &initial_layer_order,
     )
     .expect("strict initial-layer admitted bounded path diagnostic");
@@ -341,9 +342,86 @@ fn derive_strict_speculative_crossing_line_v1(
     );
     assert_eq!(
         endpoint.indeterminate_pairs(),
-        2,
-        "the raw endpoint must preserve the authenticated persistent flat pair and the \
-         independently checked moving-hinge boundary pair: {endpoint:?}"
+        1,
+        "only the authenticated persistent flat pair may remain indeterminate: {endpoint:?}"
+    );
+    let direct_pair_hinge = |first, second| {
+        let mut matches = prepared_requested_pose
+            .initial()
+            .target()
+            .model()
+            .hinges()
+            .iter()
+            .filter(|hinge| {
+                (hinge.left_face() == first && hinge.right_face() == second)
+                    || (hinge.left_face() == second && hinge.right_face() == first)
+            });
+        let hinge = matches.next().map(|hinge| hinge.edge());
+        hinge.filter(|_| matches.next().is_none())
+    };
+    let persistent_flat_pairs = endpoint
+        .pairs()
+        .iter()
+        .filter(|pair| {
+            pair.topology() == ori_collision::TopologyRelation::SharedHingeEdge
+                && pair.evidence() == ori_collision::IntersectionEvidenceV2::SharedFeatureFlatStack
+                && pair.disposition()
+                    == ori_collision::StaticCollisionPairDisposition::Indeterminate
+                && direct_pair_hinge(pair.first_face(), pair.second_face())
+                    .is_some_and(|hinge| !moving_hinges.contains(&hinge))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        persistent_flat_pairs.len(),
+        1,
+        "one stationary, source-authenticated flat pair must remain fail-closed: {endpoint:?}"
+    );
+    let persistent_hinge = direct_pair_hinge(
+        persistent_flat_pairs[0].first_face(),
+        persistent_flat_pairs[0].second_face(),
+    )
+    .expect("persistent pair direct hinge");
+    assert_eq!(
+        prepared_requested_pose
+            .pose()
+            .hinge_angles()
+            .iter()
+            .find(|angle| angle.edge() == persistent_hinge)
+            .map(|angle| angle.angle_degrees().to_bits()),
+        Some(180.0_f64.to_bits())
+    );
+
+    let moving_boundary_pairs = endpoint
+        .pairs()
+        .iter()
+        .filter(|pair| {
+            pair.topology() == ori_collision::TopologyRelation::SharedHingeEdge
+                && pair.evidence() == ori_collision::IntersectionEvidenceV2::SharedFeatureContact
+                && pair.disposition() == ori_collision::StaticCollisionPairDisposition::Allowed
+                && pair.shared_hinge_boundary_contact_proven()
+                && direct_pair_hinge(pair.first_face(), pair.second_face())
+                    .is_some_and(|hinge| moving_hinges.contains(&hinge))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        moving_boundary_pairs.len(),
+        1,
+        "the moving-hinge pair must be independently proven as finite boundary-only contact: \
+         {endpoint:?}"
+    );
+    let moving_hinge = direct_pair_hinge(
+        moving_boundary_pairs[0].first_face(),
+        moving_boundary_pairs[0].second_face(),
+    )
+    .expect("moving pair direct hinge");
+    assert_eq!(
+        prepared_requested_pose
+            .pose()
+            .hinge_angles()
+            .iter()
+            .find(|angle| angle.edge() == moving_hinge)
+            .map(|angle| angle.angle_degrees().to_bits()),
+        Some(37.0_f64.to_bits())
     );
     prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
         &prepared_requested_pose,
@@ -372,21 +450,22 @@ fn prepare_speculative_tree_environment_v1() -> (
     ];
     let vertices = positions
         .into_iter()
-        .map(|position| ori_domain::Vertex {
-            id: ori_domain::VertexId::new(),
+        .enumerate()
+        .map(|(index, position)| ori_domain::Vertex {
+            id: fixed_id("9b10", index as u64 + 1),
             position,
         })
         .collect::<Vec<_>>();
     let mut edges = (0..vertices.len())
         .map(|index| ori_domain::Edge {
-            id: ori_domain::EdgeId::new(),
+            id: fixed_id("9b20", index as u64 + 1),
             start: vertices[index].id,
             end: vertices[(index + 1) % vertices.len()].id,
             kind: ori_domain::EdgeKind::Boundary,
         })
         .collect::<Vec<_>>();
     edges.push(ori_domain::Edge {
-        id: ori_domain::EdgeId::new(),
+        id: fixed_id("9b20", 20),
         start: vertices[1].id,
         end: vertices[4].id,
         kind: ori_domain::EdgeKind::Mountain,
@@ -396,6 +475,9 @@ fn prepare_speculative_tree_environment_v1() -> (
     paper.boundary_vertices = pattern.vertices.iter().map(|vertex| vertex.id).collect();
     paper.thickness_mm = 0.0;
     let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+    project.instance_id = fixed_id("9b30", 1);
+    project.project_id = fixed_id("9b30", 2);
+    project.saved_document = Some(project.document());
     super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
     let instance = project.instance_id;
     let project_id = project.project_id;
@@ -462,7 +544,7 @@ fn tree_samples_without_a_continuous_certificate_publish_only_speculative_author
 }
 
 #[test]
-fn post_install_cancel_stale_and_contract_failure_clear_only_the_installed_token() {
+fn prepublication_cancel_stale_and_contract_failure_preserve_the_previous_token() {
     let _generation_guard = lock_stacked_fold_read_generation_test();
     for (action, expected_error) in [
         (1_u8, CANCELLED_MESSAGE),
@@ -476,9 +558,22 @@ fn post_install_cancel_stale_and_contract_failure_clear_only_the_installed_token
         let revision = request.expected_revision;
         let line_x = request.first[0];
         let before = observe_speculative_project_v1(&app_state);
-        STACKED_FOLD_POST_INSTALL_ACTION_V1
+        let previous = tauri::async_runtime::block_on(propose_current_stacked_fold_read_inner(
+            None,
+            &app_state,
+            &layer_state,
+            &transaction_state,
+            speculative_tree_request_v1(instance, project_id, revision, line_x),
+        ))
+        .expect("baseline pending proposal");
+        let previous_token = speculative_token_v1(&previous);
+        assert_eq!(
+            transaction_state.speculative_pending_token_for_test_v1(),
+            Some(previous_token)
+        );
+        STACKED_FOLD_PREPUBLICATION_ACTION_V1
             .compare_exchange(0, action, Ordering::AcqRel, Ordering::Acquire)
-            .expect("one post-install test action");
+            .expect("one prepublication test action");
 
         let error = tauri::async_runtime::block_on(propose_current_stacked_fold_read_inner(
             None,
@@ -487,18 +582,24 @@ fn post_install_cancel_stale_and_contract_failure_clear_only_the_installed_token
             &transaction_state,
             request,
         ))
-        .expect_err("the injected post-install race must fail closed");
+        .expect_err("the injected prepublication race must fail closed");
         assert_eq!(error, expected_error);
         assert_eq!(
-            STACKED_FOLD_POST_INSTALL_ACTION_V1.load(Ordering::Acquire),
+            STACKED_FOLD_PREPUBLICATION_ACTION_V1.load(Ordering::Acquire),
             0
         );
         assert_eq!(transaction_state.pending_token_for_test_v1(), None);
         assert_eq!(
             transaction_state.speculative_pending_token_for_test_v1(),
-            None
+            Some(previous_token),
+            "a rejected replacement must not displace the prior valid token"
         );
         assert_speculative_project_observation_v1(&app_state, &before);
+        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
+            &transaction_state,
+            previous_token,
+        )
+        .expect("previous token cleanup");
 
         let retry = tauri::async_runtime::block_on(propose_current_stacked_fold_read_inner(
             None,
@@ -970,7 +1071,9 @@ fn speculative_commit_target_pose_reissue_failure_rolls_back_complete_editor() {
             .expect("current layer capability"),
         )
     };
-    super::super::stacked_fold_transaction::fail_next_speculative_target_pose_reissue_for_test_v1();
+    let _target_pose_reissue_failure_guard =
+        super::super::stacked_fold_transaction::fail_next_speculative_target_pose_reissue_for_test_v1(
+        );
     let error = apply_speculative_v1(&app_state, &layer_state, &transaction_state, token)
         .expect_err("injected target-pose reissue must fail after the editor commit");
     assert_eq!(

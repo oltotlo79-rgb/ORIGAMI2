@@ -1,11 +1,15 @@
 #[cfg(test)]
-use std::cell::Cell;
-use std::sync::MutexGuard;
+use std::{cell::Cell, marker::PhantomData, rc::Rc};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::MutexGuard,
+};
 
 use ori_collision::{StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticLimitsV1};
 use ori_core::{
-    PreparedStackedFoldRequestedPoseV1, StackedFoldInitialLayerOrderV1,
-    StackedFoldNonFlatLayerOrderV1,
+    PreparedStackedFoldRequestedPoseV1, SpeculativeUnprovenFoldBindingV1,
+    SpeculativeUnprovenFoldProofOutcomeV1, SpeculativeUnprovenFoldUnknownReasonV1,
+    StackedFoldInitialLayerOrderV1, StackedFoldNonFlatLayerOrderV1,
     diagnose_stacked_fold_requested_path_with_initial_layer_order_v1,
 };
 use ori_domain::{InstructionHingeAngle, InstructionPose, InstructionPoseModel, ProjectId};
@@ -17,7 +21,7 @@ use super::reissue_target_pose_or_rollback_with_v1;
 use super::{
     AppState, CurrentLayerEvidence, GlobalFlatFoldabilityState,
     StackedFoldProjectRollbackSnapshotV1, StackedFoldTransactionState, lock_project,
-    reissue_target_pose_or_rollback,
+    reissue_target_pose_or_rollback, rollback_stacked_fold_apply_v1,
 };
 use crate::{
     applied_pose::{
@@ -25,7 +29,8 @@ use crate::{
         lock_revalidated_current_applied_pose_for_commit,
     },
     global_flat_foldability::{
-        CurrentLayerOrderCapability, lock_revalidated_current_layer_order_for_commit,
+        CurrentLayerOrderCapability, CurrentLayerOrderCommitGuard,
+        lock_revalidated_current_layer_order_for_commit,
     },
 };
 
@@ -80,8 +85,56 @@ struct PendingSpeculativeStackedFoldTransactionV1 {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy)]
+struct PostApplyPublicationResolutionFaultV1 {
+    token: u64,
+    fault: u8,
+}
+
+#[cfg(test)]
+#[must_use = "the target-pose fault remains armed only while this guard is held"]
+pub(crate) struct ArmedTargetPoseReissueFailureGuardV1 {
+    token: u64,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for ArmedTargetPoseReissueFailureGuardV1 {
+    fn drop(&mut self) {
+        FAIL_NEXT_TARGET_POSE_REISSUE_V1.with(|slot| {
+            if slot.get() == Some(self.token) {
+                slot.set(None);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
 thread_local! {
-    static FAIL_NEXT_TARGET_POSE_REISSUE_V1: Cell<bool> = const { Cell::new(false) };
+    static NEXT_TARGET_POSE_REISSUE_FAILURE_TOKEN_V1: Cell<u64> = const { Cell::new(0) };
+    static FAIL_NEXT_TARGET_POSE_REISSUE_V1: Cell<Option<u64>> = const { Cell::new(None) };
+    static NEXT_POST_APPLY_PUBLICATION_RESOLUTION_FAULT_TOKEN_V1: Cell<u64> =
+        const { Cell::new(0) };
+    static NEXT_POST_APPLY_PUBLICATION_RESOLUTION_FAULT_V1:
+        Cell<Option<PostApplyPublicationResolutionFaultV1>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+#[must_use = "the publication-resolution fault remains armed only while this guard is held"]
+pub(crate) struct ArmedPostApplyPublicationResolutionFaultGuardV1 {
+    token: u64,
+    _not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for ArmedPostApplyPublicationResolutionFaultGuardV1 {
+    fn drop(&mut self) {
+        NEXT_POST_APPLY_PUBLICATION_RESOLUTION_FAULT_V1.with(|slot| {
+            if slot.get().is_some_and(|armed| armed.token == self.token) {
+                slot.set(None);
+            }
+        });
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -102,8 +155,26 @@ pub(crate) fn speculative_tree_diagnostic_is_issuable_v1(
         && diagnostic.sampled_nonblocking_pose_count() == diagnostic.sampled_pose_count()
 }
 
+#[cfg(test)]
 pub(crate) fn install_pending_speculative_stacked_fold_v1(
     state: &StackedFoldTransactionState,
+    premises: PendingSpeculativeStackedFoldPremisesV1,
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
+) -> Result<ProjectId, String> {
+    let request_generation_id = ProjectId::new();
+    install_pending_speculative_stacked_fold_with_token_v1(
+        state,
+        request_generation_id,
+        premises,
+        pose_capability,
+        layer_capability,
+    )
+}
+
+pub(crate) fn install_pending_speculative_stacked_fold_with_token_v1(
+    state: &StackedFoldTransactionState,
+    request_generation_id: ProjectId,
     premises: PendingSpeculativeStackedFoldPremisesV1,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
@@ -120,7 +191,6 @@ pub(crate) fn install_pending_speculative_stacked_fold_v1(
     {
         return Err("The speculative stacked-fold premises are inconsistent.".to_owned());
     }
-    let request_generation_id = ProjectId::new();
     let post_apply_binding = ori_core::SpeculativeUnprovenFoldBindingV1::new(
         premises.expected_instance_id,
         premises.expected_project_id,
@@ -142,12 +212,15 @@ pub(crate) fn install_pending_speculative_stacked_fold_v1(
         layer_capability,
         expected_layer_generation: premises.expected_layer_generation,
     };
-    let _mode_guard = super::lock_transaction_mode_gate_v1(state)?;
-    super::clear_pending_certified_stacked_fold_v1(state)?;
-    let mut slot = lock_speculative_slot_v1(state)?;
-    slot.active_generation = Some(request_generation_id);
-    slot.pending = Some(pending);
-    Ok(request_generation_id)
+    super::with_try_locked_transaction_install_slots_v1(
+        state,
+        |certified_slot, speculative_slot| {
+            super::clear_pending_certified_slot_locked_v1(certified_slot);
+            speculative_slot.active_generation = Some(request_generation_id);
+            speculative_slot.pending = Some(pending);
+            request_generation_id
+        },
+    )
 }
 
 #[tauri::command]
@@ -198,7 +271,7 @@ pub(crate) fn apply_speculative_stacked_fold_transaction_inner_v1(
         lock_revalidated_current_applied_pose_for_commit(&project, &pending.pose_capability)
             .map_err(|_| "The current pose authority is unavailable.".to_owned())?
             .ok_or_else(|| "The speculative stacked-fold preview is stale.".to_owned())?;
-    let layer_guard = lock_revalidated_current_layer_order_for_commit(
+    let mut layer_guard = lock_revalidated_current_layer_order_for_commit(
         foldability_state,
         &project,
         &pending.layer_capability,
@@ -234,38 +307,182 @@ pub(crate) fn apply_speculative_stacked_fold_transaction_inner_v1(
             project.editor.paper().thickness_mm,
         )
         .map_err(|_| "The speculative stacked-fold token could not be issued.".to_owned())?;
-    let project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
-    let result = project
+    let mut project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
+    let layer_before = layer_guard.capture_rollback_snapshot_v1();
+    let (result, resolution_ticket) = project
         .editor
-        .execute_stacked_fold_document_with_unproven_mark_v1(token)
+        .execute_stacked_fold_document_with_unproven_mark_and_resolution_ticket_v1(token)
         .map_err(|_| "The speculative stacked fold could not be applied atomically.".to_owned())?;
     project.record_numeric_expression_edit();
     drop(pose_guard);
-    let pose_rollback = reissue_speculative_target_pose_or_rollback_v1(
+    let mut pose_rollback = reissue_speculative_target_pose_or_rollback_v1(
         &mut project,
         &persisted_pose,
-        &project_before,
+        &mut project_before,
     )?;
+    let target_pose_capability = match project.applied_pose_authority.capture_capability(&project) {
+        Ok(Some(capability)) => capability,
+        _ => {
+            rollback_failed_post_apply_publication_v1(
+                &mut project,
+                &mut project_before,
+                &mut pose_rollback,
+                &mut layer_guard,
+                &layer_before,
+            )?;
+            return Err(
+                "The post-Apply proof premise could not capture its target pose authority."
+                    .to_owned(),
+            );
+        }
+    };
+    let premise = post_apply_proof::PostApplyProofPremiseV1 {
+        resolution_ticket,
+        binding: pending.post_apply_binding,
+        requested: pending.requested,
+        initial_layer_order: pending.initial_layer_order,
+        target_revision: result.revision,
+        target_fingerprint,
+        target_pose_generation: target_pose_capability.generation(),
+        paper_thickness_mm: project.editor.paper().thickness_mm,
+    };
+    if let Err(premise) =
+        post_apply_proof::publish_post_apply_proof_premise_v1(app_state, transaction_state, premise)
+    {
+        if let Err(error) =
+            resolve_post_apply_publication_failure_v1(&mut project, &premise.binding)
+        {
+            rollback_failed_post_apply_publication_v1(
+                &mut project,
+                &mut project_before,
+                &mut pose_rollback,
+                &mut layer_guard,
+                &layer_before,
+            )?;
+            return Err(error);
+        }
+        // The exact mark is now observably fail-closed, so its one-shot
+        // positive-proof ticket is no longer live authority.
+        drop(premise);
+    }
     layer_guard.invalidate_after_project_mutation();
     project.current_layer_evidence = Some(CurrentLayerEvidence::NonFlat(pending.layer_order));
     pose_rollback.disarm();
-    if let Ok(Some(target_pose_capability)) =
-        project.applied_pose_authority.capture_capability(&project)
-    {
-        let _ = post_apply_proof::publish_post_apply_proof_premise_v1(
-            transaction_state,
-            post_apply_proof::PostApplyProofPremiseV1 {
-                binding: pending.post_apply_binding,
-                requested: pending.requested,
-                initial_layer_order: pending.initial_layer_order,
-                target_revision: result.revision,
-                target_fingerprint,
-                target_pose_generation: target_pose_capability.generation(),
-                paper_thickness_mm: project.editor.paper().thickness_mm,
-            },
-        );
-    }
     Ok(result.revision)
+}
+
+fn rollback_failed_post_apply_publication_v1(
+    project: &mut super::super::ProjectState,
+    project_before: &mut StackedFoldProjectRollbackSnapshotV1,
+    pose_rollback: &mut CurrentAppliedPoseTransactionRollbackV1,
+    layer_guard: &mut CurrentLayerOrderCommitGuard<'_>,
+    layer_before: &crate::global_flat_foldability::CurrentLayerOrderRollbackSnapshotV1,
+) -> Result<(), String> {
+    rollback_stacked_fold_apply_v1(
+        project,
+        project_before,
+        pose_rollback,
+        Some(layer_guard),
+        Some(layer_before),
+    )
+}
+
+fn resolve_post_apply_publication_failure_v1(
+    project: &mut super::super::ProjectState,
+    binding: &SpeculativeUnprovenFoldBindingV1,
+) -> Result<(), String> {
+    let expected = SpeculativeUnprovenFoldProofOutcomeV1::Unknown {
+        reason: SpeculativeUnprovenFoldUnknownReasonV1::ResourceLimit,
+    };
+    let fault = take_post_apply_publication_resolution_fault_v1();
+    let attempted = catch_unwind(AssertUnwindSafe(|| {
+        if fault == 2 {
+            panic!("injected pre-resolution post-Apply publication fallback panic");
+        }
+        if fault == 1 {
+            return Err(());
+        }
+        let report = project
+            .editor
+            .resolve_speculative_unproven_fold_v1(binding, expected)
+            .map_err(|_| ())?;
+        if fault == 3 {
+            panic!("injected post-resolution post-Apply publication fallback panic");
+        }
+        Ok(report)
+    }));
+    if matches!(attempted, Ok(Ok(report)) if report.outcome == expected) {
+        return Ok(());
+    }
+    // An Err or unwind may occur after the editor committed the explicit
+    // outcome. Observe the exact binding before deciding that Apply must be
+    // rolled back; the one-shot premise remains owned by the caller meanwhile.
+    if matches!(
+        catch_unwind(AssertUnwindSafe(|| {
+            project
+                .editor
+                .inspect_speculative_unproven_fold_v1(binding)
+        })),
+        Ok(Ok(Some(report))) if report.outcome == expected
+    ) {
+        return Ok(());
+    }
+    Err("The post-Apply proof premise could not be retained or resolved fail-closed.".to_owned())
+}
+
+fn take_post_apply_publication_resolution_fault_v1() -> u8 {
+    #[cfg(test)]
+    {
+        NEXT_POST_APPLY_PUBLICATION_RESOLUTION_FAULT_V1
+            .with(Cell::take)
+            .map_or(0, |armed| armed.fault)
+    }
+    #[cfg(not(test))]
+    0
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_post_apply_publication_resolution_for_test_v1()
+-> ArmedPostApplyPublicationResolutionFaultGuardV1 {
+    arm_post_apply_publication_resolution_fault_v1(1)
+}
+
+#[cfg(test)]
+pub(crate) fn panic_next_post_apply_publication_resolution_before_for_test_v1()
+-> ArmedPostApplyPublicationResolutionFaultGuardV1 {
+    arm_post_apply_publication_resolution_fault_v1(2)
+}
+
+#[cfg(test)]
+pub(crate) fn panic_next_post_apply_publication_resolution_after_for_test_v1()
+-> ArmedPostApplyPublicationResolutionFaultGuardV1 {
+    arm_post_apply_publication_resolution_fault_v1(3)
+}
+
+#[cfg(test)]
+fn arm_post_apply_publication_resolution_fault_v1(
+    fault: u8,
+) -> ArmedPostApplyPublicationResolutionFaultGuardV1 {
+    assert!((1..=3).contains(&fault), "known resolution fault");
+    let token = NEXT_POST_APPLY_PUBLICATION_RESOLUTION_FAULT_TOKEN_V1.with(|next| {
+        let token = next
+            .get()
+            .checked_add(1)
+            .expect("publication resolution fault token overflow");
+        next.set(token);
+        token
+    });
+    NEXT_POST_APPLY_PUBLICATION_RESOLUTION_FAULT_V1.with(|slot| {
+        assert!(
+            slot.get().is_none(),
+            "one post-Apply publication resolution fault may be armed"
+        );
+        slot.set(Some(PostApplyPublicationResolutionFaultV1 { token, fault }));
+    });
+    ArmedPostApplyPublicationResolutionFaultGuardV1 {
+        token,
+        _not_send_or_sync: PhantomData,
+    }
 }
 
 fn lowercase_sha256_v1(bytes: [u8; 32]) -> String {
@@ -281,10 +498,10 @@ fn lowercase_sha256_v1(bytes: [u8; 32]) -> String {
 fn reissue_speculative_target_pose_or_rollback_v1(
     project: &mut super::super::ProjectState,
     persisted_pose: &InstructionPose,
-    project_before: &StackedFoldProjectRollbackSnapshotV1,
+    project_before: &mut StackedFoldProjectRollbackSnapshotV1,
 ) -> Result<CurrentAppliedPoseTransactionRollbackV1, String> {
     #[cfg(test)]
-    if FAIL_NEXT_TARGET_POSE_REISSUE_V1.with(|flag| flag.replace(false)) {
+    if take_target_pose_reissue_failure_for_test_v1() {
         return reissue_target_pose_or_rollback_with_v1(
             project,
             persisted_pose,
@@ -296,10 +513,29 @@ fn reissue_speculative_target_pose_or_rollback_v1(
 }
 
 #[cfg(test)]
-pub(crate) fn fail_next_speculative_target_pose_reissue_for_test_v1() {
-    FAIL_NEXT_TARGET_POSE_REISSUE_V1.with(|flag| {
-        assert!(!flag.replace(true), "a failure injection is already armed");
+pub(crate) fn fail_next_speculative_target_pose_reissue_for_test_v1()
+-> ArmedTargetPoseReissueFailureGuardV1 {
+    let token = NEXT_TARGET_POSE_REISSUE_FAILURE_TOKEN_V1.with(|next| {
+        let token = next
+            .get()
+            .checked_add(1)
+            .expect("target pose reissue failure token overflow");
+        next.set(token);
+        token
     });
+    FAIL_NEXT_TARGET_POSE_REISSUE_V1.with(|slot| {
+        assert!(slot.get().is_none(), "a failure injection is already armed");
+        slot.set(Some(token));
+    });
+    ArmedTargetPoseReissueFailureGuardV1 {
+        token,
+        _not_send_or_sync: PhantomData,
+    }
+}
+
+#[cfg(test)]
+fn take_target_pose_reissue_failure_for_test_v1() -> bool {
+    FAIL_NEXT_TARGET_POSE_REISSUE_V1.with(Cell::take).is_some()
 }
 
 fn diagnostic_revalidates_exactly_v1(premises: &PendingSpeculativeStackedFoldPremisesV1) -> bool {
@@ -394,13 +630,20 @@ fn lock_speculative_slot_v1(
         .map_err(|_| "The speculative stacked-fold registry is unavailable.".to_owned())
 }
 
+#[cfg(test)]
 pub(super) fn clear_pending_speculative_stacked_fold_v1(
     state: &StackedFoldTransactionState,
 ) -> Result<(), String> {
     let mut slot = lock_speculative_slot_v1(state)?;
+    clear_pending_speculative_slot_locked_v1(&mut slot);
+    Ok(())
+}
+
+pub(super) fn clear_pending_speculative_slot_locked_v1(
+    slot: &mut SpeculativeStackedFoldTransactionSlotV1,
+) {
     slot.active_generation = None;
     slot.pending = None;
-    Ok(())
 }
 
 pub(super) fn try_cancel_pending_speculative_stacked_fold_v1(

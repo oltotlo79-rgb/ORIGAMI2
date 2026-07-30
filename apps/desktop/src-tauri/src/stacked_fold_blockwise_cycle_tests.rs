@@ -2,6 +2,262 @@ use super::tests::lock_stacked_fold_read_generation_test;
 use super::*;
 
 #[test]
+fn blockwise_control_gate_rejects_stops_and_accepts_only_current_generation() {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::{Duration, Instant},
+    };
+
+    use ori_collision::CooperativeOperationControlV1;
+
+    let _serial = lock_stacked_fold_read_generation_test();
+    let original = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
+    STACKED_FOLD_READ_GENERATION.store(811, Ordering::Release);
+    let active = AtomicBool::new(false);
+    let deadline = CooperativeOperationControlV1::new(Some(&active), Instant::now());
+    assert_eq!(
+        super::stacked_fold_blockwise_cycle::blockwise_cycle_control_gate_v1(811, &deadline),
+        Err(
+            super::stacked_fold_blockwise_cycle::BlockwiseCycleControlGateErrorV1::DeadlineExceeded
+        )
+    );
+    let cancelled = AtomicBool::new(true);
+    let cancelled_control = CooperativeOperationControlV1::new(
+        Some(&cancelled),
+        Instant::now() + Duration::from_secs(1),
+    );
+    assert_eq!(
+        super::stacked_fold_blockwise_cycle::blockwise_cycle_control_gate_v1(
+            811,
+            &cancelled_control,
+        ),
+        Err(super::stacked_fold_blockwise_cycle::BlockwiseCycleControlGateErrorV1::Cancelled)
+    );
+    let old = CooperativeOperationControlV1::new_with_generation(
+        Some(&active),
+        &STACKED_FOLD_READ_GENERATION,
+        811,
+        Instant::now() + Duration::from_secs(1),
+    );
+    STACKED_FOLD_READ_GENERATION.store(812, Ordering::Release);
+    assert_eq!(
+        super::stacked_fold_blockwise_cycle::blockwise_cycle_control_gate_v1(811, &old),
+        Err(super::stacked_fold_blockwise_cycle::BlockwiseCycleControlGateErrorV1::Cancelled)
+    );
+    let current = CooperativeOperationControlV1::new_with_generation(
+        Some(&active),
+        &STACKED_FOLD_READ_GENERATION,
+        812,
+        Instant::now() + Duration::from_secs(1),
+    );
+    assert_eq!(
+        super::stacked_fold_blockwise_cycle::blockwise_cycle_control_gate_v1(812, &current),
+        Ok(())
+    );
+    STACKED_FOLD_READ_GENERATION.store(original, Ordering::Release);
+}
+
+#[test]
+fn three_block_transport_preflight_enforces_the_aggregate_and_every_exact_limit() {
+    use ori_collision::GeneralCellTransportLimitsV1;
+
+    use super::stacked_fold_blockwise_cycle::{
+        ThreeBlockCellTransportWorkV1, preflight_three_block_transport_aggregate_v1,
+    };
+
+    let per_proof = ThreeBlockCellTransportWorkV1 {
+        transitions: 3,
+        cells: 5,
+        layer_records: 7,
+        boundary_samples: 11,
+        folded_faces: 13,
+        maximum_boundary_points: 17,
+    };
+    let aggregate = per_proof
+        .checked_add_v1(per_proof)
+        .and_then(|work| work.checked_add_v1(per_proof))
+        .and_then(|work| work.checked_add_v1(per_proof))
+        .expect("four-proof aggregate");
+    let exact = GeneralCellTransportLimitsV1 {
+        max_transitions: aggregate.transitions,
+        max_cells: aggregate.cells,
+        max_layer_records: aggregate.layer_records,
+        max_boundary_samples: aggregate.boundary_samples,
+    };
+    assert_eq!(
+        preflight_three_block_transport_aggregate_v1(per_proof, exact),
+        Ok(()),
+        "each individual proof fits the aggregate limits"
+    );
+    assert_eq!(
+        preflight_three_block_transport_aggregate_v1(aggregate, exact),
+        Ok(()),
+        "the exact whole-operation aggregate is accepted"
+    );
+
+    for one_short in [
+        GeneralCellTransportLimitsV1 {
+            max_transitions: exact.max_transitions - 1,
+            ..exact
+        },
+        GeneralCellTransportLimitsV1 {
+            max_cells: exact.max_cells - 1,
+            ..exact
+        },
+        GeneralCellTransportLimitsV1 {
+            max_layer_records: exact.max_layer_records - 1,
+            ..exact
+        },
+        GeneralCellTransportLimitsV1 {
+            max_boundary_samples: exact.max_boundary_samples - 1,
+            ..exact
+        },
+    ] {
+        assert_eq!(
+            preflight_three_block_transport_aggregate_v1(aggregate, one_short),
+            Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+        );
+    }
+}
+
+#[test]
+fn three_block_transport_aggregate_addition_rejects_every_overflow() {
+    use super::stacked_fold_blockwise_cycle::ThreeBlockCellTransportWorkV1;
+
+    let one = ThreeBlockCellTransportWorkV1 {
+        transitions: 1,
+        cells: 1,
+        layer_records: 1,
+        boundary_samples: 1,
+        folded_faces: 1,
+        maximum_boundary_points: 1,
+    };
+    for near_overflow in [
+        ThreeBlockCellTransportWorkV1 {
+            transitions: usize::MAX,
+            ..Default::default()
+        },
+        ThreeBlockCellTransportWorkV1 {
+            cells: usize::MAX,
+            ..Default::default()
+        },
+        ThreeBlockCellTransportWorkV1 {
+            layer_records: usize::MAX,
+            ..Default::default()
+        },
+        ThreeBlockCellTransportWorkV1 {
+            boundary_samples: usize::MAX,
+            ..Default::default()
+        },
+        ThreeBlockCellTransportWorkV1 {
+            folded_faces: usize::MAX,
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(near_overflow.checked_add_v1(one), None);
+    }
+}
+
+#[test]
+fn three_block_layer_peak_preflight_accepts_exact_rejects_one_short_and_overflow() {
+    use super::stacked_fold_blockwise_cycle::{
+        checked_three_block_layer_peak_retained_bytes_v1,
+        checked_three_block_operation_peak_retained_bytes_v1,
+        preflight_three_block_layer_peak_retained_bytes_v1,
+    };
+
+    let layer_peak = checked_three_block_layer_peak_retained_bytes_v1(10, 7)
+        .expect("three whole-source and two restricted-source copies");
+    assert_eq!(layer_peak, 44);
+    let peak = checked_three_block_operation_peak_retained_bytes_v1(layer_peak, 5, 7)
+        .expect("proof-retained and streaming workspace bytes");
+    assert_eq!(peak, 56);
+    assert_eq!(
+        preflight_three_block_layer_peak_retained_bytes_v1(peak, peak),
+        Ok(())
+    );
+    assert_eq!(
+        preflight_three_block_layer_peak_retained_bytes_v1(peak, peak - 1),
+        Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+    );
+    assert_eq!(
+        checked_three_block_layer_peak_retained_bytes_v1(usize::MAX, 0),
+        None
+    );
+    assert_eq!(
+        checked_three_block_layer_peak_retained_bytes_v1(0, usize::MAX),
+        None
+    );
+    assert_eq!(
+        checked_three_block_operation_peak_retained_bytes_v1(usize::MAX, 1, 0),
+        None
+    );
+    assert_eq!(
+        checked_three_block_operation_peak_retained_bytes_v1(0, usize::MAX, 1),
+        None
+    );
+}
+
+#[test]
+fn three_block_layer_peak_rejection_happens_before_any_source_clone() {
+    use ori_foldability::{
+        GLOBAL_FLAT_FOLDABILITY_MODEL_ID, GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID,
+        LayerFace, LayerOrderDerivation, LayerOrderProvenance, LayerOrderSnapshot,
+    };
+    use ori_topology::FaceKey;
+
+    use super::stacked_fold_blockwise_cycle::{
+        ThreeBlockLayerRetainedBytesV1, materialize_three_block_layer_sources_v1,
+        reset_three_block_layer_source_clone_attempts_for_test_v1,
+        three_block_layer_source_clone_attempts_for_test_v1,
+    };
+
+    let _serial = lock_stacked_fold_read_generation_test();
+    let face = LayerFace {
+        face_id: FaceId::new(),
+        face_key: FaceKey([0; 32]),
+    };
+    let source = LayerOrderSnapshot {
+        model_id: LAYER_ORDER_MODEL_ID,
+        material_faces: vec![face],
+        global_bottom_to_top: Some(vec![face]),
+        provenance: LayerOrderProvenance {
+            source: GlobalFlatFoldabilityProvenance {
+                identity_namespace: None,
+                source_revision: 0,
+                source_fingerprint: None,
+                model_id: GLOBAL_FLAT_FOLDABILITY_MODEL_ID,
+            },
+            derivation: LayerOrderDerivation::SingleFace { face },
+        },
+        reference_face: Some(face),
+        folded_faces: Vec::new(),
+        overlap_cells: Vec::new(),
+        face_pair_orders: Vec::new(),
+        proof_summary: None,
+    };
+    let no_faces: &[FaceId] = &[];
+    let face_sets = [no_faces; 3];
+    let plan = ThreeBlockLayerRetainedBytesV1::for_source_v1(&source, face_sets, 5, 7)
+        .expect("checked proof-retained and temporary peak");
+    reset_three_block_layer_source_clone_attempts_for_test_v1();
+    assert_eq!(
+        materialize_three_block_layer_sources_v1(&source, face_sets, 5, 7, plan.peak - 1),
+        Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+    );
+    assert_eq!(
+        three_block_layer_source_clone_attempts_for_test_v1(),
+        0,
+        "peak amplification must be rejected before the whole or restricted source is cloned"
+    );
+    assert_eq!(
+        materialize_three_block_layer_sources_v1(&source, face_sets, usize::MAX, 1, usize::MAX,),
+        Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+    );
+    assert_eq!(three_block_layer_source_clone_attempts_for_test_v1(), 0);
+}
+
+#[test]
 fn seventeen_cell_current_cycle_uses_blockwise_fallback_end_to_end() {
     use ori_kinematics::{MaterialHingeGraphGeometry, TreeKinematicsLimits};
     use ori_topology::FaceExtractionInput;

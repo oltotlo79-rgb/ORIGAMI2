@@ -10,8 +10,8 @@ use tauri::State;
 
 use super::{
     POST_APPLY_PROOF_PROTOCOL_VERSION_V1, PostApplyProofJobStateV1, PostApplyProofRegistryV1,
-    job_matches_continuing_project_v1, lock_registry_v1, mark_stale_v1, refresh_terminal_report_v1,
-    terminal_is_failure_v1,
+    close_noncontinuing_job_v1, job_matches_continuing_project_v1, lock_registry_v1,
+    refresh_terminal_report_v1, terminal_is_failure_v1,
 };
 use crate::{
     AppState, ProjectNumericExpressions, ProjectState, StackedFoldTransactionState,
@@ -121,7 +121,7 @@ async fn revert_post_apply_proof_failure_with_interleave_v1(
 ) -> Result<u64, String> {
     let expected_report = validate_revert_request_v1(&request)?;
     let (binding, editor, numeric_expressions, history_settings) = {
-        let project = lock_project(app_state).map_err(|_| revert_unavailable_message_v1())?;
+        let mut project = lock_project(app_state).map_err(|_| revert_unavailable_message_v1())?;
         ensure_revert_project_authority_v1(&project, &request)?;
         let mut registry =
             lock_registry_v1(transaction_state).map_err(|_| revert_unavailable_message_v1())?;
@@ -130,15 +130,15 @@ async fn revert_post_apply_proof_failure_with_interleave_v1(
         };
         let job = &mut registry.jobs[index];
         if !job_matches_continuing_project_v1(job, &project) {
-            mark_stale_v1(job);
+            close_noncontinuing_job_v1(&mut project, job);
             return Err(revert_unavailable_message_v1());
         }
         refresh_terminal_report_v1(&project, job);
         if job.resolution_report != Some(expected_report)
             || !matches!(
-                job.state,
+                &job.state,
                 PostApplyProofJobStateV1::Terminal(terminal)
-                    if terminal_is_failure_v1(terminal)
+                    if terminal_is_failure_v1(*terminal)
             )
         {
             return Err(revert_unavailable_message_v1());
@@ -172,7 +172,7 @@ async fn revert_post_apply_proof_failure_with_interleave_v1(
     };
     let job = &mut registry.jobs[index];
     if !job_matches_continuing_project_v1(job, &project) {
-        mark_stale_v1(job);
+        close_noncontinuing_job_v1(&mut project, job);
         return Err(revert_unavailable_message_v1());
     }
     refresh_terminal_report_v1(&project, job);
@@ -186,7 +186,7 @@ async fn revert_post_apply_proof_failure_with_interleave_v1(
     let pose_invalidation = authority
         .begin_invalidation()
         .map_err(|_| revert_unavailable_message_v1())?;
-    let layer_invalidation = lock_current_layer_order_for_history_mutation(foldability_state)
+    let mut layer_invalidation = lock_current_layer_order_for_history_mutation(foldability_state)
         .map_err(|_| revert_unavailable_message_v1())?;
     let source_revision = project.editor.revision();
     project.editor = prepared.editor;

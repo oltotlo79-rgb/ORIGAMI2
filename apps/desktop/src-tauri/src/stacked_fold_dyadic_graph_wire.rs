@@ -5,13 +5,15 @@
 //! vocabulary shared by every bounded-read exit.
 
 use ori_domain::ProjectId;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use super::{CycleScheduleRequestV1, DyadicPoseGraphAngleDtoV1, default_dyadic_level_count_v1};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct DyadicPoseGraphReadRequestV1 {
+    #[serde(default, deserialize_with = "deserialize_progress_request_id_v1")]
+    pub(super) progress_request_id: Option<String>,
     pub(super) expected_project_instance_id: ProjectId,
     pub(super) expected_project_id: ProjectId,
     pub(super) expected_revision: u64,
@@ -22,6 +24,23 @@ pub(crate) struct DyadicPoseGraphReadRequestV1 {
     pub(super) level_count: usize,
     #[serde(default)]
     pub(super) cycle_schedule_v1: Option<CycleScheduleRequestV1>,
+}
+
+fn deserialize_progress_request_id_v1<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if value.as_ref().is_some_and(|request_id| {
+        request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id.bytes().all(|byte| byte.is_ascii_graphic())
+    }) {
+        return Err(D::Error::custom(
+            "progressRequestId must contain 1-128 visible ASCII bytes",
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Serialize)]

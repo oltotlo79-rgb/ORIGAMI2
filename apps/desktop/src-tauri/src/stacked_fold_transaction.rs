@@ -18,13 +18,17 @@ use tauri::State;
 mod speculative_unproven;
 
 #[cfg(test)]
+pub(crate) use crate::applied_pose::fail_next_transaction_rollback_for_test_v1;
+#[cfg(test)]
 pub(crate) use speculative_unproven::{
     ApplySpeculativeStackedFoldRequestV1, apply_speculative_stacked_fold_transaction_inner_v1,
     fail_next_speculative_target_pose_reissue_for_test_v1,
+    install_pending_speculative_stacked_fold_v1,
 };
 pub(super) use speculative_unproven::{
     PendingSpeculativeStackedFoldPremisesV1, apply_speculative_stacked_fold_transaction,
-    install_pending_speculative_stacked_fold_v1, speculative_tree_diagnostic_is_issuable_v1,
+    install_pending_speculative_stacked_fold_with_token_v1,
+    speculative_tree_diagnostic_is_issuable_v1,
 };
 #[allow(unused_imports)]
 pub(crate) use speculative_unproven::{
@@ -60,7 +64,8 @@ use super::{
         restore_persisted_current_pose_transactional_v1,
     },
     global_flat_foldability::{
-        CurrentLayerOrderCapability, GlobalFlatFoldabilityState,
+        CurrentLayerOrderCapability, CurrentLayerOrderCommitGuard,
+        CurrentLayerOrderRollbackSnapshotV1, GlobalFlatFoldabilityState,
         lock_revalidated_current_layer_order_for_commit,
     },
     lock_project,
@@ -90,6 +95,37 @@ impl StackedFoldTransactionState {
             .lock()
             .expect("speculative stacked-fold transaction test lock")
             .active_generation
+    }
+
+    pub(super) fn set_installed_guard_tokens_for_test_v1(
+        &self,
+        certified: Option<ProjectId>,
+        speculative: Option<ProjectId>,
+    ) {
+        let mut certified_slot = self.0.lock().expect("certified transaction test lock");
+        certified_slot.active_generation = certified;
+        certified_slot.pending = None;
+        certified_slot.last_cancelled = None;
+        drop(certified_slot);
+        self.1
+            .lock()
+            .expect("speculative transaction test lock")
+            .active_generation = speculative;
+    }
+
+    pub(super) fn installed_guard_tokens_for_test_v1(
+        &self,
+    ) -> (Option<ProjectId>, Option<ProjectId>) {
+        (
+            self.0
+                .lock()
+                .expect("certified transaction test lock")
+                .active_generation,
+            self.1
+                .lock()
+                .expect("speculative transaction test lock")
+                .active_generation,
+        )
     }
 }
 
@@ -154,6 +190,26 @@ pub(super) enum PendingStackedFoldRequestedPose {
         layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
         target_angles: Vec<(ori_domain::EdgeId, f64)>,
     },
+    ThreeBlockCurrentCycle {
+        geometry: ori_kinematics::MaterialHingeGraphGeometry,
+        audit: ori_kinematics::MaterialHingeGraphAudit,
+        pose: ori_kinematics::ClosedMaterialHingeGraphPose,
+        decomposition: ori_kinematics::CanonicalMaterialEdgeBlockDecompositionV1,
+        authority: ori_collision::CommonArticulationContinuousLayerPathAuthorityV1,
+        common_pose_limits: ori_kinematics::CommonArticulationPoseLimitsV1,
+        schedule: ori_kinematics::CanonicalCycleScheduleV1,
+        schedule_limits: ori_kinematics::CycleScheduleLimitsV1,
+        closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+        clearance_limits: ori_collision::CommonArticulationClearanceLimitsV1,
+        block_sources: Vec<LayerOrderSnapshot>,
+        source: Box<LayerOrderSnapshot>,
+        thickness: f64,
+        issuer_context: [u8; 32],
+        articulation_layer_fingerprint: [u8; 32],
+        layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
+        transition_count: usize,
+        target_angles: Vec<(ori_domain::EdgeId, f64)>,
+    },
 }
 
 pub(super) struct PendingCertifiedPathEdgeV1 {
@@ -163,18 +219,127 @@ pub(super) struct PendingCertifiedPathEdgeV1 {
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
+fn canonical_three_block_layer_summary_v1(
+    closure: &ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    source: &LayerOrderSnapshot,
+) -> Option<(Vec<(ori_domain::FaceId, ori_domain::FaceId)>, usize)> {
+    let transition_count = closure.leaves().len().checked_add(1)?;
+    let mut pairs = Vec::new();
+    pairs
+        .try_reserve_exact(source.face_pair_orders.len())
+        .ok()?;
+    pairs.extend(
+        source
+            .face_pair_orders
+            .iter()
+            .map(|pair| (pair.lower_face.face_id, pair.upper_face.face_id)),
+    );
+    pairs.sort_unstable_by_key(|(lower, upper)| (lower.canonical_bytes(), upper.canonical_bytes()));
+    let source_pair_count = pairs.len();
+    pairs.dedup();
+    (pairs.len() == source_pair_count).then_some((pairs, transition_count))
+}
+
+fn three_block_layer_summary_matches_v1(
+    closure: &ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    source: &LayerOrderSnapshot,
+    layer_order_pairs: &[(ori_domain::FaceId, ori_domain::FaceId)],
+    transition_count: usize,
+) -> bool {
+    canonical_three_block_layer_summary_v1(closure, source).is_some_and(
+        |(expected_pairs, expected_transition_count)| {
+            exact_three_block_summary_fields_match_v1(
+                &expected_pairs,
+                expected_transition_count,
+                layer_order_pairs,
+                transition_count,
+            )
+        },
+    )
+}
+
+fn exact_three_block_summary_fields_match_v1(
+    expected_pairs: &[(ori_domain::FaceId, ori_domain::FaceId)],
+    expected_transition_count: usize,
+    layer_order_pairs: &[(ori_domain::FaceId, ori_domain::FaceId)],
+    transition_count: usize,
+) -> bool {
+    layer_order_pairs == expected_pairs && transition_count == expected_transition_count
+}
+
+#[allow(clippy::too_many_arguments)]
+fn revalidate_three_block_current_cycle_authority_v1(
+    geometry: &ori_kinematics::MaterialHingeGraphGeometry,
+    audit: &ori_kinematics::MaterialHingeGraphAudit,
+    pose: &ori_kinematics::ClosedMaterialHingeGraphPose,
+    decomposition: &ori_kinematics::CanonicalMaterialEdgeBlockDecompositionV1,
+    authority: &ori_collision::CommonArticulationContinuousLayerPathAuthorityV1,
+    common_pose_limits: ori_kinematics::CommonArticulationPoseLimitsV1,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    schedule_limits: ori_kinematics::CycleScheduleLimitsV1,
+    closure: &ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    clearance_limits: ori_collision::CommonArticulationClearanceLimitsV1,
+    block_sources: &[LayerOrderSnapshot],
+    source: &LayerOrderSnapshot,
+    thickness: f64,
+    issuer_context: [u8; 32],
+    articulation_layer_fingerprint: [u8; 32],
+    target_angles: &[(ori_domain::EdgeId, f64)],
+    layer_order_pairs: &[(ori_domain::FaceId, ori_domain::FaceId)],
+    transition_count: usize,
+) -> bool {
+    let [first, second, third] = block_sources else {
+        return false;
+    };
+    let block_sources = [first, second, third];
+    authority.block_count_v1() == 3
+        && decomposition.blocks().len() == 3
+        && three_block_layer_summary_matches_v1(
+            closure,
+            source,
+            layer_order_pairs,
+            transition_count,
+        )
+        && authority
+            .revalidate_v1(
+                ori_collision::CommonArticulationContinuousLayerPathRevalidationInputV1 {
+                    geometry,
+                    audit,
+                    pose,
+                    decomposition,
+                    common_pose_limits,
+                    schedule,
+                    schedule_limits,
+                    closure,
+                    paper_thickness_mm: thickness,
+                    clearance_limits,
+                    block_sources: &block_sources,
+                    issuer_context,
+                    articulation_layer_fingerprint,
+                    target_angles,
+                    source,
+                },
+            )
+            .is_ok()
+}
+
 impl PendingStackedFoldRequestedPose {
     fn is_graph(&self) -> bool {
         matches!(
             self,
-            Self::Graph { .. } | Self::CurrentCycle { .. } | Self::BlockwiseCurrentCycle { .. }
+            Self::Graph { .. }
+                | Self::CurrentCycle { .. }
+                | Self::BlockwiseCurrentCycle { .. }
+                | Self::ThreeBlockCurrentCycle { .. }
         )
     }
     fn geometry(&self) -> Option<&PreparedStackedFoldGeometryV1> {
         match self {
             Self::Tree { requested, .. } => Some(requested.initial().target().geometry()),
             Self::Graph { requested, .. } => Some(requested.initial().target().geometry()),
-            Self::CurrentCycle { .. } | Self::BlockwiseCurrentCycle { .. } => None,
+            Self::CurrentCycle { .. }
+            | Self::BlockwiseCurrentCycle { .. }
+            | Self::ThreeBlockCurrentCycle { .. } => None,
         }
     }
     fn continuous_certified(&self) -> bool {
@@ -310,6 +475,46 @@ impl PendingStackedFoldRequestedPose {
                         *articulation_layer_fingerprint,
                     )
             }
+            Self::ThreeBlockCurrentCycle {
+                geometry,
+                audit,
+                pose,
+                decomposition,
+                authority,
+                common_pose_limits,
+                schedule,
+                schedule_limits,
+                closure,
+                clearance_limits,
+                block_sources,
+                source,
+                thickness,
+                issuer_context,
+                articulation_layer_fingerprint,
+                target_angles,
+                layer_order_pairs,
+                transition_count,
+                ..
+            } => revalidate_three_block_current_cycle_authority_v1(
+                geometry,
+                audit,
+                pose,
+                decomposition,
+                authority,
+                *common_pose_limits,
+                schedule,
+                *schedule_limits,
+                closure,
+                *clearance_limits,
+                block_sources,
+                source,
+                *thickness,
+                *issuer_context,
+                *articulation_layer_fingerprint,
+                target_angles,
+                layer_order_pairs,
+                *transition_count,
+            ),
         }
     }
 
@@ -346,6 +551,39 @@ impl PendingStackedFoldRequestedPose {
                     model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
                     target_order_sha256: authority.target_order_hash_v1(),
                     transition_count: authority.transition_count_v1(),
+                    pairs,
+                });
+            }
+            if let Self::ThreeBlockCurrentCycle {
+                authority,
+                layer_order_pairs,
+                transition_count,
+                closure,
+                source,
+                ..
+            } = self
+            {
+                let (canonical_pairs, expected_transition_count) =
+                    canonical_three_block_layer_summary_v1(closure, source)?;
+                if canonical_pairs.as_slice() != layer_order_pairs
+                    || expected_transition_count != *transition_count
+                {
+                    return None;
+                }
+                let pairs = canonical_pairs
+                    .iter()
+                    .map(
+                        |(lower_face, upper_face)| ori_domain::CycleLayerOrderPairV1 {
+                            lower_face: *lower_face,
+                            upper_face: *upper_face,
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                return Some(ori_domain::CycleLayerOrderProofV1 {
+                    version: 1,
+                    model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
+                    target_order_sha256: authority.whole_parent_target_order_hash_v1(),
+                    transition_count: expected_transition_count,
                     pairs,
                 });
             }
@@ -442,6 +680,17 @@ impl PendingStackedFoldRequestedPose {
                 Some(*fixed_face),
                 target_angles.clone(),
             ),
+            Self::ThreeBlockCurrentCycle {
+                geometry,
+                pose,
+                target_angles,
+                ..
+            } => (
+                geometry.face_ids().to_vec(),
+                geometry.hinges().iter().map(|hinge| hinge.edge()).collect(),
+                Some(pose.fixed_face()),
+                target_angles.clone(),
+            ),
         }
     }
 
@@ -456,7 +705,8 @@ impl PendingStackedFoldRequestedPose {
                 .map(|edge| edge.target_angles.clone())
                 .collect(),
             Self::CurrentCycle { target_angles, .. }
-            | Self::BlockwiseCurrentCycle { target_angles, .. } => vec![target_angles.clone()],
+            | Self::BlockwiseCurrentCycle { target_angles, .. }
+            | Self::ThreeBlockCurrentCycle { target_angles, .. } => vec![target_angles.clone()],
             _ => vec![self.pose_components().3],
         }
     }
@@ -593,6 +843,33 @@ pub(super) struct PendingBlockwiseCurrentCyclePremisesV1 {
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
+pub(super) struct PendingThreeBlockCurrentCyclePremisesV1 {
+    pub expected_instance_id: ProjectId,
+    pub expected_project_id: ProjectId,
+    pub expected_revision: u64,
+    pub expected_source_fingerprint: [u8; 32],
+    pub expected_pose_generation: u64,
+    pub expected_layer_generation: u64,
+    pub geometry: ori_kinematics::MaterialHingeGraphGeometry,
+    pub audit: ori_kinematics::MaterialHingeGraphAudit,
+    pub pose: ori_kinematics::ClosedMaterialHingeGraphPose,
+    pub decomposition: ori_kinematics::CanonicalMaterialEdgeBlockDecompositionV1,
+    pub authority: ori_collision::CommonArticulationContinuousLayerPathAuthorityV1,
+    pub common_pose_limits: ori_kinematics::CommonArticulationPoseLimitsV1,
+    pub schedule: ori_kinematics::CanonicalCycleScheduleV1,
+    pub schedule_limits: ori_kinematics::CycleScheduleLimitsV1,
+    pub closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub clearance_limits: ori_collision::CommonArticulationClearanceLimitsV1,
+    pub block_sources: Vec<LayerOrderSnapshot>,
+    pub source: Box<LayerOrderSnapshot>,
+    pub thickness: f64,
+    pub issuer_context: [u8; 32],
+    pub articulation_layer_fingerprint: [u8; 32],
+    pub layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
+    pub transition_count: usize,
+    pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum CurrentLayerEvidence {
     NonFlat(StackedFoldNonFlatLayerOrderV1),
@@ -663,13 +940,21 @@ fn binding_matches(expected: LiveBinding, actual: LiveBinding) -> bool {
     expected == actual
 }
 
-pub(super) fn install_pending_stacked_fold(
+#[must_use]
+pub(super) const fn next_current_cycle_target_revision_v1(source_revision: u64) -> Option<u64> {
+    match source_revision.checked_add(1) {
+        Some(target_revision) if target_revision <= ori_core::MAX_REVISION => Some(target_revision),
+        Some(_) | None => None,
+    }
+}
+
+pub(super) fn install_pending_stacked_fold_with_token_v1(
     state: &StackedFoldTransactionState,
+    token: ProjectId,
     premises: PendingStackedFoldPremises,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
 ) -> Result<ProjectId, String> {
-    let token = ProjectId::new();
     let pending = PendingStackedFoldTransaction {
         token,
         expected_instance_id: premises.expected_instance_id,
@@ -698,21 +983,21 @@ pub(super) fn install_pending_stacked_fold(
     {
         return Err("The stacked-fold transaction premises are inconsistent.".to_owned());
     }
-    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
-    speculative_unproven::clear_pending_speculative_stacked_fold_v1(state)?;
-    let mut slot = lock_slot(state)?;
-    slot.active_generation = Some(token);
-    slot.pending = Some(pending);
-    Ok(token)
+    with_try_locked_transaction_install_slots_v1(state, |slot, speculative_slot| {
+        speculative_unproven::clear_pending_speculative_slot_locked_v1(speculative_slot);
+        slot.active_generation = Some(token);
+        slot.pending = Some(pending);
+        token
+    })
 }
 
-pub(super) fn install_pending_stacked_fold_graph(
+pub(super) fn install_pending_stacked_fold_graph_with_token_v1(
     state: &StackedFoldTransactionState,
+    token: ProjectId,
     premises: PendingStackedFoldGraphPremises,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
 ) -> Result<ProjectId, String> {
-    let token = ProjectId::new();
     let pending = PendingStackedFoldTransaction {
         token,
         expected_instance_id: premises.expected_instance_id,
@@ -742,16 +1027,17 @@ pub(super) fn install_pending_stacked_fold_graph(
     ) {
         return Err("The stacked-fold graph transaction premises are inconsistent.".to_owned());
     }
-    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
-    speculative_unproven::clear_pending_speculative_stacked_fold_v1(state)?;
-    let mut slot = lock_slot(state)?;
-    slot.active_generation = Some(token);
-    slot.pending = Some(pending);
-    Ok(token)
+    with_try_locked_transaction_install_slots_v1(state, |slot, speculative_slot| {
+        speculative_unproven::clear_pending_speculative_slot_locked_v1(speculative_slot);
+        slot.active_generation = Some(token);
+        slot.pending = Some(pending);
+        token
+    })
 }
 
-pub(super) fn install_pending_current_cycle_pose_v1(
+pub(super) fn install_pending_current_cycle_pose_with_token_v1(
     state: &StackedFoldTransactionState,
+    token: ProjectId,
     premises: PendingCurrentCyclePosePremisesV1,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: Option<CurrentLayerOrderCapability>,
@@ -788,7 +1074,6 @@ pub(super) fn install_pending_current_cycle_pose_v1(
     {
         return Err("The current-cycle layer transport premises are inconsistent.".to_owned());
     }
-    let token = ProjectId::new();
     let pending = PendingStackedFoldTransaction {
         token,
         expected_instance_id: premises.expected_instance_id,
@@ -824,16 +1109,21 @@ pub(super) fn install_pending_current_cycle_pose_v1(
     {
         return Err("The current-cycle pose premises are inconsistent.".to_owned());
     }
-    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
-    speculative_unproven::clear_pending_speculative_stacked_fold_v1(state)?;
-    let mut slot = lock_slot(state)?;
-    slot.active_generation = Some(token);
-    slot.pending = Some(pending);
-    Ok(token)
+    with_project_guarded_current_cycle_install_slots_v1(
+        state,
+        pending.expected_revision,
+        |slot, speculative_slot| {
+            speculative_unproven::clear_pending_speculative_slot_locked_v1(speculative_slot);
+            slot.active_generation = Some(token);
+            slot.pending = Some(pending);
+            token
+        },
+    )
 }
 
-pub(super) fn install_pending_blockwise_current_cycle_pose_v1(
+pub(super) fn install_pending_blockwise_current_cycle_pose_with_token_v1(
     state: &StackedFoldTransactionState,
+    token: ProjectId,
     premises: PendingBlockwiseCurrentCyclePremisesV1,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
@@ -850,7 +1140,6 @@ pub(super) fn install_pending_blockwise_current_cycle_pose_v1(
     {
         return Err("The blockwise current-cycle premises are inconsistent.".to_owned());
     }
-    let token = ProjectId::new();
     let pending = PendingStackedFoldTransaction {
         token,
         expected_instance_id: premises.expected_instance_id,
@@ -885,12 +1174,105 @@ pub(super) fn install_pending_blockwise_current_cycle_pose_v1(
     ) {
         return Err("The blockwise current-cycle premises are inconsistent.".to_owned());
     }
-    let _mode_guard = lock_transaction_mode_gate_v1(state)?;
-    speculative_unproven::clear_pending_speculative_stacked_fold_v1(state)?;
-    let mut slot = lock_slot(state)?;
-    slot.active_generation = Some(token);
-    slot.pending = Some(pending);
-    Ok(token)
+    with_project_guarded_current_cycle_install_slots_v1(
+        state,
+        pending.expected_revision,
+        |slot, speculative_slot| {
+            speculative_unproven::clear_pending_speculative_slot_locked_v1(speculative_slot);
+            slot.active_generation = Some(token);
+            slot.pending = Some(pending);
+            token
+        },
+    )
+}
+
+pub(super) fn install_pending_three_block_current_cycle_pose_with_token_v1(
+    state: &StackedFoldTransactionState,
+    token: ProjectId,
+    premises: PendingThreeBlockCurrentCyclePremisesV1,
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
+) -> Result<ProjectId, String> {
+    if premises.issuer_context != premises.expected_source_fingerprint
+        || premises.expected_pose_generation != pose_capability.generation()
+        || premises.expected_layer_generation != layer_capability.generation()
+        || premises.source.as_ref() != layer_capability.snapshot()
+        || premises.transition_count == 0
+        || !revalidate_three_block_current_cycle_authority_v1(
+            &premises.geometry,
+            &premises.audit,
+            &premises.pose,
+            &premises.decomposition,
+            &premises.authority,
+            premises.common_pose_limits,
+            &premises.schedule,
+            premises.schedule_limits,
+            &premises.closure,
+            premises.clearance_limits,
+            &premises.block_sources,
+            &premises.source,
+            premises.thickness,
+            premises.issuer_context,
+            premises.articulation_layer_fingerprint,
+            &premises.target_angles,
+            &premises.layer_order_pairs,
+            premises.transition_count,
+        )
+    {
+        return Err("The three-block current-cycle premises are inconsistent.".to_owned());
+    }
+    let pending = PendingStackedFoldTransaction {
+        token,
+        expected_instance_id: premises.expected_instance_id,
+        expected_project_id: premises.expected_project_id,
+        expected_revision: premises.expected_revision,
+        expected_source_fingerprint: premises.expected_source_fingerprint,
+        expected_pose_generation: premises.expected_pose_generation,
+        expected_layer_generation: premises.expected_layer_generation,
+        requested: PendingStackedFoldRequestedPose::ThreeBlockCurrentCycle {
+            geometry: premises.geometry,
+            audit: premises.audit,
+            pose: premises.pose,
+            decomposition: premises.decomposition,
+            authority: premises.authority,
+            common_pose_limits: premises.common_pose_limits,
+            schedule: premises.schedule,
+            schedule_limits: premises.schedule_limits,
+            closure: premises.closure,
+            clearance_limits: premises.clearance_limits,
+            block_sources: premises.block_sources,
+            source: premises.source,
+            thickness: premises.thickness,
+            issuer_context: premises.issuer_context,
+            articulation_layer_fingerprint: premises.articulation_layer_fingerprint,
+            layer_order_pairs: premises.layer_order_pairs,
+            transition_count: premises.transition_count,
+            target_angles: premises.target_angles,
+        },
+        layer_order: None,
+        pose_capability,
+        layer_capability: Some(layer_capability),
+    };
+    if !pending.matches_live_binding(
+        pending.expected_instance_id,
+        pending.expected_project_id,
+        pending.expected_revision,
+        pending.expected_source_fingerprint,
+        pending.expected_pose_generation,
+        pending.expected_layer_generation,
+    ) {
+        return Err("The three-block current-cycle premises are inconsistent.".to_owned());
+    }
+    with_project_guarded_current_cycle_install_slots_v1(
+        state,
+        pending.expected_revision,
+        |slot, speculative_slot| {
+            speculative_unproven::clear_pending_speculative_slot_locked_v1(speculative_slot);
+            slot.active_generation = Some(token);
+            slot.pending = Some(pending);
+            token
+        },
+    )
 }
 
 pub(super) fn cancel_pending_stacked_fold(
@@ -1785,6 +2167,59 @@ fn apply_stacked_fold_transaction_with_title(
             return Err("The current-cycle layer transport preview is stale.".to_owned());
         }
     }
+    if let PendingStackedFoldRequestedPose::ThreeBlockCurrentCycle {
+        geometry,
+        audit,
+        pose,
+        decomposition,
+        authority,
+        common_pose_limits,
+        schedule,
+        schedule_limits,
+        closure,
+        clearance_limits,
+        block_sources,
+        source,
+        thickness,
+        issuer_context,
+        articulation_layer_fingerprint,
+        target_angles,
+        layer_order_pairs,
+        transition_count,
+        ..
+    } = &pending.requested
+    {
+        let capability = pending.layer_capability.as_ref().ok_or_else(|| {
+            "The three-block current-cycle layer-order authority is unavailable.".to_owned()
+        })?;
+        if layer_guard.is_none()
+            || source.as_ref() != capability.snapshot()
+            || !revalidate_three_block_current_cycle_authority_v1(
+                geometry,
+                audit,
+                pose,
+                decomposition,
+                authority,
+                *common_pose_limits,
+                schedule,
+                *schedule_limits,
+                closure,
+                *clearance_limits,
+                block_sources,
+                source,
+                *thickness,
+                *issuer_context,
+                *articulation_layer_fingerprint,
+                target_angles,
+                layer_order_pairs,
+                *transition_count,
+            )
+        {
+            return Err(
+                "The three-block current-cycle layer transport preview is stale.".to_owned(),
+            );
+        }
+    }
 
     let requested = &pending.requested;
     let target = requested.geometry();
@@ -1954,7 +2389,10 @@ fn apply_stacked_fold_transaction_with_title(
     // Keep an exact rollback image until both target authorities have been
     // installed. This includes history/dirty state and every saved baseline;
     // pose authority and its pair-cache epoch use a separate one-shot guard.
-    let project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
+    let mut project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
+    let layer_before = layer_guard
+        .as_ref()
+        .map(CurrentLayerOrderCommitGuard::capture_rollback_snapshot_v1);
     let persisted_current_pose = timeline
         .steps
         .last()
@@ -1998,23 +2436,32 @@ fn apply_stacked_fold_transaction_with_title(
         .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
     project.record_numeric_expression_edit();
     drop(_pose_guard);
-    let mut pose_rollback =
-        reissue_target_pose_or_rollback(&mut project, &persisted_current_pose, &project_before)?;
+    let mut pose_rollback = reissue_target_pose_or_rollback(
+        &mut project,
+        &persisted_current_pose,
+        &mut project_before,
+    )?;
     match (&applied_layer_order, layer_guard) {
         (Some(CurrentLayerEvidence::NonFlat(_)) | None, layer_guard) => {
-            if let Some(layer_guard) = layer_guard {
+            if let Some(mut layer_guard) = layer_guard {
                 layer_guard.invalidate_after_project_mutation();
             }
         }
         (Some(CurrentLayerEvidence::CertifiedFlat(snapshot)), layer_guard) => {
-            let layer_install_succeeded = layer_guard.is_some_and(|guard| {
+            let mut layer_guard = layer_guard;
+            let layer_install_succeeded = layer_guard.as_mut().is_some_and(|guard| {
                 guard
                     .install_certified_target_after_project_mutation(&project, snapshot.clone())
                     .is_ok()
             });
             if !layer_install_succeeded {
-                let _ = pose_rollback.rollback();
-                project_before.restore(&mut project);
+                rollback_stacked_fold_apply_v1(
+                    &mut project,
+                    &mut project_before,
+                    &mut pose_rollback,
+                    layer_guard.as_mut(),
+                    layer_before.as_ref(),
+                )?;
                 return Err(
                     "The certified target layer order could not be installed atomically."
                         .to_owned(),
@@ -2042,7 +2489,11 @@ fn apply_stacked_fold_transaction_with_title(
     Ok(result.revision)
 }
 
-struct StackedFoldProjectRollbackSnapshotV1 {
+pub(crate) struct StackedFoldProjectRollbackSnapshotV1 {
+    state: Option<StackedFoldProjectRollbackStateV1>,
+}
+
+struct StackedFoldProjectRollbackStateV1 {
     editor: ori_core::EditorState,
     current_layer_evidence: Option<CurrentLayerEvidence>,
     numeric_expressions: super::ProjectNumericExpressions,
@@ -2051,32 +2502,59 @@ struct StackedFoldProjectRollbackSnapshotV1 {
     saved_speculative_unproven_state: Option<ori_core::SpeculativeUnprovenFoldStateMarkerV1>,
 }
 
+pub(super) fn rollback_stacked_fold_apply_v1(
+    project: &mut super::ProjectState,
+    project_before: &mut StackedFoldProjectRollbackSnapshotV1,
+    pose_rollback: &mut CurrentAppliedPoseTransactionRollbackV1,
+    layer_guard: Option<&mut CurrentLayerOrderCommitGuard<'_>>,
+    layer_before: Option<&CurrentLayerOrderRollbackSnapshotV1>,
+) -> Result<(), String> {
+    // Restore every independently held image even when the pose image has
+    // already been consumed or is otherwise unavailable. Leaving the editor
+    // or layer slot at the target after reporting rollback failure would
+    // expose a mixed transaction. The origin-bound pose/cache image itself
+    // restores in one finite operation; never retry while these locks are
+    // held.
+    let project_result = project_before.restore(project);
+    let pose_result = pose_rollback.rollback();
+    if let (Some(layer_guard), Some(layer_before)) = (layer_guard, layer_before) {
+        layer_guard.restore_rollback_snapshot_v1(layer_before);
+    }
+    project_result
+        .map_err(|_| "The stacked-fold project rollback image was already consumed.".to_owned())?;
+    pose_result.map_err(|_| "The stacked-fold rollback image was already consumed.".to_owned())
+}
+
 impl StackedFoldProjectRollbackSnapshotV1 {
-    fn capture(project: &super::ProjectState) -> Self {
+    pub(crate) fn capture(project: &super::ProjectState) -> Self {
         Self {
-            editor: project.editor.clone(),
-            current_layer_evidence: project.current_layer_evidence.clone(),
-            numeric_expressions: project.numeric_expressions.clone(),
-            saved_revision: project.saved_revision,
-            saved_document: project.saved_document.clone(),
-            saved_speculative_unproven_state: project.saved_speculative_unproven_state.clone(),
+            state: Some(StackedFoldProjectRollbackStateV1 {
+                editor: project.editor.clone(),
+                current_layer_evidence: project.current_layer_evidence.clone(),
+                numeric_expressions: project.numeric_expressions.clone(),
+                saved_revision: project.saved_revision,
+                saved_document: project.saved_document.clone(),
+                saved_speculative_unproven_state: project.saved_speculative_unproven_state.clone(),
+            }),
         }
     }
 
-    fn restore(&self, project: &mut super::ProjectState) {
-        project.editor = self.editor.clone();
-        project.current_layer_evidence = self.current_layer_evidence.clone();
-        project.numeric_expressions = self.numeric_expressions.clone();
-        project.saved_revision = self.saved_revision;
-        project.saved_document = self.saved_document.clone();
-        project.saved_speculative_unproven_state = self.saved_speculative_unproven_state.clone();
+    pub(crate) fn restore(&mut self, project: &mut super::ProjectState) -> Result<(), ()> {
+        let before = self.state.take().ok_or(())?;
+        project.editor = before.editor;
+        project.current_layer_evidence = before.current_layer_evidence;
+        project.numeric_expressions = before.numeric_expressions;
+        project.saved_revision = before.saved_revision;
+        project.saved_document = before.saved_document;
+        project.saved_speculative_unproven_state = before.saved_speculative_unproven_state;
+        Ok(())
     }
 }
 
 fn reissue_target_pose_or_rollback(
     project: &mut super::ProjectState,
     persisted_current_pose: &InstructionPose,
-    project_before: &StackedFoldProjectRollbackSnapshotV1,
+    project_before: &mut StackedFoldProjectRollbackSnapshotV1,
 ) -> Result<CurrentAppliedPoseTransactionRollbackV1, String> {
     reissue_target_pose_or_rollback_with_v1(
         project,
@@ -2089,7 +2567,7 @@ fn reissue_target_pose_or_rollback(
 fn reissue_target_pose_or_rollback_with_v1(
     project: &mut super::ProjectState,
     persisted_current_pose: &InstructionPose,
-    project_before: &StackedFoldProjectRollbackSnapshotV1,
+    project_before: &mut StackedFoldProjectRollbackSnapshotV1,
     restore: impl FnOnce(
         &mut super::ProjectState,
         &InstructionPose,
@@ -2101,7 +2579,9 @@ fn reissue_target_pose_or_rollback_with_v1(
     if let Ok(rollback) = restore(project, persisted_current_pose) {
         return Ok(rollback);
     }
-    project_before.restore(project);
+    project_before
+        .restore(project)
+        .map_err(|_| "The stacked-fold project rollback image was already consumed.".to_owned())?;
     Err("The target pose authority could not be installed atomically.".to_owned())
 }
 
@@ -2114,6 +2594,18 @@ fn lock_slot(
         .map_err(|_| "The stacked-fold transaction registry is unavailable.".to_owned())
 }
 
+#[cfg(test)]
+fn lock_recovering_poison_for_drop_v1<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            let guard = poisoned.into_inner();
+            mutex.clear_poison();
+            guard
+        }
+    }
+}
+
 fn lock_transaction_mode_gate_v1(
     state: &StackedFoldTransactionState,
 ) -> Result<MutexGuard<'_, ()>, String> {
@@ -2123,13 +2615,52 @@ fn lock_transaction_mode_gate_v1(
         .map_err(|_| "The stacked-fold transaction mode registry is unavailable.".to_owned())
 }
 
-fn clear_pending_certified_stacked_fold_v1(
+/// Publishes a current-cycle preview while its caller already owns the project
+/// mutex.
+///
+/// Apply and named-preview compilation acquire transaction registries before
+/// the project mutex. A project-held installer must therefore never wait for
+/// any of those registries. All three guards are acquired with `try_lock`
+/// before the callback may mutate either pending slot.
+fn with_project_guarded_current_cycle_install_slots_v1<R>(
     state: &StackedFoldTransactionState,
-) -> Result<(), String> {
-    let mut slot = lock_slot(state)?;
+    source_revision: u64,
+    action: impl FnOnce(
+        &mut StackedFoldTransactionSlot,
+        &mut speculative_unproven::SpeculativeStackedFoldTransactionSlotV1,
+    ) -> R,
+) -> Result<R, String> {
+    if next_current_cycle_target_revision_v1(source_revision).is_none() {
+        return Err("The current-cycle transaction cannot advance its revision.".to_owned());
+    }
+    with_try_locked_transaction_install_slots_v1(state, action)
+}
+
+fn with_try_locked_transaction_install_slots_v1<R>(
+    state: &StackedFoldTransactionState,
+    action: impl FnOnce(
+        &mut StackedFoldTransactionSlot,
+        &mut speculative_unproven::SpeculativeStackedFoldTransactionSlotV1,
+    ) -> R,
+) -> Result<R, String> {
+    let _mode_guard = state
+        .2
+        .try_lock()
+        .map_err(|_| "The stacked-fold transaction mode registry is unavailable.".to_owned())?;
+    let mut certified_slot = state
+        .0
+        .try_lock()
+        .map_err(|_| "The stacked-fold transaction registry is unavailable.".to_owned())?;
+    let mut speculative_slot = state
+        .1
+        .try_lock()
+        .map_err(|_| "The speculative stacked-fold registry is unavailable.".to_owned())?;
+    Ok(action(&mut certified_slot, &mut speculative_slot))
+}
+
+fn clear_pending_certified_slot_locked_v1(slot: &mut StackedFoldTransactionSlot) {
     slot.active_generation = None;
     slot.pending = None;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2155,27 +2686,6 @@ mod tests {
         }
         assert!(cancel_pending_stacked_fold(&state, first).is_err());
         assert_eq!(lock_slot(&state).unwrap().active_generation, Some(second));
-    }
-
-    #[test]
-    fn target_pose_reissue_failure_restores_the_complete_editor() {
-        let mut project = super::super::initial_project_state();
-        let project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
-        let document_before = project.document();
-        project.editor = ori_core::EditorState::with_paper(
-            ori_domain::CreasePattern::empty(),
-            ori_domain::Paper::default(),
-        );
-        let invalid_pose = InstructionPose {
-            model: InstructionPoseModel::DeclarativeOnlyV1,
-            source_model_fingerprint: String::new(),
-            fixed_face: None,
-            hinge_angles: Vec::new(),
-        };
-        assert!(
-            reissue_target_pose_or_rollback(&mut project, &invalid_pose, &project_before).is_err()
-        );
-        assert_eq!(project.document(), document_before);
     }
 
     #[test]
@@ -2208,6 +2718,231 @@ mod tests {
             expected,
             (instance, project, 7, [0x5a; 32], 11, 14)
         ));
+    }
+
+    #[test]
+    fn current_cycle_target_revision_stops_at_the_editor_limit() {
+        assert_eq!(
+            next_current_cycle_target_revision_v1(ori_core::MAX_REVISION - 1),
+            Some(ori_core::MAX_REVISION)
+        );
+        assert_eq!(
+            next_current_cycle_target_revision_v1(ori_core::MAX_REVISION),
+            None
+        );
+        assert_eq!(
+            next_current_cycle_target_revision_v1(ori_core::MAX_REVISION + 1),
+            None
+        );
+        assert_eq!(next_current_cycle_target_revision_v1(u64::MAX), None);
+    }
+
+    #[test]
+    fn three_block_persisted_summary_rejects_count_pair_and_empty_list_tampering() {
+        let expected = [
+            (ori_domain::FaceId::new(), ori_domain::FaceId::new()),
+            (ori_domain::FaceId::new(), ori_domain::FaceId::new()),
+        ];
+        let transition_count = 9;
+        assert!(exact_three_block_summary_fields_match_v1(
+            &expected,
+            transition_count,
+            &expected,
+            transition_count,
+        ));
+        assert!(!exact_three_block_summary_fields_match_v1(
+            &expected,
+            transition_count,
+            &expected,
+            transition_count + 1,
+        ));
+
+        let mut changed_pair = expected;
+        changed_pair[0].1 = ori_domain::FaceId::new();
+        assert!(!exact_three_block_summary_fields_match_v1(
+            &expected,
+            transition_count,
+            &changed_pair,
+            transition_count,
+        ));
+        assert!(!exact_three_block_summary_fields_match_v1(
+            &expected,
+            transition_count,
+            &[],
+            transition_count,
+        ));
+    }
+
+    #[test]
+    fn project_guarded_current_cycle_install_holds_all_three_registry_guards() {
+        let state = StackedFoldTransactionState::default();
+        let old_certified = ProjectId::new();
+        let old_speculative = ProjectId::new();
+        let replacement = ProjectId::new();
+        state.set_installed_guard_tokens_for_test_v1(Some(old_certified), Some(old_speculative));
+
+        let installed = with_project_guarded_current_cycle_install_slots_v1(
+            &state,
+            ori_core::MAX_REVISION - 1,
+            |certified_slot, speculative_slot| {
+                assert!(state.2.try_lock().is_err(), "mode gate was not retained");
+                assert!(
+                    state.0.try_lock().is_err(),
+                    "certified slot was not retained"
+                );
+                assert!(
+                    state.1.try_lock().is_err(),
+                    "speculative slot was not retained"
+                );
+                assert_eq!(certified_slot.active_generation, Some(old_certified));
+                assert_eq!(speculative_slot.active_generation, Some(old_speculative));
+
+                speculative_unproven::clear_pending_speculative_slot_locked_v1(speculative_slot);
+                certified_slot.active_generation = Some(replacement);
+                replacement
+            },
+        )
+        .expect("all project-held install locks are free");
+
+        assert_eq!(installed, replacement);
+        assert_eq!(
+            state.installed_guard_tokens_for_test_v1(),
+            (Some(replacement), None)
+        );
+    }
+
+    #[test]
+    fn project_guarded_current_cycle_install_contention_is_atomic() {
+        fn fixture() -> (StackedFoldTransactionState, ProjectId, ProjectId) {
+            let state = StackedFoldTransactionState::default();
+            let certified = ProjectId::new();
+            let speculative = ProjectId::new();
+            state.set_installed_guard_tokens_for_test_v1(Some(certified), Some(speculative));
+            (state, certified, speculative)
+        }
+
+        let exercise = |state: &StackedFoldTransactionState| {
+            let callback_called = std::cell::Cell::new(false);
+            assert!(
+                with_project_guarded_current_cycle_install_slots_v1(state, 0, |_, _| {
+                    callback_called.set(true)
+                },)
+                .is_err()
+            );
+            assert!(!callback_called.get());
+        };
+
+        let (state, certified, speculative) = fixture();
+        let held = state.2.lock().expect("mode gate");
+        exercise(&state);
+        drop(held);
+        assert_eq!(
+            state.installed_guard_tokens_for_test_v1(),
+            (Some(certified), Some(speculative))
+        );
+
+        let (state, certified, speculative) = fixture();
+        let held = state.0.lock().expect("certified slot");
+        exercise(&state);
+        drop(held);
+        assert_eq!(
+            state.installed_guard_tokens_for_test_v1(),
+            (Some(certified), Some(speculative))
+        );
+
+        let (state, certified, speculative) = fixture();
+        let held = state.1.lock().expect("speculative slot");
+        exercise(&state);
+        drop(held);
+        assert_eq!(
+            state.installed_guard_tokens_for_test_v1(),
+            (Some(certified), Some(speculative))
+        );
+
+        let (state, certified, speculative) = fixture();
+        let callback_called = std::cell::Cell::new(false);
+        assert!(
+            with_project_guarded_current_cycle_install_slots_v1(
+                &state,
+                ori_core::MAX_REVISION,
+                |_, _| callback_called.set(true),
+            )
+            .is_err()
+        );
+        assert!(!callback_called.get());
+        assert_eq!(
+            state.installed_guard_tokens_for_test_v1(),
+            (Some(certified), Some(speculative))
+        );
+    }
+
+    #[test]
+    fn project_guarded_current_cycle_install_poison_is_atomic() {
+        fn poison<T>(mutex: &Mutex<T>) {
+            let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = mutex.lock().unwrap_or_else(|error| error.into_inner());
+                panic!("poison current-cycle install registry");
+            }));
+            assert!(unwind.is_err());
+            assert!(mutex.is_poisoned());
+        }
+
+        fn fixture() -> (StackedFoldTransactionState, ProjectId, ProjectId) {
+            let state = StackedFoldTransactionState::default();
+            let certified = ProjectId::new();
+            let speculative = ProjectId::new();
+            state.set_installed_guard_tokens_for_test_v1(Some(certified), Some(speculative));
+            (state, certified, speculative)
+        }
+
+        fn recovered_tokens(
+            state: &StackedFoldTransactionState,
+        ) -> (Option<ProjectId>, Option<ProjectId>) {
+            let certified = {
+                let slot = lock_recovering_poison_for_drop_v1(&state.0);
+                slot.active_generation
+            };
+            let speculative = {
+                let slot = lock_recovering_poison_for_drop_v1(&state.1);
+                slot.active_generation
+            };
+            (certified, speculative)
+        }
+
+        let exercise = |state: &StackedFoldTransactionState| {
+            let callback_called = std::cell::Cell::new(false);
+            assert!(
+                with_project_guarded_current_cycle_install_slots_v1(state, 0, |_, _| {
+                    callback_called.set(true)
+                },)
+                .is_err()
+            );
+            assert!(!callback_called.get());
+        };
+
+        let (state, certified, speculative) = fixture();
+        poison(&state.2);
+        exercise(&state);
+        assert_eq!(
+            recovered_tokens(&state),
+            (Some(certified), Some(speculative))
+        );
+
+        let (state, certified, speculative) = fixture();
+        poison(&state.0);
+        exercise(&state);
+        assert_eq!(
+            recovered_tokens(&state),
+            (Some(certified), Some(speculative))
+        );
+
+        let (state, certified, speculative) = fixture();
+        poison(&state.1);
+        exercise(&state);
+        assert_eq!(
+            recovered_tokens(&state),
+            (Some(certified), Some(speculative))
+        );
     }
 
     #[test]
@@ -2326,3 +3061,6 @@ mod tests {
         assert!(!accordion_assignments_alternate_v1(&vec!["mountain"; 32]));
     }
 }
+
+#[cfg(test)]
+mod rollback_tests;

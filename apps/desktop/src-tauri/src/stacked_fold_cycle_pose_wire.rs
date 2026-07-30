@@ -126,7 +126,11 @@ pub(super) struct LayerOrderPairDtoV1 {
 
 pub(super) fn validate_progress_request_id_v1(value: Option<&str>) -> Result<Option<&str>, String> {
     match value {
-        Some(value) if value.is_empty() || value.len() > 128 || !value.is_ascii() => {
+        Some(value)
+            if value.is_empty()
+                || value.len() > 128
+                || !value.bytes().all(|byte| byte.is_ascii_graphic()) =>
+        {
             Err(INVALID_REQUEST_MESSAGE.to_owned())
         }
         value => Ok(value),

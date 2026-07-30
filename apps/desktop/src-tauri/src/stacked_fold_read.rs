@@ -19,10 +19,13 @@ mod stacked_fold_dyadic_graph_wire;
 pub(super) mod stacked_fold_dyadic_preview;
 #[path = "stacked_fold_dyadic_scope.rs"]
 mod stacked_fold_dyadic_scope;
+#[path = "stacked_fold_non_flat_continuation.rs"]
+pub(super) mod stacked_fold_non_flat_continuation;
 #[path = "stacked_fold_read_wire.rs"]
 mod stacked_fold_read_wire;
 
 use std::{
+    collections::VecDeque,
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -31,12 +34,14 @@ use std::{
 };
 
 use ori_collision::{
+    CanonicalPositiveThicknessCyclePathControlErrorV1, CooperativeOperationControlV1,
     FlatEndpointLayerOrderInputV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
     ProofCacheOperationControlV1, ProofCacheRuntimeBindingV1, ProofCacheRuntimeErrorV1,
     StackedFoldFixedSideV1, StackedFoldLinearCandidateV1, StackedFoldMaterialMapLimitsV1,
     StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
     StaticCollisionLimits, anchor_flat_endpoint_layer_order_v1, capture_stacked_fold_read_guard_v1,
     certify_canonical_positive_thickness_cycle_schedule_path_v1,
+    certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1,
     certify_general_multi_face_cell_transport_v1, diagnose_collective_hinge_path_v1,
     diagnose_collective_hinge_path_with_pair_cache_v1, diagnose_scheduled_cycle_path_v1,
     diagnose_scheduled_positive_thickness_cycle_path_v1, diagnose_static_collision_geometry,
@@ -147,6 +152,7 @@ const CYCLE_PATH_UNCERTIFIED_MESSAGE: &str = "stacked_fold_cycle_path_uncertifie
 const CYCLE_PATH_UNSUPPORTED_MESSAGE: &str = "stacked_fold_cycle_path_unsupported";
 const CYCLE_PATH_RESOURCE_MESSAGE: &str = "stacked_fold_cycle_path_resource_limit";
 const CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE: &str = "stacked_fold_cycle_path_no_certified_path";
+const CYCLE_PATH_DEADLINE_MESSAGE: &str = "stacked_fold_cycle_path_deadline_exceeded";
 pub(super) const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 pub(super) const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
@@ -234,8 +240,57 @@ enum ScheduledCycleThicknessDiagnosticErrorV1 {
     Uncertified,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ControlledCycleAuthorityReadErrorV1 {
+    Cancelled,
+    DeadlineExceeded,
+}
+
+fn controlled_cycle_authority_read_v1<T>(
+    generation: u64,
+    control: &CooperativeOperationControlV1<'_>,
+    issue: impl FnOnce(
+        &CooperativeOperationControlV1<'_>,
+    ) -> Result<Option<T>, CanonicalPositiveThicknessCyclePathControlErrorV1>,
+) -> Result<Option<T>, ControlledCycleAuthorityReadErrorV1> {
+    if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != generation {
+        return Err(ControlledCycleAuthorityReadErrorV1::Cancelled);
+    }
+    let authority = issue(control).map_err(|error| match error {
+        CanonicalPositiveThicknessCyclePathControlErrorV1::Cancelled => {
+            ControlledCycleAuthorityReadErrorV1::Cancelled
+        }
+        CanonicalPositiveThicknessCyclePathControlErrorV1::DeadlineExceeded => {
+            ControlledCycleAuthorityReadErrorV1::DeadlineExceeded
+        }
+    })?;
+    control.checkpoint().map_err(|stop| match stop {
+        ori_collision::CooperativeOperationStopV1::Cancelled => {
+            ControlledCycleAuthorityReadErrorV1::Cancelled
+        }
+        ori_collision::CooperativeOperationStopV1::DeadlineExceeded => {
+            ControlledCycleAuthorityReadErrorV1::DeadlineExceeded
+        }
+    })?;
+    (STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) == generation)
+        .then_some(authority)
+        .ok_or(ControlledCycleAuthorityReadErrorV1::Cancelled)
+}
+
+const fn controlled_cycle_authority_read_message_v1(
+    error: ControlledCycleAuthorityReadErrorV1,
+) -> &'static str {
+    match error {
+        ControlledCycleAuthorityReadErrorV1::Cancelled => CANCELLED_MESSAGE,
+        ControlledCycleAuthorityReadErrorV1::DeadlineExceeded => CYCLE_PATH_DEADLINE_MESSAGE,
+    }
+}
+
 fn normalize_blockwise_current_cycle_fallback_error_v1(error: String) -> String {
-    if error == CANCELLED_MESSAGE || error == CYCLE_PATH_RESOURCE_MESSAGE {
+    if error == CANCELLED_MESSAGE
+        || error == CYCLE_PATH_DEADLINE_MESSAGE
+        || error == CYCLE_PATH_RESOURCE_MESSAGE
+    {
         error
     } else {
         CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned()
@@ -339,25 +394,109 @@ const MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1: usize = 9;
 // A certified path is committed as one editor transaction. Keep the request
 // boundary aligned with the editor's bounded multi-step transaction admission.
 const MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1: usize = 31;
+const MAX_PRE_CANCELLED_STACKED_FOLD_READ_REQUESTS_V1: usize = 256;
 static STACKED_FOLD_READ_GENERATION: AtomicU64 = AtomicU64::new(0);
-static STACKED_FOLD_READ_PUBLICATION_GATE_V1: Mutex<()> = Mutex::new(());
+struct StackedFoldReadPublicationStateV1 {
+    active_request_id: Option<String>,
+    pre_cancelled_request_ids: VecDeque<String>,
+}
+
+static STACKED_FOLD_READ_PUBLICATION_GATE_V1: Mutex<StackedFoldReadPublicationStateV1> =
+    Mutex::new(StackedFoldReadPublicationStateV1 {
+        active_request_id: None,
+        pre_cancelled_request_ids: VecDeque::new(),
+    });
 #[cfg(test)]
-static STACKED_FOLD_POST_INSTALL_ACTION_V1: std::sync::atomic::AtomicU8 =
+static STACKED_FOLD_PREPUBLICATION_ACTION_V1: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(0);
 const STACKED_FOLD_READ_PROGRESS_EVENT_V1: &str = "stacked-fold-read-progress-v1";
 const CURRENT_CYCLE_POSE_PROGRESS_EVENT_V1: &str = "current-cycle-pose-progress-v1";
 
 #[tauri::command]
-pub(super) fn cancel_current_stacked_fold_read_v1() -> Result<(), String> {
-    let _publication_guard = STACKED_FOLD_READ_PUBLICATION_GATE_V1
+pub(super) fn cancel_current_stacked_fold_read_v1(
+    app_state: State<'_, AppState>,
+) -> Result<(), String> {
+    let result = cancel_current_stacked_fold_read_inner_v1();
+    if result.is_ok() {
+        app_state.1.notify_waiters();
+    }
+    result
+}
+
+fn cancel_current_stacked_fold_read_inner_v1() -> Result<(), String> {
+    let publication = STACKED_FOLD_READ_PUBLICATION_GATE_V1
         .lock()
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    if publication.active_request_id.is_some() {
+        return Ok(());
+    }
+    advance_stacked_fold_read_generation_v1()
+}
+
+#[tauri::command]
+pub(super) fn cancel_current_stacked_fold_read_request_v1(
+    app_state: State<'_, AppState>,
+    request_id: String,
+) -> Result<(), String> {
+    let result = cancel_current_stacked_fold_read_request_inner_v1(request_id);
+    if result.is_ok() {
+        app_state.1.notify_waiters();
+    }
+    result
+}
+
+fn cancel_current_stacked_fold_read_request_inner_v1(request_id: String) -> Result<(), String> {
+    validate_progress_request_id_v1(Some(&request_id))?;
+    let mut publication = STACKED_FOLD_READ_PUBLICATION_GATE_V1
+        .lock()
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    if publication.active_request_id.as_deref() == Some(request_id.as_str()) {
+        advance_stacked_fold_read_generation_v1()?;
+        publication.active_request_id = None;
+    }
+    remember_pre_cancelled_request_id_v1(&mut publication, request_id);
+    Ok(())
+}
+
+fn remember_pre_cancelled_request_id_v1(
+    publication: &mut StackedFoldReadPublicationStateV1,
+    request_id: String,
+) {
+    if publication
+        .pre_cancelled_request_ids
+        .iter()
+        .any(|cancelled| cancelled == &request_id)
+    {
+        return;
+    }
+    if publication.pre_cancelled_request_ids.len()
+        == MAX_PRE_CANCELLED_STACKED_FOLD_READ_REQUESTS_V1
+    {
+        publication.pre_cancelled_request_ids.pop_front();
+    }
+    publication.pre_cancelled_request_ids.push_back(request_id);
+}
+
+fn advance_stacked_fold_read_generation_v1() -> Result<(), String> {
     STACKED_FOLD_READ_GENERATION
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
             generation.checked_add(1)
         })
         .map(|_| ())
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+}
+
+fn with_current_cycle_publication_v1<R>(
+    generation: u64,
+    publish: impl FnOnce() -> Result<R, String>,
+) -> Result<R, String> {
+    let _publication_guard = STACKED_FOLD_READ_PUBLICATION_GATE_V1
+        .lock()
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != generation {
+        return Err(CANCELLED_MESSAGE.to_owned());
+    }
+    publish()
 }
 
 fn stacked_fold_pair_cache_control_v1(
@@ -603,65 +742,6 @@ impl RegularQuadPetalPreviewRecordV1 {
         {
             return Err("regular-quad petal authority is unavailable".to_owned());
         }
-        let (geometry, audit, _) = authority
-            .pose_capability
-            .graph()
-            .ok_or_else(|| "regular-quad petal graph authority is unavailable".to_owned())?;
-        let source = authority.layer_capability.snapshot();
-        let mut inputs = Vec::with_capacity(3);
-        for edge in &authority.edges {
-            let positive = match &edge.auxiliary {
-                DyadicAuxiliaryProofV1::Graph { positive, .. } => positive,
-                DyadicAuxiliaryProofV1::Tree { .. } => {
-                    return Err("regular-quad petal requires graph proofs".to_owned());
-                }
-            };
-            let closure = edge
-                .closure
-                .as_ref()
-                .ok_or_else(|| "regular-quad petal closure is unavailable".to_owned())?;
-            let transitions = closure
-                .leaves()
-                .len()
-                .checked_add(1)
-                .ok_or_else(|| "regular-quad petal work overflow".to_owned())?;
-            let layer_records = source
-                .overlap_cells
-                .iter()
-                .try_fold(0_usize, |sum, cell| {
-                    sum.checked_add(cell.bottom_to_top_faces.len())
-                })
-                .ok_or_else(|| "regular-quad petal work overflow".to_owned())?;
-            let boundary_samples = source
-                .overlap_cells
-                .iter()
-                .try_fold(0_usize, |sum, cell| {
-                    cell.exact_boundary
-                        .len()
-                        .checked_mul(cell.bottom_to_top_faces.len())
-                        .and_then(|work| sum.checked_add(work))
-                })
-                .and_then(|work| work.checked_mul(transitions))
-                .ok_or_else(|| "regular-quad petal work overflow".to_owned())?;
-            inputs.push(ori_collision::GeneralCellTransportInputV1 {
-                geometry,
-                audit,
-                source,
-                schedule: &edge.schedule,
-                closure,
-                positive_continuous: positive,
-                paper_thickness_mm: authority.paper_thickness_mm,
-                tolerance: 1.0e-9,
-                limits: ori_collision::GeneralCellTransportLimitsV1 {
-                    max_transitions: transitions,
-                    max_cells: source.overlap_cells.len(),
-                    max_layer_records: layer_records,
-                    max_boundary_samples: boundary_samples,
-                },
-            });
-        }
-        ori_collision::ChainedGeneralCellTransportAuthorityV1::issue(inputs)
-            .map_err(|_| "regular-quad petal chained layer authority failed".to_owned())?;
         Ok(Self {
             token,
             project_instance_id: project.instance_id,
@@ -740,7 +820,7 @@ fn issue_regular_quad_petal_preview_record_v1(
         return Err("regular-quad petal face is unavailable".to_owned());
     }
     let paper_thickness_mm = project.editor.paper().thickness_mm;
-    let (path, edges, target_angles) = {
+    let (path, edges, target_angles, transport) = {
         let (geometry, audit, pose) = pose_capability
             .graph()
             .ok_or_else(|| "regular-quad petal requires graph pose authority".to_owned())?;
@@ -765,14 +845,13 @@ fn issue_regular_quad_petal_preview_record_v1(
         )
         .ok_or_else(|| "regular-quad petal candidates are uncertified".to_owned())?;
         let (_, schedules, closures, positives, transport) = issued.into_parts();
-        let layers = transport.into_proofs();
         let mut path_segments = Vec::with_capacity(3);
         let mut native_edges = Vec::with_capacity(3);
-        for (((schedule, closure), positive), layer) in schedules
+        for (layer_index, ((schedule, closure), positive)) in schedules
             .into_iter()
             .zip(closures)
             .zip(positives)
-            .zip(layers)
+            .enumerate()
         {
             let source_angles = schedule
                 .evaluate(0.0)
@@ -820,7 +899,10 @@ fn issue_regular_quad_petal_preview_record_v1(
                 target: target_fingerprint,
                 schedule,
                 closure: Some(closure),
-                auxiliary: DyadicAuxiliaryProofV1::Graph { positive, layer },
+                auxiliary: DyadicAuxiliaryProofV1::ChainedGraph {
+                    positive,
+                    layer_index,
+                },
             });
         }
         let path = ori_collision::issue_private_three_segment_path_v1(
@@ -833,7 +915,7 @@ fn issue_regular_quad_petal_preview_record_v1(
             .last()
             .and_then(|edge| edge.schedule.evaluate(1.0))
             .ok_or_else(|| "petal target is unavailable".to_owned())?;
-        (path, native_edges, target_angles)
+        (path, native_edges, target_angles, transport)
     };
     let target_binding = pose_state_fingerprint_v1(&target_angles);
     let path_binding = path
@@ -842,10 +924,12 @@ fn issue_regular_quad_petal_preview_record_v1(
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let authority = DyadicPathNativeAuthorityV1 {
+        read_scope: None,
         pose_capability,
         layer_capability,
         path,
         edges,
+        chained_graph_transport: Some(transport),
         paper_thickness_mm,
         target_angles,
     };
@@ -861,10 +945,12 @@ fn issue_regular_quad_petal_preview_record_v1(
 }
 
 struct DyadicPathNativeAuthorityV1 {
+    read_scope: Option<StackedFoldReadGenerationLeaseV1>,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
     path: ori_collision::CertifiedPoseGraphPathCertificateV1,
     edges: Vec<DyadicPathEdgeAuthorityV1>,
+    chained_graph_transport: Option<ori_collision::ChainedGeneralCellTransportAuthorityV1>,
     paper_thickness_mm: f64,
     target_angles: ori_kinematics::CanonicalHingeAngles,
 }
@@ -881,6 +967,10 @@ enum DyadicAuxiliaryProofV1 {
     Graph {
         positive: ori_collision::PositiveThicknessContinuousCertificateV1,
         layer: ori_collision::GeneralMultiFaceCellTransportProofV1,
+    },
+    ChainedGraph {
+        positive: ori_collision::PositiveThicknessContinuousCertificateV1,
+        layer_index: usize,
     },
     Tree {
         positive: ori_collision::PositiveThicknessTreeContinuousCertificateV1,
@@ -924,13 +1014,24 @@ impl DyadicPathNativeAuthorityV1 {
         record_target: [u8; 32],
         record_path_binding: &str,
     ) -> bool {
+        let Some(chained) = self.chained_graph_transport.as_ref() else {
+            return false;
+        };
         exact_three_graph_segment_shape_v1(
             self.edges.len(),
             self.edges
                 .iter()
-                .filter(|edge| matches!(&edge.auxiliary, DyadicAuxiliaryProofV1::Graph { .. }))
+                .enumerate()
+                .filter(|(index, edge)| {
+                    matches!(
+                        &edge.auxiliary,
+                        DyadicAuxiliaryProofV1::ChainedGraph { layer_index, .. }
+                            if *layer_index == *index
+                    )
+                })
                 .count(),
-        ) && self.revalidates_private_proofs_v1(record_target, record_path_binding)
+        ) && chained.proofs().len() == 3
+            && self.revalidates_private_proofs_v1(record_target, record_path_binding)
     }
 
     fn revalidates_private_proofs_v1(
@@ -964,6 +1065,35 @@ impl DyadicPathNativeAuthorityV1 {
                     && match &edge.auxiliary {
                         DyadicAuxiliaryProofV1::Graph { positive, layer } => {
                             let Some(closure) = edge.closure.as_ref() else {
+                                return false;
+                            };
+                            positive.is_for(
+                                geometry,
+                                audit,
+                                closure.fixed_face(),
+                                &edge.schedule,
+                                closure,
+                                self.paper_thickness_mm,
+                            ) && layer.is_for(
+                                geometry,
+                                self.layer_capability.snapshot(),
+                                &edge.schedule,
+                                closure,
+                                self.paper_thickness_mm,
+                            )
+                        }
+                        DyadicAuxiliaryProofV1::ChainedGraph {
+                            positive,
+                            layer_index,
+                        } => {
+                            let Some(closure) = edge.closure.as_ref() else {
+                                return false;
+                            };
+                            let Some(layer) = self
+                                .chained_graph_transport
+                                .as_ref()
+                                .and_then(|authority| authority.proofs().get(*layer_index))
+                            else {
                                 return false;
                             };
                             positive.is_for(
@@ -1037,14 +1167,6 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     request: DyadicPoseGraphReadRequestV1,
     authority_out: Option<&mut Option<DyadicPathNativeAuthorityV1>>,
 ) -> Result<DyadicPoseGraphReadResponseV1, String> {
-    let generation = begin_stacked_fold_read_generation_v1()?;
-    let project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
-    if project.instance_id != request.expected_project_instance_id
-        || project.project_id != request.expected_project_id
-        || project.editor.revision() != request.expected_revision
-    {
-        return Err(STALE_MESSAGE.to_owned());
-    }
     if !dyadic_request_hinge_counts_are_bounded_v1(
         request.target_angles.len(),
         request
@@ -1054,8 +1176,21 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     ) {
         return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
     }
+    if !(1..=MAX_DYADIC_GRAPH_STATES_V1).contains(&request.max_states)
+        || !(1..=MAX_DYADIC_GRAPH_TRANSITIONS_V1).contains(&request.max_transitions)
+    {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+    }
     if !matches!(request.level_count, 3 | 5 | 9) {
         return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
+    }
+    validate_progress_request_id_v1(request.progress_request_id.as_deref())?;
+    let project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+    if project.instance_id != request.expected_project_instance_id
+        || project.project_id != request.expected_project_id
+        || project.editor.revision() != request.expected_revision
+    {
+        return Err(STALE_MESSAGE.to_owned());
     }
     if !strict_dyadic_geometry_is_in_scope_v1(&project) {
         return Ok(unsupported_dyadic_graph_response_v1(&project));
@@ -1115,6 +1250,19 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
     }
+    let uses_collective_graph = collective_schedule.is_some()
+        || audit.closure_hinges().len() >= 2
+        || target.as_slice().len() >= 32;
+    if uses_collective_graph && (request.max_states < 3 || request.max_transitions < 4) {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+    }
+    // Only a request that has passed every bounded, binding, and schedule
+    // admission check may replace the process-wide read generation. The
+    // project guard remains held, preserving the global project ->
+    // publication lock order used by the final publication path.
+    let read_scope = begin_stacked_fold_read_scope_v1(request.progress_request_id.clone())?;
+    let generation = read_scope.generation();
+    let mut read_scope = Some(read_scope);
     let generated_graph = if let Some(schedule) = collective_schedule.as_ref() {
         schedule
             .evaluate(0.5)
@@ -1127,7 +1275,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 .ok()
             })
             .ok_or(ori_kinematics::DyadicPoseGraphGenerationErrorV1::BindingMismatch)
-    } else if audit.closure_hinges().len() >= 2 || target.as_slice().len() >= 32 {
+    } else if uses_collective_graph {
         let midpoint = ori_kinematics::CanonicalHingeAngles::new(
             pose.hinge_angles()
                 .as_slice()
@@ -1424,12 +1572,9 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 Some((<[u8; 32]>::from(hash.finalize()), proof))
             });
             let mut layer_binding = layer.as_ref().map(|value| value.0);
-            let mut proof = positive.zip(layer.as_ref()).map(|(positive, (_, layer))| {
-                DyadicAuxiliaryProofV1::Graph {
-                    positive,
-                    layer: layer.clone(),
-                }
-            });
+            let mut proof = positive
+                .zip(layer)
+                .map(|(positive, (_, layer))| DyadicAuxiliaryProofV1::Graph { positive, layer });
             if proof.is_none() && edge.source == pose_state_fingerprint_v1(pose.hinge_angles()) {
                 proof = capability
                     .tree()
@@ -1596,10 +1741,12 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     if let Some(out) = authority_out {
         *out = match (authority_parts, layer_capability) {
             (Some((path, edges)), Some(layer_capability)) => Some(DyadicPathNativeAuthorityV1 {
+                read_scope: read_scope.take(),
                 pose_capability: capability,
                 layer_capability,
                 path,
                 edges,
+                chained_graph_transport: None,
                 paper_thickness_mm,
                 target_angles: target,
             }),
@@ -1638,8 +1785,8 @@ pub(super) fn propose_current_cycle_pose_v1(
         &transaction_state,
         request,
     );
-    if let Some(request_id) = request_id.as_deref() {
-        emit_current_cycle_terminal_v1(
+    if let Some(request_id) = request_id {
+        emit_current_cycle_terminal_owned_v1(
             &app,
             request_id,
             match &result {
@@ -1669,9 +1816,13 @@ fn propose_current_cycle_pose_inner_with_layers(
     transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,
     request: CurrentCyclePosePreviewRequestV1,
 ) -> Result<CurrentCyclePosePreviewResponseV1, String> {
-    let generation = begin_stacked_fold_read_generation_v1()?;
+    let progress_request_id_owned = request.progress_request_id.clone();
     let progress_request_id =
-        validate_progress_request_id_v1(request.progress_request_id.as_deref())?;
+        validate_progress_request_id_v1(progress_request_id_owned.as_deref())?;
+    let target_revision = super::stacked_fold_transaction::next_current_cycle_target_revision_v1(
+        request.expected_revision,
+    )
+    .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     emit_current_cycle_progress_v1(app, progress_request_id, 0, 0);
     emit_current_cycle_status_v1(app, progress_request_id, "running", 0);
     let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
@@ -1744,6 +1895,12 @@ fn propose_current_cycle_pose_inner_with_layers(
         &requested,
     )
     .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    // Invalid, stale, and non-admissible requests must leave an older valid
+    // analysis running. Advance the generation only after all cheap
+    // admission checks have succeeded, while retaining project ->
+    // publication lock order.
+    let generation_scope = begin_stacked_fold_read_scope_v1(progress_request_id_owned.clone())?;
+    let generation = generation_scope.generation();
     let paper_thickness_mm = project.editor.paper().thickness_mm;
     let basis_closure = match geometry.prove_simultaneous_cycle_basis_schedule_closure_v1(
         audit,
@@ -1764,6 +1921,7 @@ fn propose_current_cycle_pose_inner_with_layers(
                 app,
                 transaction_state,
                 &project,
+                foldability_state,
                 pose_capability,
                 layer_capability,
                 &generated,
@@ -1772,8 +1930,9 @@ fn propose_current_cycle_pose_inner_with_layers(
                 generation,
                 progress_request_id,
                 request.expected_revision,
+                target_revision,
             )
-            .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned());
+            .map_err(normalize_blockwise_current_cycle_fallback_error_v1);
         }
     };
     let closure = basis_closure.closure().clone();
@@ -1829,6 +1988,7 @@ fn propose_current_cycle_pose_inner_with_layers(
                 app,
                 transaction_state,
                 &project,
+                foldability_state,
                 pose_capability,
                 layer_capability,
                 &generated,
@@ -1837,6 +1997,7 @@ fn propose_current_cycle_pose_inner_with_layers(
                 generation,
                 progress_request_id,
                 request.expected_revision,
+                target_revision,
             )
             .map_err(normalize_blockwise_current_cycle_fallback_error_v1);
         }
@@ -1879,15 +2040,23 @@ fn propose_current_cycle_pose_inner_with_layers(
         (layer_capability.as_ref(), source_layer_order.as_ref())
     {
         let source = capability.snapshot();
-        let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
-            geometry,
-            audit,
-            pose.fixed_face(),
-            generated.schedule(),
-            &closure,
-            paper_thickness_mm,
-            32,
+        let positive = controlled_cycle_authority_read_v1(
+            generation,
+            &CooperativeOperationControlV1::unbounded(),
+            |control| {
+                certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1(
+                    geometry,
+                    audit,
+                    pose.fixed_face(),
+                    generated.schedule(),
+                    &closure,
+                    paper_thickness_mm,
+                    32,
+                    control,
+                )
+            },
         )
+        .map_err(|error| controlled_cycle_authority_read_message_v1(error).to_owned())?
         .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
         let layer_records = source
             .overlap_cells
@@ -1959,51 +2128,58 @@ fn propose_current_cycle_pose_inner_with_layers(
         })
         .unwrap_or_default();
     emit_current_cycle_progress_v1(app, progress_request_id, 1, 1);
-    if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != generation {
-        return Err(CANCELLED_MESSAGE.to_owned());
-    }
     let target_angles = requested
         .as_slice()
         .iter()
         .map(|angle| (angle.edge(), angle.angle_degrees()))
         .collect();
-    let token = super::stacked_fold_transaction::install_pending_current_cycle_pose_v1(
-        &transaction_state,
-        super::stacked_fold_transaction::PendingCurrentCyclePosePremisesV1 {
-            expected_instance_id: project.instance_id,
-            expected_project_id: project.project_id,
-            expected_revision: project.editor.revision(),
-            expected_source_fingerprint: ori_foldability::fold_model_fingerprint_v1(
-                project.editor.pattern(),
-                project.editor.paper(),
-            )
-            .0,
-            expected_pose_generation: pose_capability.generation(),
-            expected_layer_generation: 0,
-            geometry: geometry.clone(),
-            audit: audit.clone(),
-            fixed_face: pose.fixed_face(),
-            generated,
-            closure,
-            expected,
-            continuous,
-            layer_transport,
-            layer_order_pairs: persisted_layer_order_pairs,
-            target_angles,
-        },
-        pose_capability,
-        layer_capability,
-    )?;
+    let pose_is_current = project
+        .applied_pose_authority
+        .revalidate_capability(&project, &pose_capability)
+        .map_err(|_| STALE_MESSAGE.to_owned())?
+        .is_some();
+    let layer_is_current = match (foldability_state, layer_capability.as_ref()) {
+        (Some(state), Some(capability)) => {
+            revalidate_current_layer_order_capability(state, &project, capability)
+                .map_err(|_| STALE_MESSAGE.to_owned())?
+                .is_some()
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    if !pose_is_current || !layer_is_current {
+        return Err(STALE_MESSAGE.to_owned());
+    }
+    let pending = super::stacked_fold_transaction::PendingCurrentCyclePosePremisesV1 {
+        expected_instance_id: project.instance_id,
+        expected_project_id: project.project_id,
+        expected_revision: project.editor.revision(),
+        expected_source_fingerprint: ori_foldability::fold_model_fingerprint_v1(
+            project.editor.pattern(),
+            project.editor.paper(),
+        )
+        .0,
+        expected_pose_generation: pose_capability.generation(),
+        expected_layer_generation: 0,
+        geometry: geometry.clone(),
+        audit: audit.clone(),
+        fixed_face: pose.fixed_face(),
+        generated,
+        closure,
+        expected,
+        continuous,
+        layer_transport,
+        layer_order_pairs: persisted_layer_order_pairs,
+        target_angles,
+    };
     let source_layer_order = source_layer_order.unwrap_or_default();
+    let target_layer_order = source_layer_order.clone();
     let (layer_model_id, layer_transition_count, layer_pair_count, layer_target_hash) =
         layer_transport_metadata.map_or((None, 0, 0, None), |value| {
             (Some(value.0), value.1, value.2, Some(value.3))
         });
-    let target_revision = request
-        .expected_revision
-        .checked_add(1)
-        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
-    Ok(CurrentCyclePosePreviewResponseV1 {
+    let token = ProjectId::new();
+    let response = CurrentCyclePosePreviewResponseV1 {
         version: 1,
         transaction_token: token,
         source_revision: request.expected_revision,
@@ -2017,10 +2193,20 @@ fn propose_current_cycle_pose_inner_with_layers(
         continuous_layer_transition_count: layer_transition_count,
         continuous_layer_pair_order_count: layer_pair_count,
         continuous_layer_target_order_sha256: layer_target_hash,
-        target_layer_order: source_layer_order.clone(),
+        target_layer_order,
         source_layer_order,
         authorizes_project_mutation: false,
-    })
+    };
+    with_current_cycle_publication_v1(generation, || {
+        super::stacked_fold_transaction::install_pending_current_cycle_pose_with_token_v1(
+            &transaction_state,
+            token,
+            pending,
+            pose_capability,
+            layer_capability,
+        )
+    })?;
+    Ok(response)
 }
 
 fn emit_current_cycle_status_v1(
@@ -2045,21 +2231,83 @@ fn emit_current_cycle_status_v1(
     );
 }
 
-fn emit_current_cycle_terminal_v1(app: &AppHandle, request_id: &str, status: &'static str) {
-    emit_current_cycle_status_v1(Some(app), Some(request_id), status, 2);
+fn emit_current_cycle_terminal_owned_v1(app: &AppHandle, request_id: String, status: &'static str) {
+    // A presentation-only event must never hide an already issued native
+    // transaction token. The request ID is owned before publication and
+    // emitter failures or unwinds are isolated from the command result.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = app.emit(
+            CURRENT_CYCLE_POSE_PROGRESS_EVENT_V1,
+            CurrentCyclePoseProgressDtoV1 {
+                version: 1,
+                request_id,
+                status,
+                completed_work: 2,
+                total_work: 2,
+                authorizes_project_mutation: false,
+            },
+        );
+    }));
 }
 
+#[cfg(test)]
 fn begin_stacked_fold_read_generation_v1() -> Result<u64, String> {
-    let _publication_guard = STACKED_FOLD_READ_PUBLICATION_GATE_V1
+    begin_stacked_fold_read_generation_for_request_v1(None)
+}
+
+#[derive(Debug)]
+struct StackedFoldReadGenerationLeaseV1 {
+    generation: u64,
+}
+
+impl StackedFoldReadGenerationLeaseV1 {
+    const fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+impl Drop for StackedFoldReadGenerationLeaseV1 {
+    fn drop(&mut self) {
+        let mut publication = STACKED_FOLD_READ_PUBLICATION_GATE_V1
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) == self.generation {
+            publication.active_request_id = None;
+        }
+    }
+}
+
+fn begin_stacked_fold_read_scope_v1(
+    request_id: Option<String>,
+) -> Result<StackedFoldReadGenerationLeaseV1, String> {
+    begin_stacked_fold_read_generation_for_request_v1(request_id)
+        .map(|generation| StackedFoldReadGenerationLeaseV1 { generation })
+}
+
+fn begin_stacked_fold_read_generation_for_request_v1(
+    request_id: Option<String>,
+) -> Result<u64, String> {
+    let mut publication = STACKED_FOLD_READ_PUBLICATION_GATE_V1
         .lock()
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
-    STACKED_FOLD_READ_GENERATION
+    if let Some(request_id) = request_id.as_ref()
+        && let Some(index) = publication
+            .pre_cancelled_request_ids
+            .iter()
+            .position(|cancelled| cancelled == request_id)
+    {
+        publication.pre_cancelled_request_ids.remove(index);
+        return Err(CANCELLED_MESSAGE.to_owned());
+    }
+    let generation = STACKED_FOLD_READ_GENERATION
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
             value.checked_add(1)
         })
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?
         .checked_add(1)
-        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    publication.active_request_id = request_id;
+    Ok(generation)
 }
 
 fn emit_current_cycle_progress_v1(
@@ -2099,38 +2347,6 @@ enum NativeStackedFoldPremises {
     Graph(super::stacked_fold_transaction::PendingStackedFoldGraphPremises),
 }
 
-struct InstalledStackedFoldProposalGuard<'a> {
-    transaction_state: &'a super::stacked_fold_transaction::StackedFoldTransactionState,
-    token: Option<ProjectId>,
-}
-
-impl<'a> InstalledStackedFoldProposalGuard<'a> {
-    fn new(
-        transaction_state: &'a super::stacked_fold_transaction::StackedFoldTransactionState,
-        token: ProjectId,
-    ) -> Self {
-        Self {
-            transaction_state,
-            token: Some(token),
-        }
-    }
-
-    fn disarm(mut self) {
-        self.token = None;
-    }
-}
-
-impl Drop for InstalledStackedFoldProposalGuard<'_> {
-    fn drop(&mut self) {
-        if let Some(token) = self.token {
-            let _ = super::stacked_fold_transaction::cancel_pending_stacked_fold(
-                self.transaction_state,
-                token,
-            );
-        }
-    }
-}
-
 fn stacked_fold_read_binding_is_current_v1(
     app_state: &AppState,
     foldability_state: &GlobalFlatFoldabilityState,
@@ -2159,6 +2375,35 @@ fn stacked_fold_read_binding_is_current_v1(
             .is_some_and(|capability| capability.generation() == binding.layer_order_generation()))
 }
 
+fn stacked_fold_read_capabilities_match_project_v1(
+    project: &ProjectState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    binding: StackedFoldReadBindingV1,
+    expected_source_fingerprint_sha256: &str,
+    pose_capability: &CurrentAppliedPoseCapability,
+    layer_capability: &CurrentLayerOrderCapability,
+) -> Result<bool, String> {
+    if project.instance_id != binding.project_instance_id()
+        || project.project_id != binding.project_id()
+        || project.editor.revision() != binding.source_revision()
+        || project.editor.fold_model_fingerprint_v1() != expected_source_fingerprint_sha256
+        || pose_capability.generation() != binding.pose_generation()
+        || layer_capability.generation() != binding.layer_order_generation()
+    {
+        return Ok(false);
+    }
+    let pose_is_current = project
+        .applied_pose_authority
+        .revalidate_capability(project, pose_capability)
+        .map_err(|_| STALE_MESSAGE.to_owned())?
+        .is_some();
+    let layer_is_current =
+        revalidate_current_layer_order_capability(foldability_state, project, layer_capability)
+            .map_err(|_| STALE_MESSAGE.to_owned())?
+            .is_some();
+    Ok(pose_is_current && layer_is_current)
+}
+
 #[tauri::command]
 pub(super) async fn propose_current_stacked_fold_read(
     app: AppHandle,
@@ -2185,25 +2430,33 @@ async fn propose_current_stacked_fold_read_inner(
     request: StackedFoldReadRequest,
 ) -> Result<StackedFoldReadResponse, String> {
     validate_request_resource_shape_v1(&request).map_err(str::to_owned)?;
-    let worker_permit = app_state
-        .try_acquire_native_pose_worker()
-        .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
-    if request.certified_path_graph_v1.is_some() {
-        let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
-        if project.instance_id != request.expected_project_instance_id
-            || project.project_id != request.expected_project_id
-            || project.editor.revision() != request.expected_revision
-        {
-            return Err(STALE_MESSAGE.to_owned());
-        }
-        preflight_certified_path_graph_thickness_v1(project.editor.paper().thickness_mm)
-            .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    let first = Point3::new(request.first[0], request.first[1], request.first[2])
+        .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let second = Point3::new(request.second[0], request.second[1], request.second[2])
+        .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let candidate = StackedFoldLinearCandidateV1::new(
+        first,
+        second,
+        request.fixed_side.into(),
+        request.rotation_direction.into(),
+        request.requested_angle_degrees,
+    )
+    .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    validate_progress_request_id_v1(request.progress_request_id.as_deref())?;
+    let path_variant_count = usize::from(request.cycle_schedule_v1.is_some())
+        + usize::from(request.linear_candidate_v1.is_some())
+        + usize::from(request.certified_path_graph_v1.is_some());
+    if path_variant_count > 1 {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
     }
-    // A rejected busy request must not cancel the permit owner.
-    let analysis_generation = begin_stacked_fold_read_generation_v1()?;
-    let progress_request_id = request.progress_request_id.clone().filter(|value| {
-        !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_graphic())
-    });
+    if let Some(exact_path) = request
+        .linear_candidate_v1
+        .as_ref()
+        .and_then(|linear| linear.exact_dyadic_path_v1.as_ref())
+    {
+        validate_exact_dyadic_candidate_path_v1(exact_path).map_err(str::to_owned)?;
+    }
+    let progress_request_id = request.progress_request_id.clone();
     let (
         paper,
         pattern,
@@ -2212,6 +2465,8 @@ async fn propose_current_stacked_fold_read_inner(
         binding,
         pair_proof_cache,
         pair_proof_cache_capture,
+        _analysis_scope,
+        analysis_generation,
     ) = {
         let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
         if project.instance_id != request.expected_project_instance_id
@@ -2220,11 +2475,18 @@ async fn propose_current_stacked_fold_read_inner(
         {
             return Err(STALE_MESSAGE.to_owned());
         }
+        if request.certified_path_graph_v1.is_some() {
+            preflight_certified_path_graph_thickness_v1(project.editor.paper().thickness_mm)
+                .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+        }
         let pose_authority = project.applied_pose_authority.clone();
         let pose_capability = pose_authority
             .capture_capability(&project)
             .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
             .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
+        if pose_capability.tree().is_none() {
+            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+        }
         let layer_capability = capture_current_layer_order_capability(&foldability_state, &project)
             .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
             .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
@@ -2254,31 +2516,38 @@ async fn propose_current_stacked_fold_read_inner(
             .map(|binding| pair_proof_cache.capture_v1(binding))
             .transpose()
             .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        let paper = project.editor.paper().clone();
+        let pattern = project.editor.pattern().clone();
+        // Malformed, stale, unsupported-thickness, and unavailable authority
+        // requests must not cancel the current permit owner. This fully
+        // admitted request linearizes replacement while the project binding is
+        // still locked, preserving project -> publication lock order. Worker
+        // capacity is awaited only after this project guard is released.
+        let analysis_scope = begin_stacked_fold_read_scope_v1(progress_request_id.clone())?;
+        let analysis_generation = analysis_scope.generation();
         (
-            project.editor.paper().clone(),
-            project.editor.pattern().clone(),
+            paper,
+            pattern,
             pose_capability,
             layer_capability,
             binding,
             pair_proof_cache,
             pair_proof_cache_capture,
+            analysis_scope,
+            analysis_generation,
         )
     };
-
-    let first = Point3::new(request.first[0], request.first[1], request.first[2])
-        .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
-    let second = Point3::new(request.second[0], request.second[1], request.second[2])
-        .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
-    let candidate = StackedFoldLinearCandidateV1::new(
-        first,
-        second,
-        request.fixed_side.into(),
-        request.rotation_direction.into(),
-        request.requested_angle_degrees,
-    )
-    .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let worker_permit = app_state
+        .1
+        .acquire_notified_while(move || {
+            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) == analysis_generation
+        })
+        .await
+        .ok_or_else(|| CANCELLED_MESSAGE.to_owned())?;
     let paper_thickness_mm = paper.thickness_mm;
     let progress_app = app.cloned();
+    #[cfg(test)]
+    let prepublication_request_id = progress_request_id.clone();
     let analysis = tauri::async_runtime::spawn_blocking(move || {
         let (model, pose) = pose_capability
             .tree()
@@ -2444,7 +2713,13 @@ async fn propose_current_stacked_fold_read_inner(
                             .and_then(|value| value.parse::<usize>().ok())
                             .is_some_and(|limit| progress.evaluated_transition_count >= limit)
                         {
-                            let _ = cancel_current_stacked_fold_read_v1();
+                            if let Some(request_id) = progress_request_id.as_ref() {
+                                let _ = cancel_current_stacked_fold_read_request_inner_v1(
+                                    request_id.clone(),
+                                );
+                            } else {
+                                let _ = cancel_current_stacked_fold_read_inner_v1();
+                            }
                         }
                         if let Some(request_id) = progress_request_id.as_ref() {
                             if let Some(progress_app) = progress_app.as_ref() {
@@ -2631,9 +2906,6 @@ async fn propose_current_stacked_fold_read_inner(
                     .linear_candidate_v1
                     .as_ref()
                     .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
-                if let Some(exact_path) = linear.exact_dyadic_path_v1.as_ref() {
-                    validate_exact_dyadic_candidate_path_v1(exact_path).map_err(str::to_owned)?;
-                }
                 let (initial_angles, requested_angles) =
                     validate_linear_candidate_angles_v1(linear, initial.pose().hinge_angles())
                         .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
@@ -3475,64 +3747,34 @@ async fn propose_current_stacked_fold_read_inner(
             return Err(STALE_MESSAGE.to_owned());
         }
     }
-    let mut installed_proposal_guard = None;
-    if let Some(native_transaction) = native_transaction {
-        let (token, apply_mode) = match native_transaction {
-            NativeStackedFoldPremises::Tree(premises) => (
-                super::stacked_fold_transaction::install_pending_stacked_fold(
-                    &transaction_state,
-                    premises,
-                    pose_capability,
-                    layer_capability,
-                )?,
-                StackedFoldApplyModeDtoV1::Certified,
-            ),
-            NativeStackedFoldPremises::SpeculativeTree(premises) => (
-                super::stacked_fold_transaction::install_pending_speculative_stacked_fold_v1(
-                    &transaction_state,
-                    premises,
-                    pose_capability,
-                    layer_capability,
-                )?,
-                StackedFoldApplyModeDtoV1::SpeculativeUnproven,
-            ),
-            NativeStackedFoldPremises::Graph(premises) => (
-                super::stacked_fold_transaction::install_pending_stacked_fold_graph(
-                    &transaction_state,
-                    premises,
-                    pose_capability,
-                    layer_capability,
-                )?,
-                StackedFoldApplyModeDtoV1::Certified,
-            ),
-        };
-        match apply_mode {
-            StackedFoldApplyModeDtoV1::Certified => {
+    let publication_token = native_transaction.as_ref().map(|transaction| {
+        let token = ProjectId::new();
+        match transaction {
+            NativeStackedFoldPremises::Tree(_) | NativeStackedFoldPremises::Graph(_) => {
                 transaction_proposal.publish_certified_v1(token);
             }
-            StackedFoldApplyModeDtoV1::SpeculativeUnproven => {
+            NativeStackedFoldPremises::SpeculativeTree(_) => {
                 transaction_proposal.publish_speculative_unproven_v1(token);
             }
-            StackedFoldApplyModeDtoV1::None => unreachable!("native proposal always has a mode"),
         }
-        installed_proposal_guard = Some(InstalledStackedFoldProposalGuard::new(
-            transaction_state,
-            token,
-        ));
-    }
-
+        token
+    });
     #[cfg(test)]
-    let post_install_action = STACKED_FOLD_POST_INSTALL_ACTION_V1.swap(0, Ordering::AcqRel);
+    let prepublication_action = STACKED_FOLD_PREPUBLICATION_ACTION_V1.swap(0, Ordering::AcqRel);
     #[cfg(not(test))]
-    let post_install_action = 0_u8;
+    let prepublication_action = 0_u8;
     #[cfg(test)]
-    if post_install_action == 1 {
-        let _ = cancel_current_stacked_fold_read_v1();
+    if prepublication_action == 1 {
+        if let Some(request_id) = prepublication_request_id {
+            let _ = cancel_current_stacked_fold_read_request_inner_v1(request_id);
+        } else {
+            let _ = cancel_current_stacked_fold_read_inner_v1();
+        }
     }
     if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != analysis_generation {
         return Err(CANCELLED_MESSAGE.to_owned());
     }
-    if post_install_action == 2
+    if prepublication_action == 2
         || !stacked_fold_read_binding_is_current_v1(
             app_state,
             foldability_state,
@@ -3543,7 +3785,7 @@ async fn propose_current_stacked_fold_read_inner(
         return Err(STALE_MESSAGE.to_owned());
     }
     #[cfg(test)]
-    if post_install_action == 3 {
+    if prepublication_action == 3 {
         transaction_proposal.apply_contract_version = 0;
     }
     if !transaction_proposal
@@ -3660,29 +3902,67 @@ async fn propose_current_stacked_fold_read_inner(
         authorizes_project_mutation: false,
         authorizes_apply_stacked_fold: false,
     };
+    let native_publication = match (native_transaction, publication_token) {
+        (Some(transaction), Some(token)) => Some((transaction, token)),
+        (None, None) => None,
+        _ => return Err(ANALYSIS_FAILED_MESSAGE.to_owned()),
+    };
+    // Every fallible response construction and contract check is complete
+    // before a pending token can displace an older valid proposal.
+    let project = lock_project(app_state).map_err(|_| STALE_MESSAGE.to_owned())?;
+    if !stacked_fold_read_capabilities_match_project_v1(
+        &project,
+        foldability_state,
+        binding,
+        &response.transaction_proposal.source_fingerprint_sha256,
+        &pose_capability,
+        &layer_capability,
+    )? {
+        return Err(STALE_MESSAGE.to_owned());
+    }
     let _publication_guard = STACKED_FOLD_READ_PUBLICATION_GATE_V1
         .lock()
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != analysis_generation {
         return Err(CANCELLED_MESSAGE.to_owned());
     }
-    if !stacked_fold_read_binding_is_current_v1(
-        app_state,
-        foldability_state,
-        binding,
-        &response.transaction_proposal.source_fingerprint_sha256,
-    )? {
-        return Err(STALE_MESSAGE.to_owned());
+    // Retain project -> publication order through the non-blocking registry
+    // admission. The installers acquire every transaction registry with
+    // try_lock before mutating either slot, so an apply path that already owns
+    // a registry causes a closed error instead of a lock-order cycle.
+    if let Some((native_transaction, token)) = native_publication {
+        match native_transaction {
+            NativeStackedFoldPremises::Tree(premises) => {
+                super::stacked_fold_transaction::install_pending_stacked_fold_with_token_v1(
+                    transaction_state,
+                    token,
+                    premises,
+                    pose_capability,
+                    layer_capability,
+                )?
+            }
+            NativeStackedFoldPremises::SpeculativeTree(premises) => {
+                super::stacked_fold_transaction::
+                    install_pending_speculative_stacked_fold_with_token_v1(
+                    transaction_state,
+                    token,
+                    premises,
+                    pose_capability,
+                    layer_capability,
+                )?
+            }
+            NativeStackedFoldPremises::Graph(premises) => {
+                super::stacked_fold_transaction::install_pending_stacked_fold_graph_with_token_v1(
+                    transaction_state,
+                    token,
+                    premises,
+                    pose_capability,
+                    layer_capability,
+                )?
+            }
+        };
     }
-    if !response
-        .transaction_proposal
-        .has_valid_apply_contract_v1(continuous_path_certified, target_layer_order_certified)
-    {
-        return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
-    }
-    if let Some(guard) = installed_proposal_guard {
-        guard.disarm();
-    }
+    drop(project);
     Ok(response)
 }
 
@@ -3721,6322 +4001,5 @@ mod miura_cactus_test_support;
 mod theta_cycle_test_support;
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-
-    // Keep the established `stacked_fold_read::tests::*` exact-filter surface
-    // while storing the large strict-scope fixture family separately.
-    include!("stacked_fold_dyadic_scope_tests.rs");
-
-    fn set_zero_thickness_for_cycle_test_v1(project: &mut super::super::ProjectState) {
-        let paper = project.editor.paper().clone();
-        let revision = project.editor.revision();
-        project
-            .editor
-            .execute(
-                revision,
-                ori_core::Command::UpdatePaperProperties {
-                    thickness_mm: 0.0,
-                    front_color: paper.front.color,
-                    back_color: paper.back.color,
-                    front_texture_asset: paper.front.texture_asset,
-                    back_texture_asset: paper.back.texture_asset,
-                    cutting_allowed: paper.cutting_allowed,
-                },
-            )
-            .expect("set an explicit zero-thickness cycle fixture");
-    }
-
-    #[test]
-    fn exact_flat_endpoint_defers_until_zero_thickness_layer_order_diagnosis() {
-        assert_eq!(
-            endpoint_collision_plan_v1(180.0, false),
-            EndpointCollisionPlanV1::DeferToFlatLayerOrder,
-        );
-        assert_eq!(
-            endpoint_collision_plan_v1(180.0, true),
-            EndpointCollisionPlanV1::DeferToFlatLayerOrder,
-        );
-        assert_eq!(
-            FLAT_ENDPOINT_COLLISION_THICKNESS_MM_V1.to_bits(),
-            0.0_f64.to_bits()
-        );
-    }
-
-    #[test]
-    fn near_flat_endpoint_keeps_the_existing_static_collision_path() {
-        assert_eq!(
-            endpoint_collision_plan_v1(179.999, false),
-            EndpointCollisionPlanV1::StaticGeometry,
-        );
-        assert_eq!(
-            endpoint_collision_plan_v1(179.999, true),
-            EndpointCollisionPlanV1::CertifiedPositiveThickness,
-        );
-    }
-
-    #[test]
-    fn speculative_endpoint_gate_requires_all_three_nonblocking_observations() {
-        let endpoint = |has_blocking_hold, penetrating_pair_count, indeterminate_pair_count| {
-            StackedFoldEndpointCollisionDto {
-                expected_pair_count: 1,
-                separated_pair_count: 1,
-                touching_pair_count: 0,
-                allowed_pair_count: 0,
-                penetrating_pair_count,
-                indeterminate_pair_count,
-                has_blocking_hold,
-            }
-        };
-        assert!(endpoint_allows_speculative_apply_v1(&endpoint(false, 0, 0)));
-        assert!(!endpoint_allows_speculative_apply_v1(&endpoint(true, 0, 0)));
-        assert!(!endpoint_allows_speculative_apply_v1(&endpoint(
-            false, 1, 0
-        )));
-        assert!(!endpoint_allows_speculative_apply_v1(&endpoint(
-            false, 0, 1
-        )));
-    }
-
-    #[test]
-    fn initial_layer_order_endpoint_admission_is_exact_and_fail_closed() {
-        let endpoint = |expected_pair_count,
-                        separated_pair_count,
-                        touching_pair_count,
-                        allowed_pair_count,
-                        penetrating_pair_count,
-                        indeterminate_pair_count,
-                        has_blocking_hold| StackedFoldEndpointCollisionDto {
-            expected_pair_count,
-            separated_pair_count,
-            touching_pair_count,
-            allowed_pair_count,
-            penetrating_pair_count,
-            indeterminate_pair_count,
-            has_blocking_hold,
-        };
-
-        let clear = admit_initial_layer_order_endpoint_v1(endpoint(4, 2, 1, 1, 0, 0, false), false)
-            .expect("an exactly accounted clear endpoint remains clear");
-        assert_eq!(clear.separated_pair_count, 2);
-        assert_eq!(clear.touching_pair_count, 1);
-        assert_eq!(clear.allowed_pair_count, 1);
-        assert_eq!(clear.indeterminate_pair_count, 0);
-        assert!(!clear.has_blocking_hold);
-
-        let admitted =
-            admit_initial_layer_order_endpoint_v1(endpoint(4, 1, 1, 0, 0, 2, true), true)
-                .expect("the authenticated initial layer order admits its persistent flat pairs");
-        assert_eq!(admitted.separated_pair_count, 1);
-        assert_eq!(admitted.touching_pair_count, 1);
-        assert_eq!(admitted.allowed_pair_count, 2);
-        assert_eq!(admitted.indeterminate_pair_count, 0);
-        assert!(!admitted.has_blocking_hold);
-
-        assert!(
-            admit_initial_layer_order_endpoint_v1(endpoint(1, 0, 0, 0, 0, 1, true), false,)
-                .is_none(),
-            "a raw indeterminate endpoint requires the exact admitted path"
-        );
-        assert!(
-            admit_initial_layer_order_endpoint_v1(endpoint(1, 0, 0, 0, 1, 0, true), true).is_none(),
-            "penetration remains blocking under every layer-order admission"
-        );
-        assert!(
-            admit_initial_layer_order_endpoint_v1(endpoint(2, 1, 0, 0, 0, 0, false), true)
-                .is_none(),
-            "an unaccounted candidate-only pair must fail closed"
-        );
-        assert!(
-            admit_initial_layer_order_endpoint_v1(endpoint(1, 0, 0, 0, 0, 1, false), true)
-                .is_none(),
-            "the raw blocking flag must agree with the pair dispositions"
-        );
-        assert!(
-            admit_initial_layer_order_endpoint_v1(
-                endpoint(usize::MAX, usize::MAX, 0, 1, 0, 0, false),
-                true,
-            )
-            .is_none(),
-            "count overflow must fail closed"
-        );
-    }
-
-    #[test]
-    fn native_positive_thickness_runtime_accepts_only_v2_model_ids() {
-        assert!(is_positive_thickness_continuous_certificate_model_id_v2(
-            Some(
-                ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
-            ),
-        ));
-        assert!(is_positive_thickness_continuous_certificate_model_id_v2(
-            Some(
-                ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
-            ),
-        ));
-        for rejected in [
-            None,
-            Some("stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1"),
-            Some("stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1"),
-            Some("forged_positive_thickness_continuous_certificate_v2"),
-        ] {
-            assert!(!is_positive_thickness_continuous_certificate_model_id_v2(
-                rejected
-            ));
-        }
-    }
-
-    #[test]
-    fn certified_path_graph_thickness_preflight_allows_only_signed_zero() {
-        for thickness in [0.0_f64, -0.0_f64] {
-            assert_eq!(
-                preflight_certified_path_graph_thickness_v1(thickness),
-                Ok(()),
-            );
-        }
-        for thickness in [f64::MIN_POSITIVE, 0.1, f64::MAX] {
-            assert_eq!(
-                preflight_certified_path_graph_thickness_v1(thickness),
-                Err(ScheduledCycleThicknessDiagnosticErrorV1::PositiveThicknessUnsupported),
-            );
-        }
-        for thickness in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1] {
-            assert_eq!(
-                preflight_certified_path_graph_thickness_v1(thickness),
-                Err(ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness),
-            );
-        }
-    }
-
-    #[test]
-    fn blockwise_fallback_preserves_operational_errors_and_normalizes_proof_failures() {
-        for preserved in [CANCELLED_MESSAGE, CYCLE_PATH_RESOURCE_MESSAGE] {
-            assert_eq!(
-                normalize_blockwise_current_cycle_fallback_error_v1(preserved.to_owned()),
-                preserved,
-            );
-        }
-        for proof_failure in [
-            CYCLE_NONCLOSING_MESSAGE,
-            CYCLE_PATH_UNCERTIFIED_MESSAGE,
-            CYCLE_PATH_UNSUPPORTED_MESSAGE,
-        ] {
-            assert_eq!(
-                normalize_blockwise_current_cycle_fallback_error_v1(proof_failure.to_owned()),
-                CYCLE_PATH_UNCERTIFIED_MESSAGE,
-            );
-        }
-    }
-
-    #[test]
-    fn scheduled_cycle_thickness_dispatch_preserves_signed_zero_and_exact_positive_model() {
-        use std::cell::Cell;
-
-        type Diagnostic = (Option<&'static str>, Option<u64>);
-        for thickness in [0.0_f64, -0.0_f64] {
-            let support_calls = Cell::new(0);
-            let zero_calls = Cell::new(0);
-            let positive_calls = Cell::new(0);
-            let observed = diagnose_scheduled_cycle_path_for_thickness_v1(
-                thickness,
-                || {
-                    support_calls.set(support_calls.get() + 1);
-                    false
-                },
-                || {
-                    zero_calls.set(zero_calls.get() + 1);
-                    (
-                        Some(
-                            ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-                        ),
-                        None,
-                    )
-                },
-                |_| {
-                    positive_calls.set(positive_calls.get() + 1);
-                    (None, None)
-                },
-                |diagnostic: &Diagnostic| *diagnostic,
-            )
-            .expect("signed zero keeps the established zero-thickness oracle");
-            assert_eq!(
-                observed,
-                (
-                    Some(
-                        ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-                    ),
-                    None,
-                )
-            );
-            assert_eq!(support_calls.get(), 0);
-            assert_eq!(zero_calls.get(), 1);
-            assert_eq!(positive_calls.get(), 0);
-        }
-        for rejected in [
-            (None, None),
-            (
-                Some(
-                    ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-                ),
-                None,
-            ),
-            (
-                Some(
-                    ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-                ),
-                Some(0.0_f64.to_bits()),
-            ),
-        ] {
-            assert_eq!(
-                diagnose_scheduled_cycle_path_for_thickness_v1(
-                    0.0,
-                    || panic!("zero thickness must not query positive support"),
-                    || rejected,
-                    |_| panic!("zero thickness must not invoke the positive oracle"),
-                    |diagnostic: &Diagnostic| *diagnostic,
-                ),
-                Err(ScheduledCycleThicknessDiagnosticErrorV1::Uncertified),
-            );
-        }
-
-        let thickness = f64::from_bits(0x3fb9_9999_9999_999a);
-        let positive_calls = Cell::new(0);
-        let observed = diagnose_scheduled_cycle_path_for_thickness_v1(
-            thickness,
-            || true,
-            || panic!("positive thickness must not invoke the zero-thickness oracle"),
-            |observed_thickness| {
-                positive_calls.set(positive_calls.get() + 1);
-                assert_eq!(observed_thickness.to_bits(), thickness.to_bits());
-                (
-                    Some(
-                        ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-                    ),
-                    Some(observed_thickness.to_bits()),
-                )
-            },
-            |diagnostic: &Diagnostic| *diagnostic,
-        )
-        .expect("the exact cycle positive-thickness model and binding are admitted");
-        assert_eq!(observed.1, Some(thickness.to_bits()));
-        assert_eq!(positive_calls.get(), 1);
-
-        for rejected in [
-            (
-                Some(
-                    ori_collision::STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-                ),
-                Some(thickness.to_bits()),
-            ),
-            (
-                Some(
-                    ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-                ),
-                Some(1.0_f64.to_bits()),
-            ),
-            (
-                Some(
-                    ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
-                ),
-                Some(thickness.to_bits()),
-            ),
-            (None, Some(thickness.to_bits())),
-        ] {
-            assert_eq!(
-                diagnose_scheduled_cycle_path_for_thickness_v1(
-                    thickness,
-                    || true,
-                    || panic!("positive thickness must not invoke the zero-thickness oracle"),
-                    |_| rejected,
-                    |diagnostic: &Diagnostic| *diagnostic,
-                ),
-                Err(ScheduledCycleThicknessDiagnosticErrorV1::Uncertified),
-            );
-        }
-    }
-
-    #[test]
-    fn unsupported_cycle_thickness_stops_before_work_cancel_and_publication_gates() {
-        use std::cell::Cell;
-
-        type Diagnostic = (Option<&'static str>, Option<u64>);
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let generation = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
-        for (thickness, expected_error, expected_support_calls) in [
-            (
-                0.1,
-                ScheduledCycleThicknessDiagnosticErrorV1::PositiveThicknessUnsupported,
-                1,
-            ),
-            (
-                f64::NAN,
-                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness,
-                0,
-            ),
-            (
-                f64::INFINITY,
-                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness,
-                0,
-            ),
-            (
-                f64::NEG_INFINITY,
-                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness,
-                0,
-            ),
-            (
-                -0.1,
-                ScheduledCycleThicknessDiagnosticErrorV1::InvalidThickness,
-                0,
-            ),
-        ] {
-            let support_calls = Cell::new(0);
-            let diagnostic_work = Cell::new(0);
-            let publication_reached = Cell::new(false);
-            let result = diagnose_scheduled_cycle_path_for_thickness_v1(
-                thickness,
-                || {
-                    support_calls.set(support_calls.get() + 1);
-                    false
-                },
-                || {
-                    diagnostic_work.set(diagnostic_work.get() + 1);
-                    (None, None)
-                },
-                |_| {
-                    diagnostic_work.set(diagnostic_work.get() + 1);
-                    (None, None)
-                },
-                |diagnostic: &Diagnostic| *diagnostic,
-            )
-            .inspect(|_| {
-                publication_reached.set(true);
-            });
-            assert_eq!(result, Err(expected_error));
-            assert_eq!(support_calls.get(), expected_support_calls);
-            assert_eq!(diagnostic_work.get(), 0);
-            assert!(!publication_reached.get());
-            assert_eq!(
-                STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
-                generation,
-                "fail-closed thickness dispatch must not mutate cancellation state",
-            );
-        }
-    }
-
-    #[test]
-    fn three_block_miura_chain_stops_at_the_two_block_positive_layer_authority_boundary() {
-        use std::collections::HashSet;
-
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (blocks, (pattern, paper, moving)) =
-            super::miura_cactus_test_support::three_three_by_three_miura_blocks_with_document();
-        let namespace = ProjectId::new();
-        let block_faces = blocks.each_ref().map(|(pattern, paper, _)| {
-            analyze_faces(FaceExtractionInput {
-                identity_namespace: namespace,
-                source_revision: 1,
-                paper,
-                pattern,
-            })
-            .snapshot
-            .unwrap()
-            .faces
-            .into_iter()
-            .map(|face| face.id)
-            .collect::<HashSet<_>>()
-        });
-        assert_eq!(block_faces.each_ref().map(HashSet::len), [9, 9, 9]);
-        assert_eq!(block_faces[0].intersection(&block_faces[1]).count(), 1);
-        assert_eq!(block_faces[1].intersection(&block_faces[2]).count(), 1);
-        assert!(block_faces[0].is_disjoint(&block_faces[2]));
-        let document = analyze_faces(FaceExtractionInput {
-            identity_namespace: namespace,
-            source_revision: 1,
-            paper: &paper,
-            pattern: &pattern,
-        })
-        .snapshot
-        .unwrap();
-        assert_eq!(document.faces.len(), 25);
-        assert_eq!(ori_collision::BLOCKWISE_POSITIVE_LAYER_ARITY_V1, 2);
-        assert!(
-            block_faces.len() > ori_collision::BLOCKWISE_POSITIVE_LAYER_ARITY_V1,
-            "three per-block positive/layer proofs cannot yet be composed into one authority"
-        );
-        let articulation = *block_faces[0]
-            .intersection(&block_faces[1])
-            .next()
-            .expect("first articulation");
-        let hinges = document
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        let mut project =
-            super::super::ProjectState::new_with_paper(pattern.clone(), paper.clone());
-        project.project_id = namespace;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            articulation,
-        );
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        let active = moving
-            .iter()
-            .copied()
-            .filter(|edge_id| {
-                let edge = pattern
-                    .edges
-                    .iter()
-                    .find(|edge| edge.id == *edge_id)
-                    .expect("moving edge");
-                let y = pattern
-                    .vertices
-                    .iter()
-                    .find(|vertex| vertex.id == edge.start)
-                    .expect("moving edge start")
-                    .position
-                    .y;
-                y.to_bits() == (-20.0_f64).to_bits() || y.to_bits() == 20.0_f64.to_bits()
-            })
-            .collect::<Vec<_>>();
-        let revision = project.editor.revision();
-        let request = CurrentCyclePosePreviewRequestV1 {
-            progress_request_id: None,
-            expected_project_instance_id: project.instance_id,
-            expected_project_id: project.project_id,
-            expected_revision: revision,
-            cycle_schedule_v1: dense_grid_schedule(&hinges, &active, 64),
-        };
-        let app_state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        assert_eq!(
-            propose_current_cycle_pose_inner_with_layers(
-                None,
-                &app_state,
-                Some(&layer_state),
-                &transactions,
-                request,
-            )
-            .unwrap_err(),
-            CYCLE_PATH_UNCERTIFIED_MESSAGE
-        );
-        assert_eq!(transactions.pending_token_for_test_v1(), None);
-        assert_eq!(
-            super::super::lock_project(&app_state)
-                .expect("project after rejected preview")
-                .editor
-                .revision(),
-            revision
-        );
-    }
-
-    #[test]
-    fn regular_quad_petal_authority_shape_rejects_wrong_counts_and_tree_substitution() {
-        assert!(exact_three_graph_segment_shape_v1(3, 3));
-        assert!(!exact_three_graph_segment_shape_v1(2, 2));
-        assert!(!exact_three_graph_segment_shape_v1(4, 4));
-        assert!(!exact_three_graph_segment_shape_v1(3, 2));
-        assert!(!exact_three_graph_segment_shape_v1(3, 0));
-    }
-
-    // The production cancellation generation is intentionally process-wide.
-    // Serialize tests that advance it so parallel test scheduling cannot make
-    // an unrelated preview observe a foreign cancellation.
-    static STACKED_FOLD_READ_GENERATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    pub(crate) fn lock_stacked_fold_read_generation_test() -> std::sync::MutexGuard<'static, ()> {
-        STACKED_FOLD_READ_GENERATION_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    #[test]
-    fn pair_cache_binding_is_strictly_positive_finite_only() {
-        let project_instance_id = ProjectId::new();
-        let project_id = ProjectId::new();
-        let binding = |thickness| {
-            positive_pair_proof_cache_binding_v1(
-                project_instance_id,
-                project_id,
-                1,
-                [0x91; 32],
-                1,
-                thickness,
-            )
-        };
-
-        assert!(
-            binding(f64::MIN_POSITIVE)
-                .expect("positive binding")
-                .is_some()
-        );
-        assert_eq!(binding(0.0).expect("positive-zero fallback"), None);
-        assert_eq!(binding(-0.0).expect("negative-zero fallback"), None);
-        assert_eq!(
-            binding(-f64::MIN_POSITIVE).expect("negative fallback"),
-            None
-        );
-        assert_eq!(binding(f64::NAN).expect("NaN fallback"), None);
-        assert_eq!(binding(f64::INFINITY).expect("infinity fallback"), None);
-        assert_eq!(
-            binding(f64::NEG_INFINITY).expect("negative-infinity fallback"),
-            None
-        );
-    }
-
-    #[test]
-    fn production_pair_cache_control_observes_cancel_and_accepts_fresh_retry() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let first = begin_stacked_fold_read_generation_v1().expect("first generation");
-        let first_control =
-            stacked_fold_pair_cache_control_v1(first, Instant::now() + Duration::from_secs(30));
-        assert_eq!(first_control.check_v1(), Ok(()));
-
-        cancel_current_stacked_fold_read_v1().expect("cancel first generation");
-        assert_eq!(
-            first_control.check_v1(),
-            Err(ori_collision::ProofCacheErrorV1::Cancelled)
-        );
-
-        let retry = begin_stacked_fold_read_generation_v1().expect("retry generation");
-        assert_ne!(retry, first);
-        let retry_control =
-            stacked_fold_pair_cache_control_v1(retry, Instant::now() + Duration::from_secs(30));
-        assert_eq!(retry_control.check_v1(), Ok(()));
-    }
-
-    fn fixed_id<T: serde::de::DeserializeOwned>(group: &str, index: u64) -> T {
-        serde_json::from_str(&format!("\"00000000-0000-4000-{group}-{index:012x}\"")).unwrap()
-    }
-
-    fn automatic_opposite_pairs(
-        project: &super::super::ProjectState,
-        snapshot: &ori_topology::TopologySnapshot,
-    ) -> Vec<[ori_domain::EdgeId; 2]> {
-        let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
-            project.editor.pattern(),
-            project.editor.paper(),
-            snapshot,
-            ori_kinematics::TreeKinematicsLimits::default(),
-        )
-        .unwrap();
-        let audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
-            snapshot,
-            ori_kinematics::TreeKinematicsLimits::default(),
-        )
-        .unwrap();
-        let count = geometry.hinges().len();
-        ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
-            &geometry,
-            &audit,
-            count * (count - 1) / 2,
-        )
-        .unwrap()
-    }
-
-    fn uncertified_rational_kawasaki_project(
-        numerator: f64,
-        denominator: f64,
-        complement: f64,
-    ) -> (super::super::ProjectState, Vec<ori_domain::EdgeId>) {
-        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
-        let ratio = numerator / denominator;
-        let sine = complement / denominator;
-        let points = [
-            (1.0, 0.0),
-            (-ratio, sine),
-            (2.0 * ratio * ratio - 1.0, -2.0 * ratio * sine),
-            (ratio, -sine),
-            (0.0, 0.0),
-        ];
-        let vertices = points
-            .into_iter()
-            .map(|(x, y)| Vertex {
-                id: ori_domain::VertexId::new(),
-                position: Point2::new(x * 100.0, y * 100.0),
-            })
-            .collect::<Vec<_>>();
-        let boundary = vertices[..4]
-            .iter()
-            .map(|vertex| vertex.id)
-            .collect::<Vec<_>>();
-        let center = vertices[4].id;
-        let mut edges = (0..4)
-            .map(|index| Edge {
-                id: ori_domain::EdgeId::new(),
-                start: boundary[index],
-                end: boundary[(index + 1) % 4],
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        let hinges = (0..4)
-            .map(|_| ori_domain::EdgeId::new())
-            .collect::<Vec<_>>();
-        edges.extend((0..4).map(|index| Edge {
-            id: hinges[index],
-            start: boundary[index],
-            end: center,
-            kind: if index == 3 {
-                EdgeKind::Mountain
-            } else {
-                EdgeKind::Valley
-            },
-        }));
-        (
-            super::super::ProjectState::new_with_paper(
-                CreasePattern { vertices, edges },
-                Paper {
-                    boundary_vertices: boundary,
-                    ..Paper::default()
-                },
-            ),
-            hinges,
-        )
-    }
-
-    fn two_hinge_tree_project(paper_thickness_mm: f64) -> super::super::ProjectState {
-        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
-        let points = [
-            (0.0, 0.0),
-            (33.0, 0.0),
-            (66.0, 0.0),
-            (100.0, 0.0),
-            (100.0, 100.0),
-            (66.0, 100.0),
-            (33.0, 100.0),
-            (0.0, 100.0),
-        ];
-        let vertices = points
-            .into_iter()
-            .enumerate()
-            .map(|(index, (x, y))| Vertex {
-                id: fixed_id("7100", index as u64 + 1),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
-        let mut edges = (0..boundary.len())
-            .map(|index| Edge {
-                id: fixed_id("7200", index as u64 + 1),
-                start: boundary[index],
-                end: boundary[(index + 1) % boundary.len()],
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        edges.extend([
-            Edge {
-                id: fixed_id("7200", 20),
-                start: boundary[1],
-                end: boundary[6],
-                kind: EdgeKind::Mountain,
-            },
-            Edge {
-                id: fixed_id("7200", 21),
-                start: boundary[2],
-                end: boundary[5],
-                kind: EdgeKind::Valley,
-            },
-        ]);
-        let mut project = super::super::ProjectState::new_with_paper(
-            CreasePattern { vertices, edges },
-            Paper {
-                boundary_vertices: boundary,
-                thickness_mm: paper_thickness_mm,
-                ..Paper::default()
-            },
-        );
-        project.instance_id = fixed_id("7300", 1);
-        project.project_id = fixed_id("7300", 2);
-        project
-    }
-
-    fn four_hinge_tree_project() -> super::super::ProjectState {
-        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
-        let points = [
-            (0.0, 0.0),
-            (300.0, 0.0),
-            (520.0, 120.0),
-            (620.0, 350.0),
-            (480.0, 580.0),
-            (200.0, 650.0),
-            (0.0, 320.0),
-        ];
-        let vertices = points
-            .into_iter()
-            .enumerate()
-            .map(|(index, (x, y))| Vertex {
-                id: fixed_id("7400", index as u64 + 1),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
-        let mut edges = (0..boundary.len())
-            .map(|index| Edge {
-                id: fixed_id("7500", index as u64 + 1),
-                start: boundary[index],
-                end: boundary[(index + 1) % boundary.len()],
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        for (index, end) in [2, 3, 4, 5].into_iter().enumerate() {
-            edges.push(Edge {
-                id: fixed_id("7500", index as u64 + 20),
-                start: boundary[0],
-                end: boundary[end],
-                kind: if index % 2 == 0 {
-                    EdgeKind::Mountain
-                } else {
-                    EdgeKind::Valley
-                },
-            });
-        }
-        super::super::ProjectState::new_with_paper(
-            CreasePattern { vertices, edges },
-            Paper {
-                boundary_vertices: boundary,
-                ..Paper::default()
-            },
-        )
-    }
-
-    fn five_hinge_tree_project() -> super::super::ProjectState {
-        positive_tree_project(5)
-    }
-
-    fn six_hinge_tree_project() -> super::super::ProjectState {
-        positive_tree_project(6)
-    }
-
-    fn seven_hinge_tree_project() -> super::super::ProjectState {
-        positive_tree_project(7)
-    }
-
-    fn eight_hinge_tree_project() -> super::super::ProjectState {
-        positive_tree_project(8)
-    }
-
-    fn positive_tree_project(hinge_count: usize) -> super::super::ProjectState {
-        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
-        let points: Vec<(f64, f64)> = match hinge_count {
-            5 => vec![
-                (0.0, 0.0),
-                (300.0, 0.0),
-                (520.0, 90.0),
-                (680.0, 280.0),
-                (650.0, 500.0),
-                (450.0, 680.0),
-                (180.0, 700.0),
-                (0.0, 340.0),
-            ],
-            6 => vec![
-                (0.0, 0.0),
-                (300.0, 0.0),
-                (530.0, 70.0),
-                (700.0, 220.0),
-                (760.0, 430.0),
-                (620.0, 640.0),
-                (380.0, 760.0),
-                (140.0, 720.0),
-                (0.0, 360.0),
-            ],
-            7 => vec![
-                (0.0, 0.0),
-                (300.0, 0.0),
-                (540.0, 60.0),
-                (730.0, 190.0),
-                (840.0, 380.0),
-                (810.0, 580.0),
-                (650.0, 760.0),
-                (410.0, 850.0),
-                (150.0, 780.0),
-                (0.0, 390.0),
-            ],
-            8 => {
-                let radius = 41_i64.pow(9);
-                let mut directions = Vec::with_capacity(11);
-                directions.push((0.0, 0.0));
-                let (mut real, mut imaginary) = (1_i64, 0_i64);
-                for power in 0..=9_u32 {
-                    let scale = 41_i64.pow(9 - power);
-                    directions.push(((real * scale) as f64, (imaginary * scale) as f64));
-                    (real, imaginary) = (real * 40 - imaginary * 9, real * 9 + imaginary * 40);
-                }
-                debug_assert_eq!(directions[1], (radius as f64, 0.0));
-                directions
-            }
-            _ => unreachable!("positive Tree fixture only covers 5..=8 hinges"),
-        };
-        let vertices = points
-            .iter()
-            .enumerate()
-            .map(|(index, &(x, y))| Vertex {
-                id: fixed_id("7600", index as u64 + 1),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
-        let mut edges = (0..boundary.len())
-            .map(|index| Edge {
-                id: fixed_id("7700", index as u64 + 1),
-                start: boundary[index],
-                end: boundary[(index + 1) % boundary.len()],
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        for (index, end) in (2..=hinge_count + 1).enumerate() {
-            edges.push(Edge {
-                id: fixed_id("7700", index as u64 + 20),
-                start: boundary[0],
-                end: boundary[end],
-                kind: if index % 2 == 0 {
-                    EdgeKind::Mountain
-                } else {
-                    EdgeKind::Valley
-                },
-            });
-        }
-        super::super::ProjectState::new_with_paper(
-            CreasePattern { vertices, edges },
-            Paper {
-                boundary_vertices: boundary,
-                ..Paper::default()
-            },
-        )
-    }
-
-    #[test]
-    fn dyadic_pose_graph_read_is_strict_bounded_and_observation_only() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
-        super::super::applied_pose::tests::install_flat_graph_pose_authority(
-            &mut project,
-            hinges.clone(),
-        );
-        let live_edges = project
-            .applied_pose_authority
-            .capture_capability(&project)
-            .unwrap()
-            .unwrap()
-            .graph()
-            .unwrap()
-            .2
-            .hinge_angles()
-            .as_slice()
-            .iter()
-            .map(|angle| angle.edge())
-            .collect::<Vec<_>>();
-        let request = |max_states| DyadicPoseGraphReadRequestV1 {
-            expected_project_instance_id: project.instance_id,
-            expected_project_id: project.project_id,
-            expected_revision: project.editor.revision(),
-            target_angles: live_edges
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, edge)| DyadicPoseGraphAngleDtoV1 {
-                    edge,
-                    angle_degrees: if index < 2 { 30.0 } else { 0.0 },
-                })
-                .collect(),
-            max_states,
-            max_transitions: 64,
-            level_count: 3,
-            cycle_schedule_v1: None,
-        };
-        let limited_request = request(8);
-        let live_request = request(32);
-        let state = AppState::new(project);
-        let limited = read_bounded_dyadic_pose_graph_inner_v1(&state, None, limited_request, None)
-            .unwrap()
-            .into_test_view();
-        assert_eq!(limited.status, "resource_limit");
-        assert!(!limited.authorizes_project_mutation);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(&state, None, live_request, None)
-            .unwrap()
-            .into_test_view();
-        assert_eq!(observed.state_count, 9);
-        assert_eq!(observed.transition_count, 24);
-        assert_eq!(observed.status, "no_path");
-        assert_eq!(observed.reason, "no_certified_path");
-        assert_eq!(observed.certified_transition_count, 0);
-        assert!(observed.certificate_binding_sha256.is_none());
-        assert_eq!(observed.positive_thickness_transition_count, 0);
-        assert!(!observed.positive_thickness_certified);
-        assert!(observed.positive_thickness_binding_sha256.is_none());
-        assert_eq!(observed.layer_transport_transition_count, 0);
-        assert!(!observed.layer_transport_certified);
-        assert!(observed.layer_transport_binding_sha256.is_none());
-        assert!(!observed.mutation_candidate_ready);
-        assert!(!observed.authorizes_project_mutation);
-        let preview_state = DyadicPathPreviewState::default();
-        let rejected = mint_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &GlobalFlatFoldabilityState::default(),
-            &preview_state,
-            DyadicPathPreviewRequestV1 {
-                expected_project_instance_id: observed.project_instance_id,
-                expected_project_id: observed.project_id,
-                expected_revision: observed.revision,
-                target_angles: live_edges
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(index, edge)| DyadicPoseGraphAngleDtoV1 {
-                        edge,
-                        angle_degrees: if index < 2 { 30.0 } else { 0.0 },
-                    })
-                    .collect(),
-                max_states: 32,
-                max_transitions: 64,
-                level_count: 3,
-                cycle_schedule_v1: None,
-                expected_path_binding_sha256: "00".repeat(32),
-                expected_positive_thickness_binding_sha256: "11".repeat(32),
-                expected_layer_transport_binding_sha256: "22".repeat(32),
-            },
-        );
-        assert_eq!(rejected.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
-        assert!(preview_state.is_empty_for_test());
-        let token = ProjectId::new();
-        let target_binding = [0x33; 32];
-        preview_state.install_record_for_test(
-            token,
-            observed.project_instance_id,
-            observed.project_id,
-            observed.revision,
-            target_binding,
-            "44".repeat(32),
-            "55".repeat(32),
-            "66".repeat(32),
-            None,
-        );
-        let apply_request = |path: String| ApplyDyadicPathPreviewRequestV1 {
-            preview_token: token,
-            expected_project_instance_id: observed.project_instance_id,
-            expected_project_id: observed.project_id,
-            expected_revision: observed.revision,
-            expected_target_binding_sha256: "33".repeat(32),
-            expected_path_binding_sha256: path,
-            expected_positive_thickness_binding_sha256: "55".repeat(32),
-            expected_layer_transport_binding_sha256: "66".repeat(32),
-        };
-        let apply_layer_state = GlobalFlatFoldabilityState::default();
-        assert_eq!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &apply_layer_state,
-                &preview_state,
-                apply_request("77".repeat(32)),
-            )
-            .unwrap_err(),
-            CYCLE_PATH_UNCERTIFIED_MESSAGE,
-        );
-        assert!(!preview_state.is_empty_for_test());
-        assert_eq!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &apply_layer_state,
-                &preview_state,
-                apply_request("44".repeat(32)),
-            )
-            .unwrap_err(),
-            CYCLE_PATH_UNCERTIFIED_MESSAGE,
-        );
-        assert!(!preview_state.is_empty_for_test());
-        cancel_dyadic_pose_path_preview_inner_v1(&preview_state, token).unwrap();
-        assert!(preview_state.is_empty_for_test());
-        assert_eq!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &apply_layer_state,
-                &preview_state,
-                apply_request("44".repeat(32)),
-            )
-            .unwrap_err(),
-            CYCLE_PATH_UNCERTIFIED_MESSAGE,
-        );
-        assert!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .instruction_timeline()
-                .steps
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn four_hinge_tree_level_three_proof_applies_and_persists_atomically() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let mut project = four_hinge_tree_project();
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        assert_eq!(hinges.len(), 4);
-        super::super::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
-            &mut project,
-            hinges.clone(),
-            snapshot.faces[0].id,
-            1.0,
-        );
-        assert!(project.editor.paper().thickness_mm > 0.0);
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let target_angles = hinges
-            .iter()
-            .copied()
-            .map(|edge| DyadicPoseGraphAngleDtoV1 {
-                edge,
-                angle_degrees: 2.0,
-            })
-            .collect::<Vec<_>>();
-        let tree_capability = project
-            .applied_pose_authority
-            .capture_capability(&project)
-            .unwrap()
-            .unwrap();
-        let mut tree_target_entries = target_angles
-            .iter()
-            .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        tree_target_entries.sort_unstable_by_key(|entry| entry.edge().canonical_bytes());
-        let tree_target = ori_kinematics::CanonicalHingeAngles::new(tree_target_entries).unwrap();
-        let (tree_model, tree_pose) = tree_capability.tree().expect("tree pose capability");
-        let tree_diagnostic = ori_collision::diagnose_collective_hinge_path_from_pose_v1(
-            tree_model,
-            tree_pose,
-            tree_pose.hinge_angles(),
-            tree_target.as_slice(),
-            project.editor.paper().thickness_mm,
-            ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
-        )
-        .unwrap();
-        assert!(
-            tree_diagnostic.continuous_clearance_certified(),
-            "four-hinge native Tree endpoint must issue positive evidence: {tree_diagnostic:?}"
-        );
-        let state = AppState::new(project);
-        let request = |level_count, max_states, max_transitions| DyadicPoseGraphReadRequestV1 {
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            target_angles: target_angles.clone(),
-            max_states,
-            max_transitions,
-            level_count,
-            cycle_schedule_v1: None,
-        };
-        for (levels, states, transitions) in [(5, 125, 600), (9, 128, 512)] {
-            let limited = read_bounded_dyadic_pose_graph_inner_v1(
-                &state,
-                Some(&layer_state),
-                request(levels, states, transitions),
-                None,
-            )
-            .unwrap()
-            .into_test_view();
-            assert_eq!(limited.status, "resource_limit");
-            assert!(!limited.mutation_candidate_ready);
-        }
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            Some(&layer_state),
-            request(3, 81, 432),
-            None,
-        )
-        .unwrap()
-        .into_test_view();
-        assert_eq!((observed.state_count, observed.transition_count), (81, 432));
-        assert_eq!(
-            observed.status,
-            "certified",
-            "explored={} evaluated={} certified={} positive={}",
-            observed.explored_state_count,
-            observed.evaluated_transition_count,
-            observed.certified_transition_count,
-            observed.positive_thickness_transition_count,
-        );
-        assert!(observed.mutation_candidate_ready);
-        assert!(!observed.authorizes_project_mutation);
-        assert!(observed.positive_thickness_certified);
-        assert!(observed.layer_transport_certified);
-        let preview_state = DyadicPathPreviewState::default();
-        let preview = mint_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            DyadicPathPreviewRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles,
-                max_states: 81,
-                max_transitions: 432,
-                level_count: 3,
-                cycle_schedule_v1: None,
-                expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
-                expected_positive_thickness_binding_sha256: observed
-                    .positive_thickness_binding_sha256
-                    .unwrap(),
-                expected_layer_transport_binding_sha256: observed
-                    .layer_transport_binding_sha256
-                    .unwrap(),
-            },
-        )
-        .expect("four-hinge certified graph mints a read-only token");
-        assert!(!preview.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        drop(project);
-        let apply_request = |path_binding: String| ApplyDyadicPathPreviewRequestV1 {
-            preview_token: preview.preview_token,
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
-            expected_path_binding_sha256: path_binding,
-            expected_positive_thickness_binding_sha256: preview
-                .positive_thickness_binding_sha256
-                .clone(),
-            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
-        };
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request("00".repeat(32)),
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision,
-            "tampered Tree proof is an atomic no-op"
-        );
-        let applied = apply_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            apply_request(preview.path_binding_sha256.clone()),
-        )
-        .expect("issuer-bound four-hinge Tree proof applies atomically");
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request(preview.path_binding_sha256.clone()),
-            )
-            .is_err(),
-            "consumed Tree preview must be one-shot"
-        );
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(applied, revision + 1);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            project.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        let archive = project.project_archive().unwrap();
-        let reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("four-hinge-tree-positive-thickness.ori2"),
-        )
-        .unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            reopened.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-    }
-
-    #[test]
-    fn five_hinge_tree_level_three_proof_applies_and_persists_atomically() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let mut project = five_hinge_tree_project();
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        assert_eq!(snapshot.faces.len(), 6);
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        assert_eq!(hinges.len(), 5);
-        super::super::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
-            &mut project,
-            hinges.clone(),
-            snapshot.faces[0].id,
-            1.0,
-        );
-        assert!(project.editor.paper().thickness_mm > 0.0);
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let target_angles = hinges
-            .iter()
-            .copied()
-            .map(|edge| DyadicPoseGraphAngleDtoV1 {
-                edge,
-                angle_degrees: 2.0,
-            })
-            .collect::<Vec<_>>();
-        let state = AppState::new(project);
-        let request = |level_count, max_states, max_transitions, angles: Vec<_>| {
-            DyadicPoseGraphReadRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles: angles,
-                max_states,
-                max_transitions,
-                level_count,
-                cycle_schedule_v1: None,
-            }
-        };
-        for (levels, states, transitions) in [(5, 125, 600), (9, 128, 512)] {
-            let limited = read_bounded_dyadic_pose_graph_inner_v1(
-                &state,
-                Some(&layer_state),
-                request(levels, states, transitions, target_angles.clone()),
-                None,
-            )
-            .unwrap()
-            .into_test_view();
-            assert_eq!(limited.status, "resource_limit");
-            assert!(!limited.mutation_candidate_ready);
-        }
-        let mut mismatched = target_angles.clone();
-        mismatched[0].edge = ori_domain::EdgeId::new();
-        assert_eq!(
-            read_bounded_dyadic_pose_graph_inner_v1(
-                &state,
-                Some(&layer_state),
-                request(3, 243, 1_620, mismatched),
-                None,
-            )
-            .unwrap_err(),
-            CYCLE_PATH_UNSUPPORTED_MESSAGE
-        );
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            Some(&layer_state),
-            request(3, 243, 1_620, target_angles.clone()),
-            None,
-        )
-        .unwrap()
-        .into_test_view();
-        assert_eq!(
-            (observed.state_count, observed.transition_count),
-            (243, 1_620)
-        );
-        assert_eq!(observed.status, "certified");
-        assert!(observed.mutation_candidate_ready);
-        assert!(observed.positive_thickness_certified);
-        assert!(observed.layer_transport_certified);
-        let preview_state = DyadicPathPreviewState::default();
-        let preview_request = |expected_revision| DyadicPathPreviewRequestV1 {
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision,
-            target_angles: target_angles.clone(),
-            max_states: 243,
-            max_transitions: 1_620,
-            level_count: 3,
-            cycle_schedule_v1: None,
-            expected_path_binding_sha256: observed.certificate_binding_sha256.clone().unwrap(),
-            expected_positive_thickness_binding_sha256: observed
-                .positive_thickness_binding_sha256
-                .clone()
-                .unwrap(),
-            expected_layer_transport_binding_sha256: observed
-                .layer_transport_binding_sha256
-                .clone()
-                .unwrap(),
-        };
-        assert_eq!(
-            mint_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                preview_request(revision + 1),
-            )
-            .unwrap_err(),
-            STALE_MESSAGE
-        );
-        let preview = mint_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            preview_request(revision),
-        )
-        .expect("five-hinge certified graph mints a read-only token");
-        assert!(!preview.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        drop(project);
-        let apply_request = |path_binding: String| ApplyDyadicPathPreviewRequestV1 {
-            preview_token: preview.preview_token,
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
-            expected_path_binding_sha256: path_binding,
-            expected_positive_thickness_binding_sha256: preview
-                .positive_thickness_binding_sha256
-                .clone(),
-            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
-        };
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request("00".repeat(32)),
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision,
-            "tampered five-hinge proof is an atomic no-op"
-        );
-        let applied = apply_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            apply_request(preview.path_binding_sha256.clone()),
-        )
-        .expect("issuer-bound five-hinge Tree proof applies atomically");
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request(preview.path_binding_sha256.clone()),
-            )
-            .is_err(),
-            "consumed five-hinge preview must be one-shot"
-        );
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(applied, revision + 1);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            project.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        let archive = project.project_archive().unwrap();
-        let reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("five-hinge-tree-positive-thickness.ori2"),
-        )
-        .unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            reopened.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-    }
-
-    #[test]
-    fn six_hinge_tree_level_three_proof_applies_and_persists_atomically() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let mut project = six_hinge_tree_project();
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        assert_eq!(snapshot.faces.len(), 7);
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        assert_eq!(hinges.len(), 6);
-        super::super::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
-            &mut project,
-            hinges.clone(),
-            snapshot.faces[0].id,
-            1.0,
-        );
-        assert!(project.editor.paper().thickness_mm > 0.0);
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let target_angles = hinges
-            .iter()
-            .copied()
-            .map(|edge| DyadicPoseGraphAngleDtoV1 {
-                edge,
-                angle_degrees: 2.0,
-            })
-            .collect::<Vec<_>>();
-        let state = AppState::new(project);
-        let request = |level_count, max_states, max_transitions| DyadicPoseGraphReadRequestV1 {
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            target_angles: target_angles.clone(),
-            max_states,
-            max_transitions,
-            level_count,
-            cycle_schedule_v1: None,
-        };
-        for (levels, states, transitions) in [(5, 125, 600), (9, 128, 512)] {
-            let limited = read_bounded_dyadic_pose_graph_inner_v1(
-                &state,
-                Some(&layer_state),
-                request(levels, states, transitions),
-                None,
-            )
-            .unwrap()
-            .into_test_view();
-            assert_eq!(limited.status, "resource_limit");
-            assert_eq!((limited.state_count, limited.transition_count), (0, 0));
-        }
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            Some(&layer_state),
-            request(3, 729, 5_832),
-            None,
-        )
-        .unwrap()
-        .into_test_view();
-        assert_eq!(
-            (observed.state_count, observed.transition_count),
-            (729, 5_832)
-        );
-        assert_eq!(observed.status, "certified");
-        assert!(observed.mutation_candidate_ready);
-        assert!(observed.positive_thickness_certified);
-        assert!(observed.layer_transport_certified);
-        let preview_state = DyadicPathPreviewState::default();
-        let preview = mint_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            DyadicPathPreviewRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles,
-                max_states: 729,
-                max_transitions: 5_832,
-                level_count: 3,
-                cycle_schedule_v1: None,
-                expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
-                expected_positive_thickness_binding_sha256: observed
-                    .positive_thickness_binding_sha256
-                    .unwrap(),
-                expected_layer_transport_binding_sha256: observed
-                    .layer_transport_binding_sha256
-                    .unwrap(),
-            },
-        )
-        .expect("six-hinge bounded proof mints a read-only token");
-        assert!(!preview.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        drop(project);
-        let apply_request = |path_binding: String| ApplyDyadicPathPreviewRequestV1 {
-            preview_token: preview.preview_token,
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
-            expected_path_binding_sha256: path_binding,
-            expected_positive_thickness_binding_sha256: preview
-                .positive_thickness_binding_sha256
-                .clone(),
-            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
-        };
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request("00".repeat(32)),
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision,
-            "tampered six-hinge proof is an atomic no-op"
-        );
-        let applied = apply_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            apply_request(preview.path_binding_sha256.clone()),
-        )
-        .expect("issuer-bound six-hinge Tree proof applies atomically");
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request(preview.path_binding_sha256.clone()),
-            )
-            .is_err(),
-            "consumed six-hinge preview must be one-shot"
-        );
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(applied, revision + 1);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            project.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        let archive = project.project_archive().unwrap();
-        let reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("six-hinge-tree-positive-thickness.ori2"),
-        )
-        .unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            reopened.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-    }
-
-    #[test]
-    fn seven_hinge_generic_grid_proof_applies_and_persists_atomically() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let mut project = seven_hinge_tree_project();
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        assert_eq!(snapshot.faces.len(), 8);
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        assert_eq!(hinges.len(), 7);
-        super::super::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
-            &mut project,
-            hinges.clone(),
-            snapshot.faces[0].id,
-            1.0,
-        );
-        assert!(project.editor.paper().thickness_mm > 0.0);
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let target_angles = hinges
-            .iter()
-            .copied()
-            .map(|edge| DyadicPoseGraphAngleDtoV1 {
-                edge,
-                angle_degrees: 2.0,
-            })
-            .collect::<Vec<_>>();
-        let state = AppState::new(project);
-        let request = |schedule| DyadicPoseGraphReadRequestV1 {
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            target_angles: target_angles.clone(),
-            max_states: 2_187,
-            max_transitions: 20_412,
-            level_count: 3,
-            cycle_schedule_v1: schedule,
-        };
-        let generic = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            Some(&layer_state),
-            request(None),
-            None,
-        )
-        .unwrap()
-        .into_test_view();
-        assert_eq!(generic.status, "certified");
-        assert_eq!(
-            (generic.state_count, generic.transition_count),
-            (2_187, 20_412)
-        );
-        assert!(generic.mutation_candidate_ready);
-        assert!(generic.positive_thickness_certified);
-        assert!(generic.layer_transport_certified);
-        let preview_state = DyadicPathPreviewState::default();
-        let preview = mint_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            DyadicPathPreviewRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles,
-                max_states: 2_187,
-                max_transitions: 20_412,
-                level_count: 3,
-                cycle_schedule_v1: None,
-                expected_path_binding_sha256: generic.certificate_binding_sha256.unwrap(),
-                expected_positive_thickness_binding_sha256: generic
-                    .positive_thickness_binding_sha256
-                    .unwrap(),
-                expected_layer_transport_binding_sha256: generic
-                    .layer_transport_binding_sha256
-                    .unwrap(),
-            },
-        )
-        .expect("seven-hinge generic proof mints a bounded read-only token");
-        assert!(!preview.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        drop(project);
-        let apply_request = |path_binding: String| ApplyDyadicPathPreviewRequestV1 {
-            preview_token: preview.preview_token,
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
-            expected_path_binding_sha256: path_binding,
-            expected_positive_thickness_binding_sha256: preview
-                .positive_thickness_binding_sha256
-                .clone(),
-            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
-        };
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request("00".repeat(32)),
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision,
-            "tampered seven-hinge proof is an atomic no-op"
-        );
-        let applied = apply_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            apply_request(preview.path_binding_sha256.clone()),
-        )
-        .expect("issuer-bound seven-hinge Tree proof applies atomically");
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request(preview.path_binding_sha256.clone()),
-            )
-            .is_err(),
-            "consumed seven-hinge preview must be one-shot"
-        );
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(applied, revision + 1);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            project.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        let archive = project.project_archive().unwrap();
-        let reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("seven-hinge-tree-positive-thickness.ori2"),
-        )
-        .unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            reopened.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-    }
-
-    #[test]
-    fn eight_hinge_collective_proof_applies_and_persists_atomically() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let mut project = eight_hinge_tree_project();
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        assert_eq!(snapshot.faces.len(), 9);
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        assert_eq!(hinges.len(), 8);
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            snapshot.faces[0].id,
-        );
-        assert!(project.editor.paper().thickness_mm > 0.0);
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let angle = 2.0 * 1.0_f64.atan2(64.0).to_degrees();
-        let target_angles = hinges
-            .iter()
-            .copied()
-            .map(|edge| DyadicPoseGraphAngleDtoV1 {
-                edge,
-                angle_degrees: angle,
-            })
-            .collect::<Vec<_>>();
-        let state = AppState::new(project);
-        let request = |schedule| DyadicPoseGraphReadRequestV1 {
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            target_angles: target_angles.clone(),
-            max_states: 2_187,
-            max_transitions: 20_412,
-            level_count: 3,
-            cycle_schedule_v1: schedule,
-        };
-        let generic = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            Some(&layer_state),
-            request(None),
-            None,
-        )
-        .unwrap()
-        .into_test_view();
-        assert_eq!(generic.status, "resource_limit");
-        assert_eq!((generic.state_count, generic.transition_count), (0, 0));
-        assert!(!generic.mutation_candidate_ready);
-
-        let schedule = dense_grid_schedule_ratio(&hinges, &hinges, 1, 64);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            Some(&layer_state),
-            request(Some(schedule.clone())),
-            None,
-        )
-        .unwrap()
-        .into_test_view();
-        assert_eq!((observed.state_count, observed.transition_count), (3, 4));
-        assert_eq!(observed.status, "certified");
-        assert!(observed.mutation_candidate_ready);
-        assert!(observed.positive_thickness_certified);
-        assert!(observed.layer_transport_certified);
-        let preview_state = DyadicPathPreviewState::default();
-        let preview = mint_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            DyadicPathPreviewRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles,
-                max_states: 2_187,
-                max_transitions: 20_412,
-                level_count: 3,
-                cycle_schedule_v1: Some(schedule),
-                expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
-                expected_positive_thickness_binding_sha256: observed
-                    .positive_thickness_binding_sha256
-                    .unwrap(),
-                expected_layer_transport_binding_sha256: observed
-                    .layer_transport_binding_sha256
-                    .unwrap(),
-            },
-        )
-        .expect("eight-hinge collective proof mints a bounded read-only token");
-        assert!(!preview.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        drop(project);
-        let apply_request = |path_binding: String| ApplyDyadicPathPreviewRequestV1 {
-            preview_token: preview.preview_token,
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
-            expected_path_binding_sha256: path_binding,
-            expected_positive_thickness_binding_sha256: preview
-                .positive_thickness_binding_sha256
-                .clone(),
-            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
-        };
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request("00".repeat(32)),
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision,
-            "tampered eight-hinge proof is an atomic no-op"
-        );
-        let applied = apply_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            apply_request(preview.path_binding_sha256.clone()),
-        )
-        .expect("issuer-bound eight-hinge collective proof applies atomically");
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request(preview.path_binding_sha256.clone()),
-            )
-            .is_err(),
-            "consumed eight-hinge preview must be one-shot"
-        );
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(applied, revision + 1);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            project.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        let archive = project.project_archive().unwrap();
-        let reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("eight-hinge-collective-positive-thickness.ori2"),
-        )
-        .unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            reopened.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| step.visual.path_certificate_reference_v1.is_some())
-        );
-    }
-
-    #[test]
-    fn two_hinge_e2e_fixture_issues_pose_and_layer_authorities() {
-        let mut project = two_hinge_tree_project(0.0);
-        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        assert!(
-            project
-                .applied_pose_authority
-                .capture_capability(&project)
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            capture_current_layer_order_capability(&layer_state, &project)
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    fn assert_non_graph_capability_returns_unsupported_dto(
-        project: super::super::ProjectState,
-        target_edge: ori_domain::EdgeId,
-        authority_expected: bool,
-    ) {
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            None,
-            DyadicPoseGraphReadRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles: vec![DyadicPoseGraphAngleDtoV1 {
-                    edge: target_edge,
-                    angle_degrees: 1.0,
-                }],
-                max_states: 32,
-                max_transitions: 64,
-                level_count: 3,
-                cycle_schedule_v1: None,
-            },
-            None,
-        )
-        .expect("non-graph capability returns a read-only DTO")
-        .into_test_view();
-        assert_eq!(observed.status, "unsupported");
-        assert_eq!(observed.reason, "unsupported_geometry");
-        assert_eq!(observed.state_count, 0);
-        assert_eq!(observed.transition_count, 0);
-        assert_eq!(observed.explored_state_count, 0);
-        assert_eq!(observed.evaluated_transition_count, 0);
-        assert_eq!(observed.certified_transition_count, 0);
-        assert!(!observed.mutation_candidate_ready);
-        assert!(!observed.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        assert_eq!(
-            project
-                .applied_pose_authority
-                .capture_capability(&project)
-                .unwrap()
-                .is_some(),
-            authority_expected
-        );
-    }
-
-    #[test]
-    fn missing_pose_capability_strict_dyadic_read_returns_unsupported_dto() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let project = two_hinge_tree_project(0.0);
-        let target_edge = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze()
-            .simulation_snapshot()
-            .unwrap()
-            .hinge_adjacency[0]
-            .edge;
-        assert_non_graph_capability_returns_unsupported_dto(project, target_edge, false);
-    }
-
-    #[test]
-    fn tree_pose_capability_rejects_incomplete_target_without_mutation() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let mut project = two_hinge_tree_project(0.0);
-        let target_edge = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze()
-            .simulation_snapshot()
-            .unwrap()
-            .hinge_adjacency[0]
-            .edge;
-        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let result = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            None,
-            DyadicPoseGraphReadRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles: vec![DyadicPoseGraphAngleDtoV1 {
-                    edge: target_edge,
-                    angle_degrees: 1.0,
-                }],
-                max_states: 32,
-                max_transitions: 64,
-                level_count: 3,
-                cycle_schedule_v1: None,
-            },
-            None,
-        );
-        assert_eq!(result.unwrap_err(), CYCLE_PATH_UNSUPPORTED_MESSAGE);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-    }
-
-    fn assert_two_hinge_projective_schedule_round_trip(
-        first: [f64; 3],
-        second: [f64; 3],
-        paper_thickness_mm: f64,
-        certified_path_steps: usize,
-        cancel_after_transition: Option<usize>,
-        expected_non_flat_pose_model_id: Option<&'static str>,
-    ) -> Vec<(String, String, String)> {
-        let _generation_guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut project = two_hinge_tree_project(paper_thickness_mm);
-        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let app_state = AppState::new(project);
-        let layer_state = GlobalFlatFoldabilityState::default();
-        {
-            let project = super::super::lock_project(&app_state).unwrap();
-            super::super::global_flat_foldability::tests::install_possible_layer_order(
-                &layer_state,
-                &project,
-            );
-        }
-        let certified_path = certified_path_steps > 0;
-        let angle = if certified_path {
-            certified_path_steps as f64
-        } else {
-            ori_kinematics::deterministic_half_angle_ratio_degrees_v1(1.0, 5.0)
-                .expect("the canonical half-angle fixture is finite")
-        };
-        let registry = tauri::async_runtime::block_on(read_live_hinge_registry_inner(
-            &app_state,
-            &layer_state,
-            LiveHingeRegistryRequestV1::for_test(
-                instance,
-                project_id,
-                revision,
-                first,
-                second,
-                FixedSideRequest::Left,
-                RotationDirectionRequest::Positive,
-                angle,
-            ),
-        ))
-        .expect("live target hinge registry");
-        let registry_entries = registry.entries_for_test();
-        assert!(registry_entries.len() >= 2);
-        let cycle_schedule_v1 = CycleScheduleRequestV1 {
-            version: 1,
-            endpoint_denominator: None,
-            entries: registry_entries
-                .iter()
-                .map(|entry| {
-                    let is_source_hinge =
-                        entry.initial_angle_degrees_for_test().to_bits() == 180.0_f64.to_bits();
-                    CycleScheduleEntryRequestV1 {
-                        edge: entry.edge_for_test(),
-                        u_domain: [
-                            RationalCoefficientRequestV1 {
-                                numerator: 0,
-                                denominator: 1,
-                            },
-                            RationalCoefficientRequestV1 {
-                                numerator: 1,
-                                denominator: 1,
-                            },
-                        ],
-                        numerator_power_coefficients: if is_source_hinge {
-                            vec![RationalCoefficientRequestV1 {
-                                numerator: 1,
-                                denominator: 1,
-                            }]
-                        } else {
-                            vec![
-                                RationalCoefficientRequestV1 {
-                                    numerator: 0,
-                                    denominator: 1,
-                                },
-                                RationalCoefficientRequestV1 {
-                                    numerator: 1,
-                                    denominator: 1,
-                                },
-                            ]
-                        },
-                        denominator_power_coefficients: if is_source_hinge {
-                            vec![RationalCoefficientRequestV1 {
-                                numerator: 0,
-                                denominator: 1,
-                            }]
-                        } else {
-                            vec![RationalCoefficientRequestV1 {
-                                numerator: 5,
-                                denominator: 1,
-                            }]
-                        },
-                        requested_angle_degrees: if is_source_hinge { 180.0 } else { angle },
-                    }
-                })
-                .collect(),
-        };
-        let certified_path_graph_v1 = certified_path.then(|| CertifiedPathGraphRequestV1 {
-            version: 1,
-            states: (0..=certified_path_steps)
-                .map(|step| step as f64 / certified_path_steps as f64)
-                .map(|progress| CertifiedPathGraphStateRequestV1 {
-                    entries: registry_entries
-                        .iter()
-                        .map(|entry| CertifiedPathGraphAngleRequestV1 {
-                            edge: entry.edge_for_test(),
-                            angle_degrees: if entry.initial_angle_degrees_for_test().to_bits()
-                                == 180.0_f64.to_bits()
-                            {
-                                180.0
-                            } else {
-                                angle * progress
-                            },
-                        })
-                        .collect(),
-                })
-                .collect(),
-            transitions: (0..certified_path_steps)
-                .map(|step| CertifiedPathGraphTransitionRequestV1 {
-                    source_state: step,
-                    target_state: step + 1,
-                })
-                .collect(),
-            source_state: 0,
-            target_state: certified_path_steps,
-        });
-        let transaction_state =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let generation_before_proposal = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
-        let response = tauri::async_runtime::block_on(propose_current_stacked_fold_read_inner(
-            None,
-            &app_state,
-            &layer_state,
-            &transaction_state,
-            StackedFoldReadRequest {
-                progress_request_id: cancel_after_transition
-                    .map(|step| format!("test-cancel-after-{step}")),
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                first,
-                second,
-                fixed_side: FixedSideRequest::Left,
-                rotation_direction: RotationDirectionRequest::Positive,
-                requested_angle_degrees: angle,
-                cycle_schedule_v1: (!certified_path).then_some(cycle_schedule_v1),
-                linear_candidate_v1: None,
-                certified_path_graph_v1,
-            },
-        ));
-        if certified_path && paper_thickness_mm != 0.0 {
-            assert_eq!(response.unwrap_err(), CYCLE_PATH_UNSUPPORTED_MESSAGE);
-            assert_eq!(
-                STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
-                generation_before_proposal,
-                "positive-thickness Graph rejection must precede generation and cancellation",
-            );
-            assert_eq!(transaction_state.pending_token_for_test_v1(), None);
-            let project = super::super::lock_project(&app_state).unwrap();
-            assert_eq!(project.editor.revision(), revision);
-            assert!(project.editor.instruction_timeline().steps.is_empty());
-            return Vec::new();
-        }
-        if cancel_after_transition.is_some() {
-            assert_eq!(response.unwrap_err(), CANCELLED_MESSAGE);
-            let project = super::super::lock_project(&app_state).unwrap();
-            assert_eq!(project.editor.revision(), revision);
-            assert!(project.editor.instruction_timeline().steps.is_empty());
-            return Vec::new();
-        }
-        let response = response.expect("genuine ready preview");
-        let certificate_hashes = if certified_path {
-            let graph = response
-                .certified_path_graph
-                .as_ref()
-                .expect("certified path graph preview");
-            assert_eq!(graph.explored_state_count, certified_path_steps);
-            assert_eq!(graph.evaluated_transition_count, certified_path_steps);
-            assert_eq!(graph.edges.len(), certified_path_steps);
-            assert!(graph.edges.iter().all(|edge| {
-                edge.schedule_certificate_sha256.len() == 64
-                    && edge.collision_certificate_sha256.len() == 64
-                    && edge.closure_certificate_sha256.len() == 64
-            }));
-            assert!(!graph.authorizes_project_mutation);
-            graph
-                .edges
-                .iter()
-                .map(|edge| {
-                    (
-                        edge.schedule_certificate_sha256.clone(),
-                        edge.collision_certificate_sha256.clone(),
-                        edge.closure_certificate_sha256.clone(),
-                    )
-                })
-                .collect()
-        } else {
-            assert!(response.certified_path_graph.is_none());
-            Vec::new()
-        };
-        assert!(response.transaction_proposal.ready_for_atomic_apply);
-        let token = response
-            .transaction_proposal
-            .transaction_token
-            .expect("ready token");
-        let before = {
-            let project = super::super::lock_project(&app_state).unwrap();
-            project.editor.clone()
-        };
-        let applied_revision =
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &app_state,
-                &layer_state,
-                &transaction_state,
-                token,
-            )
-            .expect("atomic apply");
-        let mut project = super::super::lock_project(&app_state).unwrap();
-        assert_eq!(project.editor.revision(), applied_revision);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        assert_eq!(response.transaction_proposal.timeline_step_count, 1);
-        let after = project.editor.clone();
-        if let Some(expected_pose_model_id) = expected_non_flat_pose_model_id {
-            let proof = match project.current_layer_evidence.as_ref() {
-                Some(super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
-                    proof,
-                )) => proof,
-                _ => panic!("atomic apply must install its non-flat layer-order evidence"),
-            };
-            assert_eq!(proof.identity_namespace(), project.project_id);
-            assert_eq!(proof.target_revision(), applied_revision);
-            assert_eq!(
-                proof.target_fingerprint().to_hex(),
-                project.editor.fold_model_fingerprint_v1()
-            );
-            let active_pose = project
-                .editor
-                .current_applied_pose()
-                .expect("the genuine Apply installs one complete semantic pose");
-            assert_eq!(active_pose.model_id(), expected_pose_model_id);
-            assert_eq!(active_pose.fixed_face(), proof.fixed_face());
-            assert_eq!(active_pose.hinge_angles().len(), proof.hinge_angles().len());
-            assert!(
-                active_pose
-                    .hinge_angles()
-                    .iter()
-                    .zip(proof.hinge_angles())
-                    .all(|(pose, proof)| {
-                        pose.edge() == proof.edge()
-                            && pose.angle_degrees().to_bits() == proof.angle_degrees().to_bits()
-                    })
-            );
-            let predecessor = project
-                .editor
-                .clone_predecessor_if_last_stacked_fold_v1()
-                .expect("the genuine Apply exposes one detached predecessor");
-            let proof_angles =
-                ori_kinematics::CanonicalHingeAngles::new(proof.hinge_angles().to_vec())
-                    .expect("the installed proof stores canonical target angles");
-            let archived_pairs = proof
-                .face_pair_orders()
-                .iter()
-                .map(|pair| ori_core::ArchivedNonFlatFacePairOrderInputV1 {
-                    lower_face: pair.lower_face(),
-                    upper_face: pair.upper_face(),
-                })
-                .collect::<Vec<_>>();
-            let prepared = ori_core::prepare_archived_refined_non_flat_layer_order_v1(
-                ori_core::PrepareArchivedRefinedNonFlatLayerOrderRequestV1 {
-                    identity_namespace: project.project_id,
-                    source_revision: predecessor.revision(),
-                    source_pattern: predecessor.pattern(),
-                    source_paper: predecessor.paper(),
-                    target_admission_revision: project.editor.revision(),
-                    target_pattern: project.editor.pattern(),
-                    target_paper: project.editor.paper(),
-                    fixed_face: proof.fixed_face(),
-                    hinge_angles: &proof_angles,
-                    archived_pair_orders: &archived_pairs,
-                    lineage_limits: ori_core::FaceLineageLimits::default(),
-                    geometry_limits: ori_core::StackedFoldGeometryLimitsV1::default(),
-                    max_face_pairs: ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
-                },
-            )
-            .expect("derive genuine coincident-descendant source constraints");
-            assert!(
-                !prepared.required_source_pair_orders().is_empty(),
-                "the genuine graph fixture must exercise a constrained predecessor solve"
-            );
-            let constrained_source_flat = super::super::global_flat_foldability::
-                reanalyze_editor_flat_layer_order_with_required_pairs(
-                    project.project_id,
-                    &predecessor,
-                    prepared.required_source_pair_orders(),
-                )
-                .expect("solve every mapped predecessor direction");
-            let directly_rebound = ori_core::finish_archived_refined_non_flat_layer_order_v1(
-                prepared,
-                &constrained_source_flat,
-                project
-                    .editor
-                    .current_applied_pose()
-                    .expect("the genuine graph target keeps its semantic pose"),
-            )
-            .expect("finish the constrained genuine graph proof");
-            assert_eq!(
-                directly_rebound.face_pair_orders(),
-                proof.face_pair_orders()
-            );
-            assert_eq!(
-                directly_rebound.target_revision(),
-                project.editor.revision()
-            );
-
-            let immediate_archive = project
-                .project_archive()
-                .expect("serialize immediately applied non-flat evidence");
-            let archived_evidence = immediate_archive
-                .layer_evidence
-                .as_ref()
-                .expect("immediate archive must contain non-flat evidence");
-            assert!(matches!(
-                &archived_evidence.evidence,
-                ori_formats::LayerEvidenceArchiveKindV1::NonFlat { .. }
-            ));
-            assert_eq!(
-                serde_json::from_value::<ProjectId>(serde_json::Value::String(
-                    archived_evidence.project_instance_id.clone()
-                ))
-                .unwrap(),
-                project.instance_id
-            );
-            assert_eq!(
-                serde_json::from_value::<ProjectId>(serde_json::Value::String(
-                    archived_evidence.project_id.clone()
-                ))
-                .unwrap(),
-                project.project_id
-            );
-            assert_eq!(archived_evidence.revision, 0);
-            assert_eq!(
-                archived_evidence.fold_model_fingerprint_sha256,
-                project.editor.fold_model_fingerprint_v1()
-            );
-            let project_signature_before_tamper = (
-                project.instance_id,
-                project.project_id,
-                project.editor.revision(),
-                project.editor.fold_model_fingerprint_v1(),
-                proof.face_pair_order_count(),
-            );
-            let assert_archive_rejected =
-                |archive: ori_formats::Ori2ProjectArchive, case_name: &str| {
-                    assert!(
-                        super::super::ProjectState::from_project_archive(
-                            archive,
-                            std::path::PathBuf::from(format!(
-                                "split-hinge-cycle-tamper-{case_name}.ori2"
-                            )),
-                        )
-                        .is_err(),
-                        "the genuine authenticated archive must reject {case_name}"
-                    );
-                };
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { hinge_angles, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            assert!(hinge_angles.len() > 1);
-            hinge_angles.swap(0, 1);
-            assert_archive_rejected(tampered, "noncanonical-hinge-order");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { hinge_angles, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            hinge_angles[1] = hinge_angles[0].clone();
-            assert_archive_rejected(tampered, "duplicate-hinge");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { hinge_angles, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            hinge_angles[0].edge = serde_json::to_value(ori_domain::EdgeId::new())
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_owned();
-            assert_archive_rejected(tampered, "unknown-hinge");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { hinge_angles, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            hinge_angles[0].angle_degrees = -0.0;
-            assert_archive_rejected(tampered, "negative-zero-hinge-angle");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { hinge_angles, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            let bits = hinge_angles[0].angle_degrees.to_bits();
-            hinge_angles[0].angle_degrees = f64::from_bits(if bits == 0 { 1 } else { bits - 1 });
-            assert_archive_rejected(tampered, "one-ulp-hinge-angle");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat {
-                fixed_face,
-                material_faces,
-                ..
-            } = &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            let alternate_fixed = material_faces
-                .iter()
-                .find(|face| Some(face.face_id.as_str()) != fixed_face.as_deref())
-                .expect("the graph fixture has another material face")
-                .face_id
-                .clone();
-            *fixed_face = Some(alternate_fixed);
-            assert_archive_rejected(tampered, "fixed-face");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { material_faces, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            let replacement = if material_faces[0].face_key_sha256.starts_with('0') {
-                "1"
-            } else {
-                "0"
-            };
-            material_faces[0]
-                .face_key_sha256
-                .replace_range(0..1, replacement);
-            assert_archive_rejected(tampered, "material-face-key");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { cells, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            assert!(!cells.is_empty());
-            let coordinate = &mut cells[0].boundary_xy[0][0];
-            *coordinate = f64::from_bits(coordinate.to_bits() + 1);
-            assert_archive_rejected(tampered, "cell-boundary-bit");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { pair_orders, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            assert!(!pair_orders.is_empty());
-            let pair = &mut pair_orders[0];
-            std::mem::swap(&mut pair.lower_face, &mut pair.upper_face);
-            assert_archive_rejected(tampered, "reversed-pair-direction");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { pair_orders, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            pair_orders.pop();
-            assert_archive_rejected(tampered, "missing-pair");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { pair_orders, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            pair_orders.push(pair_orders[0].clone());
-            assert_archive_rejected(tampered, "duplicate-pair");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { pair_orders, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            pair_orders[0].lower_face = serde_json::to_value(ori_domain::FaceId::new())
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_owned();
-            assert_archive_rejected(tampered, "unknown-pair-face");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { pair_orders, .. } =
-                &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            pair_orders[0].upper_face = pair_orders[0].lower_face.clone();
-            assert_archive_rejected(tampered, "equal-pair-face");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat {
-                material_faces,
-                pair_orders,
-                ..
-            } = &mut tampered.layer_evidence.as_mut().unwrap().evidence
-            else {
-                unreachable!()
-            };
-            let ordered_pairs = pair_orders
-                .iter()
-                .map(|pair| {
-                    if pair.lower_face < pair.upper_face {
-                        (pair.lower_face.clone(), pair.upper_face.clone())
-                    } else {
-                        (pair.upper_face.clone(), pair.lower_face.clone())
-                    }
-                })
-                .collect::<std::collections::HashSet<_>>();
-            let non_overlap = material_faces
-                .iter()
-                .enumerate()
-                .find_map(|(first, lower)| {
-                    material_faces.iter().skip(first + 1).find_map(|upper| {
-                        let key = if lower.face_id < upper.face_id {
-                            (lower.face_id.clone(), upper.face_id.clone())
-                        } else {
-                            (upper.face_id.clone(), lower.face_id.clone())
-                        };
-                        (!ordered_pairs.contains(&key)).then_some(key)
-                    })
-                });
-            let (lower_face, upper_face) =
-                non_overlap.expect("the genuine graph has a non-overlapping material pair");
-            pair_orders.push(ori_formats::LayerEvidencePairOrderV1 {
-                lower_face,
-                upper_face,
-            });
-            assert_archive_rejected(tampered, "non-overlapping-extra-pair");
-
-            let mut tampered = immediate_archive.clone();
-            tampered.editor_history = None;
-            assert_archive_rejected(tampered, "missing-authenticated-history");
-
-            let mut tampered = immediate_archive.clone();
-            let ori_formats::LayerEvidenceArchiveKindV1::NonFlat {
-                fixed_face,
-                material_faces,
-                ..
-            } = tampered
-                .layer_evidence
-                .as_ref()
-                .map(|evidence| &evidence.evidence)
-                .unwrap()
-            else {
-                unreachable!()
-            };
-            let current_fixed = fixed_face.as_deref();
-            let alternate_fixed = material_faces
-                .iter()
-                .find(|face| Some(face.face_id.as_str()) != current_fixed)
-                .unwrap()
-                .face_id
-                .clone();
-            tampered.document.current_pose.as_mut().unwrap().fixed_face =
-                Some(serde_json::from_value(serde_json::Value::String(alternate_fixed)).unwrap());
-            assert_archive_rejected(tampered, "document-current-pose-fixed-face");
-
-            let mut redo_project = super::super::ProjectState::from_project_archive(
-                immediate_archive.clone(),
-                std::path::PathBuf::from("split-hinge-cycle-redo-branch-source.ori2"),
-            )
-            .expect("prepare a genuine reopened project for the redo-branch regression");
-            let mut reinserted_evidence = redo_project
-                .archived_layer_evidence()
-                .unwrap()
-                .expect("capture evidence before creating the redo branch");
-            redo_project
-                .editor
-                .execute(
-                    redo_project.editor.revision(),
-                    ori_core::Command::UpdateProjectMemo {
-                        memo: "temporary branch".to_owned(),
-                    },
-                )
-                .unwrap();
-            redo_project
-                .editor
-                .undo(redo_project.editor.revision())
-                .unwrap();
-            assert!(redo_project.editor.can_redo());
-            assert!(
-                redo_project
-                    .editor
-                    .clone_predecessor_if_last_stacked_fold_v1()
-                    .is_none(),
-                "the pending redo branch itself is the authenticated-history rejection reason"
-            );
-            redo_project.current_layer_evidence = None;
-            reinserted_evidence.revision = 0;
-            reinserted_evidence.fold_model_fingerprint_sha256 =
-                redo_project.editor.fold_model_fingerprint_v1();
-            let mut redo_archive = redo_project.project_archive().unwrap();
-            let redo_control = super::super::ProjectState::from_project_archive(
-                redo_archive.clone(),
-                std::path::PathBuf::from("split-hinge-cycle-redo-branch-control.ori2"),
-            )
-            .expect("the same pending-redo archive is valid without reinserted evidence");
-            assert_eq!(redo_control.editor.revision(), 0);
-            assert!(redo_control.editor.can_redo());
-            assert!(
-                redo_control
-                    .editor
-                    .clone_predecessor_if_last_stacked_fold_v1()
-                    .is_none()
-            );
-            redo_archive.layer_evidence = Some(reinserted_evidence);
-            assert_archive_rejected(redo_archive, "pending-redo-branch");
-
-            assert_eq!(
-                (
-                    project.instance_id,
-                    project.project_id,
-                    project.editor.revision(),
-                    project.editor.fold_model_fingerprint_v1(),
-                    proof.face_pair_order_count(),
-                ),
-                project_signature_before_tamper,
-                "all failed admissions leave the live genuine project untouched"
-            );
-
-            let mut reopened = super::super::ProjectState::from_project_archive(
-                immediate_archive,
-                std::path::PathBuf::from("split-hinge-cycle-evidence.ori2"),
-            )
-            .expect("reopen immediately applied non-flat evidence");
-            assert_ne!(reopened.instance_id, project.instance_id);
-            assert_eq!(reopened.project_id, project.project_id);
-            let reopened_proof = match reopened.current_layer_evidence.as_ref() {
-                Some(super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
-                    proof,
-                )) => proof,
-                _ => panic!("fresh open must revalidate non-flat layer-order evidence"),
-            };
-            assert_eq!(reopened_proof.identity_namespace(), reopened.project_id);
-            assert_eq!(reopened_proof.target_revision(), reopened.editor.revision());
-            assert_eq!(
-                reopened_proof.target_fingerprint().to_hex(),
-                reopened.editor.fold_model_fingerprint_v1()
-            );
-            let reopened_pose = reopened
-                .editor
-                .current_applied_pose()
-                .expect("fresh open restores the complete semantic pose");
-            assert_eq!(reopened_pose.model_id(), expected_pose_model_id);
-            assert_eq!(reopened_pose.fixed_face(), reopened_proof.fixed_face());
-            assert_eq!(
-                reopened_pose.hinge_angles().len(),
-                reopened_proof.hinge_angles().len()
-            );
-            assert!(
-                reopened_pose
-                    .hinge_angles()
-                    .iter()
-                    .zip(reopened_proof.hinge_angles())
-                    .all(|(pose, proof)| {
-                        pose.edge() == proof.edge()
-                            && pose.angle_degrees().to_bits() == proof.angle_degrees().to_bits()
-                    })
-            );
-            let reopened_evidence = reopened
-                .archived_layer_evidence()
-                .expect("serialize freshly revalidated non-flat evidence")
-                .expect("fresh archive must contain non-flat evidence");
-            assert_eq!(
-                serde_json::from_value::<ProjectId>(serde_json::Value::String(
-                    reopened_evidence.project_instance_id
-                ))
-                .unwrap(),
-                reopened.instance_id
-            );
-            assert_eq!(reopened_evidence.revision, reopened.editor.revision());
-            assert_eq!(
-                reopened_evidence.fold_model_fingerprint_sha256,
-                reopened.editor.fold_model_fingerprint_v1()
-            );
-            let second_archive = reopened
-                .project_archive()
-                .expect("rearchive freshly revalidated non-flat evidence");
-            assert!(second_archive.layer_evidence.is_some());
-            let second_reopened = super::super::ProjectState::from_project_archive(
-                second_archive,
-                std::path::PathBuf::from("split-hinge-cycle-evidence-second.ori2"),
-            )
-            .expect("reopen freshly revalidated non-flat evidence a second time");
-            assert_ne!(second_reopened.instance_id, reopened.instance_id);
-            assert_eq!(second_reopened.project_id, reopened.project_id);
-            let second_proof = match second_reopened.current_layer_evidence.as_ref() {
-                Some(super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
-                    proof,
-                )) => proof,
-                _ => panic!("second fresh open must revalidate non-flat layer-order evidence"),
-            };
-            assert_eq!(
-                second_proof.target_revision(),
-                second_reopened.editor.revision()
-            );
-            assert_eq!(
-                second_proof.target_fingerprint().to_hex(),
-                second_reopened.editor.fold_model_fingerprint_v1()
-            );
-
-            let reopened_instance = reopened.instance_id;
-            let reopened_project_id = reopened.project_id;
-            let reopened_revision = reopened.editor.revision();
-            super::super::execute_undo(
-                &mut reopened,
-                reopened_instance,
-                reopened_project_id,
-                reopened_revision,
-            )
-            .expect("undo freshly revalidated stacked fold");
-            assert!(reopened.current_layer_evidence.is_none());
-            let reopened_redo_revision = reopened.editor.revision();
-            super::super::execute_redo(
-                &mut reopened,
-                reopened_instance,
-                reopened_project_id,
-                reopened_redo_revision,
-            )
-            .expect("redo freshly revalidated stacked fold");
-            assert!(reopened.current_layer_evidence.is_none());
-            assert!(
-                reopened
-                    .project_archive()
-                    .expect("archive evidence-invalidated reopened project")
-                    .layer_evidence
-                    .is_none(),
-                "Undo/Redo after fresh revalidation must not resurrect evidence"
-            );
-        }
-        let source_vertices = before
-            .pattern()
-            .vertices
-            .iter()
-            .map(|vertex| vertex.id)
-            .collect::<std::collections::HashSet<_>>();
-        let inserted = after
-            .pattern()
-            .vertices
-            .iter()
-            .filter(|vertex| !source_vertices.contains(&vertex.id))
-            .collect::<Vec<_>>();
-        assert!(
-            !inserted.is_empty(),
-            "the new straight line must atomically materialize its source-hinge intersections"
-        );
-        let line_start = ori_domain::Point2::new(first[0], -first[2]);
-        let line_end = ori_domain::Point2::new(second[0], -second[2]);
-        let line_length =
-            ((line_end.x - line_start.x).powi(2) + (line_end.y - line_start.y).powi(2)).sqrt();
-        let position_tolerance = 1.0e-9_f64;
-        let inserted_on_requested_line = inserted
-            .iter()
-            .filter(|vertex| {
-                let cross = (line_end.x - line_start.x) * (vertex.position.y - line_start.y)
-                    - (line_end.y - line_start.y) * (vertex.position.x - line_start.x);
-                cross.abs() <= position_tolerance * line_length.max(1.0)
-                    && vertex.position.x + position_tolerance >= line_start.x.min(line_end.x)
-                    && vertex.position.x - position_tolerance <= line_start.x.max(line_end.x)
-                    && vertex.position.y + position_tolerance >= line_start.y.min(line_end.y)
-                    && vertex.position.y - position_tolerance <= line_start.y.max(line_end.y)
-            })
-            .count();
-        assert!(
-            inserted_on_requested_line >= 2,
-            "both source hinges must gain a materialized intersection on the requested line"
-        );
-        assert!(after.pattern().edges.len() > before.pattern().edges.len());
-        super::super::execute_undo(&mut project, instance, project_id, applied_revision)
-            .expect("undo atomically applied stacked fold");
-        assert_eq!(project.editor.pattern(), before.pattern());
-        assert_eq!(
-            project.editor.current_applied_pose(),
-            before.current_applied_pose()
-        );
-        assert!(project.current_layer_evidence.is_none());
-        let undo_revision = project.editor.revision();
-        super::super::execute_redo(&mut project, instance, project_id, undo_revision)
-            .expect("redo atomically applied stacked fold");
-        assert_eq!(project.editor.pattern(), after.pattern());
-        assert_eq!(
-            project.editor.current_applied_pose(),
-            after.current_applied_pose()
-        );
-        assert!(project.current_layer_evidence.is_none());
-        let archive = project
-            .project_archive()
-            .expect("serialize split-hinge cycle operation");
-        assert!(
-            archive.layer_evidence.is_none(),
-            "redo must not resurrect invalidated layer-order evidence"
-        );
-        let mut reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("split-hinge-cycle.ori2"),
-        )
-        .expect("reopen split-hinge cycle operation");
-        assert_eq!(reopened.editor.pattern(), after.pattern());
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
-        assert!(reopened.current_layer_evidence.is_none());
-        let reopened_instance = reopened.instance_id;
-        let reopened_project_id = reopened.project_id;
-        let reopened_revision = reopened.editor.revision();
-        super::super::execute_undo(
-            &mut reopened,
-            reopened_instance,
-            reopened_project_id,
-            reopened_revision,
-        )
-        .expect("undo reopened stacked fold");
-        assert_eq!(reopened.editor.pattern(), before.pattern());
-        assert!(reopened.current_layer_evidence.is_none());
-        let reopened_redo_revision = reopened.editor.revision();
-        super::super::execute_redo(
-            &mut reopened,
-            reopened_instance,
-            reopened_project_id,
-            reopened_redo_revision,
-        )
-        .expect("redo reopened stacked fold");
-        assert_eq!(reopened.editor.pattern(), after.pattern());
-        assert_eq!(
-            reopened.editor.current_applied_pose(),
-            after.current_applied_pose()
-        );
-        assert!(reopened.current_layer_evidence.is_none());
-        certificate_hashes
-    }
-
-    #[test]
-    fn genuine_two_hinge_projective_schedule_previews_applies_and_round_trips_history() {
-        let _ = assert_two_hinge_projective_schedule_round_trip(
-            [50.0, 0.0, 0.0],
-            [50.0, 0.0, -100.0],
-            0.0,
-            0,
-            None,
-            Some(ori_core::APPLIED_POSE_MODEL_ID_V1),
-        );
-    }
-
-    #[test]
-    fn genuine_common_axis_cycle_previews_applies_and_round_trips_history() {
-        let _ = assert_two_hinge_projective_schedule_round_trip(
-            [0.0, 0.0, -50.0],
-            [100.0, 0.0, -50.0],
-            0.0,
-            0,
-            None,
-            Some(ori_core::CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1),
-        );
-    }
-
-    #[test]
-    fn genuine_common_axis_cycle_certified_path_applies_and_round_trips_history() {
-        let _ = assert_two_hinge_projective_schedule_round_trip(
-            [0.0, 0.0, -50.0],
-            [100.0, 0.0, -50.0],
-            0.0,
-            2,
-            None,
-            None,
-        );
-    }
-
-    #[test]
-    fn positive_thickness_certified_path_graph_is_rejected_before_generation_or_authority() {
-        assert!(
-            assert_two_hinge_projective_schedule_round_trip(
-                [0.0, 0.0, -50.0],
-                [100.0, 0.0, -50.0],
-                0.1,
-                2,
-                None,
-                None,
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn negative_zero_certified_path_graph_keeps_legacy_atomic_apply() {
-        assert_eq!(
-            assert_two_hinge_projective_schedule_round_trip(
-                [0.0, 0.0, -50.0],
-                [100.0, 0.0, -50.0],
-                -0.0,
-                2,
-                None,
-                None,
-            )
-            .len(),
-            2,
-        );
-    }
-
-    #[test]
-    fn genuine_common_axis_cycle_four_edge_certified_path_applies_and_round_trips_history() {
-        let _ = assert_two_hinge_projective_schedule_round_trip(
-            [0.0, 0.0, -50.0],
-            [100.0, 0.0, -50.0],
-            0.0,
-            4,
-            None,
-            None,
-        );
-    }
-
-    #[test]
-    fn genuine_common_axis_cycle_sixteen_edge_certified_path_applies_and_round_trips_history() {
-        let _ = assert_two_hinge_projective_schedule_round_trip(
-            [0.0, 0.0, -50.0],
-            [100.0, 0.0, -50.0],
-            0.0,
-            16,
-            None,
-            None,
-        );
-    }
-
-    #[test]
-    fn genuine_common_axis_cycle_maximum_atomic_path_cancels_cleanly_and_retries() {
-        let first = [0.0, 0.0, -50.0];
-        let second = [100.0, 0.0, -50.0];
-        assert!(
-            assert_two_hinge_projective_schedule_round_trip(first, second, 0.0, 31, Some(8), None,)
-                .is_empty()
-        );
-        let first_retry =
-            assert_two_hinge_projective_schedule_round_trip(first, second, 0.0, 31, None, None);
-        let second_retry =
-            assert_two_hinge_projective_schedule_round_trip(first, second, 0.0, 31, None, None);
-        assert_eq!(first_retry, second_retry);
-    }
-
-    #[test]
-    fn cell_keys_use_fixed_lowercase_sha256_hex() {
-        let mut bytes = [0_u8; 32];
-        bytes[0] = 0xab;
-        bytes[31] = 0xef;
-        let encoded = lowercase_hex(bytes);
-        assert_eq!(encoded.len(), 64);
-        assert!(encoded.starts_with("ab00"));
-        assert!(encoded.ends_with("00ef"));
-        assert!(encoded.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert!(!encoded.bytes().any(|byte| byte.is_ascii_uppercase()));
-    }
-
-    #[test]
-    fn rank64_cycle_request_rejects_resource_before_work_and_keeps_progress_cancel_dtos_bounded() {
-        let entry = || {
-            serde_json::json!({
-                "edge": ori_domain::EdgeId::new(),
-                "uDomain": [{"numerator": 0, "denominator": 1}, {"numerator": 1, "denominator": 1}],
-                "numeratorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
-                "denominatorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
-                "requestedAngleDegrees": 90.0
-            })
-        };
-        let request = serde_json::from_value::<StackedFoldReadRequest>(serde_json::json!({
-            "progressRequestId": "rank64:resource",
-            "expectedProjectInstanceId": ori_domain::ProjectId::new(),
-            "expectedProjectId": ori_domain::ProjectId::new(),
-            "expectedRevision": 0,
-            "first": [0.0, 0.0, 0.0],
-            "second": [1.0, 0.0, 0.0],
-            "fixedSide": "left",
-            "rotationDirection": "positive",
-            "requestedAngleDegrees": 90.0,
-            "cycleScheduleV1": {"version": 1, "entries": (0..256).map(|_| entry()).collect::<Vec<_>>()}
-        })).unwrap();
-        assert_eq!(
-            validate_progress_request_id_v1(request.progress_request_id.as_deref()),
-            Ok(Some("rank64:resource"))
-        );
-        assert_eq!(
-            validate_request_resource_shape_v1(&request),
-            Err(CYCLE_PATH_RESOURCE_MESSAGE)
-        );
-
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let before = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
-        cancel_current_stacked_fold_read_v1().expect("rank64 cancel dto remains available");
-        assert_eq!(
-            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
-            before + 1
-        );
-    }
-
-    #[test]
-    fn stacked_fold_read_cancel_advances_the_process_wide_generation() {
-        let _generation_guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let before = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
-        cancel_current_stacked_fold_read_v1().expect("generation has capacity");
-        assert_eq!(
-            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
-            before + 1
-        );
-    }
-
-    #[test]
-    fn live_registry_round_trips_into_the_same_bit_exact_linear_request() {
-        let first = serde_json::from_value::<ori_domain::EdgeId>(serde_json::json!(
-            "018f47a2-4b7a-7cc1-8abc-665544332211"
-        ))
-        .unwrap();
-        let second = serde_json::from_value::<ori_domain::EdgeId>(serde_json::json!(
-            "018f47a2-4b7a-7cc1-8abc-778899aabbcc"
-        ))
-        .unwrap();
-        let live = ori_kinematics::CanonicalHingeAngles::new(vec![
-            ori_kinematics::HingeAngle::new(first, 10.0).unwrap(),
-            ori_kinematics::HingeAngle::new(second, 20.0).unwrap(),
-        ])
-        .unwrap();
-        let registry = live_hinge_registry(live.as_slice());
-        assert_eq!(
-            registry
-                .iter()
-                .map(LiveGraphHingeAngleDto::edge_for_test)
-                .collect::<Vec<_>>(),
-            vec![first, second]
-        );
-        let request = LinearCandidateRequestV1 {
-            version: 1,
-            exact_dyadic_path_v1: None,
-            entries: registry
-                .iter()
-                .map(|entry| LinearCandidateEntryRequestV1 {
-                    edge: entry.edge_for_test(),
-                    initial_angle_degrees: entry.initial_angle_degrees_for_test(),
-                    requested_angle_degrees: entry.initial_angle_degrees_for_test() + 5.0,
-                })
-                .collect(),
-        };
-        let (round_tripped, requested) =
-            validate_linear_candidate_angles_v1(&request, &live).unwrap();
-        assert_eq!(round_tripped, live);
-        assert!(
-            requested
-                .as_slice()
-                .iter()
-                .zip(live.as_slice())
-                .all(|(next, initial)| {
-                    next.edge() == initial.edge()
-                        && next.angle_degrees() == initial.angle_degrees() + 5.0
-                })
-        );
-    }
-
-    #[test]
-    fn dense_rank_four_grid_previews_applies_and_round_trips_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
-            let (pattern, mut paper, moving) =
-                super::dense_grid_cycle_test_support::three_by_three_dense_cycle_pattern();
-            paper.thickness_mm = thickness_mm;
-            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-            let topology = project
-                .editor
-                .topology_analysis_input(project.project_id)
-                .analyze();
-            let snapshot = topology.simulation_snapshot().unwrap();
-            assert_eq!(
-                (snapshot.faces.len(), snapshot.hinge_adjacency.len()),
-                (9, 12)
-            );
-            let hinges = snapshot
-                .hinge_adjacency
-                .iter()
-                .map(|hinge| hinge.edge)
-                .collect::<Vec<_>>();
-            let fixed = snapshot.faces[0].id;
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                fixed,
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let app_state = AppState::new(project);
-            let transactions =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            let request = |expected_instance_id| CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: expected_instance_id,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 4),
-            };
-            assert_eq!(
-                propose_current_cycle_pose_inner(
-                    None,
-                    &app_state,
-                    &transactions,
-                    request(ProjectId::new())
-                )
-                .unwrap_err(),
-                STALE_MESSAGE
-            );
-            let preview = propose_current_cycle_pose_inner(
-                None,
-                &app_state,
-                &transactions,
-                request(instance),
-            );
-            if thickness_mm == 10_000.0 {
-                assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
-                assert!(
-                    super::super::lock_project(&app_state)
-                        .unwrap()
-                        .editor
-                        .instruction_timeline()
-                        .steps
-                        .is_empty()
-                );
-                continue;
-            }
-            let preview = preview.expect("dense rank-four preview");
-            assert_eq!(
-                (
-                    preview.closure_leaf_count,
-                    preview.checked_hinge_count,
-                    preview.total_hinge_count
-                ),
-                (1, 12, 12)
-            );
-            if thickness_mm == 1.0 {
-                super::super::lock_project(&app_state).unwrap().instance_id = ProjectId::new();
-                assert!(
-                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &app_state,
-                        &GlobalFlatFoldabilityState::default(),
-                        &transactions,
-                        preview.transaction_token,
-                    )
-                    .is_err()
-                );
-                assert!(
-                    super::super::lock_project(&app_state)
-                        .unwrap()
-                        .editor
-                        .instruction_timeline()
-                        .steps
-                        .is_empty()
-                );
-                continue;
-            }
-            super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-                &transactions,
-                preview.transaction_token,
-            )
-            .unwrap();
-            assert!(
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &GlobalFlatFoldabilityState::default(),
-                    &transactions,
-                    preview.transaction_token,
-                )
-                .is_err()
-            );
-            let preview = propose_current_cycle_pose_inner(
-                None,
-                &app_state,
-                &transactions,
-                request(instance),
-            )
-            .expect("dense retry");
-            let applied =
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &GlobalFlatFoldabilityState::default(),
-                    &transactions,
-                    preview.transaction_token,
-                )
-                .expect("dense atomic apply");
-            let mut project = super::super::lock_project(&app_state).unwrap();
-            project.editor.undo(applied).unwrap();
-            let undone = project.editor.revision();
-            project.editor.redo(undone).unwrap();
-            assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        }
-    }
-
-    #[test]
-    fn regular_quad_petal_gate_accepts_only_three_hinges_on_one_square_boundary_face() {
-        let (pattern, paper, _, _) =
-            super::dense_grid_cycle_test_support::miura_authority_pattern(3, 3);
-        let project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let hinges = snapshot
-            .faces
-            .iter()
-            .find_map(|face| {
-                let hinges = face
-                    .outer
-                    .half_edges
-                    .iter()
-                    .filter(|half| {
-                        snapshot
-                            .hinge_adjacency
-                            .iter()
-                            .any(|adjacency| adjacency.edge == half.edge)
-                    })
-                    .map(|half| half.edge)
-                    .collect::<Vec<_>>();
-                (face.outer.half_edges.len() == 4 && hinges.len() == 3).then_some(hinges)
-            })
-            .expect("3x3 edge cell has exactly three hinge sides");
-        assert!(
-            super::super::stacked_fold_transaction::regular_quad_petal_face_v1(&project, &hinges)
-        );
-        assert!(
-            !super::super::stacked_fold_transaction::regular_quad_petal_face_v1(
-                &project,
-                &hinges[..2],
-            )
-        );
-        let mut duplicate = hinges.clone();
-        duplicate[2] = duplicate[0];
-        assert!(
-            !super::super::stacked_fold_transaction::regular_quad_petal_face_v1(
-                &project, &duplicate,
-            )
-        );
-    }
-
-    #[test]
-    fn regular_quad_petal_private_capture_rejects_without_publishing_or_mutating() {
-        let (pattern, paper, _, _) =
-            super::dense_grid_cycle_test_support::miura_authority_pattern(3, 3);
-        let project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let revision = project.editor.revision();
-        let previews = RegularQuadPetalPrivatePreviewStateV1::default();
-        assert!(
-            capture_and_mint_regular_quad_petal_preview_v1(
-                &project,
-                &GlobalFlatFoldabilityState::default(),
-                &previews,
-            )
-            .is_err()
-        );
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        assert!(previews.0.lock().unwrap().is_none());
-    }
-
-    #[test]
-    fn dense_square_and_rectangular_grids_preview_and_apply_atomically() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        for (columns, rows) in [
-            (4usize, 4usize),
-            (5, 5),
-            (6, 6),
-            (7, 7),
-            (3, 7),
-            (5, 7),
-            (6, 7),
-        ] {
-            for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
-                let (pattern, mut paper, moving) =
-                    super::dense_grid_cycle_test_support::rectangular_dense_cycle_pattern(
-                        columns, rows,
-                    );
-                paper.thickness_mm = thickness_mm;
-                let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-                let topology = project
-                    .editor
-                    .topology_analysis_input(project.project_id)
-                    .analyze();
-                let snapshot = topology.simulation_snapshot().unwrap();
-                let expected_hinges = 2 * columns * rows - columns - rows;
-                assert_eq!(
-                    (snapshot.faces.len(), snapshot.hinge_adjacency.len()),
-                    (columns * rows, expected_hinges)
-                );
-                let hinges = snapshot
-                    .hinge_adjacency
-                    .iter()
-                    .map(|hinge| hinge.edge)
-                    .collect::<Vec<_>>();
-                let fixed = snapshot.faces[0].id;
-                super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                    &mut project,
-                    hinges.clone(),
-                    fixed,
-                );
-                let request = CurrentCyclePosePreviewRequestV1 {
-                    progress_request_id: None,
-                    expected_project_instance_id: project.instance_id,
-                    expected_project_id: project.project_id,
-                    expected_revision: project.editor.revision(),
-                    cycle_schedule_v1: dense_grid_schedule(
-                        &hinges,
-                        &moving,
-                        if columns == 4 && rows == 4 { 4 } else { 100 },
-                    ),
-                };
-                let state = AppState::new(project);
-                let transactions =
-                    super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-                let preview =
-                    propose_current_cycle_pose_inner(None, &state, &transactions, request);
-                if thickness_mm == 10_000.0 {
-                    assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
-                    assert!(
-                        super::super::lock_project(&state)
-                            .unwrap()
-                            .editor
-                            .instruction_timeline()
-                            .steps
-                            .is_empty()
-                    );
-                    continue;
-                }
-                let preview = preview.unwrap_or_else(|error| {
-                    panic!("{columns}x{rows} dense preview at {thickness_mm}mm: {error}")
-                });
-                assert_eq!(
-                    (preview.closure_leaf_count, preview.checked_hinge_count),
-                    (1, expected_hinges)
-                );
-                let applied =
-                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &state,
-                        &GlobalFlatFoldabilityState::default(),
-                        &transactions,
-                        preview.transaction_token,
-                    )
-                    .expect("rank-nine dense apply");
-                let mut project = super::super::lock_project(&state).unwrap();
-                project.editor.undo(applied).unwrap();
-                let undone = project.editor.revision();
-                project.editor.redo(undone).unwrap();
-            }
-        }
-    }
-
-    #[test]
-    fn eighty_four_hinge_flat_start_path_without_layer_transport_persists_atomically() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, mut paper, moving) =
-            super::dense_grid_cycle_test_support::rectangular_dense_cycle_pattern(7, 7);
-        paper.thickness_mm = 0.1;
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        assert_eq!((snapshot.faces.len(), hinges.len()), (49, 84));
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            snapshot.faces[0].id,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let preview = propose_current_cycle_pose_inner(
-            None,
-            &state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
-            },
-        )
-        .expect("84-hinge positive-thickness dense proof");
-        assert_eq!(
-            (preview.closure_leaf_count, preview.checked_hinge_count),
-            (1, 84)
-        );
-        assert!(preview.continuous_path_certified);
-        assert_eq!(preview.continuous_layer_transport_model_id, None);
-        assert_eq!(preview.continuous_layer_transition_count, 0);
-        assert_eq!(preview.continuous_layer_pair_order_count, 0);
-        assert_eq!(preview.continuous_layer_target_order_sha256, None);
-        assert!(preview.source_layer_order.is_empty());
-        assert!(preview.target_layer_order.is_empty());
-        assert!(!preview.authorizes_project_mutation);
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &state,
-                &GlobalFlatFoldabilityState::default(),
-                &transactions,
-                ProjectId::new(),
-            )
-            .is_err(),
-            "unknown transaction token must be an atomic no-op"
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision
-        );
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            preview.transaction_token,
-        )
-        .expect("84-hinge dense proof applies atomically");
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &state,
-                &GlobalFlatFoldabilityState::default(),
-                &transactions,
-                preview.transaction_token,
-            )
-            .is_err(),
-            "consumed dense preview must be one-shot"
-        );
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(applied, revision + 1);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        let archive = project.project_archive().unwrap();
-        let reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("eighty-four-hinge-dense.ori2"),
-        )
-        .unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
-    }
-
-    #[test]
-    fn orthogonal_dense_rank_four_horizontal_axis_previews_and_applies() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
-            let (pattern, mut paper, horizontal, _) =
-                super::dense_grid_cycle_test_support::orthogonal_dense_cycle_pattern(3, 3);
-            paper.thickness_mm = thickness_mm;
-            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-            let topology = project
-                .editor
-                .topology_analysis_input(project.project_id)
-                .analyze();
-            let snapshot = topology.simulation_snapshot().unwrap();
-            let hinges = snapshot
-                .hinge_adjacency
-                .iter()
-                .map(|hinge| hinge.edge)
-                .collect::<Vec<_>>();
-            let fixed = snapshot.faces[0].id;
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                fixed,
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let request = |expected_project_instance_id| CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 4),
-            };
-            let state = AppState::new(project);
-            let transactions =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            assert_eq!(
-                propose_current_cycle_pose_inner(
-                    None,
-                    &state,
-                    &transactions,
-                    request(ProjectId::new())
-                )
-                .unwrap_err(),
-                STALE_MESSAGE
-            );
-            let preview =
-                propose_current_cycle_pose_inner(None, &state, &transactions, request(instance));
-            if thickness_mm == 10_000.0 {
-                assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
-                continue;
-            }
-            let preview = preview.expect("orthogonal horizontal dense preview");
-            let applied =
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &state,
-                    &GlobalFlatFoldabilityState::default(),
-                    &transactions,
-                    preview.transaction_token,
-                )
-                .expect("orthogonal horizontal dense apply");
-            let mut project = super::super::lock_project(&state).unwrap();
-            project.editor.undo(applied).unwrap();
-            let undone = project.editor.revision();
-            project.editor.redo(undone).unwrap();
-        }
-    }
-
-    #[test]
-    fn oblique_dense_rank_four_collision_fails_closed_before_preview() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
-            let (pattern, mut paper, horizontal, _) =
-                super::dense_grid_cycle_test_support::oblique_dense_cycle_pattern(3, 3);
-            paper.thickness_mm = thickness_mm;
-            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-            let topology = project
-                .editor
-                .topology_analysis_input(project.project_id)
-                .analyze();
-            let snapshot = topology.simulation_snapshot().unwrap();
-            let hinges = snapshot
-                .hinge_adjacency
-                .iter()
-                .map(|hinge| hinge.edge)
-                .collect::<Vec<_>>();
-            let fixed = snapshot.faces[0].id;
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                fixed,
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let request = |expected_project_instance_id| CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 100),
-            };
-            let state = AppState::new(project);
-            let transactions =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            assert_eq!(
-                propose_current_cycle_pose_inner(
-                    None,
-                    &state,
-                    &transactions,
-                    request(ProjectId::new())
-                )
-                .unwrap_err(),
-                STALE_MESSAGE
-            );
-            let preview =
-                propose_current_cycle_pose_inner(None, &state, &transactions, request(instance));
-            if thickness_mm == 3.0 {
-                let preview = preview.expect("3mm oblique prism separation");
-                let applied =
-                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &state,
-                        &GlobalFlatFoldabilityState::default(),
-                        &transactions,
-                        preview.transaction_token,
-                    )
-                    .expect("3mm oblique apply");
-                let mut project = super::super::lock_project(&state).unwrap();
-                project.editor.undo(applied).unwrap();
-                let undone = project.editor.revision();
-                project.editor.redo(undone).unwrap();
-            } else {
-                assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
-            }
-            assert_eq!(
-                super::super::lock_project(&state)
-                    .unwrap()
-                    .editor
-                    .instruction_timeline()
-                    .steps
-                    .len(),
-                usize::from(thickness_mm == 3.0)
-            );
-        }
-    }
-
-    #[test]
-    fn parametric_oblique_dense_static_authority_is_available_on_desktop() {
-        for angle_degrees in [30.0, 45.0, 120.0] {
-            for thickness_mm in [0.1, 1.0, 3.0] {
-                let (pattern, mut paper, _, _) =
-                    super::dense_grid_cycle_test_support::angled_dense_cycle_pattern(
-                        3,
-                        3,
-                        angle_degrees,
-                    );
-                paper.thickness_mm = thickness_mm;
-                let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-                let topology = project
-                    .editor
-                    .topology_analysis_input(project.project_id)
-                    .analyze();
-                let snapshot = topology.simulation_snapshot().unwrap();
-                let hinges = snapshot
-                    .hinge_adjacency
-                    .iter()
-                    .map(|hinge| hinge.edge)
-                    .collect();
-                let fixed = snapshot.faces[0].id;
-                super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                    &mut project,
-                    hinges,
-                    fixed,
-                );
-                let state = AppState::new(project);
-                assert!(
-                    crate::applied_pose::certify_current_static_collision(
-                        &state,
-                        ori_collision::StaticCollisionLimits::default(),
-                    )
-                    .expect("parametric oblique static diagnosis")
-                    .is_some()
-                );
-            }
-        }
-    }
-
-    fn balloon_six_sector_cycle_pattern() -> (
-        ori_domain::CreasePattern,
-        ori_domain::Paper,
-        Vec<ori_domain::EdgeId>,
-    ) {
-        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
-        let namespace = ProjectId::schema_namespace([
-            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x05, 0x41,
-        ]);
-        let center = Vertex {
-            id: VertexId::derive_v5(namespace, b"balloon-center"),
-            position: Point2::new(0.0, 0.0),
-        };
-        let boundary = [
-            (100.0, 0.0),
-            (50.0, 100.0),
-            (-50.0, 100.0),
-            (-100.0, 0.0),
-            (-50.0, -100.0),
-            (50.0, -100.0),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, (x, y))| Vertex {
-            id: VertexId::derive_v5(namespace, format!("balloon-{index}").as_bytes()),
-            position: Point2::new(x, y),
-        })
-        .collect::<Vec<_>>();
-        let mut edges = (0..6)
-            .map(|index| Edge {
-                id: EdgeId::derive_v5(namespace, format!("boundary-{index}").as_bytes()),
-                start: boundary[index].id,
-                end: boundary[(index + 1) % 6].id,
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        let hinges = (0..6)
-            .map(|index| EdgeId::derive_v5(namespace, format!("spoke-{index}").as_bytes()))
-            .collect::<Vec<_>>();
-        edges.extend((0..6).map(|index| Edge {
-            id: hinges[index],
-            start: center.id,
-            end: boundary[index].id,
-            kind: if matches!(index, 0 | 1 | 3 | 4) {
-                EdgeKind::Mountain
-            } else {
-                EdgeKind::Valley
-            },
-        }));
-        let mut vertices = vec![center];
-        vertices.extend(boundary.iter().cloned());
-        (
-            CreasePattern { vertices, edges },
-            Paper {
-                boundary_vertices: boundary.iter().map(|vertex| vertex.id).collect(),
-                thickness_mm: 0.0,
-                ..Paper::default()
-            },
-            vec![hinges[0], hinges[3]],
-        )
-    }
-
-    fn octagonal_eight_sector_cycle_pattern() -> (
-        ori_domain::CreasePattern,
-        ori_domain::Paper,
-        Vec<ori_domain::EdgeId>,
-    ) {
-        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
-        let namespace = ProjectId::schema_namespace([
-            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x05, 0x42,
-        ]);
-        let center = Vertex {
-            id: VertexId::derive_v5(namespace, b"octagonal-center"),
-            position: Point2::new(0.0, 0.0),
-        };
-        let boundary = [
-            (100.0, 0.0),
-            (70.0, 70.0),
-            (0.0, 100.0),
-            (-70.0, 70.0),
-            (-100.0, 0.0),
-            (-70.0, -70.0),
-            (0.0, -100.0),
-            (70.0, -70.0),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, (x, y))| Vertex {
-            id: VertexId::derive_v5(namespace, format!("octagonal-{index}").as_bytes()),
-            position: Point2::new(x, y),
-        })
-        .collect::<Vec<_>>();
-        let mut edges = (0..8)
-            .map(|index| Edge {
-                id: EdgeId::derive_v5(namespace, format!("boundary-{index}").as_bytes()),
-                start: boundary[index].id,
-                end: boundary[(index + 1) % 8].id,
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        let hinges = (0..8)
-            .map(|index| EdgeId::derive_v5(namespace, format!("spoke-{index}").as_bytes()))
-            .collect::<Vec<_>>();
-        edges.extend((0..8).map(|index| Edge {
-            id: hinges[index],
-            start: center.id,
-            end: boundary[index].id,
-            kind: if matches!(index, 0 | 1 | 2 | 4 | 6) {
-                EdgeKind::Mountain
-            } else {
-                EdgeKind::Valley
-            },
-        }));
-        let mut vertices = vec![center];
-        vertices.extend(boundary.iter().cloned());
-        (
-            CreasePattern { vertices, edges },
-            Paper {
-                boundary_vertices: boundary.iter().map(|vertex| vertex.id).collect(),
-                thickness_mm: 0.0,
-                ..Paper::default()
-            },
-            vec![hinges[0], hinges[2], hinges[4], hinges[6]],
-        )
-    }
-
-    fn sixteen_sector_cycle_pattern(
-        moving_second: usize,
-    ) -> (
-        ori_domain::CreasePattern,
-        ori_domain::Paper,
-        Vec<ori_domain::EdgeId>,
-    ) {
-        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
-        let namespace = ProjectId::schema_namespace([
-            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x05, 0x43,
-        ]);
-        let center = Vertex {
-            id: VertexId::derive_v5(namespace, b"sixteen-center"),
-            position: Point2::new(0.0, 0.0),
-        };
-        let half = [
-            (100.0, 0.0),
-            (92.0, 38.0),
-            (71.0, 71.0),
-            (38.0, 92.0),
-            (0.0, 100.0),
-            (-38.0, 92.0),
-            (-71.0, 71.0),
-            (-92.0, 38.0),
-        ];
-        let coordinates = half
-            .into_iter()
-            .chain(half.into_iter().map(|(x, y)| (-x, -y)))
-            .collect::<Vec<_>>();
-        let boundary = coordinates
-            .into_iter()
-            .enumerate()
-            .map(|(index, (x, y))| Vertex {
-                id: VertexId::derive_v5(namespace, format!("sixteen-{index}").as_bytes()),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let mut edges = (0..16)
-            .map(|index| Edge {
-                id: EdgeId::derive_v5(namespace, format!("boundary-{index}").as_bytes()),
-                start: boundary[index].id,
-                end: boundary[(index + 1) % 16].id,
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        let hinges = (0..16)
-            .map(|index| EdgeId::derive_v5(namespace, format!("spoke-{index}").as_bytes()))
-            .collect::<Vec<_>>();
-        edges.extend((0..16).map(|index| Edge {
-            id: hinges[index],
-            start: center.id,
-            end: boundary[index].id,
-            kind: if index <= 8 {
-                EdgeKind::Mountain
-            } else {
-                EdgeKind::Valley
-            },
-        }));
-        let mut vertices = vec![center];
-        vertices.extend(boundary.iter().cloned());
-        (
-            CreasePattern { vertices, edges },
-            Paper {
-                boundary_vertices: boundary.iter().map(|vertex| vertex.id).collect(),
-                thickness_mm: 0.0,
-                ..Paper::default()
-            },
-            vec![hinges[0], hinges[moving_second]],
-        )
-    }
-
-    #[test]
-    fn balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, moving) = balloon_six_sector_cycle_pattern();
-        assert_eq!(
-            pattern
-                .edges
-                .iter()
-                .filter(|edge| edge.kind == ori_domain::EdgeKind::Mountain)
-                .count(),
-            4
-        );
-        assert_eq!(
-            pattern
-                .edges
-                .iter()
-                .filter(|edge| edge.kind == ori_domain::EdgeKind::Valley)
-                .count(),
-            2
-        );
-        assert!(
-            pattern
-                .edges
-                .iter()
-                .filter(|edge| moving.contains(&edge.id))
-                .all(|edge| edge.kind == ori_domain::EdgeKind::Mountain)
-        );
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        assert_eq!(snapshot.faces.len(), 6);
-        assert_eq!(snapshot.hinge_adjacency.len(), 6);
-        let discovered = automatic_opposite_pairs(&project, &snapshot);
-        assert!(
-            discovered
-                .iter()
-                .any(|pair| pair.iter().all(|edge| moving.contains(edge)))
-        );
-        let mut reordered_pattern = project.editor.pattern().clone();
-        reordered_pattern.edges.reverse();
-        let reordered = super::super::ProjectState::new_with_paper(
-            reordered_pattern,
-            project.editor.paper().clone(),
-        );
-        let reordered_analysis = reordered
-            .editor
-            .topology_analysis_input(reordered.project_id)
-            .analyze();
-        let reordered_snapshot = reordered_analysis.simulation_snapshot().unwrap();
-        assert_eq!(
-            automatic_opposite_pairs(&reordered, &reordered_snapshot),
-            discovered
-        );
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        let fixed = snapshot.faces[0].id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let preview = propose_current_cycle_pose_inner(
-            None,
-            &state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
-            },
-        )
-        .expect("balloon straight-line cycle must certify");
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            preview.transaction_token,
-        )
-        .expect("balloon straight-line cycle apply");
-        let second_preview = propose_current_cycle_pose_inner(
-            None,
-            &state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: applied,
-                cycle_schedule_v1: advance_collective_schedule(&hinges, &moving, 100),
-            },
-        )
-        .expect("the rebound current pose must authorize a second preview");
-        let second_applied =
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &state,
-                &GlobalFlatFoldabilityState::default(),
-                &transactions,
-                second_preview.transaction_token,
-            )
-            .expect("second balloon operation applies atomically");
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            project
-                .applied_pose_authority
-                .capture_capability(&project)
-                .unwrap()
-                .is_some()
-        );
-        project.editor.undo(second_applied).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        assert!(
-            project
-                .applied_pose_authority
-                .capture_capability(&project)
-                .unwrap()
-                .is_none()
-        );
-        let first_undone = project.editor.revision();
-        project.editor.undo(first_undone).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        let first_redone = project.editor.revision();
-        project.editor.redo(first_redone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        let mut nonclosing_document = project.document();
-        let tampered = nonclosing_document.instruction_timeline.steps[0]
-            .pose
-            .hinge_angles
-            .iter_mut()
-            .find(|hinge| hinge.edge == moving[0])
-            .expect("moving balloon hinge is persisted");
-        tampered.angle_degrees += 0.01;
-        assert!(
-            super::super::validate_document_instruction_poses(&nonclosing_document)
-                .expect_err("a nonclosing cyclic persisted pose must fail closed")
-                .contains("is not cycle-closing")
-        );
-        let archive = project
-            .project_archive()
-            .expect("serialize applied balloon cycle with history");
-        super::super::restore_archive_editor(&archive)
-            .expect("restore applied balloon editor history");
-        let mut reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("balloon-cycle.ori2"),
-        )
-        .expect("reopen applied balloon cycle");
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-        assert!(
-            reopened
-                .applied_pose_authority
-                .capture_capability(&reopened)
-                .unwrap()
-                .is_some()
-        );
-        let reopened_revision = reopened.editor.revision();
-        reopened.editor.undo(reopened_revision).unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
-        let reopened_undone = reopened.editor.revision();
-        reopened.editor.undo(reopened_undone).unwrap();
-        assert!(reopened.editor.instruction_timeline().steps.is_empty());
-        let reopened_first_redo = reopened.editor.revision();
-        reopened.editor.redo(reopened_first_redo).unwrap();
-        let reopened_second_redo = reopened.editor.revision();
-        reopened.editor.redo(reopened_second_redo).unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-    }
-
-    #[test]
-    fn concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority() {
-        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let namespace = ProjectId::schema_namespace([
-            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x05, 0x71,
-        ]);
-        let coordinates = [
-            (0.0, 0.0),
-            (3.0, 0.0),
-            (3.0, 1.0),
-            (1.0, 1.0),
-            (1.0, 3.0),
-            (0.0, 3.0),
-        ];
-        let vertices = coordinates
-            .into_iter()
-            .enumerate()
-            .map(|(index, (x, y))| Vertex {
-                id: VertexId::derive_v5(namespace, &[index as u8]),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let hinge = EdgeId::derive_v5(namespace, b"concave-hinge");
-        let mut edges = (0..vertices.len())
-            .map(|index| Edge {
-                id: EdgeId::derive_v5(namespace, &[0x20, index as u8]),
-                start: vertices[index].id,
-                end: vertices[(index + 1) % vertices.len()].id,
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        edges.push(Edge {
-            id: hinge,
-            start: vertices[0].id,
-            end: vertices[3].id,
-            kind: EdgeKind::Mountain,
-        });
-        let paper = Paper {
-            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
-            thickness_mm: 0.1,
-            ..Paper::default()
-        };
-        let project =
-            super::super::ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper);
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            None,
-            DyadicPoseGraphReadRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles: vec![DyadicPoseGraphAngleDtoV1 {
-                    edge: hinge,
-                    angle_degrees: 1.0,
-                }],
-                max_states: 32,
-                max_transitions: 64,
-                level_count: 3,
-                cycle_schedule_v1: None,
-            },
-            None,
-        )
-        .expect("concave read returns a fail-closed observation")
-        .into_test_view();
-        assert_eq!(observed.reason, "unsupported_geometry");
-        assert!(!observed.mutation_candidate_ready);
-        assert!(!observed.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-    }
-
-    #[test]
-    fn cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority() {
-        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let namespace = ProjectId::schema_namespace([
-            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x05, 0x72,
-        ]);
-        let coordinates = [
-            (0.0, 0.0),
-            (1.0, 0.0),
-            (2.0, 0.0),
-            (3.0, 0.0),
-            (3.0, 2.0),
-            (2.0, 2.0),
-            (1.0, 2.0),
-            (0.0, 2.0),
-        ];
-        let vertices = coordinates
-            .into_iter()
-            .enumerate()
-            .map(|(index, (x, y))| Vertex {
-                id: VertexId::derive_v5(namespace, &[index as u8]),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let hinge = EdgeId::derive_v5(namespace, b"cut-fixture-hinge");
-        let cut = EdgeId::derive_v5(namespace, b"cut-fixture-cut");
-        let mut edges = (0..vertices.len())
-            .map(|index| Edge {
-                id: EdgeId::derive_v5(namespace, &[0x20, index as u8]),
-                start: vertices[index].id,
-                end: vertices[(index + 1) % vertices.len()].id,
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        edges.extend([
-            Edge {
-                id: hinge,
-                start: vertices[1].id,
-                end: vertices[6].id,
-                kind: EdgeKind::Mountain,
-            },
-            Edge {
-                id: cut,
-                start: vertices[2].id,
-                end: vertices[5].id,
-                kind: EdgeKind::Cut,
-            },
-        ]);
-        let paper = Paper {
-            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
-            thickness_mm: 0.1,
-            ..Paper::default()
-        };
-        let project =
-            super::super::ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper);
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            None,
-            DyadicPoseGraphReadRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles: vec![DyadicPoseGraphAngleDtoV1 {
-                    edge: hinge,
-                    angle_degrees: 1.0,
-                }],
-                max_states: 32,
-                max_transitions: 64,
-                level_count: 3,
-                cycle_schedule_v1: None,
-            },
-            None,
-        )
-        .expect("cut read returns a fail-closed observation")
-        .into_test_view();
-        assert_eq!(observed.reason, "unsupported_geometry");
-        assert!(!observed.mutation_candidate_ready);
-        assert!(!observed.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        assert!(
-            project
-                .applied_pose_authority
-                .capture_capability(&project)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority() {
-        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let namespace = ProjectId::schema_namespace([
-            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x05, 0x73,
-        ]);
-        let coordinates = [
-            (0.0, 0.0),
-            (1.0, 0.0),
-            (8.0, 0.0),
-            (8.0, 8.0),
-            (1.0, 8.0),
-            (0.0, 8.0),
-            (2.0, 2.0),
-            (6.0, 2.0),
-            (4.0, 6.0),
-        ];
-        let vertices = coordinates
-            .into_iter()
-            .enumerate()
-            .map(|(index, (x, y))| Vertex {
-                id: VertexId::derive_v5(namespace, &[index as u8]),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let hinge = EdgeId::derive_v5(namespace, b"hole-fixture-hinge");
-        let mut edges = (0..6)
-            .map(|index| Edge {
-                id: EdgeId::derive_v5(namespace, &[0x20, index as u8]),
-                start: vertices[index].id,
-                end: vertices[(index + 1) % 6].id,
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        edges.push(Edge {
-            id: hinge,
-            start: vertices[1].id,
-            end: vertices[4].id,
-            kind: EdgeKind::Mountain,
-        });
-        for (index, (start, end)) in [(6, 7), (7, 8), (8, 6)].into_iter().enumerate() {
-            edges.push(Edge {
-                id: EdgeId::derive_v5(namespace, &[0x30, index as u8]),
-                start: vertices[start].id,
-                end: vertices[end].id,
-                kind: EdgeKind::Cut,
-            });
-        }
-        let paper = Paper {
-            boundary_vertices: vertices[..6].iter().map(|vertex| vertex.id).collect(),
-            thickness_mm: 0.1,
-            cutting_allowed: true,
-            ..Paper::default()
-        };
-        let project =
-            super::super::ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper);
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            None,
-            DyadicPoseGraphReadRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles: vec![DyadicPoseGraphAngleDtoV1 {
-                    edge: hinge,
-                    angle_degrees: 1.0,
-                }],
-                max_states: 32,
-                max_transitions: 64,
-                level_count: 3,
-                cycle_schedule_v1: None,
-            },
-            None,
-        )
-        .expect("hole read returns a fail-closed observation")
-        .into_test_view();
-        assert_eq!(observed.reason, "unsupported_geometry");
-        assert!(!observed.mutation_candidate_ready);
-        assert!(!observed.authorizes_project_mutation);
-        let project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.revision(), revision);
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        assert!(
-            project
-                .applied_pose_authority
-                .capture_capability(&project)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (c8_pattern, c8_paper, c8_cardinal) = octagonal_eight_sector_cycle_pattern();
-        let c8_opposite = vec![c8_cardinal[0], c8_cardinal[2]];
-        for (fixture_name, (pattern, mut paper, moving)) in [
-            ("balloon-c6", balloon_six_sector_cycle_pattern()),
-            ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite)),
-        ] {
-            paper.thickness_mm = 0.1;
-            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-            let topology = project
-                .editor
-                .topology_analysis_input(project.project_id)
-                .analyze();
-            let snapshot = topology.simulation_snapshot().unwrap();
-            let hinges = snapshot
-                .hinge_adjacency
-                .iter()
-                .map(|hinge| hinge.edge)
-                .collect::<Vec<_>>();
-            let fixed = snapshot.faces[0].id;
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                fixed,
-            );
-            let layer_state = GlobalFlatFoldabilityState::default();
-            super::super::global_flat_foldability::tests::install_possible_layer_order(
-                &layer_state,
-                &project,
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let state = AppState::new(project);
-            let endpoint_ratio = match hinges.len() {
-                6 => (4, 3),
-                8 => (7, 3),
-                _ => unreachable!("bounded opposite-pair fixture"),
-            };
-            let schedule =
-                dense_grid_schedule_ratio(&hinges, &moving, endpoint_ratio.0, endpoint_ratio.1);
-            let target = {
-                let project = super::super::lock_project(&state).unwrap();
-                let capability = project
-                    .applied_pose_authority
-                    .capture_capability(&project)
-                    .unwrap()
-                    .unwrap();
-                let (geometry, audit, pose) = capability.graph().unwrap();
-                prepare_requested_cycle_schedule_v1(
-                    &schedule,
-                    geometry,
-                    audit,
-                    pose.fixed_face(),
-                    pose.hinge_angles(),
-                )
-                .unwrap()
-                .evaluate(1.0)
-                .unwrap()
-            };
-            let target_angles = target
-                .as_slice()
-                .iter()
-                .map(|angle| DyadicPoseGraphAngleDtoV1 {
-                    edge: angle.edge(),
-                    angle_degrees: angle.angle_degrees(),
-                })
-                .collect::<Vec<_>>();
-            let observed = read_bounded_dyadic_pose_graph_inner_v1(
-                &state,
-                Some(&layer_state),
-                DyadicPoseGraphReadRequestV1 {
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    target_angles: target_angles
-                        .iter()
-                        .map(|angle| DyadicPoseGraphAngleDtoV1 {
-                            edge: angle.edge,
-                            angle_degrees: angle.angle_degrees,
-                        })
-                        .collect(),
-                    max_states: 32,
-                    max_transitions: 128,
-                    level_count: 3,
-                    cycle_schedule_v1: None,
-                },
-                None,
-            )
-            .unwrap_or_else(|error| panic!("{fixture_name} exact schedule dyadic read: {error}"))
-            .into_test_view();
-            assert_eq!(observed.status, "certified");
-            assert_eq!(observed.state_count, 3);
-            assert_eq!(observed.transition_count, 4);
-            assert!(observed.certified_transition_count > 0);
-            assert!(observed.positive_thickness_certified);
-            assert!(observed.layer_transport_certified);
-            assert!(observed.mutation_candidate_ready);
-            assert!(!observed.authorizes_project_mutation);
-
-            let expected_steps = observed.certified_transition_count + 1;
-            let preview_state = DyadicPathPreviewState::default();
-            let preview = mint_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                DyadicPathPreviewRequestV1 {
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    target_angles,
-                    max_states: 32,
-                    max_transitions: 128,
-                    level_count: 3,
-                    cycle_schedule_v1: None,
-                    expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
-                    expected_positive_thickness_binding_sha256: observed
-                        .positive_thickness_binding_sha256
-                        .unwrap(),
-                    expected_layer_transport_binding_sha256: observed
-                        .layer_transport_binding_sha256
-                        .unwrap(),
-                },
-            )
-            .unwrap_or_else(|error| panic!("{fixture_name} proof families mint preview: {error}"));
-            let apply_request =
-                |expected_revision: u64, path: String| ApplyDyadicPathPreviewRequestV1 {
-                    preview_token: preview.preview_token,
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision,
-                    expected_target_binding_sha256: preview.target_binding_sha256.clone(),
-                    expected_path_binding_sha256: path,
-                    expected_positive_thickness_binding_sha256: preview
-                        .positive_thickness_binding_sha256
-                        .clone(),
-                    expected_layer_transport_binding_sha256: preview
-                        .layer_transport_binding_sha256
-                        .clone(),
-                };
-            for rejected in [
-                apply_request(revision, "00".repeat(32)),
-                apply_request(revision + 1, preview.path_binding_sha256.clone()),
-            ] {
-                assert!(
-                    apply_dyadic_pose_path_preview_inner_v1(
-                        &state,
-                        &layer_state,
-                        &preview_state,
-                        rejected,
-                    )
-                    .is_err()
-                );
-                assert_eq!(
-                    super::super::lock_project(&state)
-                        .unwrap()
-                        .editor
-                        .revision(),
-                    revision,
-                    "tamper and stale attempts are atomic no-ops"
-                );
-            }
-            let applied = apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request(revision, preview.path_binding_sha256.clone()),
-            )
-            .unwrap_or_else(|error| panic!("{fixture_name} path applies atomically: {error}"));
-            assert!(
-                apply_dyadic_pose_path_preview_inner_v1(
-                    &state,
-                    &layer_state,
-                    &preview_state,
-                    apply_request(revision, preview.path_binding_sha256),
-                )
-                .is_err()
-            );
-            let mut project = super::super::lock_project(&state).unwrap();
-            assert_eq!(applied, revision + 1);
-            assert_eq!(
-                project.editor.instruction_timeline().steps.len(),
-                expected_steps
-            );
-            assert!(
-                project.editor.instruction_timeline().steps[1..]
-                    .iter()
-                    .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
-            );
-            project.editor.undo(applied).unwrap();
-            assert!(project.editor.instruction_timeline().steps.is_empty());
-            let undone = project.editor.revision();
-            project.editor.redo(undone).unwrap();
-            assert_eq!(
-                project.editor.instruction_timeline().steps.len(),
-                expected_steps
-            );
-            let archive = project.project_archive().unwrap();
-            drop(project);
-            let reopened = super::super::ProjectState::from_project_archive(
-                archive,
-                std::path::PathBuf::from(format!("{fixture_name}-dyadic-authority.ori2")),
-            )
-            .expect("reopen proof-bearing degree-six balloon path");
-            assert_eq!(
-                reopened.editor.instruction_timeline().steps.len(),
-                expected_steps
-            );
-            assert!(
-                reopened.editor.instruction_timeline().steps[1..]
-                    .iter()
-                    .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
-            );
-            // Instruction rendering has its own bounded topology contract;
-            // this regression authenticates exact cycle read/apply/history.
-        }
-    }
-
-    #[test]
-    fn automatic_kawasaki_archive_reopens_with_native_pose_authority() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
-        set_zero_thickness_for_cycle_test_v1(&mut project);
-        super::super::applied_pose::tests::install_flat_graph_pose_authority(&mut project, hinges);
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let preview = propose_current_cycle_pose_inner(
-            None,
-            &state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: CycleScheduleRequestV1 {
-                    version: 2,
-                    entries: Vec::new(),
-                    endpoint_denominator: None,
-                },
-            },
-        )
-        .expect("automatic exact Kawasaki preview");
-        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            preview.transaction_token,
-        )
-        .expect("apply automatic exact Kawasaki pose");
-        let project = super::super::lock_project(&state).unwrap();
-        let original_pose = project.editor.instruction_timeline().steps[0].pose.clone();
-        let archive = project.project_archive().unwrap();
-        let mut tampered = project.document();
-        tampered.instruction_timeline.steps[0].pose.hinge_angles[0].angle_degrees += 0.01;
-        assert!(super::super::validate_document_instruction_poses(&tampered).is_err());
-        drop(project);
-        let reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("automatic-kawasaki.ori2"),
-        )
-        .expect("reopen automatic exact Kawasaki archive");
-        assert_eq!(
-            reopened.editor.instruction_timeline().steps[0].pose,
-            original_pose
-        );
-        assert!(
-            reopened
-                .applied_pose_authority
-                .capture_capability(&reopened)
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn uncertified_rational_kawasaki_endpoints_are_atomic_no_ops() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        for (numerator, denominator, complement) in [(5.0, 13.0, 12.0), (7.0, 25.0, 24.0)] {
-            let (mut project, hinges) =
-                uncertified_rational_kawasaki_project(numerator, denominator, complement);
-            super::super::applied_pose::tests::install_flat_graph_pose_authority(
-                &mut project,
-                hinges,
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let state = AppState::new(project);
-            let transactions =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            let endpoint_read = read_even_cycle_candidates_inner_v1(
-                &state,
-                EvenCycleCandidatesRequestV1::for_test(instance, project_id, revision, 6),
-            )
-            .unwrap();
-            let endpoint_outcomes = endpoint_read.kawasaki_endpoint_outcomes_for_test();
-            assert_eq!(endpoint_outcomes.len(), 5);
-            assert!(endpoint_outcomes.iter().all(
-                |(closure_status, collision_status, authorizes_apply)| {
-                    *closure_status == "certified"
-                        && *collision_status == "uncertified"
-                        && !*authorizes_apply
-                }
-            ));
-            let result = propose_current_cycle_pose_inner(
-                None,
-                &state,
-                &transactions,
-                CurrentCyclePosePreviewRequestV1 {
-                    progress_request_id: None,
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    cycle_schedule_v1: CycleScheduleRequestV1 {
-                        version: 2,
-                        entries: Vec::new(),
-                        endpoint_denominator: Some(16),
-                    },
-                },
-            );
-            assert!(matches!(
-                result,
-                Err(reason) if reason == CYCLE_PATH_UNCERTIFIED_MESSAGE
-            ));
-            let project = super::super::lock_project(&state).unwrap();
-            assert_eq!(project.editor.revision(), revision);
-            assert!(project.editor.instruction_timeline().steps.is_empty());
-            assert!(
-                project
-                    .applied_pose_authority
-                    .capture_capability(&project)
-                    .unwrap()
-                    .is_some(),
-                "a rejected preview must not consume source pose authority"
-            );
-        }
-    }
-
-    #[test]
-    fn octagonal_eight_sector_cycle_previews_applies_and_reopens_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, moving) = octagonal_eight_sector_cycle_pattern();
-        assert_eq!(
-            pattern
-                .edges
-                .iter()
-                .filter(|edge| edge.kind == ori_domain::EdgeKind::Mountain)
-                .count(),
-            5
-        );
-        assert_eq!(
-            pattern
-                .edges
-                .iter()
-                .filter(|edge| edge.kind == ori_domain::EdgeKind::Valley)
-                .count(),
-            3
-        );
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        assert_eq!(snapshot.faces.len(), 8);
-        assert_eq!(snapshot.hinge_adjacency.len(), 8);
-        assert!(
-            automatic_opposite_pairs(&project, &snapshot)
-                .iter()
-                .any(|pair| pair.iter().all(|edge| moving.contains(edge)))
-        );
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        let fixed = snapshot.faces[0].id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let opposite_pair = vec![moving[0], moving[2]];
-        assert_eq!(
-            propose_current_cycle_pose_inner(
-                None,
-                &state,
-                &transactions,
-                CurrentCyclePosePreviewRequestV1 {
-                    progress_request_id: None,
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
-                },
-            )
-            .unwrap_err(),
-            CYCLE_NONCLOSING_MESSAGE
-        );
-        let preview = propose_current_cycle_pose_inner(
-            None,
-            &state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: dense_grid_schedule(&hinges, &opposite_pair, 100),
-            },
-        )
-        .expect("octagonal straight-line cycle must certify");
-        assert_eq!(preview.checked_hinge_count, 8);
-        assert_eq!(preview.total_hinge_count, 8);
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            preview.transaction_token,
-        )
-        .expect("octagonal straight-line cycle apply");
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        let archive = project
-            .project_archive()
-            .expect("serialize applied octagonal cycle");
-        let mut reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("octagonal-cycle.ori2"),
-        )
-        .expect("reopen applied octagonal cycle");
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
-        let reopened_revision = reopened.editor.revision();
-        reopened.editor.undo(reopened_revision).unwrap();
-        assert!(reopened.editor.instruction_timeline().steps.is_empty());
-        let reopened_undone = reopened.editor.revision();
-        reopened.editor.redo(reopened_undone).unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
-    }
-
-    #[test]
-    fn sixteen_sector_upper_bound_previews_applies_reopens_and_rejects_nonopposite_pair() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, moving) = sixteen_sector_cycle_pattern(8);
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        assert_eq!(snapshot.faces.len(), 16);
-        assert_eq!(snapshot.hinge_adjacency.len(), 16);
-        let graph_geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
-            project.editor.pattern(),
-            project.editor.paper(),
-            &snapshot,
-            ori_kinematics::TreeKinematicsLimits::default(),
-        )
-        .unwrap();
-        let graph_audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
-            &snapshot,
-            ori_kinematics::TreeKinematicsLimits::default(),
-        )
-        .unwrap();
-        let automatic_pairs = ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
-            &graph_geometry,
-            &graph_audit,
-            120,
-        )
-        .expect("bounded C16 opposite-pair discovery");
-        assert!(
-            automatic_pairs
-                .iter()
-                .any(|pair| { pair.iter().all(|edge| moving.contains(edge)) })
-        );
-        assert!(matches!(
-            ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
-                &graph_geometry,
-                &graph_audit,
-                119,
-            ),
-            Err(ori_kinematics::KinematicsError::ResourceLimitExceeded)
-        ));
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        let fixed = snapshot.faces[0].id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let preview = propose_current_cycle_pose_inner(
-            None,
-            &state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
-            },
-        )
-        .expect("sixteen-sector opposite pair must certify");
-        assert_eq!(preview.checked_hinge_count, 16);
-        assert_eq!(preview.total_hinge_count, 16);
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            preview.transaction_token,
-        )
-        .expect("sixteen-sector opposite pair apply");
-        let second_preview = propose_current_cycle_pose_inner(
-            None,
-            &state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: applied,
-                cycle_schedule_v1: advance_collective_schedule(&hinges, &moving, 100),
-            },
-        )
-        .expect("C16 rebound authority must authorize the second preview");
-        assert_eq!(second_preview.checked_hinge_count, 16);
-        assert_eq!(second_preview.total_hinge_count, 16);
-        let second_applied =
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &state,
-                &GlobalFlatFoldabilityState::default(),
-                &transactions,
-                second_preview.transaction_token,
-            )
-            .expect("second C16 operation applies atomically");
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        project.editor.undo(second_applied).unwrap();
-        let first_undone = project.editor.revision();
-        project.editor.undo(first_undone).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let first_redo = project.editor.revision();
-        project.editor.redo(first_redo).unwrap();
-        let second_redo = project.editor.revision();
-        project.editor.redo(second_redo).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
-        let archive = project.project_archive().expect("serialize C16 cycle");
-        let mut reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("sixteen-cycle.ori2"),
-        )
-        .expect("reopen C16 cycle");
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-        let reopened_revision = reopened.editor.revision();
-        reopened.editor.undo(reopened_revision).unwrap();
-        let reopened_first_undone = reopened.editor.revision();
-        reopened.editor.undo(reopened_first_undone).unwrap();
-        assert!(reopened.editor.instruction_timeline().steps.is_empty());
-        let reopened_first_redo = reopened.editor.revision();
-        reopened.editor.redo(reopened_first_redo).unwrap();
-        let reopened_second_redo = reopened.editor.revision();
-        reopened.editor.redo(reopened_second_redo).unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
-
-        let (pattern, paper, nonopposite) = sixteen_sector_cycle_pattern(7);
-        let mut rejected = super::super::ProjectState::new_with_paper(pattern, paper);
-        let rejected_topology = rejected
-            .editor
-            .topology_analysis_input(rejected.project_id)
-            .analyze();
-        let rejected_snapshot = rejected_topology.simulation_snapshot().unwrap();
-        let rejected_hinges = rejected_snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut rejected,
-            rejected_hinges.clone(),
-            rejected_snapshot.faces[0].id,
-        );
-        let rejected_instance = rejected.instance_id;
-        let rejected_project_id = rejected.project_id;
-        let rejected_revision = rejected.editor.revision();
-        let rejected_state = AppState::new(rejected);
-        assert_eq!(
-            propose_current_cycle_pose_inner(
-                None,
-                &rejected_state,
-                &super::super::stacked_fold_transaction::StackedFoldTransactionState::default(),
-                CurrentCyclePosePreviewRequestV1 {
-                    progress_request_id: None,
-                    expected_project_instance_id: rejected_instance,
-                    expected_project_id: rejected_project_id,
-                    expected_revision: rejected_revision,
-                    cycle_schedule_v1: dense_grid_schedule(&rejected_hinges, &nonopposite, 100,),
-                },
-            )
-            .unwrap_err(),
-            CYCLE_NONCLOSING_MESSAGE
-        );
-    }
-
-    #[test]
-    fn four_leaf_cycle_preview_applies_atomically_and_round_trips_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, hinges) =
-            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let fixed = snapshot
-            .faces
-            .iter()
-            .max_by_key(|face| {
-                snapshot
-                    .hinge_adjacency
-                    .iter()
-                    .filter(|adjacency| adjacency.first == face.id || adjacency.second == face.id)
-                    .count()
-            })
-            .unwrap()
-            .id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        {
-            let capability = project
-                .applied_pose_authority
-                .capture_capability(&project)
-                .unwrap()
-                .unwrap();
-            let (geometry, audit, _) = capability.graph().unwrap();
-            let basis = geometry
-                .extract_canonical_cycle_basis_v1(audit, CycleBasisLimitsV1::default())
-                .expect("four-cycle canonical basis");
-            assert_eq!(basis.cycles().len(), 4);
-            assert!(
-                geometry
-                    .extract_canonical_cycle_basis_v1(
-                        audit,
-                        CycleBasisLimitsV1 {
-                            max_cycles: 3,
-                            ..CycleBasisLimitsV1::default()
-                        },
-                    )
-                    .is_err()
-            );
-        }
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let app_state = AppState::new(project);
-        let transaction_state =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let mut corrupted = four_bay_cycle_schedule(&hinges);
-        corrupted
-            .entries
-            .iter_mut()
-            .find(|entry| entry.edge == hinges[12])
-            .unwrap()
-            .numerator_power_coefficients[1]
-            .numerator += 1;
-        assert!(
-            propose_current_cycle_pose_inner(
-                None,
-                &app_state,
-                &transaction_state,
-                CurrentCyclePosePreviewRequestV1 {
-                    progress_request_id: None,
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    cycle_schedule_v1: corrupted,
-                },
-            )
-            .is_err()
-        );
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &app_state,
-                &GlobalFlatFoldabilityState::default(),
-                &transaction_state,
-                ProjectId::new(),
-            )
-            .is_err()
-        );
-        let response = propose_current_cycle_pose_inner(
-            None,
-            &app_state,
-            &transaction_state,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-            },
-        )
-        .expect("four-leaf authenticated preview");
-        assert_eq!(response.closure_leaf_count, 4);
-        assert_eq!(response.closure_max_depth, 2);
-        assert_eq!(response.checked_hinge_count, 16);
-        assert_eq!(response.total_hinge_count, 16);
-        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-            &transaction_state,
-            response.transaction_token,
-        )
-        .unwrap();
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &app_state,
-                &GlobalFlatFoldabilityState::default(),
-                &transaction_state,
-                response.transaction_token,
-            )
-            .is_err()
-        );
-        let response = propose_current_cycle_pose_inner(
-            None,
-            &app_state,
-            &transaction_state,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-            },
-        )
-        .expect("four-leaf retry preview");
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &app_state,
-            &GlobalFlatFoldabilityState::default(),
-            &transaction_state,
-            response.transaction_token,
-        )
-        .expect("four-leaf atomic apply");
-        let mut project = super::super::lock_project(&app_state).unwrap();
-        assert_eq!(applied, revision + 1);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-    }
-
-    #[test]
-    fn coupled_cactus_previews_apply_and_round_trip_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        for cycle_count in [2, 3, 4, 8, 16, 32] {
-            for thickness_mm in [10_000.0, 0.1, 1.0, 3.0] {
-                let (pattern, mut paper, hinges) = if cycle_count == 2 {
-                    super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern()
-                } else if cycle_count == 3 {
-                    super::four_bay_cycle_test_support::three_bay_rational_cycle_pattern()
-                } else if cycle_count == 4 {
-                    super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern()
-                } else if cycle_count == 8 {
-                    super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern()
-                } else if cycle_count == 32 {
-                    super::four_bay_cycle_test_support::thirty_two_bay_rational_cycle_pattern()
-                } else {
-                    super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern()
-                };
-                paper.thickness_mm = thickness_mm;
-                let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-                let topology = project
-                    .editor
-                    .topology_analysis_input(project.project_id)
-                    .analyze();
-                let snapshot = topology.simulation_snapshot().unwrap();
-                let fixed = snapshot
-                    .faces
-                    .iter()
-                    .find(|face| {
-                        snapshot
-                            .hinge_adjacency
-                            .iter()
-                            .filter(|adjacency| {
-                                adjacency.first == face.id || adjacency.second == face.id
-                            })
-                            .count()
-                            == 2
-                    })
-                    .unwrap()
-                    .id;
-                super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                    &mut project,
-                    hinges.clone(),
-                    fixed,
-                );
-                let instance = project.instance_id;
-                let project_id = project.project_id;
-                let revision = project.editor.revision();
-                let app_state = AppState::new(project);
-                let transactions =
-                    super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-                if thickness_mm < 10_000.0 && cycle_count < 32 {
-                    assert!(
-                        crate::applied_pose::certify_current_static_collision(
-                            &app_state,
-                            ori_collision::StaticCollisionLimits::default(),
-                        )
-                        .expect("flat cactus current collision diagnosis")
-                        .is_some()
-                    );
-                }
-                if cycle_count == 32 {
-                    assert_eq!(
-                        propose_current_cycle_pose_inner(
-                            None,
-                            &app_state,
-                            &transactions,
-                            CurrentCyclePosePreviewRequestV1 {
-                                progress_request_id: Some("rank32:stale".to_owned()),
-                                expected_project_instance_id: ProjectId::new(),
-                                expected_project_id: project_id,
-                                expected_revision: revision,
-                                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-                            },
-                        )
-                        .unwrap_err(),
-                        STALE_MESSAGE
-                    );
-                }
-                let response = propose_current_cycle_pose_inner(
-                    None,
-                    &app_state,
-                    &transactions,
-                    CurrentCyclePosePreviewRequestV1 {
-                        progress_request_id: None,
-                        expected_project_instance_id: instance,
-                        expected_project_id: project_id,
-                        expected_revision: revision,
-                        cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-                    },
-                );
-                if thickness_mm == 10_000.0 {
-                    assert_eq!(response.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
-                    let project = super::super::lock_project(&app_state).unwrap();
-                    assert!(project.editor.instruction_timeline().steps.is_empty());
-                    assert_eq!(project.editor.revision(), revision);
-                    assert!(
-                        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                            &app_state,
-                            &GlobalFlatFoldabilityState::default(),
-                            &transactions,
-                            ProjectId::new(),
-                        )
-                        .is_err()
-                    );
-                    continue;
-                }
-                let response = response.expect("coupled cactus preview");
-                assert_eq!(response.closure_leaf_count, cycle_count);
-                assert_eq!(response.checked_hinge_count, cycle_count * 4);
-                if cycle_count == 32 && thickness_mm == 1.0 {
-                    super::super::lock_project(&app_state).unwrap().instance_id = ProjectId::new();
-                    assert!(
-                        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                            &app_state,
-                            &GlobalFlatFoldabilityState::default(),
-                            &transactions,
-                            response.transaction_token,
-                        )
-                        .is_err()
-                    );
-                    assert!(
-                        super::super::lock_project(&app_state)
-                            .unwrap()
-                            .editor
-                            .instruction_timeline()
-                            .steps
-                            .is_empty()
-                    );
-                    continue;
-                }
-                super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-                    &transactions,
-                    response.transaction_token,
-                )
-                .unwrap();
-                assert!(
-                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &app_state,
-                        &GlobalFlatFoldabilityState::default(),
-                        &transactions,
-                        response.transaction_token,
-                    )
-                    .is_err()
-                );
-                let response = propose_current_cycle_pose_inner(
-                    None,
-                    &app_state,
-                    &transactions,
-                    CurrentCyclePosePreviewRequestV1 {
-                        progress_request_id: None,
-                        expected_project_instance_id: instance,
-                        expected_project_id: project_id,
-                        expected_revision: revision,
-                        cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-                    },
-                )
-                .expect("coupled cactus retry");
-                let applied =
-                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &app_state,
-                        &GlobalFlatFoldabilityState::default(),
-                        &transactions,
-                        response.transaction_token,
-                    )
-                    .unwrap();
-                let mut project = super::super::lock_project(&app_state).unwrap();
-                project.editor.undo(applied).unwrap();
-                let undone = project.editor.revision();
-                project.editor.redo(undone).unwrap();
-                assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-                if cycle_count == 16 {
-                    let archive = project
-                        .project_archive()
-                        .expect("serialize positive-thickness C16 cycle");
-                    let mut reopened = super::super::ProjectState::from_project_archive(
-                        archive,
-                        std::path::PathBuf::from(format!("positive-c16-{thickness_mm}.ori2")),
-                    )
-                    .expect("reopen positive-thickness C16 cycle");
-                    assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
-                    let reopened_revision = reopened.editor.revision();
-                    reopened.editor.undo(reopened_revision).unwrap();
-                    assert!(reopened.editor.instruction_timeline().steps.is_empty());
-                    let reopened_redo = reopened.editor.revision();
-                    reopened.editor.redo(reopened_redo).unwrap();
-                    assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn rank4_cycle_transports_layer_order_and_applies_atomically() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        for (columns, rows, thickness_mm, expected_cycle_rank) in [
-            (3, 3, 0.1, 4),
-            (3, 3, 1.0, 4),
-            (3, 3, 3.0, 4),
-            (3, 3, 10_000.0, 4),
-            (3, 5, 0.1, 8),
-            (5, 5, 0.1, 16),
-            (5, 9, 0.1, 32),
-            (7, 7, 0.1, 36),
-            (7, 9, 0.1, 48),
-            (8, 9, 0.1, 56),
-            (9, 9, 0.1, 64),
-        ] {
-            let (pattern, mut paper, horizontal, _) =
-                super::dense_grid_cycle_test_support::miura_authority_pattern(columns, rows);
-            let moving = horizontal.into_iter().take(columns).collect::<Vec<_>>();
-            paper.thickness_mm = thickness_mm;
-            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-            let topology = project
-                .editor
-                .topology_analysis_input(project.project_id)
-                .analyze();
-            let snapshot = topology.simulation_snapshot().unwrap();
-            assert_eq!(
-                snapshot.hinge_adjacency.len() + 1 - snapshot.faces.len(),
-                expected_cycle_rank
-            );
-            let hinges = snapshot
-                .hinge_adjacency
-                .iter()
-                .map(|hinge| hinge.edge)
-                .collect::<Vec<_>>();
-            let fixed = snapshot.faces[0].id;
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                fixed,
-            );
-            let layer_state = GlobalFlatFoldabilityState::default();
-            super::super::global_flat_foldability::tests::install_possible_layer_order(
-                &layer_state,
-                &project,
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let app_state = AppState::new(project);
-            let transactions =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            let schedule_for = |mask: usize| {
-                let mut schedule = dense_grid_schedule(&hinges, &moving, 100);
-                for (index, entry) in schedule
-                    .entries
-                    .iter_mut()
-                    .filter(|entry| moving.contains(&entry.edge))
-                    .enumerate()
-                {
-                    let mountain = snapshot
-                        .hinge_adjacency
-                        .iter()
-                        .find(|hinge| hinge.edge == entry.edge)
-                        .is_some_and(|hinge| {
-                            hinge.assignment == ori_topology::FoldAssignment::Mountain
-                        });
-                    if mountain ^ (mask & (1 << index) != 0) {
-                        entry.numerator_power_coefficients[1].numerator *= -1;
-                        entry.requested_angle_degrees *= -1.0;
-                    }
-                }
-                schedule
-            };
-            let request = |expected_project_instance_id, mask| CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: Some("rank4:layer".to_owned()),
-                expected_project_instance_id,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: schedule_for(mask),
-            };
-            assert_eq!(
-                propose_current_cycle_pose_inner_with_layers(
-                    None,
-                    &app_state,
-                    Some(&layer_state),
-                    &transactions,
-                    request(ProjectId::new(), 0),
-                )
-                .unwrap_err(),
-                STALE_MESSAGE
-            );
-            if thickness_mm == 10_000.0 {
-                assert!((0..(1usize << moving.len())).all(|mask| {
-                    propose_current_cycle_pose_inner_with_layers(
-                        None,
-                        &app_state,
-                        Some(&layer_state),
-                        &transactions,
-                        request(instance, mask),
-                    )
-                    .is_err()
-                }));
-                let project = super::super::lock_project(&app_state).unwrap();
-                assert_eq!(project.editor.revision(), revision);
-                assert!(project.editor.instruction_timeline().steps.is_empty());
-                continue;
-            }
-            let mut malformed = request(instance, 0);
-            malformed.cycle_schedule_v1.entries[0].denominator_power_coefficients[0].numerator = 0;
-            assert!(
-                propose_current_cycle_pose_inner_with_layers(
-                    None,
-                    &app_state,
-                    Some(&layer_state),
-                    &transactions,
-                    malformed,
-                )
-                .is_err()
-            );
-            assert!(
-                super::super::lock_project(&app_state)
-                    .unwrap()
-                    .editor
-                    .instruction_timeline()
-                    .steps
-                    .is_empty()
-            );
-            let Some((closing_mask, preview)) = (0..(1usize << moving.len())).find_map(|mask| {
-                propose_current_cycle_pose_inner_with_layers(
-                    None,
-                    &app_state,
-                    Some(&layer_state),
-                    &transactions,
-                    request(instance, mask),
-                )
-                .ok()
-                .map(|preview| (mask, preview))
-            }) else {
-                let project = super::super::lock_project(&app_state).unwrap();
-                assert_eq!(project.editor.revision(), revision);
-                assert!(project.editor.instruction_timeline().steps.is_empty());
-                continue;
-            };
-            assert_eq!(
-                preview.continuous_layer_transport_model_id,
-                Some(ori_collision::GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1)
-            );
-            assert_eq!(preview.continuous_layer_transition_count, 2);
-            assert_eq!(preview.source_layer_order, preview.target_layer_order);
-            assert_eq!(
-                preview.continuous_layer_pair_order_count,
-                preview.source_layer_order.len()
-            );
-            assert!(!preview.authorizes_project_mutation);
-            let cancelled = preview.transaction_token;
-            super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-                &transactions,
-                cancelled,
-            )
-            .unwrap();
-            assert!(
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &layer_state,
-                    &transactions,
-                    cancelled,
-                )
-                .is_err()
-            );
-            let stale_authority_preview = propose_current_cycle_pose_inner_with_layers(
-                None,
-                &app_state,
-                Some(&layer_state),
-                &transactions,
-                request(instance, closing_mask),
-            )
-            .expect("rank4 layer authority ABA preview");
-            {
-                let project = super::super::lock_project(&app_state).unwrap();
-                super::super::global_flat_foldability::tests::install_possible_layer_order(
-                    &layer_state,
-                    &project,
-                );
-            }
-            assert!(
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &layer_state,
-                    &transactions,
-                    stale_authority_preview.transaction_token,
-                )
-                .is_err()
-            );
-            let preview = propose_current_cycle_pose_inner_with_layers(
-                None,
-                &app_state,
-                Some(&layer_state),
-                &transactions,
-                request(instance, closing_mask),
-            )
-            .expect("rank4 layer transport retry");
-            let applied =
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &layer_state,
-                    &transactions,
-                    preview.transaction_token,
-                )
-                .expect("rank4 layer transport apply");
-            let mut project = super::super::lock_project(&app_state).unwrap();
-            let persisted = project.editor.instruction_timeline().steps[0]
-                .visual
-                .cycle_layer_order_proof_v1
-                .as_ref()
-                .expect("applied transport proof is persisted in timeline history");
-            assert_eq!(persisted.version, 1);
-            assert_eq!(
-                persisted.model_id,
-                ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
-            );
-            assert_eq!(persisted.target_order_sha256.len(), 32);
-            if expected_cycle_rank == 16 {
-                let pose = project.editor.current_applied_pose().unwrap();
-                let fixed_face = pose.fixed_face();
-                let angles = ori_kinematics::CanonicalHingeAngles::new(
-                    pose.hinge_angles()
-                        .iter()
-                        .map(|angle| {
-                            ori_kinematics::HingeAngle::new(angle.edge(), angle.angle_degrees())
-                                .unwrap()
-                        })
-                        .collect(),
-                )
-                .unwrap();
-                let predecessor = project
-                    .editor
-                    .clone_predecessor_if_last_stacked_fold_v1()
-                    .expect("current-cycle apply has an authenticated predecessor");
-                let proof = super::super::global_flat_foldability::
-                    revalidate_authenticated_non_refining_graph_layer_evidence(
-                        project.project_id,
-                        &predecessor,
-                        &project.editor,
-                        fixed_face,
-                        &angles,
-                        super::super::global_flat_foldability::archive_revalidation_deadline()
-                            .unwrap(),
-                    )
-                    .expect("authenticated same-geometry graph evidence");
-                project.current_layer_evidence = Some(
-                    super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(proof),
-                );
-                assert!(matches!(
-                    &project.current_layer_evidence,
-                    Some(super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(_))
-                ));
-                let archive = project.project_archive().unwrap();
-                assert!(matches!(
-                    &archive.layer_evidence,
-                    Some(ori_formats::LayerEvidenceArchiveV1 {
-                        evidence: ori_formats::LayerEvidenceArchiveKindV1::NonFlat { .. },
-                        ..
-                    })
-                ));
-                let mut reopened = super::super::ProjectState::from_project_archive(
-                    archive,
-                    std::path::PathBuf::from("rank16-graph-layer-evidence.ori2"),
-                )
-                .unwrap();
-                assert!(matches!(
-                    &reopened.current_layer_evidence,
-                    Some(super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(_))
-                ));
-                let revision = reopened.editor.revision();
-                let reopened_instance = reopened.instance_id;
-                let reopened_project = reopened.project_id;
-                let vertex = reopened.editor.pattern().vertices[0].id;
-                let position = reopened.editor.pattern().vertices[0].position;
-                super::super::execute_command(
-                    &mut reopened,
-                    reopened_instance,
-                    reopened_project,
-                    revision,
-                    ori_core::Command::MoveVertex {
-                        id: vertex,
-                        position: ori_domain::Point2::new(position.x + 0.125, position.y),
-                    },
-                )
-                .unwrap();
-                assert!(reopened.current_layer_evidence.is_none());
-            }
-            project.editor.undo(applied).unwrap();
-            assert!(project.editor.instruction_timeline().steps.is_empty());
-            let undone = project.editor.revision();
-            project.editor.redo(undone).unwrap();
-            assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-            assert!(
-                project.editor.instruction_timeline().steps[0]
-                    .visual
-                    .cycle_layer_order_proof_v1
-                    .is_some()
-            );
-            let reopened = super::super::ProjectState::from_valid_document(
-                project.document(),
-                std::path::PathBuf::from("miura-cell-transport-reopened.ori2"),
-            );
-            let reopened_proof = reopened.editor.instruction_timeline().steps[0]
-                .visual
-                .cycle_layer_order_proof_v1
-                .as_ref()
-                .expect("persisted Miura cell proof survives reopen");
-            assert_eq!(
-                reopened_proof.model_id,
-                ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
-            );
-            assert_eq!(reopened_proof.target_order_sha256.len(), 32);
-        }
-    }
-
-    #[test]
-    fn dyadic_private_authority_applies_and_round_trips_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, mut paper, horizontal, _) =
-            super::dense_grid_cycle_test_support::miura_authority_pattern(3, 3);
-        paper.thickness_mm = 0.1;
-        let moving = horizontal.into_iter().take(3).collect::<Vec<_>>();
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            snapshot.faces[0].id,
-        );
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let state = AppState::new(project);
-        let preview_state = DyadicPathPreviewState::default();
-        let schedule_for = |mask: usize| {
-            let mut schedule = dense_grid_schedule(&hinges, &moving, 100);
-            for (index, entry) in schedule
-                .entries
-                .iter_mut()
-                .filter(|entry| moving.contains(&entry.edge))
-                .enumerate()
-            {
-                let mountain = snapshot
-                    .hinge_adjacency
-                    .iter()
-                    .find(|hinge| hinge.edge == entry.edge)
-                    .is_some_and(|hinge| {
-                        hinge.assignment == ori_topology::FoldAssignment::Mountain
-                    });
-                if mountain ^ (mask & (1 << index) != 0) {
-                    entry.numerator_power_coefficients[1].numerator *= -1;
-                    entry.requested_angle_degrees *= -1.0;
-                }
-            }
-            schedule
-        };
-        let (schedule, target, observed) = (0..8)
-            .find_map(|mask| {
-                let schedule = schedule_for(mask);
-                let target = {
-                    let project = super::super::lock_project(&state).unwrap();
-                    let capability = project
-                        .applied_pose_authority
-                        .capture_capability(&project)
-                        .ok()??;
-                    let (geometry, audit, pose) = capability.graph()?;
-                    prepare_requested_cycle_schedule_v1(
-                        &schedule,
-                        geometry,
-                        audit,
-                        pose.fixed_face(),
-                        pose.hinge_angles(),
-                    )
-                    .ok()?
-                    .evaluate(1.0)?
-                };
-                let request = DyadicPoseGraphReadRequestV1 {
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    target_angles: target
-                        .as_slice()
-                        .iter()
-                        .map(|angle| DyadicPoseGraphAngleDtoV1 {
-                            edge: angle.edge(),
-                            angle_degrees: angle.angle_degrees(),
-                        })
-                        .collect(),
-                    max_states: 32,
-                    max_transitions: 128,
-                    level_count: 3,
-                    cycle_schedule_v1: Some(schedule.clone()),
-                };
-                let value = read_bounded_dyadic_pose_graph_inner_v1(
-                    &state,
-                    Some(&layer_state),
-                    request,
-                    None,
-                )
-                .ok()?
-                .into_test_view();
-                value
-                    .mutation_candidate_ready
-                    .then_some((schedule, target, value))
-            })
-            .expect("real Miura schedule yields a certified dyadic candidate");
-        let expected_steps = observed.certified_transition_count + 1;
-        let request = DyadicPathPreviewRequestV1 {
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            target_angles: target
-                .as_slice()
-                .iter()
-                .map(|angle| DyadicPoseGraphAngleDtoV1 {
-                    edge: angle.edge(),
-                    angle_degrees: angle.angle_degrees(),
-                })
-                .collect(),
-            max_states: 32,
-            max_transitions: 128,
-            level_count: 3,
-            cycle_schedule_v1: Some(schedule),
-            expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
-            expected_positive_thickness_binding_sha256: observed
-                .positive_thickness_binding_sha256
-                .unwrap(),
-            expected_layer_transport_binding_sha256: observed
-                .layer_transport_binding_sha256
-                .unwrap(),
-        };
-        let preview =
-            mint_dyadic_pose_path_preview_inner_v1(&state, &layer_state, &preview_state, request)
-                .unwrap();
-        let apply_request = |path: String| ApplyDyadicPathPreviewRequestV1 {
-            preview_token: preview.preview_token,
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
-            expected_path_binding_sha256: path,
-            expected_positive_thickness_binding_sha256: preview
-                .positive_thickness_binding_sha256
-                .clone(),
-            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
-        };
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request("00".repeat(32))
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision
-        );
-        let applied = apply_dyadic_pose_path_preview_inner_v1(
-            &state,
-            &layer_state,
-            &preview_state,
-            apply_request(preview.path_binding_sha256.clone()),
-        )
-        .unwrap();
-        assert!(
-            apply_dyadic_pose_path_preview_inner_v1(
-                &state,
-                &layer_state,
-                &preview_state,
-                apply_request(preview.path_binding_sha256.clone())
-            )
-            .is_err()
-        );
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(applied, revision + 1);
-        assert_eq!(
-            project.editor.instruction_timeline().steps.len(),
-            expected_steps
-        );
-        assert!(
-            project.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
-        );
-        project.editor.undo(applied).unwrap();
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        let archive = project.project_archive().unwrap();
-        let reopened = super::super::ProjectState::from_project_archive(
-            archive,
-            std::path::PathBuf::from("dyadic-authority.ori2"),
-        )
-        .unwrap();
-        assert_eq!(
-            reopened.editor.instruction_timeline().steps.len(),
-            expected_steps
-        );
-        assert!(
-            reopened.editor.instruction_timeline().steps[1..]
-                .iter()
-                .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
-        );
-    }
-
-    #[test]
-    fn theta_positive_thickness_preview_applies_and_round_trips_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        for thickness_mm in [0.1, 1.0, 3.0] {
-            let (pattern, mut paper, hinges, moving) =
-                super::theta_cycle_test_support::theta_shared_hinge_pattern();
-            paper.thickness_mm = thickness_mm;
-            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-            let topology = project
-                .editor
-                .topology_analysis_input(project.project_id)
-                .analyze();
-            let snapshot = topology.simulation_snapshot().unwrap();
-            let fixed = snapshot.faces[0].id;
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                fixed,
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let app_state = AppState::new(project);
-            let transactions =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            let request = || CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: theta_cycle_schedule(&hinges, &moving),
-            };
-            let mut broken = request();
-            broken.cycle_schedule_v1.entries[0].requested_angle_degrees += 1.0;
-            assert!(
-                propose_current_cycle_pose_inner(None, &app_state, &transactions, broken).is_err()
-            );
-            assert_eq!(
-                super::super::lock_project(&app_state)
-                    .unwrap()
-                    .editor
-                    .revision(),
-                revision
-            );
-            let replaced =
-                propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
-                    .expect("theta preview");
-            let cancelled =
-                propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
-                    .expect("theta replacement preview");
-            assert!(
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &GlobalFlatFoldabilityState::default(),
-                    &transactions,
-                    replaced.transaction_token,
-                )
-                .is_err()
-            );
-            super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-                &transactions,
-                cancelled.transaction_token,
-            )
-            .unwrap();
-            assert!(
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &GlobalFlatFoldabilityState::default(),
-                    &transactions,
-                    cancelled.transaction_token,
-                )
-                .is_err()
-            );
-            let response =
-                propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
-                    .expect("theta retry");
-            let applied =
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &GlobalFlatFoldabilityState::default(),
-                    &transactions,
-                    response.transaction_token,
-                )
-                .unwrap();
-            let mut project = super::super::lock_project(&app_state).unwrap();
-            project.editor.undo(applied).unwrap();
-            let undone = project.editor.revision();
-            project.editor.redo(undone).unwrap();
-            assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        }
-    }
-
-    #[test]
-    fn eight_leaf_cycle_preview_applies_and_round_trips_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, hinges) =
-            super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern();
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let fixed = snapshot
-            .faces
-            .iter()
-            .max_by_key(|face| {
-                snapshot
-                    .hinge_adjacency
-                    .iter()
-                    .filter(|adjacency| adjacency.first == face.id || adjacency.second == face.id)
-                    .count()
-            })
-            .unwrap()
-            .id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let app_state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let response = propose_current_cycle_pose_inner(
-            None,
-            &app_state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-            },
-        )
-        .expect("eight-leaf preview");
-        assert_eq!(response.closure_leaf_count, 8);
-        assert_eq!(response.closure_max_depth, 3);
-        assert_eq!(response.checked_hinge_count, 32);
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &app_state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            response.transaction_token,
-        )
-        .unwrap();
-        let mut project = super::super::lock_project(&app_state).unwrap();
-        project.editor.undo(applied).unwrap();
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-    }
-
-    #[test]
-    fn sixteen_leaf_cycle_preview_applies_and_round_trips_history() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, hinges) =
-            super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern();
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let fixed = snapshot
-            .faces
-            .iter()
-            .max_by_key(|face| {
-                snapshot
-                    .hinge_adjacency
-                    .iter()
-                    .filter(|adjacency| adjacency.first == face.id || adjacency.second == face.id)
-                    .count()
-            })
-            .unwrap()
-            .id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let app_state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let response = propose_current_cycle_pose_inner(
-            None,
-            &app_state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-            },
-        )
-        .expect("sixteen-leaf preview");
-        assert_eq!(response.closure_leaf_count, 16);
-        assert_eq!(response.closure_max_depth, 4);
-        assert_eq!(response.checked_hinge_count, 64);
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &app_state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            response.transaction_token,
-        )
-        .unwrap();
-        let mut project = super::super::lock_project(&app_state).unwrap();
-        project.editor.undo(applied).unwrap();
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-    }
-
-    #[test]
-    fn current_graph_cycle_authenticates_or_fails_closed_three_times() {
-        let _generation_guard = lock_stacked_fold_read_generation_test();
-        let mut authenticated = 0;
-        let mut rejected = Vec::new();
-        for iteration in 0..3 {
-            let (mut project, hinges) =
-                super::super::applied_pose::tests::flat_foldable_cross_cycle_project();
-            set_zero_thickness_for_cycle_test_v1(&mut project);
-            super::super::applied_pose::tests::install_flat_graph_pose_authority(
-                &mut project,
-                hinges.clone(),
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let app_state = AppState::new(project);
-            let transaction_state =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            assert_eq!(
-                propose_current_cycle_pose_inner(
-                    None,
-                    &app_state,
-                    &transaction_state,
-                    CurrentCyclePosePreviewRequestV1 {
-                        progress_request_id: None,
-                        expected_project_instance_id: instance,
-                        expected_project_id: project_id,
-                        expected_revision: revision + 1,
-                        cycle_schedule_v1: physical_four_vertex_cycle_schedule(&hinges),
-                    },
-                )
-                .unwrap_err(),
-                STALE_MESSAGE
-            );
-            let response = propose_current_cycle_pose_inner(
-                None,
-                &app_state,
-                &transaction_state,
-                CurrentCyclePosePreviewRequestV1 {
-                    progress_request_id: None,
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    cycle_schedule_v1: physical_four_vertex_cycle_schedule(&hinges),
-                },
-            );
-            match response {
-                Ok(mut response) => {
-                    authenticated += 1;
-                    assert!(response.closure_leaf_count > 0);
-                    assert!(response.closure_max_depth <= 16);
-                    assert_eq!(response.checked_hinge_count, response.total_hinge_count);
-                    assert_eq!(response.total_hinge_count, hinges.len());
-                    assert!(
-                        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                            &app_state,
-                            &GlobalFlatFoldabilityState::default(),
-                            &transaction_state,
-                            ProjectId::new(),
-                        )
-                        .is_err()
-                    );
-                    if iteration == 0 {
-                        let cancelled = response.transaction_token;
-                        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-                            &transaction_state,
-                            cancelled,
-                        )
-                        .unwrap();
-                        assert!(
-                            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                                &app_state,
-                                &GlobalFlatFoldabilityState::default(),
-                                &transaction_state,
-                                cancelled,
-                            )
-                            .is_err()
-                        );
-                        response = propose_current_cycle_pose_inner(
-                            None,
-                            &app_state,
-                            &transaction_state,
-                            CurrentCyclePosePreviewRequestV1 {
-                                progress_request_id: None,
-                                expected_project_instance_id: instance,
-                                expected_project_id: project_id,
-                                expected_revision: revision,
-                                cycle_schedule_v1: physical_four_vertex_cycle_schedule(&hinges),
-                            },
-                        )
-                        .expect("replacement authenticated preview");
-                        assert_ne!(response.transaction_token, cancelled);
-                    }
-                    assert!(!response.authorizes_project_mutation);
-                    assert!(response.continuous_path_certified);
-                    let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &app_state,
-                        &GlobalFlatFoldabilityState::default(),
-                        &transaction_state,
-                        response.transaction_token,
-                    )
-                    .expect("authenticated atomic apply");
-                    let mut project = super::super::lock_project(&app_state).unwrap();
-                    assert_eq!(applied, revision + 1);
-                    assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-                    project.editor.undo(applied).unwrap();
-                    let undo_revision = project.editor.revision();
-                    project.editor.redo(undo_revision).unwrap();
-                }
-                Err(error) => {
-                    rejected.push(error.clone());
-                    assert!(
-                        error == CYCLE_NONCLOSING_MESSAGE
-                            || error == CYCLE_PATH_UNCERTIFIED_MESSAGE,
-                        "unexpected fail-closed category: {error}"
-                    );
-                    let project = super::super::lock_project(&app_state).unwrap();
-                    assert_eq!(project.editor.revision(), revision);
-                    assert!(project.editor.instruction_timeline().steps.is_empty());
-                }
-            }
-        }
-        assert_eq!(
-            authenticated, 3,
-            "fixed native fixture must authenticate; rejected={rejected:?}"
-        );
-    }
-
-    #[test]
-    fn current_cycle_generation_replacement_and_cancel_are_monotonic() {
-        let _guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let first = begin_stacked_fold_read_generation_v1().unwrap();
-        let replacement = begin_stacked_fold_read_generation_v1().unwrap();
-        assert!(replacement > first);
-        assert_ne!(STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire), first);
-        assert_eq!(
-            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
-            replacement
-        );
-        cancel_current_stacked_fold_read_v1().unwrap();
-        assert_ne!(
-            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
-            replacement
-        );
-    }
-
-    include!("stacked_fold_speculative_unproven_tests.rs");
-}
+#[path = "stacked_fold_read/tests.rs"]
+pub(crate) mod tests;

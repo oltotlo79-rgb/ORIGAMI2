@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Write as _,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Mutex, MutexGuard,
@@ -496,70 +497,346 @@ struct CurrentLayerOrderCellDto {
     boundary_world: Vec<[f64; 3]>,
 }
 
+// The native certificate may legitimately retain far more data than a single
+// WebView response can safely materialize. These are response-only limits;
+// they never weaken or reinterpret the authoritative layer certificate.
+const MAX_CURRENT_LAYER_ORDER_VIEW_FACES: usize = 2_048;
+const MAX_CURRENT_LAYER_ORDER_VIEW_CELLS: usize = 4_096;
+const MAX_CURRENT_LAYER_ORDER_VIEW_PAIRS: usize = 32_768;
+const MAX_CURRENT_LAYER_ORDER_VIEW_PAIR_SUPPORTS: usize = 131_072;
+const MAX_CURRENT_LAYER_ORDER_VIEW_TOTAL_VERTICES: usize = 16_384;
+const MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES: usize = 64 * 1024;
+const MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CURRENT_LAYER_ORDER_VIEW_DTO_RETAINED_BYTES: usize = 4 * 1024 * 1024;
+const CURRENT_LAYER_ORDER_VIEW_RESPONSE_BASE_BYTES: usize = 256;
+const CURRENT_LAYER_ORDER_VIEW_CELL_BASE_BYTES: usize = 192;
+const CURRENT_LAYER_ORDER_VIEW_FACE_SERIALIZED_BYTES: usize = 128;
+const CURRENT_LAYER_ORDER_VIEW_VERTEX_SERIALIZED_BYTES: usize = 128;
+
+#[derive(Clone, Copy)]
+struct CurrentLayerOrderViewPreflight {
+    cell_count: usize,
+    estimated_serialized_bytes: usize,
+}
+
+#[derive(Default)]
+struct CurrentLayerOrderViewDtoBudget {
+    retained_bytes: usize,
+}
+
+impl CurrentLayerOrderViewDtoBudget {
+    fn charge(&mut self, bytes: usize) -> Result<(), ()> {
+        checked_add_current_layer_order_view(
+            &mut self.retained_bytes,
+            bytes,
+            MAX_CURRENT_LAYER_ORDER_VIEW_DTO_RETAINED_BYTES,
+        )
+    }
+
+    fn charge_capacity<T>(&mut self, capacity: usize) -> Result<(), ()> {
+        self.charge(capacity.checked_mul(std::mem::size_of::<T>()).ok_or(())?)
+    }
+}
+
+struct CurrentLayerOrderViewJsonSizeWriter {
+    written: usize,
+    maximum: usize,
+}
+
+impl std::io::Write for CurrentLayerOrderViewJsonSizeWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self
+            .written
+            .checked_add(bytes.len())
+            .filter(|written| *written <= self.maximum)
+            .ok_or_else(|| {
+                std::io::Error::other("current layer order view exceeds its JSON byte budget")
+            })?;
+        self.written = written;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn current_layer_order_view_error() -> GlobalFlatFoldabilityCommandError {
+    GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::InternalFailure)
+}
+
+fn checked_add_current_layer_order_view(
+    total: &mut usize,
+    addend: usize,
+    maximum: usize,
+) -> Result<(), ()> {
+    *total = total.checked_add(addend).ok_or(())?;
+    (*total <= maximum).then_some(()).ok_or(())
+}
+
+fn checked_add_current_layer_order_view_product(
+    total: &mut usize,
+    count: usize,
+    per_item: usize,
+    maximum: usize,
+) -> Result<(), ()> {
+    checked_add_current_layer_order_view(total, count.checked_mul(per_item).ok_or(())?, maximum)
+}
+
+fn preflight_current_layer_order_view(
+    snapshot: &LayerOrderSnapshot,
+) -> Result<CurrentLayerOrderViewPreflight, ()> {
+    if snapshot.material_faces.len() > MAX_CURRENT_LAYER_ORDER_VIEW_FACES
+        || snapshot.overlap_cells.len() > MAX_CURRENT_LAYER_ORDER_VIEW_CELLS
+        || snapshot.face_pair_orders.len() > MAX_CURRENT_LAYER_ORDER_VIEW_PAIRS
+    {
+        return Err(());
+    }
+
+    let mut pair_supports = 0_usize;
+    for pair in &snapshot.face_pair_orders {
+        checked_add_current_layer_order_view(
+            &mut pair_supports,
+            pair.supporting_cells.len(),
+            MAX_CURRENT_LAYER_ORDER_VIEW_PAIR_SUPPORTS,
+        )?;
+    }
+
+    let mut total_vertices = 0_usize;
+    let mut exact_magnitude_bytes = 0_usize;
+    let mut estimated_serialized_bytes = CURRENT_LAYER_ORDER_VIEW_RESPONSE_BASE_BYTES;
+    for cell in &snapshot.overlap_cells {
+        if cell.bottom_to_top_faces.len() > MAX_CURRENT_LAYER_ORDER_VIEW_FACES {
+            return Err(());
+        }
+        checked_add_current_layer_order_view(
+            &mut total_vertices,
+            cell.exact_boundary.len(),
+            MAX_CURRENT_LAYER_ORDER_VIEW_TOTAL_VERTICES,
+        )?;
+        checked_add_current_layer_order_view(
+            &mut estimated_serialized_bytes,
+            CURRENT_LAYER_ORDER_VIEW_CELL_BASE_BYTES,
+            MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES,
+        )?;
+        checked_add_current_layer_order_view_product(
+            &mut estimated_serialized_bytes,
+            cell.bottom_to_top_faces.len(),
+            CURRENT_LAYER_ORDER_VIEW_FACE_SERIALIZED_BYTES,
+            MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES,
+        )?;
+        checked_add_current_layer_order_view_product(
+            &mut estimated_serialized_bytes,
+            cell.exact_boundary.len(),
+            CURRENT_LAYER_ORDER_VIEW_VERTEX_SERIALIZED_BYTES,
+            MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES,
+        )?;
+        for point in &cell.exact_boundary {
+            for rational in [&point.x, &point.y] {
+                checked_add_current_layer_order_view(
+                    &mut exact_magnitude_bytes,
+                    rational.numerator_magnitude_be.len(),
+                    MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES,
+                )?;
+                checked_add_current_layer_order_view(
+                    &mut exact_magnitude_bytes,
+                    rational.denominator_be.len(),
+                    MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES,
+                )?;
+                if !rational.to_f64().is_some_and(f64::is_finite) {
+                    return Err(());
+                }
+            }
+        }
+    }
+    Ok(CurrentLayerOrderViewPreflight {
+        cell_count: snapshot.overlap_cells.len(),
+        estimated_serialized_bytes,
+    })
+}
+
+fn encode_current_layer_order_cell_key(
+    cell_key: &[u8; 32],
+    budget: &mut CurrentLayerOrderViewDtoBudget,
+) -> Result<String, ()> {
+    let mut encoded = String::new();
+    encoded.try_reserve_exact(64).map_err(|_| ())?;
+    budget.charge(encoded.capacity())?;
+    for byte in cell_key {
+        write!(&mut encoded, "{byte:02x}").map_err(|_| ())?;
+    }
+    if encoded.len() != 64 {
+        return Err(());
+    }
+    Ok(encoded)
+}
+
+fn checked_current_layer_order_view_cells_retained_bytes(
+    cells: &[CurrentLayerOrderCellDto],
+    outer_capacity: usize,
+) -> Result<usize, ()> {
+    let mut total = 0_usize;
+    checked_add_current_layer_order_view_product(
+        &mut total,
+        outer_capacity,
+        std::mem::size_of::<CurrentLayerOrderCellDto>(),
+        MAX_CURRENT_LAYER_ORDER_VIEW_DTO_RETAINED_BYTES,
+    )?;
+    for cell in cells {
+        checked_add_current_layer_order_view(
+            &mut total,
+            cell.cell_key_sha256.capacity(),
+            MAX_CURRENT_LAYER_ORDER_VIEW_DTO_RETAINED_BYTES,
+        )?;
+        checked_add_current_layer_order_view_product(
+            &mut total,
+            cell.bottom_to_top_faces.capacity(),
+            std::mem::size_of::<FaceId>(),
+            MAX_CURRENT_LAYER_ORDER_VIEW_DTO_RETAINED_BYTES,
+        )?;
+        checked_add_current_layer_order_view_product(
+            &mut total,
+            cell.boundary_world.capacity(),
+            std::mem::size_of::<[f64; 3]>(),
+            MAX_CURRENT_LAYER_ORDER_VIEW_DTO_RETAINED_BYTES,
+        )?;
+    }
+    Ok(total)
+}
+
+fn build_current_layer_order_view_cells(
+    snapshot: &LayerOrderSnapshot,
+    preflight: CurrentLayerOrderViewPreflight,
+) -> Result<Vec<CurrentLayerOrderCellDto>, ()> {
+    if preflight.estimated_serialized_bytes
+        > MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES
+    {
+        return Err(());
+    }
+    let mut cells = Vec::new();
+    cells
+        .try_reserve_exact(preflight.cell_count)
+        .map_err(|_| ())?;
+    let mut budget = CurrentLayerOrderViewDtoBudget::default();
+    budget.charge_capacity::<CurrentLayerOrderCellDto>(cells.capacity())?;
+    for cell in &snapshot.overlap_cells {
+        let mut bottom_to_top_faces = Vec::new();
+        bottom_to_top_faces
+            .try_reserve_exact(cell.bottom_to_top_faces.len())
+            .map_err(|_| ())?;
+        budget.charge_capacity::<FaceId>(bottom_to_top_faces.capacity())?;
+        bottom_to_top_faces.extend(cell.bottom_to_top_faces.iter().cloned());
+
+        let mut boundary_world = Vec::new();
+        boundary_world
+            .try_reserve_exact(cell.exact_boundary.len())
+            .map_err(|_| ())?;
+        budget.charge_capacity::<[f64; 3]>(boundary_world.capacity())?;
+        for point in &cell.exact_boundary {
+            let x = point
+                .x
+                .to_f64()
+                .filter(|value| value.is_finite())
+                .ok_or(())?;
+            let y = point
+                .y
+                .to_f64()
+                .filter(|value| value.is_finite())
+                .ok_or(())?;
+            boundary_world.push([x, 0.0, -y]);
+        }
+        cells.push(CurrentLayerOrderCellDto {
+            cell_key_sha256: encode_current_layer_order_cell_key(&cell.cell_key.0, &mut budget)?,
+            bottom_to_top_faces,
+            boundary_world,
+        });
+    }
+    let measured = checked_current_layer_order_view_cells_retained_bytes(&cells, cells.capacity())?;
+    if measured != budget.retained_bytes {
+        return Err(());
+    }
+    Ok(cells)
+}
+
+fn checked_current_layer_order_view_json_bytes(
+    response: &CurrentLayerOrderViewResponse,
+    maximum: usize,
+) -> Result<usize, ()> {
+    if maximum > MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES {
+        return Err(());
+    }
+    let mut writer = CurrentLayerOrderViewJsonSizeWriter {
+        written: 0,
+        maximum,
+    };
+    serde_json::to_writer(&mut writer, response).map_err(|_| ())?;
+    Ok(writer.written)
+}
+
 #[tauri::command]
 pub(super) fn get_current_layer_order_view(
     app_state: State<'_, AppState>,
     state: State<'_, GlobalFlatFoldabilityState>,
     request: CurrentLayerOrderViewRequest,
 ) -> Result<CurrentLayerOrderViewResponse, GlobalFlatFoldabilityCommandError> {
-    let project = lock_project(&app_state).map_err(|_| {
-        GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::InternalFailure)
-    })?;
-    if project.instance_id != request.expected_project_instance_id
-        || project.project_id != request.expected_project_id
-        || project.editor.revision() != request.expected_revision
-    {
-        return Err(GlobalFlatFoldabilityCommandError::new(
-            GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
-        ));
-    }
-    let capability =
-        capture_current_layer_order_capability(&state, &project)?.ok_or_else(|| {
-            GlobalFlatFoldabilityCommandError::new(
+    let (project_instance_id, project_id, revision, generation, capability) = {
+        let project = lock_project(&app_state).map_err(|_| current_layer_order_view_error())?;
+        if project.instance_id != request.expected_project_instance_id
+            || project.project_id != request.expected_project_id
+            || project.editor.revision() != request.expected_revision
+        {
+            return Err(GlobalFlatFoldabilityCommandError::new(
                 GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
-            )
-        })?;
-    let generation = capability.generation();
-    let snapshot = revalidate_current_layer_order_capability(&state, &project, &capability)?
-        .ok_or_else(|| {
-            GlobalFlatFoldabilityCommandError::new(
-                GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
-            )
-        })?;
-    let cells = snapshot
-        .overlap_cells
-        .iter()
-        .map(|cell| {
-            let boundary_world = cell
-                .exact_boundary
-                .iter()
-                .map(|point| Some([point.x.to_f64()?, 0.0, -point.y.to_f64()?]))
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    GlobalFlatFoldabilityCommandError::new(
-                        GlobalFlatFoldabilityErrorCategory::InternalFailure,
-                    )
-                })?;
-            Ok(CurrentLayerOrderCellDto {
-                cell_key_sha256: cell
-                    .cell_key
-                    .0
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect(),
-                bottom_to_top_faces: cell.bottom_to_top_faces.clone(),
-                boundary_world,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(CurrentLayerOrderViewResponse {
-        project_instance_id: project.instance_id,
-        project_id: project.project_id,
-        revision: project.editor.revision(),
+            ));
+        }
+        let capability =
+            capture_current_layer_order_capability(&state, &project)?.ok_or_else(|| {
+                GlobalFlatFoldabilityCommandError::new(
+                    GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+                )
+            })?;
+        revalidate_current_layer_order_capability(&state, &project, &capability)?.ok_or_else(
+            || {
+                GlobalFlatFoldabilityCommandError::new(
+                    GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+                )
+            },
+        )?;
+        (
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+            capability.generation(),
+            capability,
+        )
+    };
+    let preflight = preflight_current_layer_order_view(capability.snapshot())
+        .map_err(|_| current_layer_order_view_error())?;
+    let cells = build_current_layer_order_view_cells(capability.snapshot(), preflight)
+        .map_err(|_| current_layer_order_view_error())?;
+    let response = CurrentLayerOrderViewResponse {
+        project_instance_id,
+        project_id,
+        revision,
         layer_order_generation: generation,
         cells,
         read_only: true,
-    })
+    };
+    checked_current_layer_order_view_json_bytes(&response, preflight.estimated_serialized_bytes)
+        .map_err(|_| current_layer_order_view_error())?;
+    {
+        let project = lock_project(&app_state).map_err(|_| current_layer_order_view_error())?;
+        if project.instance_id != request.expected_project_instance_id
+            || project.project_id != request.expected_project_id
+            || project.editor.revision() != request.expected_revision
+            || revalidate_current_layer_order_capability(&state, &project, &capability)?.is_none()
+        {
+            return Err(GlobalFlatFoldabilityCommandError::new(
+                GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
+            ));
+        }
+    }
+    Ok(response)
 }
 
 #[derive(Default)]
@@ -624,7 +901,30 @@ pub(super) struct CurrentLayerOrderCommitGuard<'a> {
     slot: MutexGuard<'a, GlobalFlatFoldabilitySlot>,
 }
 
+/// Exact image of the layer fields an Apply transaction may mutate while it
+/// owns the layer commit guard. Other slot fields remain protected and are
+/// untouched by that transaction.
+pub(super) struct CurrentLayerOrderRollbackSnapshotV1 {
+    current_layer_order: Option<Arc<CurrentLayerOrderCertificate>>,
+    layer_order_generation: u64,
+}
+
 impl CurrentLayerOrderCommitGuard<'_> {
+    pub(super) fn capture_rollback_snapshot_v1(&self) -> CurrentLayerOrderRollbackSnapshotV1 {
+        CurrentLayerOrderRollbackSnapshotV1 {
+            current_layer_order: self.slot.current_layer_order.clone(),
+            layer_order_generation: self.slot.layer_order_generation,
+        }
+    }
+
+    pub(super) fn restore_rollback_snapshot_v1(
+        &mut self,
+        snapshot: &CurrentLayerOrderRollbackSnapshotV1,
+    ) {
+        self.slot.current_layer_order = snapshot.current_layer_order.clone();
+        self.slot.layer_order_generation = snapshot.layer_order_generation;
+    }
+
     pub(super) fn preflight_certified_target(
         &self,
         expected_project_id: ProjectId,
@@ -644,7 +944,7 @@ impl CurrentLayerOrderCommitGuard<'_> {
     /// Invalidates the source-revision certificate while the layer slot is
     /// still held at the native commit boundary. A later target certificate
     /// must be freshly minted; stale authority is never carried across edits.
-    pub(super) fn invalidate_after_project_mutation(mut self) {
+    pub(super) fn invalidate_after_project_mutation(&mut self) {
         self.slot.current_layer_order = None;
     }
 
@@ -652,7 +952,7 @@ impl CurrentLayerOrderCommitGuard<'_> {
     /// that is independently bound to the already committed target project.
     #[allow(dead_code)]
     pub(super) fn install_certified_target_after_project_mutation(
-        mut self,
+        &mut self,
         project: &ProjectState,
         snapshot: LayerOrderSnapshot,
     ) -> Result<(), ()> {
@@ -2465,7 +2765,11 @@ pub(super) mod tests {
 
     use ori_core::{Command, EditorState, analyze_local_flat_foldability};
     use ori_domain::{Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
-    use ori_foldability::{FacewiseConstraintKind, LocalNecessaryConditionViolation};
+    use ori_foldability::{
+        ExactPointValue, ExactRationalValue, ExactSign, FacePairOrderSnapshot,
+        FacewiseConstraintKind, LocalNecessaryConditionViolation, OverlapCellKey,
+        OverlapCellSnapshot,
+    };
     use serde_json::json;
 
     use super::*;
@@ -2511,6 +2815,248 @@ pub(super) mod tests {
                 "fixture must install native layer authority"
             );
         }
+    }
+
+    fn current_layer_order_view_test_snapshot() -> LayerOrderSnapshot {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        lock_foldability_state(&state)
+            .expect("lock view fixture")
+            .current_layer_order
+            .as_ref()
+            .expect("fixture installs a certificate")
+            .snapshot
+            .as_ref()
+            .clone()
+    }
+
+    fn view_test_rational(byte_count: usize) -> ExactRationalValue {
+        ExactRationalValue {
+            sign: ExactSign::Zero,
+            numerator_magnitude_be: vec![1; byte_count],
+            denominator_be: vec![1; byte_count],
+        }
+    }
+
+    fn view_test_cell(face: FaceId, vertex_count: usize) -> OverlapCellSnapshot {
+        OverlapCellSnapshot {
+            cell_key: OverlapCellKey([0; 32]),
+            exact_boundary: (0..vertex_count)
+                .map(|_| ExactPointValue {
+                    x: view_test_rational(1),
+                    y: view_test_rational(1),
+                })
+                .collect(),
+            covering_faces: Vec::new(),
+            bottom_to_top_faces: vec![face],
+        }
+    }
+
+    #[test]
+    fn layer_order_view_preflight_enforces_exact_structural_limits_before_dto_build() {
+        let mut snapshot = current_layer_order_view_test_snapshot();
+        let face = snapshot
+            .material_faces
+            .first()
+            .expect("fixture has a material face")
+            .face_id;
+        snapshot.overlap_cells.clear();
+        snapshot.face_pair_orders.clear();
+
+        let material_face = snapshot.material_faces[0].clone();
+        snapshot.material_faces = vec![material_face.clone(); MAX_CURRENT_LAYER_ORDER_VIEW_FACES];
+        assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.material_faces.push(material_face.clone());
+        assert!(preflight_current_layer_order_view(&snapshot).is_err());
+
+        snapshot.material_faces.truncate(1);
+        snapshot.overlap_cells = (0..MAX_CURRENT_LAYER_ORDER_VIEW_CELLS)
+            .map(|_| view_test_cell(face, 0))
+            .collect();
+        let preflight = preflight_current_layer_order_view(&snapshot)
+            .expect("the exact cell limit remains displayable");
+        assert_eq!(preflight.cell_count, MAX_CURRENT_LAYER_ORDER_VIEW_CELLS);
+        assert_eq!(
+            build_current_layer_order_view_cells(&snapshot, preflight)
+                .expect("DTO allocation occurs only after preflight")
+                .len(),
+            MAX_CURRENT_LAYER_ORDER_VIEW_CELLS
+        );
+        snapshot.overlap_cells.push(view_test_cell(face, 0));
+        assert!(
+            preflight_current_layer_order_view(&snapshot).is_err(),
+            "one cell over is rejected before DTO allocation"
+        );
+
+        snapshot.overlap_cells.clear();
+        snapshot.face_pair_orders = (0..MAX_CURRENT_LAYER_ORDER_VIEW_PAIRS)
+            .map(|_| FacePairOrderSnapshot {
+                lower_face: material_face.clone(),
+                upper_face: material_face.clone(),
+                supporting_cells: Vec::new(),
+            })
+            .collect();
+        assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.face_pair_orders.push(FacePairOrderSnapshot {
+            lower_face: material_face.clone(),
+            upper_face: material_face.clone(),
+            supporting_cells: Vec::new(),
+        });
+        assert!(preflight_current_layer_order_view(&snapshot).is_err());
+
+        snapshot.face_pair_orders = vec![FacePairOrderSnapshot {
+            lower_face: material_face.clone(),
+            upper_face: material_face,
+            supporting_cells: vec![
+                OverlapCellKey([0; 32]);
+                MAX_CURRENT_LAYER_ORDER_VIEW_PAIR_SUPPORTS
+            ],
+        }];
+        assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.face_pair_orders[0]
+            .supporting_cells
+            .push(OverlapCellKey([0; 32]));
+        assert!(preflight_current_layer_order_view(&snapshot).is_err());
+
+        snapshot.face_pair_orders.clear();
+        snapshot.overlap_cells = (0..16)
+            .map(|index| {
+                let face_count = if index < 15 { 2_048 } else { 2_022 };
+                let mut cell = view_test_cell(face, 0);
+                cell.bottom_to_top_faces = vec![face; face_count];
+                cell
+            })
+            .collect();
+        let serialized_preflight = preflight_current_layer_order_view(&snapshot)
+            .expect("the exact conservative serialized-byte budget is displayable");
+        assert_eq!(
+            serialized_preflight.estimated_serialized_bytes,
+            MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES
+        );
+        snapshot.overlap_cells[15].bottom_to_top_faces.push(face);
+        assert!(
+            preflight_current_layer_order_view(&snapshot).is_err(),
+            "one serialized face over the conservative byte budget is rejected"
+        );
+    }
+
+    #[test]
+    fn layer_order_view_preflight_enforces_vertex_and_exact_magnitude_budgets() {
+        let mut snapshot = current_layer_order_view_test_snapshot();
+        let face = snapshot
+            .material_faces
+            .first()
+            .expect("fixture has a material face")
+            .face_id;
+        snapshot.face_pair_orders.clear();
+        snapshot.overlap_cells = vec![view_test_cell(
+            face,
+            MAX_CURRENT_LAYER_ORDER_VIEW_TOTAL_VERTICES,
+        )];
+        assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.overlap_cells[0]
+            .exact_boundary
+            .push(ExactPointValue {
+                x: view_test_rational(1),
+                y: view_test_rational(1),
+            });
+        assert!(preflight_current_layer_order_view(&snapshot).is_err());
+
+        let bytes_per_rational = MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES / 4;
+        snapshot.overlap_cells = vec![OverlapCellSnapshot {
+            cell_key: OverlapCellKey([0; 32]),
+            exact_boundary: vec![ExactPointValue {
+                x: view_test_rational(bytes_per_rational),
+                y: view_test_rational(bytes_per_rational),
+            }],
+            covering_faces: Vec::new(),
+            bottom_to_top_faces: vec![face],
+        }];
+        assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.overlap_cells[0].exact_boundary[0]
+            .x
+            .numerator_magnitude_be
+            .push(1);
+        assert!(preflight_current_layer_order_view(&snapshot).is_err());
+
+        snapshot.overlap_cells = vec![view_test_cell(face, 1)];
+        snapshot.overlap_cells[0].exact_boundary[0]
+            .x
+            .denominator_be
+            .clear();
+        assert!(
+            preflight_current_layer_order_view(&snapshot).is_err(),
+            "non-finite DTO coordinates are rejected before vector allocation"
+        );
+    }
+
+    #[test]
+    fn layer_order_view_budget_arithmetic_rejects_exact_limit_overflow() {
+        let mut total = MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES - 1;
+        assert!(
+            checked_add_current_layer_order_view(
+                &mut total,
+                1,
+                MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES,
+            )
+            .is_ok()
+        );
+        assert!(
+            checked_add_current_layer_order_view(
+                &mut total,
+                1,
+                MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES,
+            )
+            .is_err()
+        );
+        let mut overflow = usize::MAX;
+        assert!(checked_add_current_layer_order_view(&mut overflow, 1, usize::MAX).is_err());
+        assert!(
+            checked_add_current_layer_order_view_product(&mut overflow, usize::MAX, 2, usize::MAX,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn layer_order_view_remeasures_dto_capacity_and_exact_json_bytes() {
+        let snapshot = current_layer_order_view_test_snapshot();
+        let preflight =
+            preflight_current_layer_order_view(&snapshot).expect("bounded view preflight");
+        let cells = build_current_layer_order_view_cells(&snapshot, preflight)
+            .expect("bounded view DTO allocation");
+        let retained =
+            checked_current_layer_order_view_cells_retained_bytes(&cells, cells.capacity())
+                .expect("actual DTO capacities stay bounded");
+        assert!(retained <= MAX_CURRENT_LAYER_ORDER_VIEW_DTO_RETAINED_BYTES);
+
+        let response = CurrentLayerOrderViewResponse {
+            project_instance_id: ProjectId::new(),
+            project_id: ProjectId::new(),
+            revision: 7,
+            layer_order_generation: 11,
+            cells,
+            read_only: true,
+        };
+        let json_bytes = checked_current_layer_order_view_json_bytes(
+            &response,
+            preflight.estimated_serialized_bytes,
+        )
+        .expect("the conservative preflight dominates exact JSON output");
+        assert_eq!(
+            checked_current_layer_order_view_json_bytes(&response, json_bytes),
+            Ok(json_bytes),
+            "the exact JSON-byte budget is accepted"
+        );
+        assert!(
+            checked_current_layer_order_view_json_bytes(&response, json_bytes - 1).is_err(),
+            "one byte below the exact JSON size fails closed"
+        );
+        assert!(
+            checked_current_layer_order_view_cells_retained_bytes(&response.cells, usize::MAX)
+                .is_err(),
+            "capacity multiplication overflow fails closed"
+        );
     }
 
     #[test]
@@ -2648,7 +3194,7 @@ pub(super) mod tests {
             .expect("old capability");
         let old_generation = old.generation();
         let snapshot = old.snapshot().clone();
-        let guard = lock_revalidated_current_layer_order_for_commit(&state, &project, &old)
+        let mut guard = lock_revalidated_current_layer_order_for_commit(&state, &project, &old)
             .unwrap()
             .expect("commit guard");
         guard

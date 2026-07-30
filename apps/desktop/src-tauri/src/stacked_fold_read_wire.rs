@@ -102,28 +102,81 @@ pub(super) struct DyadicPoseGraphAngleDtoV1 {
 pub(super) fn validate_request_resource_shape_v1(
     request: &StackedFoldReadRequest,
 ) -> Result<(), &'static str> {
+    let exact_limits = ori_collision::ExactDyadicIntersectionLimitsV1::default();
     if request
         .linear_candidate_v1
         .as_ref()
         .is_some_and(|candidate| {
-            candidate.entries.is_empty()
+            candidate.version != 1
+                || candidate.entries.is_empty()
                 || candidate.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+                || candidate.entries.iter().any(|entry| {
+                    !entry.initial_angle_degrees.is_finite()
+                        || !(0.0..=180.0).contains(&entry.initial_angle_degrees)
+                        || !entry.requested_angle_degrees.is_finite()
+                        || !(0.0..=180.0).contains(&entry.requested_angle_degrees)
+                })
         })
         || request
             .certified_path_graph_v1
             .as_ref()
             .is_some_and(|graph| {
-                graph.states.is_empty()
+                graph.version != 1
+                    || graph.states.len() < 2
                     || graph.states.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1
                     || graph.transitions.is_empty()
                     || graph.transitions.len() > MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1
+                    || graph.source_state != 0
+                    || graph.target_state == 0
+                    || graph.target_state >= graph.states.len()
                     || graph.states.iter().any(|state| {
                         state.entries.is_empty()
                             || state.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+                            || state.entries.iter().any(|entry| {
+                                !entry.angle_degrees.is_finite()
+                                    || !(0.0..=180.0).contains(&entry.angle_degrees)
+                            })
+                            || state.entries.windows(2).any(|pair| {
+                                pair[0].edge.canonical_bytes() >= pair[1].edge.canonical_bytes()
+                            })
+                    })
+                    || graph.transitions.iter().any(|edge| {
+                        edge.source_state >= graph.states.len()
+                            || edge.target_state >= graph.states.len()
+                            || edge.source_state == edge.target_state
+                    })
+                    || graph.transitions.windows(2).any(|pair| {
+                        (pair[0].source_state, pair[0].target_state)
+                            >= (pair[1].source_state, pair[1].target_state)
+                    })
+            })
+        || request
+            .linear_candidate_v1
+            .as_ref()
+            .and_then(|candidate| candidate.exact_dyadic_path_v1.as_ref())
+            .is_some_and(|path| {
+                path.version != 1
+                    || path.segments.is_empty()
+                    || path.segments.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+                    || path.max_pair_tests
+                        > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+                            * (MAX_STACKED_FOLD_REQUEST_HINGES_V1 - 1)
+                            / 2
+                    || path.max_denominator_power > exact_limits.max_denominator_power
+                    || path.max_integer_bits > exact_limits.max_integer_bits
+                    || path.segments.iter().any(|segment| {
+                        [
+                            segment.start.denominator_power,
+                            segment.end.denominator_power,
+                        ]
+                        .into_iter()
+                        .any(|power| power > path.max_denominator_power)
                     })
             })
         || request.cycle_schedule_v1.as_ref().is_some_and(|schedule| {
-            schedule.entries.is_empty()
+            schedule.version != 1
+                || schedule.endpoint_denominator.is_some()
+                || schedule.entries.is_empty()
                 || schedule.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
                 || schedule.entries.iter().any(|entry| {
                     entry.numerator_power_coefficients.is_empty()
@@ -132,6 +185,14 @@ pub(super) fn validate_request_resource_shape_v1(
                         || entry.denominator_power_coefficients.is_empty()
                         || entry.denominator_power_coefficients.len()
                             > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
+                        || !entry.requested_angle_degrees.is_finite()
+                        || !(0.0..=180.0).contains(&entry.requested_angle_degrees)
+                        || entry
+                            .u_domain
+                            .iter()
+                            .chain(&entry.numerator_power_coefficients)
+                            .chain(&entry.denominator_power_coefficients)
+                            .any(|coefficient| coefficient.denominator == 0)
                 })
         })
     {

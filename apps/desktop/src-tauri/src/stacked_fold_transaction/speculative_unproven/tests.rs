@@ -3,6 +3,48 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use super::*;
 
 #[test]
+fn target_pose_reissue_failure_guard_preserves_old_arm_and_clears_every_exit_path() {
+    let original_guard = fail_next_speculative_target_pose_reissue_for_test_v1();
+    let duplicate = catch_unwind(|| {
+        let _duplicate_guard = fail_next_speculative_target_pose_reissue_for_test_v1();
+    });
+    assert!(duplicate.is_err());
+    assert!(
+        take_target_pose_reissue_failure_for_test_v1(),
+        "a rejected duplicate arm cannot replace the original fault"
+    );
+    let replacement_guard = fail_next_speculative_target_pose_reissue_for_test_v1();
+    drop(original_guard);
+    assert!(
+        take_target_pose_reissue_failure_for_test_v1(),
+        "a consumed guard cannot clear an equal later arm with a new token"
+    );
+    drop(replacement_guard);
+
+    let early_return: Result<(), ()> = {
+        let _target_pose_failure_guard = fail_next_speculative_target_pose_reissue_for_test_v1();
+        Err(())
+    };
+    assert_eq!(early_return, Err(()));
+    assert!(!take_target_pose_reissue_failure_for_test_v1());
+
+    let unwound = catch_unwind(|| {
+        let _target_pose_failure_guard = fail_next_speculative_target_pose_reissue_for_test_v1();
+        panic!("inject target pose reissue failure setup unwind");
+    });
+    assert!(unwound.is_err());
+    assert!(!take_target_pose_reissue_failure_for_test_v1());
+
+    let consumed_guard = fail_next_speculative_target_pose_reissue_for_test_v1();
+    assert!(take_target_pose_reissue_failure_for_test_v1());
+    drop(consumed_guard);
+    assert!(
+        !take_target_pose_reissue_failure_for_test_v1(),
+        "dropping a consumed guard cannot clear or synthesize another fault"
+    );
+}
+
+#[test]
 fn apply_request_requires_explicit_confirmation_and_has_a_closed_schema() {
     let token = ProjectId::new();
     let valid = serde_json::json!({

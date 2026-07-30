@@ -32,6 +32,7 @@ mod import_command_support;
 mod instruction_export;
 mod mesh_animation_export;
 mod mesh_export;
+mod native_pose_worker_gate;
 mod numeric_expression;
 mod pattern_edit_commands;
 mod project_folder_io;
@@ -82,6 +83,9 @@ use beginner_recognition::{
 };
 use beginner_skeleton_endpoint_commands::resolve_beginner_skeleton_endpoint_v1;
 use constructed_vertex_commands::{move_constructed_vertex_v1, place_constructed_vertex_v1};
+use native_pose_worker_gate::{
+    NativePoseWorkerGate, NativePoseWorkerGenerationPublicationError, NativePoseWorkerPermit,
+};
 #[cfg(test)]
 use pattern_edit_commands::{
     BenchmarkEdge, BenchmarkVertex, LinearArrayRequestV1, RadialArrayRequestV1,
@@ -116,7 +120,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -289,9 +293,14 @@ use stacked_fold_read::stacked_fold_dyadic_preview::{
     DyadicPathPreviewState, apply_dyadic_pose_path_preview_v1, cancel_dyadic_pose_path_preview_v1,
     mint_dyadic_pose_path_preview_v1,
 };
+use stacked_fold_read::stacked_fold_non_flat_continuation::{
+    NonFlatCycleContinuationState, apply_non_flat_cycle_continuation_v1,
+    cancel_non_flat_cycle_continuation_v1, mint_non_flat_cycle_continuation_v1,
+};
 use stacked_fold_read::{
-    cancel_current_stacked_fold_read_v1, propose_current_cycle_pose_v1,
-    propose_current_stacked_fold_read, read_bounded_dyadic_pose_graph_v1,
+    cancel_current_stacked_fold_read_request_v1, cancel_current_stacked_fold_read_v1,
+    propose_current_cycle_pose_v1, propose_current_stacked_fold_read,
+    read_bounded_dyadic_pose_graph_v1,
 };
 use stacked_fold_transaction::{
     apply_named_accordion_fold_transaction, apply_named_book_fold_transaction,
@@ -359,8 +368,40 @@ fn instruction_topology_analysis_task_error<T>(_: T) -> String {
 /// The native pose worker gate deliberately lives beside, rather than inside,
 /// `ProjectState`. Replacing or reopening a project therefore cannot create a
 /// fresh gate while an obsolete project's heavy worker is still running.
+struct SharedProjectStateV1(Arc<Mutex<ProjectState>>);
+
+impl SharedProjectStateV1 {
+    fn new(project: ProjectState) -> Self {
+        Self(Arc::new(Mutex::new(project)))
+    }
+
+    fn lock(&self) -> std::sync::LockResult<MutexGuard<'_, ProjectState>> {
+        self.0.lock()
+    }
+
+    #[cfg(test)]
+    fn try_lock(&self) -> std::sync::TryLockResult<MutexGuard<'_, ProjectState>> {
+        self.0.try_lock()
+    }
+
+    fn handle(&self) -> Arc<Mutex<ProjectState>> {
+        Arc::clone(&self.0)
+    }
+
+    #[cfg(test)]
+    fn into_inner(self) -> Result<ProjectState, ()> {
+        let mutex = match Arc::try_unwrap(self.0) {
+            Ok(mutex) => mutex,
+            Err(_) => panic!("test project state still has a backend owner"),
+        };
+        // Preserve the poisoned/not-poisoned distinction without returning a
+        // second, very large ProjectState inside PoisonError.
+        mutex.into_inner().map_err(|_| ())
+    }
+}
+
 struct AppState(
-    Mutex<ProjectState>,
+    SharedProjectStateV1,
     NativePoseWorkerGate,
     GeometricConstraintWorkerGate,
     Mutex<Option<GeometricConstraintSolveStage>>,
@@ -369,11 +410,15 @@ struct AppState(
 impl AppState {
     fn new(project: ProjectState) -> Self {
         Self(
-            Mutex::new(project),
+            SharedProjectStateV1::new(project),
             NativePoseWorkerGate::default(),
             GeometricConstraintWorkerGate::default(),
             Mutex::new(None),
         )
+    }
+
+    fn project_handle_v1(&self) -> Arc<Mutex<ProjectState>> {
+        self.0.handle()
     }
 
     fn try_acquire_native_pose_worker(&self) -> Option<NativePoseWorkerPermit> {
@@ -383,41 +428,6 @@ impl AppState {
     #[cfg(test)]
     fn native_pose_worker_is_busy(&self) -> bool {
         self.1.is_busy()
-    }
-}
-
-/// One process-wide heavy native pose worker per managed [`AppState`].
-///
-/// The permit owns the shared atomic so it can move into `spawn_blocking`.
-/// Cancellation of the awaiting future cannot release the gate while the
-/// blocking closure is still running.
-#[derive(Clone, Default)]
-struct NativePoseWorkerGate(Arc<AtomicBool>);
-
-impl NativePoseWorkerGate {
-    fn try_acquire(&self) -> Option<NativePoseWorkerPermit> {
-        self.0
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| NativePoseWorkerPermit {
-                busy: Arc::clone(&self.0),
-            })
-    }
-
-    #[cfg(test)]
-    fn is_busy(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
-
-struct NativePoseWorkerPermit {
-    busy: Arc<AtomicBool>,
-}
-
-impl Drop for NativePoseWorkerPermit {
-    fn drop(&mut self) {
-        let was_busy = self.busy.swap(false, Ordering::Release);
-        debug_assert!(was_busy, "native pose worker permit released twice");
     }
 }
 
@@ -845,11 +855,20 @@ impl ProjectState {
             || saved.geometric_constraints != *self.editor.geometric_constraints()
             || saved.layers != *self.editor.project_layers()
             || saved.element_metadata != *self.editor.element_metadata()
+            || saved.annotations != *self.editor.annotations()
+            || saved.underlays != *self.editor.underlays()
             || saved.beginner_design_profile != *self.editor.beginner_design_profile()
             || saved.texture_assets != self.texture_assets
             || saved.reference_model_assets != self.reference_model_assets
-            || self.saved_speculative_unproven_state.as_ref()
-                != Some(&self.editor.speculative_unproven_fold_state_marker_v1())
+            || saved.material_void_evidence != self.material_void_evidence
+            || self
+                .saved_speculative_unproven_state
+                .as_ref()
+                .is_none_or(|saved| {
+                    !saved.has_same_persisted_state_v1(
+                        &self.editor.speculative_unproven_fold_state_marker_v1(),
+                    )
+                })
     }
 
     fn record_numeric_expression_edit(&mut self) {
@@ -1514,8 +1533,23 @@ struct AssignedLocalSufficiencyResponseV1 {
 }
 
 const MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1: usize = 4096;
+const MAX_ASSIGNED_LOCAL_SUMMARY_EDGES_V1: usize = 16_384;
+const MAX_ASSIGNED_LOCAL_SUMMARY_BOUNDARY_VERTICES_V1: usize = 4096;
 const MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1: usize = 16_384;
-static ASSIGNED_LOCAL_SUMMARY_GENERATION_V1: AtomicU64 = AtomicU64::new(0);
+const ASSIGNED_LOCAL_SUMMARY_BUSY_MESSAGE_V1: &str =
+    "Another native pose analysis is already running.";
+const ASSIGNED_LOCAL_SUMMARY_GENERATION_EXHAUSTED_MESSAGE_V1: &str =
+    "The local sufficiency summary generation is exhausted.";
+const ASSIGNED_LOCAL_SUMMARY_CANCELLED_MESSAGE_V1: &str =
+    "The local sufficiency summary analysis was cancelled.";
+const ASSIGNED_LOCAL_SUMMARY_INPUT_LIMIT_MESSAGE_V1: &str =
+    "The local sufficiency input limit was reached.";
+const ASSIGNED_LOCAL_SUMMARY_OUTPUT_LIMIT_MESSAGE_V1: &str =
+    "The local sufficiency summary output limit was reached.";
+const ASSIGNED_LOCAL_SUMMARY_ALLOCATION_FAILED_MESSAGE_V1: &str =
+    "The local sufficiency summary allocation failed.";
+const ASSIGNED_LOCAL_SUMMARY_PROJECT_CHANGED_MESSAGE_V1: &str =
+    "The project changed while local sufficiency was analyzed.";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1554,6 +1588,125 @@ enum AssignedLocalSufficiencySummaryVertexV1 {
         vertex: VertexId,
         reason: ori_topology::AssignedLocalSufficiencyReasonV1,
     },
+}
+
+fn ensure_assigned_local_sufficiency_input_limits_v1(
+    paper: &Paper,
+    pattern: &CreasePattern,
+) -> Result<(), String> {
+    if pattern.vertices.len() > MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1
+        || pattern.edges.len() > MAX_ASSIGNED_LOCAL_SUMMARY_EDGES_V1
+        || paper.boundary_vertices.len() > MAX_ASSIGNED_LOCAL_SUMMARY_BOUNDARY_VERTICES_V1
+    {
+        return Err(ASSIGNED_LOCAL_SUMMARY_INPUT_LIMIT_MESSAGE_V1.to_owned());
+    }
+    Ok(())
+}
+
+fn is_canonical_fold_model_fingerprint_v1(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn ensure_assigned_local_sufficiency_summary_binding_v1(
+    project: &ProjectState,
+    request: &AssignedLocalSufficiencySummaryRequestV1,
+) -> Result<(), String> {
+    if !is_canonical_fold_model_fingerprint_v1(&request.expected_fold_model_fingerprint)
+        || project.instance_id != request.expected_project_instance_id
+        || project.project_id != request.expected_project_id
+        || project.editor.revision() != request.expected_revision
+    {
+        return Err(ASSIGNED_LOCAL_SUMMARY_PROJECT_CHANGED_MESSAGE_V1.to_owned());
+    }
+    // Count limits precede fingerprint construction because the canonical
+    // fingerprint sorts allocated vertex/edge views.
+    ensure_assigned_local_sufficiency_input_limits_v1(
+        project.editor.paper(),
+        project.editor.pattern(),
+    )?;
+    if project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint {
+        return Err(ASSIGNED_LOCAL_SUMMARY_PROJECT_CHANGED_MESSAGE_V1.to_owned());
+    }
+    Ok(())
+}
+
+fn capture_assigned_local_sufficiency_summary_input_v1(
+    state: &AppState,
+    request: &AssignedLocalSufficiencySummaryRequestV1,
+) -> Result<(Paper, CreasePattern), String> {
+    let project = lock_project(state)?;
+    ensure_assigned_local_sufficiency_summary_binding_v1(&project, request)?;
+    Ok((
+        project.editor.paper().clone(),
+        project.editor.pattern().clone(),
+    ))
+}
+
+fn convert_assigned_local_sufficiency_summary_batch_v1(
+    batch: ori_topology::AssignedLocalSufficiencyBatchV1,
+) -> Result<(Vec<AssignedLocalSufficiencySummaryVertexV1>, usize), &'static str> {
+    if batch.vertices.len() > MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1
+        || batch.total_reduction_steps > MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1
+    {
+        return Err(ASSIGNED_LOCAL_SUMMARY_OUTPUT_LIMIT_MESSAGE_V1);
+    }
+    let mut vertices = Vec::new();
+    vertices
+        .try_reserve_exact(batch.vertices.len())
+        .map_err(|_| ASSIGNED_LOCAL_SUMMARY_ALLOCATION_FAILED_MESSAGE_V1)?;
+    let mut seen_vertices = HashSet::new();
+    seen_vertices
+        .try_reserve(batch.vertices.len())
+        .map_err(|_| ASSIGNED_LOCAL_SUMMARY_ALLOCATION_FAILED_MESSAGE_V1)?;
+    let mut observed_reduction_steps = 0usize;
+    for proof in batch.vertices {
+        let proof_vertex = match &proof {
+            ori_topology::AssignedLocalSufficiencyV1::Proven { vertex, .. }
+            | ori_topology::AssignedLocalSufficiencyV1::Indeterminate { vertex, .. } => *vertex,
+        };
+        if !seen_vertices.insert(proof_vertex) {
+            return Err(ASSIGNED_LOCAL_SUMMARY_OUTPUT_LIMIT_MESSAGE_V1);
+        }
+        let vertex = match proof {
+            ori_topology::AssignedLocalSufficiencyV1::Proven {
+                vertex,
+                model_id,
+                reduction_steps,
+                reductions,
+            } => {
+                if model_id != ori_topology::ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1
+                    || reductions.len() != reduction_steps
+                {
+                    return Err(ASSIGNED_LOCAL_SUMMARY_OUTPUT_LIMIT_MESSAGE_V1);
+                }
+                observed_reduction_steps = observed_reduction_steps
+                    .checked_add(reduction_steps)
+                    .filter(|total| *total <= MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1)
+                    .ok_or(ASSIGNED_LOCAL_SUMMARY_OUTPUT_LIMIT_MESSAGE_V1)?;
+                AssignedLocalSufficiencySummaryVertexV1::SufficientProven {
+                    vertex,
+                    model_id,
+                    reduction_steps,
+                }
+            }
+            ori_topology::AssignedLocalSufficiencyV1::Indeterminate {
+                vertex,
+                reason:
+                    ori_topology::AssignedLocalSufficiencyReasonV1::NecessaryConditionsNotSatisfied,
+            } => AssignedLocalSufficiencySummaryVertexV1::NecessaryFailed { vertex },
+            ori_topology::AssignedLocalSufficiencyV1::Indeterminate { vertex, reason } => {
+                AssignedLocalSufficiencySummaryVertexV1::Indeterminate { vertex, reason }
+            }
+        };
+        vertices.push(vertex);
+    }
+    if observed_reduction_steps != batch.total_reduction_steps {
+        return Err(ASSIGNED_LOCAL_SUMMARY_OUTPUT_LIMIT_MESSAGE_V1);
+    }
+    Ok((vertices, batch.total_reduction_steps))
 }
 
 struct ValidationAnalysisInput {
@@ -1707,6 +1860,10 @@ async fn prove_current_assigned_local_sufficiency_v1(
         {
             return Err("The project changed while local sufficiency was analyzed.".to_owned());
         }
+        ensure_assigned_local_sufficiency_input_limits_v1(
+            project.editor.paper(),
+            project.editor.pattern(),
+        )?;
         (
             project.editor.paper().clone(),
             project.editor.pattern().clone(),
@@ -1730,9 +1887,15 @@ async fn prove_current_assigned_local_sufficiency_v1(
         if project.instance_id != request.expected_project_instance_id
             || project.project_id != request.expected_project_id
             || project.editor.revision() != request.expected_revision
-            || project.editor.fold_model_fingerprint_v1() != source_fingerprint
         {
-            return Err("The project changed while local sufficiency was analyzed.".to_owned());
+            return Err(ASSIGNED_LOCAL_SUMMARY_PROJECT_CHANGED_MESSAGE_V1.to_owned());
+        }
+        ensure_assigned_local_sufficiency_input_limits_v1(
+            project.editor.paper(),
+            project.editor.pattern(),
+        )?;
+        if project.editor.fold_model_fingerprint_v1() != source_fingerprint {
+            return Err(ASSIGNED_LOCAL_SUMMARY_PROJECT_CHANGED_MESSAGE_V1.to_owned());
         }
     }
     Ok(AssignedLocalSufficiencyResponseV1 {
@@ -1745,14 +1908,74 @@ async fn prove_current_assigned_local_sufficiency_v1(
     })
 }
 
+fn cancel_assigned_local_sufficiency_summary_for_state_v1(state: &AppState) -> Result<(), String> {
+    state
+        .1
+        .cancel_assigned_local_summary_generation()
+        .map_err(|_| ASSIGNED_LOCAL_SUMMARY_GENERATION_EXHAUSTED_MESSAGE_V1.to_owned())
+}
+
 #[tauri::command]
-fn cancel_current_assigned_local_sufficiency_summary_v1() -> Result<(), String> {
-    ASSIGNED_LOCAL_SUMMARY_GENERATION_V1
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-            value.checked_add(1)
-        })
-        .map(|_| ())
-        .map_err(|_| "The local sufficiency summary generation is exhausted.".to_owned())
+fn cancel_current_assigned_local_sufficiency_summary_v1(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    cancel_assigned_local_sufficiency_summary_for_state_v1(&state)
+}
+
+fn try_begin_assigned_local_sufficiency_summary_v1(
+    state: &AppState,
+) -> Result<(u64, NativePoseWorkerPermit), String> {
+    try_begin_assigned_local_sufficiency_summary_with_pre_publish_hook_v1(state, || {})
+}
+
+fn try_begin_assigned_local_sufficiency_summary_with_pre_publish_hook_v1(
+    state: &AppState,
+    pre_generation_publish_hook: impl FnOnce(),
+) -> Result<(u64, NativePoseWorkerPermit), String> {
+    let observed_generation = state.1.assigned_local_summary_generation();
+    // Admission must precede generation publication. A rejected parallel
+    // request owns no cancellation authority over the worker that made the
+    // gate busy. The compare-exchange below also makes cancellation win if it
+    // races the narrow interval between admission and generation publication.
+    let permit = state
+        .try_acquire_native_pose_worker()
+        .ok_or_else(|| ASSIGNED_LOCAL_SUMMARY_BUSY_MESSAGE_V1.to_owned())?;
+    pre_generation_publish_hook();
+    let generation = state
+        .1
+        .try_publish_assigned_local_summary_generation(observed_generation)
+        .map_err(|error| match error {
+            NativePoseWorkerGenerationPublicationError::Exhausted => {
+                ASSIGNED_LOCAL_SUMMARY_GENERATION_EXHAUSTED_MESSAGE_V1.to_owned()
+            }
+            NativePoseWorkerGenerationPublicationError::Superseded => {
+                ASSIGNED_LOCAL_SUMMARY_CANCELLED_MESSAGE_V1.to_owned()
+            }
+        })?;
+    Ok((generation, permit))
+}
+
+fn try_prepare_assigned_local_sufficiency_summary_v1(
+    state: &AppState,
+    request: &AssignedLocalSufficiencySummaryRequestV1,
+) -> Result<(u64, NativePoseWorkerPermit, Paper, CreasePattern), String> {
+    // A stale, malformed, or over-limit request must never acquire
+    // cancellation authority over a valid worker whose permit was just
+    // released but whose response has not yet been adopted.
+    let (paper, pattern) = capture_assigned_local_sufficiency_summary_input_v1(state, request)?;
+    let (generation, permit) = try_begin_assigned_local_sufficiency_summary_v1(state)?;
+    Ok((generation, permit, paper, pattern))
+}
+
+fn ensure_assigned_local_sufficiency_summary_generation_v1(
+    state: &AppState,
+    generation: u64,
+) -> Result<(), String> {
+    state
+        .1
+        .assigned_local_summary_generation_is_current(generation)
+        .then_some(())
+        .ok_or_else(|| ASSIGNED_LOCAL_SUMMARY_CANCELLED_MESSAGE_V1.to_owned())
 }
 
 #[tauri::command]
@@ -1760,36 +1983,13 @@ async fn summarize_current_assigned_local_sufficiency_v1(
     state: State<'_, AppState>,
     request: AssignedLocalSufficiencySummaryRequestV1,
 ) -> Result<AssignedLocalSufficiencySummaryResponseV1, String> {
-    let generation = ASSIGNED_LOCAL_SUMMARY_GENERATION_V1
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-            value.checked_add(1)
-        })
-        .map(|previous| previous + 1)
-        .map_err(|_| "The local sufficiency summary generation is exhausted.".to_owned())?;
-    let permit = state
-        .try_acquire_native_pose_worker()
-        .ok_or_else(|| "Another native pose analysis is already running.".to_owned())?;
-    let (paper, pattern) = {
-        let project = lock_project(&state)?;
-        if project.instance_id != request.expected_project_instance_id
-            || project.project_id != request.expected_project_id
-            || project.editor.revision() != request.expected_revision
-            || project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint
-        {
-            return Err("The project changed while local sufficiency was analyzed.".to_owned());
-        }
-        if project.editor.pattern().vertices.len() > MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1 {
-            return Err("The local sufficiency summary vertex limit was reached.".to_owned());
-        }
-        (
-            project.editor.paper().clone(),
-            project.editor.pattern().clone(),
-        )
-    };
+    let (generation, permit, paper, pattern) =
+        try_prepare_assigned_local_sufficiency_summary_v1(&state, &request)?;
+    let summary_generation = state.1.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
         let mut checkpoint = || {
-            if ASSIGNED_LOCAL_SUMMARY_GENERATION_V1.load(Ordering::SeqCst) == generation {
+            if summary_generation.assigned_local_summary_generation_is_current(generation) {
                 ori_topology::CooperativeAnalysisCheckpoint::Continue
             } else {
                 ori_topology::CooperativeAnalysisCheckpoint::Cancelled
@@ -1800,49 +2000,24 @@ async fn summarize_current_assigned_local_sufficiency_v1(
             &pattern,
             ori_topology::AssignedLocalSufficiencyLimitsV1 {
                 max_vertices: MAX_ASSIGNED_LOCAL_SUMMARY_VERTICES_V1,
-                max_reductions:
-                    ori_topology::AssignedLocalSufficiencyLimitsV1::default().max_reductions,
+                max_reductions: ori_topology::AssignedLocalSufficiencyLimitsV1::default()
+                    .max_reductions,
             },
             MAX_ASSIGNED_LOCAL_SUMMARY_REDUCTIONS_V1,
             &mut checkpoint,
         );
-        let vertices = batch
-            .vertices
-            .into_iter()
-            .map(|proof| match proof {
-                ori_topology::AssignedLocalSufficiencyV1::Proven {
-                    vertex,
-                    model_id,
-                    reduction_steps,
-                    ..
-                } => AssignedLocalSufficiencySummaryVertexV1::SufficientProven {
-                    vertex,
-                    model_id,
-                    reduction_steps,
-                },
-                ori_topology::AssignedLocalSufficiencyV1::Indeterminate {
-                    vertex,
-                    reason:
-                        ori_topology::AssignedLocalSufficiencyReasonV1::NecessaryConditionsNotSatisfied,
-                } => AssignedLocalSufficiencySummaryVertexV1::NecessaryFailed { vertex },
-                ori_topology::AssignedLocalSufficiencyV1::Indeterminate { vertex, reason } => {
-                    AssignedLocalSufficiencySummaryVertexV1::Indeterminate { vertex, reason }
-                }
-            })
-            .collect();
-        (vertices, batch.total_reduction_steps)
+        convert_assigned_local_sufficiency_summary_batch_v1(batch)
     })
     .await
-    .map_err(|_| "Local sufficiency summary analysis failed.".to_owned())?;
+    .map_err(|_| "Local sufficiency summary analysis failed.".to_owned())?
+    .map_err(|message| message.to_owned())?;
     {
         let project = lock_project(&state)?;
-        if project.instance_id != request.expected_project_instance_id
-            || project.project_id != request.expected_project_id
-            || project.editor.revision() != request.expected_revision
-            || project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint
-        {
-            return Err("The project changed while local sufficiency was analyzed.".to_owned());
-        }
+        ensure_assigned_local_sufficiency_summary_binding_v1(&project, &request)?;
+        // Keep cancellation validation last. A cancellation published while
+        // the potentially nontrivial fingerprint comparison runs must not be
+        // lost before this response is adopted.
+        ensure_assigned_local_sufficiency_summary_generation_v1(&state, generation)?;
     }
     Ok(AssignedLocalSufficiencySummaryResponseV1 {
         version: 1,
@@ -5766,6 +5941,7 @@ pub fn run() {
         .manage(InstructionExportState::default())
         .manage(StackedFoldTransactionState::default())
         .manage(DyadicPathPreviewState::default())
+        .manage(NonFlatCycleContinuationState::default())
         .manage(runtime_update::State::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
@@ -5833,11 +6009,15 @@ pub fn run() {
             propose_current_stacked_fold_read,
             propose_current_cycle_pose_v1,
             cancel_current_stacked_fold_read_v1,
+            cancel_current_stacked_fold_read_request_v1,
             read_even_cycle_candidates_v1,
             read_bounded_dyadic_pose_graph_v1,
             mint_dyadic_pose_path_preview_v1,
             apply_dyadic_pose_path_preview_v1,
             cancel_dyadic_pose_path_preview_v1,
+            mint_non_flat_cycle_continuation_v1,
+            apply_non_flat_cycle_continuation_v1,
+            cancel_non_flat_cycle_continuation_v1,
             read_live_hinge_registry_v1,
             cancel_stacked_fold_transaction_preview,
             apply_stacked_fold_transaction,

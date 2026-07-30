@@ -11,6 +11,31 @@ pub struct SpeculativeUnprovenFoldStateMarkerV1 {
     pub(crate) redo_marks: Vec<Option<SpeculativeUnprovenFoldMarkV1>>,
 }
 
+impl SpeculativeUnprovenFoldStateMarkerV1 {
+    /// Compares the persisted proof state without treating ordinary,
+    /// unmarked undo/redo entries as document content.
+    ///
+    /// The full marker deliberately retains one slot per history entry for
+    /// exact rollback checks. A save-dirty comparison has a narrower
+    /// contract: normal edits are compared through the document itself, so
+    /// only actual speculative marks and the applied-base ledger belong in
+    /// this comparison.
+    #[must_use]
+    pub fn has_same_persisted_state_v1(&self, other: &Self) -> bool {
+        self.applied_base == other.applied_base
+            && self
+                .undo_marks
+                .iter()
+                .filter_map(Option::as_ref)
+                .eq(other.undo_marks.iter().filter_map(Option::as_ref))
+            && self
+                .redo_marks
+                .iter()
+                .filter_map(Option::as_ref)
+                .eq(other.redo_marks.iter().filter_map(Option::as_ref))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AppliedBaseUnprovenMarkV1 {
     pub(crate) mark: SpeculativeUnprovenFoldMarkV1,
@@ -124,5 +149,27 @@ impl AppliedBaseUnprovenLedgerV1 {
         for item in &self.retained_marks {
             counts.add_status(item.mark.status);
         }
+    }
+}
+
+#[cfg(test)]
+mod persisted_state_tests {
+    use super::{AppliedBaseUnprovenLedgerV1, SpeculativeUnprovenFoldStateMarkerV1};
+
+    #[test]
+    fn ordinary_history_slots_do_not_change_the_persisted_proof_state() {
+        let baseline = SpeculativeUnprovenFoldStateMarkerV1 {
+            applied_base: AppliedBaseUnprovenLedgerV1::default(),
+            undo_marks: Vec::new(),
+            redo_marks: Vec::new(),
+        };
+        let ordinary_history = SpeculativeUnprovenFoldStateMarkerV1 {
+            applied_base: AppliedBaseUnprovenLedgerV1::default(),
+            undo_marks: vec![None, None],
+            redo_marks: vec![None],
+        };
+
+        assert!(baseline.has_same_persisted_state_v1(&ordinary_history));
+        assert!(ordinary_history.has_same_persisted_state_v1(&baseline));
     }
 }

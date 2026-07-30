@@ -63,6 +63,7 @@ fn assert_out_of_scope_boundary_is_unsupported_no_op(
         &state,
         None,
         DyadicPoseGraphReadRequestV1 {
+            progress_request_id: None,
             expected_project_instance_id: instance,
             expected_project_id: project_id,
             expected_revision: revision,

@@ -9,6 +9,7 @@
 //! `Unknown`.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 
 use ori_domain::{CreasePattern, EdgeId, FaceId, Paper, ProjectId, VertexId};
 use ori_topology::{
@@ -282,6 +283,7 @@ impl GlobalFlatFoldabilityObserver for NoopGlobalFlatFoldabilityObserver {}
 #[serde(rename_all = "snake_case")]
 pub enum GlobalFlatFoldabilityInternalError {
     WorkCountOverflow,
+    AllocationFailed,
     ValidatedTopologyInvariantLost,
 }
 
@@ -461,6 +463,23 @@ pub struct LayerOrderSnapshot {
     pub proof_summary: Option<FacewiseProofSummary>,
 }
 
+/// Recoverable failures while constructing a retained layer-order snapshot.
+///
+/// The byte limit covers the snapshot value itself plus every Rust-owned
+/// `Vec` allocation reachable from it. Allocator metadata and transient stack
+/// storage are outside this deterministic accounting boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum LayerOrderSnapshotCloneErrorV1 {
+    #[error("layer-order retained-byte accounting overflowed")]
+    SizeOverflow,
+    #[error(
+        "layer-order snapshot would retain {observed} bytes, exceeding the {maximum}-byte limit"
+    )]
+    ByteLimitExceeded { observed: usize, maximum: usize },
+    #[error("layer-order snapshot allocation failed")]
+    AllocationFailed,
+}
+
 impl LayerOrderSnapshot {
     /// Rejects stale, differently identified, or differently modelled layer
     /// state at a later boundary.
@@ -470,6 +489,504 @@ impl LayerOrderSnapshot {
             && self.provenance.source.identity_namespace.is_some()
             && self.provenance.source.source_fingerprint.is_some()
     }
+
+    /// Returns the bytes retained by this value and all of its owned vectors.
+    ///
+    /// Vector capacity, rather than length, is measured so spare allocation is
+    /// never hidden from a retention budget.
+    #[must_use]
+    pub fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        checked_layer_order_snapshot_actual_bytes_v1(self)
+    }
+
+    /// Fallibly clones this snapshot without an unbounded intermediate clone.
+    ///
+    /// The projected length-based size is checked before allocation. The
+    /// capacity returned by every fallible reserve is charged immediately, so
+    /// allocator over-capacity cannot accumulate across nested regions. The
+    /// constructed value is also remeasured before it is returned.
+    pub fn try_clone_with_retained_byte_limit_v1(
+        &self,
+        maximum: usize,
+    ) -> Result<Self, LayerOrderSnapshotCloneErrorV1> {
+        self.try_clone_filtered_with_retained_byte_limit_v1(None, maximum)
+    }
+
+    /// Returns the projected retained bytes of the face-restricted clone.
+    ///
+    /// This is the exact length-based preflight used by
+    /// [`Self::try_restrict_to_faces_with_retained_byte_limit_v1`]. The final
+    /// clone is still remeasured because an allocator may expose a capacity
+    /// larger than the requested length.
+    #[must_use]
+    pub fn checked_restricted_deep_retained_bytes_v1(&self, faces: &[FaceId]) -> Option<usize> {
+        checked_layer_order_snapshot_projected_bytes_v1(self, Some(faces))
+    }
+
+    /// Fallibly constructs the portion of this certificate retained by
+    /// `faces`, without first cloning the complete source.
+    ///
+    /// Cell geometry is retained only for cells with at least one selected
+    /// bottom-to-top record. Pair records require both endpoint faces.
+    /// Reference-face fallback matches the former clone-then-retain behavior.
+    pub fn try_restrict_to_faces_with_retained_byte_limit_v1(
+        &self,
+        faces: &[FaceId],
+        maximum: usize,
+    ) -> Result<Self, LayerOrderSnapshotCloneErrorV1> {
+        self.try_clone_filtered_with_retained_byte_limit_v1(Some(faces), maximum)
+    }
+
+    fn try_clone_filtered_with_retained_byte_limit_v1(
+        &self,
+        faces: Option<&[FaceId]>,
+        maximum: usize,
+    ) -> Result<Self, LayerOrderSnapshotCloneErrorV1> {
+        let projected = checked_layer_order_snapshot_projected_bytes_v1(self, faces)
+            .ok_or(LayerOrderSnapshotCloneErrorV1::SizeOverflow)?;
+        check_layer_order_snapshot_byte_limit_v1(projected, maximum)?;
+
+        let mut budget = LayerOrderSnapshotCloneBudgetV1::new(maximum)?;
+        let cloned = try_clone_layer_order_snapshot_filtered_v1(self, faces, &mut budget)?;
+        let observed = cloned
+            .checked_deep_retained_bytes_v1()
+            .ok_or(LayerOrderSnapshotCloneErrorV1::SizeOverflow)?;
+        if observed != budget.observed {
+            return Err(LayerOrderSnapshotCloneErrorV1::SizeOverflow);
+        }
+        check_layer_order_snapshot_byte_limit_v1(observed, maximum)?;
+        Ok(cloned)
+    }
+}
+
+fn check_layer_order_snapshot_byte_limit_v1(
+    observed: usize,
+    maximum: usize,
+) -> Result<(), LayerOrderSnapshotCloneErrorV1> {
+    if observed > maximum {
+        return Err(LayerOrderSnapshotCloneErrorV1::ByteLimitExceeded { observed, maximum });
+    }
+    Ok(())
+}
+
+fn checked_add_vec_allocation_v1<T>(total: &mut usize, elements: usize) -> Option<()> {
+    let bytes = std::mem::size_of::<T>().checked_mul(elements)?;
+    *total = total.checked_add(bytes)?;
+    Some(())
+}
+
+fn checked_add_exact_rational_actual_bytes_v1(
+    total: &mut usize,
+    value: &ExactRationalValue,
+) -> Option<()> {
+    checked_add_vec_allocation_v1::<u8>(total, value.numerator_magnitude_be.capacity())?;
+    checked_add_vec_allocation_v1::<u8>(total, value.denominator_be.capacity())
+}
+
+fn checked_add_exact_rational_projected_bytes_v1(
+    total: &mut usize,
+    value: &ExactRationalValue,
+) -> Option<()> {
+    checked_add_vec_allocation_v1::<u8>(total, value.numerator_magnitude_be.len())?;
+    checked_add_vec_allocation_v1::<u8>(total, value.denominator_be.len())
+}
+
+fn checked_add_exact_point_actual_bytes_v1(
+    total: &mut usize,
+    value: &ExactPointValue,
+) -> Option<()> {
+    checked_add_exact_rational_actual_bytes_v1(total, &value.x)?;
+    checked_add_exact_rational_actual_bytes_v1(total, &value.y)
+}
+
+fn checked_add_exact_point_projected_bytes_v1(
+    total: &mut usize,
+    value: &ExactPointValue,
+) -> Option<()> {
+    checked_add_exact_rational_projected_bytes_v1(total, &value.x)?;
+    checked_add_exact_rational_projected_bytes_v1(total, &value.y)
+}
+
+fn checked_add_exact_transform_actual_bytes_v1(
+    total: &mut usize,
+    value: &ExactAffineTransform,
+) -> Option<()> {
+    for coefficient in [
+        &value.m00, &value.m01, &value.m10, &value.m11, &value.tx, &value.ty,
+    ] {
+        checked_add_exact_rational_actual_bytes_v1(total, coefficient)?;
+    }
+    Some(())
+}
+
+fn checked_add_exact_transform_projected_bytes_v1(
+    total: &mut usize,
+    value: &ExactAffineTransform,
+) -> Option<()> {
+    for coefficient in [
+        &value.m00, &value.m01, &value.m10, &value.m11, &value.tx, &value.ty,
+    ] {
+        checked_add_exact_rational_projected_bytes_v1(total, coefficient)?;
+    }
+    Some(())
+}
+
+fn checked_layer_order_snapshot_actual_bytes_v1(snapshot: &LayerOrderSnapshot) -> Option<usize> {
+    let mut total = std::mem::size_of::<LayerOrderSnapshot>();
+    checked_add_vec_allocation_v1::<LayerFace>(&mut total, snapshot.material_faces.capacity())?;
+    if let Some(global) = &snapshot.global_bottom_to_top {
+        checked_add_vec_allocation_v1::<LayerFace>(&mut total, global.capacity())?;
+    }
+    checked_add_vec_allocation_v1::<FoldedFaceSnapshot>(
+        &mut total,
+        snapshot.folded_faces.capacity(),
+    )?;
+    for folded in &snapshot.folded_faces {
+        checked_add_exact_transform_actual_bytes_v1(&mut total, &folded.source_to_flat)?;
+    }
+    checked_add_vec_allocation_v1::<OverlapCellSnapshot>(
+        &mut total,
+        snapshot.overlap_cells.capacity(),
+    )?;
+    for cell in &snapshot.overlap_cells {
+        checked_add_vec_allocation_v1::<ExactPointValue>(
+            &mut total,
+            cell.exact_boundary.capacity(),
+        )?;
+        for point in &cell.exact_boundary {
+            checked_add_exact_point_actual_bytes_v1(&mut total, point)?;
+        }
+        checked_add_vec_allocation_v1::<LayerFace>(&mut total, cell.covering_faces.capacity())?;
+        checked_add_vec_allocation_v1::<FaceId>(&mut total, cell.bottom_to_top_faces.capacity())?;
+    }
+    checked_add_vec_allocation_v1::<FacePairOrderSnapshot>(
+        &mut total,
+        snapshot.face_pair_orders.capacity(),
+    )?;
+    for pair in &snapshot.face_pair_orders {
+        checked_add_vec_allocation_v1::<OverlapCellKey>(
+            &mut total,
+            pair.supporting_cells.capacity(),
+        )?;
+    }
+    Some(total)
+}
+
+fn face_is_retained_v1(faces: Option<&[FaceId]>, face: FaceId) -> bool {
+    faces.is_none_or(|selected| selected.contains(&face))
+}
+
+fn cell_is_retained_v1(faces: Option<&[FaceId]>, cell: &OverlapCellSnapshot) -> bool {
+    faces.is_none()
+        || cell
+            .bottom_to_top_faces
+            .iter()
+            .copied()
+            .any(|face| face_is_retained_v1(faces, face))
+}
+
+fn checked_layer_order_snapshot_projected_bytes_v1(
+    snapshot: &LayerOrderSnapshot,
+    faces: Option<&[FaceId]>,
+) -> Option<usize> {
+    let mut total = std::mem::size_of::<LayerOrderSnapshot>();
+
+    let material_face_count = snapshot
+        .material_faces
+        .iter()
+        .filter(|face| face_is_retained_v1(faces, face.face_id))
+        .count();
+    checked_add_vec_allocation_v1::<LayerFace>(&mut total, material_face_count)?;
+
+    if let Some(global) = &snapshot.global_bottom_to_top {
+        let global_count = global
+            .iter()
+            .filter(|face| face_is_retained_v1(faces, face.face_id))
+            .count();
+        checked_add_vec_allocation_v1::<LayerFace>(&mut total, global_count)?;
+    }
+
+    let folded_face_count = snapshot
+        .folded_faces
+        .iter()
+        .filter(|face| face_is_retained_v1(faces, face.face.face_id))
+        .count();
+    checked_add_vec_allocation_v1::<FoldedFaceSnapshot>(&mut total, folded_face_count)?;
+    for folded in snapshot
+        .folded_faces
+        .iter()
+        .filter(|face| face_is_retained_v1(faces, face.face.face_id))
+    {
+        checked_add_exact_transform_projected_bytes_v1(&mut total, &folded.source_to_flat)?;
+    }
+
+    let overlap_cell_count = snapshot
+        .overlap_cells
+        .iter()
+        .filter(|cell| cell_is_retained_v1(faces, cell))
+        .count();
+    checked_add_vec_allocation_v1::<OverlapCellSnapshot>(&mut total, overlap_cell_count)?;
+    for cell in snapshot
+        .overlap_cells
+        .iter()
+        .filter(|cell| cell_is_retained_v1(faces, cell))
+    {
+        checked_add_vec_allocation_v1::<ExactPointValue>(&mut total, cell.exact_boundary.len())?;
+        for point in &cell.exact_boundary {
+            checked_add_exact_point_projected_bytes_v1(&mut total, point)?;
+        }
+        let covering_face_count = cell
+            .covering_faces
+            .iter()
+            .filter(|face| face_is_retained_v1(faces, face.face_id))
+            .count();
+        checked_add_vec_allocation_v1::<LayerFace>(&mut total, covering_face_count)?;
+        let layer_count = cell
+            .bottom_to_top_faces
+            .iter()
+            .filter(|face| face_is_retained_v1(faces, **face))
+            .count();
+        checked_add_vec_allocation_v1::<FaceId>(&mut total, layer_count)?;
+    }
+
+    let pair_count = snapshot
+        .face_pair_orders
+        .iter()
+        .filter(|pair| {
+            face_is_retained_v1(faces, pair.lower_face.face_id)
+                && face_is_retained_v1(faces, pair.upper_face.face_id)
+        })
+        .count();
+    checked_add_vec_allocation_v1::<FacePairOrderSnapshot>(&mut total, pair_count)?;
+    for pair in snapshot.face_pair_orders.iter().filter(|pair| {
+        face_is_retained_v1(faces, pair.lower_face.face_id)
+            && face_is_retained_v1(faces, pair.upper_face.face_id)
+    }) {
+        checked_add_vec_allocation_v1::<OverlapCellKey>(&mut total, pair.supporting_cells.len())?;
+    }
+
+    Some(total)
+}
+
+struct LayerOrderSnapshotCloneBudgetV1 {
+    observed: usize,
+    maximum: usize,
+}
+
+impl LayerOrderSnapshotCloneBudgetV1 {
+    fn new(maximum: usize) -> Result<Self, LayerOrderSnapshotCloneErrorV1> {
+        let observed = std::mem::size_of::<LayerOrderSnapshot>();
+        check_layer_order_snapshot_byte_limit_v1(observed, maximum)?;
+        Ok(Self { observed, maximum })
+    }
+
+    fn try_vec_with_exact_capacity<T>(
+        &mut self,
+        requested_capacity: usize,
+    ) -> Result<Vec<T>, LayerOrderSnapshotCloneErrorV1> {
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(requested_capacity)
+            .map_err(|_| LayerOrderSnapshotCloneErrorV1::AllocationFailed)?;
+        let allocation_bytes = std::mem::size_of::<T>()
+            .checked_mul(values.capacity())
+            .ok_or(LayerOrderSnapshotCloneErrorV1::SizeOverflow)?;
+        let observed = self
+            .observed
+            .checked_add(allocation_bytes)
+            .ok_or(LayerOrderSnapshotCloneErrorV1::SizeOverflow)?;
+        check_layer_order_snapshot_byte_limit_v1(observed, self.maximum)?;
+        self.observed = observed;
+        Ok(values)
+    }
+}
+
+fn try_clone_exact_bytes_v1(
+    source: &[u8],
+    budget: &mut LayerOrderSnapshotCloneBudgetV1,
+) -> Result<Vec<u8>, LayerOrderSnapshotCloneErrorV1> {
+    let mut cloned = budget.try_vec_with_exact_capacity(source.len())?;
+    cloned.extend_from_slice(source);
+    Ok(cloned)
+}
+
+fn try_clone_exact_rational_v1(
+    source: &ExactRationalValue,
+    budget: &mut LayerOrderSnapshotCloneBudgetV1,
+) -> Result<ExactRationalValue, LayerOrderSnapshotCloneErrorV1> {
+    Ok(ExactRationalValue {
+        sign: source.sign,
+        numerator_magnitude_be: try_clone_exact_bytes_v1(&source.numerator_magnitude_be, budget)?,
+        denominator_be: try_clone_exact_bytes_v1(&source.denominator_be, budget)?,
+    })
+}
+
+fn try_clone_exact_point_v1(
+    source: &ExactPointValue,
+    budget: &mut LayerOrderSnapshotCloneBudgetV1,
+) -> Result<ExactPointValue, LayerOrderSnapshotCloneErrorV1> {
+    Ok(ExactPointValue {
+        x: try_clone_exact_rational_v1(&source.x, budget)?,
+        y: try_clone_exact_rational_v1(&source.y, budget)?,
+    })
+}
+
+fn try_clone_exact_transform_v1(
+    source: &ExactAffineTransform,
+    budget: &mut LayerOrderSnapshotCloneBudgetV1,
+) -> Result<ExactAffineTransform, LayerOrderSnapshotCloneErrorV1> {
+    Ok(ExactAffineTransform {
+        m00: try_clone_exact_rational_v1(&source.m00, budget)?,
+        m01: try_clone_exact_rational_v1(&source.m01, budget)?,
+        m10: try_clone_exact_rational_v1(&source.m10, budget)?,
+        m11: try_clone_exact_rational_v1(&source.m11, budget)?,
+        tx: try_clone_exact_rational_v1(&source.tx, budget)?,
+        ty: try_clone_exact_rational_v1(&source.ty, budget)?,
+    })
+}
+
+fn try_clone_layer_order_snapshot_filtered_v1(
+    source: &LayerOrderSnapshot,
+    faces: Option<&[FaceId]>,
+    budget: &mut LayerOrderSnapshotCloneBudgetV1,
+) -> Result<LayerOrderSnapshot, LayerOrderSnapshotCloneErrorV1> {
+    let material_face_count = source
+        .material_faces
+        .iter()
+        .filter(|face| face_is_retained_v1(faces, face.face_id))
+        .count();
+    let mut material_faces = budget.try_vec_with_exact_capacity(material_face_count)?;
+    for face in &source.material_faces {
+        if face_is_retained_v1(faces, face.face_id) {
+            material_faces.push(*face);
+        }
+    }
+
+    let global_bottom_to_top = if let Some(global) = &source.global_bottom_to_top {
+        let retained_count = global
+            .iter()
+            .filter(|face| face_is_retained_v1(faces, face.face_id))
+            .count();
+        let mut retained = budget.try_vec_with_exact_capacity(retained_count)?;
+        for face in global {
+            if face_is_retained_v1(faces, face.face_id) {
+                retained.push(*face);
+            }
+        }
+        Some(retained)
+    } else {
+        None
+    };
+
+    let folded_face_count = source
+        .folded_faces
+        .iter()
+        .filter(|face| face_is_retained_v1(faces, face.face.face_id))
+        .count();
+    let mut folded_faces = budget.try_vec_with_exact_capacity(folded_face_count)?;
+    for folded in &source.folded_faces {
+        if face_is_retained_v1(faces, folded.face.face_id) {
+            folded_faces.push(FoldedFaceSnapshot {
+                face: folded.face,
+                source_to_flat: try_clone_exact_transform_v1(&folded.source_to_flat, budget)?,
+                orientation: folded.orientation,
+            });
+        }
+    }
+
+    let overlap_cell_count = source
+        .overlap_cells
+        .iter()
+        .filter(|cell| cell_is_retained_v1(faces, cell))
+        .count();
+    let mut overlap_cells = budget.try_vec_with_exact_capacity(overlap_cell_count)?;
+    for cell in &source.overlap_cells {
+        if !cell_is_retained_v1(faces, cell) {
+            continue;
+        }
+
+        let mut exact_boundary = budget.try_vec_with_exact_capacity(cell.exact_boundary.len())?;
+        for point in &cell.exact_boundary {
+            exact_boundary.push(try_clone_exact_point_v1(point, budget)?);
+        }
+
+        let covering_face_count = cell
+            .covering_faces
+            .iter()
+            .filter(|face| face_is_retained_v1(faces, face.face_id))
+            .count();
+        let mut covering_faces = budget.try_vec_with_exact_capacity(covering_face_count)?;
+        for face in &cell.covering_faces {
+            if face_is_retained_v1(faces, face.face_id) {
+                covering_faces.push(*face);
+            }
+        }
+
+        let layer_count = cell
+            .bottom_to_top_faces
+            .iter()
+            .filter(|face| face_is_retained_v1(faces, **face))
+            .count();
+        let mut bottom_to_top_faces = budget.try_vec_with_exact_capacity(layer_count)?;
+        for face in &cell.bottom_to_top_faces {
+            if face_is_retained_v1(faces, *face) {
+                bottom_to_top_faces.push(*face);
+            }
+        }
+
+        overlap_cells.push(OverlapCellSnapshot {
+            cell_key: cell.cell_key,
+            exact_boundary,
+            covering_faces,
+            bottom_to_top_faces,
+        });
+    }
+
+    let pair_count = source
+        .face_pair_orders
+        .iter()
+        .filter(|pair| {
+            face_is_retained_v1(faces, pair.lower_face.face_id)
+                && face_is_retained_v1(faces, pair.upper_face.face_id)
+        })
+        .count();
+    let mut face_pair_orders = budget.try_vec_with_exact_capacity(pair_count)?;
+    for pair in &source.face_pair_orders {
+        if !face_is_retained_v1(faces, pair.lower_face.face_id)
+            || !face_is_retained_v1(faces, pair.upper_face.face_id)
+        {
+            continue;
+        }
+        let mut supporting_cells =
+            budget.try_vec_with_exact_capacity(pair.supporting_cells.len())?;
+        supporting_cells.extend_from_slice(&pair.supporting_cells);
+        face_pair_orders.push(FacePairOrderSnapshot {
+            lower_face: pair.lower_face,
+            upper_face: pair.upper_face,
+            supporting_cells,
+        });
+    }
+
+    let reference_face = if faces.is_some() {
+        source
+            .reference_face
+            .filter(|face| face_is_retained_v1(faces, face.face_id))
+            .or_else(|| material_faces.first().copied())
+    } else {
+        source.reference_face
+    };
+
+    Ok(LayerOrderSnapshot {
+        model_id: source.model_id,
+        material_faces,
+        global_bottom_to_top,
+        provenance: source.provenance,
+        reference_face,
+        folded_faces,
+        overlap_cells,
+        face_pair_orders,
+        proof_summary: source.proof_summary,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -749,7 +1266,17 @@ fn required_pair_preflight_failure(
             observed: required_pair_count,
         });
     }
-    let required_storage = required_pair_count.saturating_mul(std::mem::size_of::<(usize, bool)>());
+    let required_storage =
+        match required_pair_count.checked_mul(std::mem::size_of::<(usize, bool)>()) {
+            Some(required_storage) => required_storage,
+            None => {
+                return Some(GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::CertificateBytes,
+                    limit: limits.max_certificate_bytes,
+                    observed: usize::MAX,
+                });
+            }
+        };
     if required_storage > limits.max_certificate_bytes {
         return Some(GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
             resource: FlatFoldabilityResource::CertificateBytes,
@@ -928,12 +1455,8 @@ fn validate_global_flat_source_with_observer<'a, O: GlobalFlatFoldabilityObserve
             )));
         }
     }
-    let canonical_faces = validate_topology(input.topology).map_err(|reason| {
-        Box::new(GlobalFlatSourceValidationFailure::Unknown {
-            provenance,
-            work_counts,
-            reason,
-        })
+    let canonical_faces = validate_topology(input.topology).map_err(|failure| {
+        global_source_failure_from_input_structure(failure, provenance, work_counts)
     })?;
     if canonical_faces.is_empty() {
         return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
@@ -944,12 +1467,8 @@ fn validate_global_flat_source_with_observer<'a, O: GlobalFlatFoldabilityObserve
             },
         }));
     }
-    match validate_local_report(input.local_flat_foldability).map_err(|reason| {
-        Box::new(GlobalFlatSourceValidationFailure::Unknown {
-            provenance,
-            work_counts,
-            reason,
-        })
+    match validate_local_report(input.local_flat_foldability).map_err(|failure| {
+        global_source_failure_from_input_structure(failure, provenance, work_counts)
     })? {
         LocalReportEvidence::Blocked => {
             return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
@@ -1267,11 +1786,18 @@ fn count_work(
     let paper_boundary_vertex_records =
         input.paper.map_or(0, |paper| paper.boundary_vertices.len());
     let face_boundary_half_edges = topology.faces.iter().try_fold(0_usize, |total, face| {
-        total.checked_add(face.outer.half_edges.len()).ok_or(
-            GlobalFlatFoldabilityExecutionError::Internal {
-                reason: GlobalFlatFoldabilityInternalError::WorkCountOverflow,
-            },
-        )
+        let overflow = || GlobalFlatFoldabilityExecutionError::Internal {
+            reason: GlobalFlatFoldabilityInternalError::WorkCountOverflow,
+        };
+        let mut total = total
+            .checked_add(face.outer.half_edges.len())
+            .ok_or_else(overflow)?;
+        for boundary in face.holes.iter().chain(&face.seams) {
+            total = total
+                .checked_add(boundary.half_edges.len())
+                .ok_or_else(overflow)?;
+        }
+        Ok::<_, GlobalFlatFoldabilityExecutionError>(total)
     })?;
     let counts = [
         source_vertex_records,
@@ -1374,25 +1900,104 @@ fn first_limit_failure(
         })
 }
 
+enum InputStructureValidationFailure {
+    Unknown(GlobalFlatFoldabilityUnknownReason),
+    Execution(GlobalFlatFoldabilityExecutionError),
+}
+
+fn global_source_failure_from_input_structure(
+    failure: InputStructureValidationFailure,
+    provenance: GlobalFlatFoldabilityProvenance,
+    work_counts: GlobalFlatFoldabilityWorkCounts,
+) -> Box<GlobalFlatSourceValidationFailure> {
+    Box::new(match failure {
+        InputStructureValidationFailure::Unknown(reason) => {
+            GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts,
+                reason,
+            }
+        }
+        InputStructureValidationFailure::Execution(error) => {
+            GlobalFlatSourceValidationFailure::Execution(error)
+        }
+    })
+}
+
+impl From<GlobalFlatFoldabilityUnknownReason> for InputStructureValidationFailure {
+    fn from(reason: GlobalFlatFoldabilityUnknownReason) -> Self {
+        Self::Unknown(reason)
+    }
+}
+
+impl From<GlobalFlatFoldabilityExecutionError> for InputStructureValidationFailure {
+    fn from(error: GlobalFlatFoldabilityExecutionError) -> Self {
+        Self::Execution(error)
+    }
+}
+
+const fn validation_allocation_failure() -> GlobalFlatFoldabilityExecutionError {
+    GlobalFlatFoldabilityExecutionError::Internal {
+        reason: GlobalFlatFoldabilityInternalError::AllocationFailed,
+    }
+}
+
+fn try_validation_vec_with_capacity<T>(
+    capacity: usize,
+) -> Result<Vec<T>, InputStructureValidationFailure> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| validation_allocation_failure())?;
+    Ok(values)
+}
+
+fn try_validation_hash_set_with_capacity<T: Eq + Hash>(
+    capacity: usize,
+) -> Result<HashSet<T>, InputStructureValidationFailure> {
+    let mut values = HashSet::new();
+    values
+        .try_reserve(capacity)
+        .map_err(|_| validation_allocation_failure())?;
+    Ok(values)
+}
+
+fn try_validation_hash_map_with_capacity<K: Eq + Hash, V>(
+    capacity: usize,
+) -> Result<HashMap<K, V>, InputStructureValidationFailure> {
+    let mut values = HashMap::new();
+    values
+        .try_reserve(capacity)
+        .map_err(|_| validation_allocation_failure())?;
+    Ok(values)
+}
+
 fn validate_topology(
     topology: &TopologySnapshot,
-) -> Result<Vec<LayerFace>, GlobalFlatFoldabilityUnknownReason> {
-    let mut face_ids = HashSet::with_capacity(topology.faces.len());
-    let mut face_keys = HashSet::with_capacity(topology.faces.len());
-    let mut keys_by_id = HashMap::with_capacity(topology.faces.len());
-    let mut canonical_faces = Vec::with_capacity(topology.faces.len());
-    let mut face_records = topology.faces.iter().collect::<Vec<_>>();
-    face_records.sort_by_key(|face| (face.id.canonical_bytes(), face.key));
+) -> Result<Vec<LayerFace>, InputStructureValidationFailure> {
+    let mut face_ids = try_validation_hash_set_with_capacity(topology.faces.len())?;
+    let mut face_keys = try_validation_hash_set_with_capacity(topology.faces.len())?;
+    let mut keys_by_id = try_validation_hash_map_with_capacity(topology.faces.len())?;
+    let mut canonical_faces = try_validation_vec_with_capacity(topology.faces.len())?;
+    let mut face_records = try_validation_vec_with_capacity(topology.faces.len())?;
+    face_records.extend(topology.faces.iter());
+    face_records.sort_unstable_by_key(|face| (face.id.canonical_bytes(), face.key));
     for face in face_records {
         if !face_ids.insert(face.id) {
-            return Err(inconsistent(
-                FlatFoldabilityInputConsistencyIssue::DuplicateFaceId { face: face.id },
-            ));
+            return Err(
+                inconsistent(FlatFoldabilityInputConsistencyIssue::DuplicateFaceId {
+                    face: face.id,
+                })
+                .into(),
+            );
         }
         if !face_keys.insert(face.key) {
-            return Err(inconsistent(
-                FlatFoldabilityInputConsistencyIssue::DuplicateFaceKey { face_key: face.key },
-            ));
+            return Err(
+                inconsistent(FlatFoldabilityInputConsistencyIssue::DuplicateFaceKey {
+                    face_key: face.key,
+                })
+                .into(),
+            );
         }
         keys_by_id.insert(face.id, face.key);
         canonical_faces.push(LayerFace {
@@ -1400,65 +2005,75 @@ fn validate_topology(
             face_key: face.key,
         });
     }
-    canonical_faces.sort_by_key(|face| (face.face_key, face.face_id.canonical_bytes()));
+    canonical_faces.sort_unstable_by_key(|face| (face.face_key, face.face_id.canonical_bytes()));
 
-    let mut incidence_edges = HashSet::with_capacity(topology.edge_incidence.len());
-    let mut incidence_hinges = HashMap::new();
-    let mut incidence_records = topology.edge_incidence.iter().collect::<Vec<_>>();
-    incidence_records.sort_by_key(|(edge, _)| edge.canonical_bytes());
+    let mut incidence_edges = try_validation_hash_set_with_capacity(topology.edge_incidence.len())?;
+    let mut incidence_hinges =
+        try_validation_hash_map_with_capacity(topology.edge_incidence.len())?;
+    let mut incidence_records = try_validation_vec_with_capacity(topology.edge_incidence.len())?;
+    incidence_records.extend(topology.edge_incidence.iter().copied());
+    incidence_records.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
     for (edge, incidence) in incidence_records {
-        if !incidence_edges.insert(*edge) {
+        if !incidence_edges.insert(edge) {
             return Err(inconsistent(
-                FlatFoldabilityInputConsistencyIssue::DuplicateIncidenceEdge { edge: *edge },
-            ));
+                FlatFoldabilityInputConsistencyIssue::DuplicateIncidenceEdge { edge },
+            )
+            .into());
         }
-        match *incidence {
+        match incidence {
             EdgeIncidence::Boundary { material } => {
-                ensure_face_exists(&keys_by_id, *edge, material, false)?;
+                ensure_face_exists(&keys_by_id, edge, material, false)?;
             }
             EdgeIncidence::Hinge {
                 left,
                 right,
                 assignment,
             } => {
-                ensure_face_exists(&keys_by_id, *edge, left, false)?;
-                ensure_face_exists(&keys_by_id, *edge, right, false)?;
+                ensure_face_exists(&keys_by_id, edge, left, false)?;
+                ensure_face_exists(&keys_by_id, edge, right, false)?;
                 if left == right {
-                    return Err(inconsistent(
-                        FlatFoldabilityInputConsistencyIssue::SelfHinge {
-                            edge: *edge,
+                    return Err(
+                        inconsistent(FlatFoldabilityInputConsistencyIssue::SelfHinge {
+                            edge,
                             face: left,
-                        },
-                    ));
+                        })
+                        .into(),
+                    );
                 }
-                incidence_hinges.insert(*edge, (left, right, assignment));
+                incidence_hinges.insert(edge, (left, right, assignment));
             }
             EdgeIncidence::Cut { left, right } => {
-                ensure_face_exists(&keys_by_id, *edge, left, false)?;
-                ensure_face_exists(&keys_by_id, *edge, right, false)?;
+                ensure_face_exists(&keys_by_id, edge, left, false)?;
+                ensure_face_exists(&keys_by_id, edge, right, false)?;
             }
             EdgeIncidence::AuxiliaryIgnored => {}
         }
     }
 
-    let mut adjacency_edges = HashSet::with_capacity(topology.hinge_adjacency.len());
-    let mut hinge_records = topology.hinge_adjacency.iter().collect::<Vec<_>>();
-    hinge_records.sort_by_key(|hinge| hinge.edge.canonical_bytes());
+    let mut adjacency_edges =
+        try_validation_hash_set_with_capacity(topology.hinge_adjacency.len())?;
+    let mut hinge_records = try_validation_vec_with_capacity(topology.hinge_adjacency.len())?;
+    hinge_records.extend(topology.hinge_adjacency.iter().copied());
+    hinge_records.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
     for hinge in hinge_records {
         if !adjacency_edges.insert(hinge.edge) {
-            return Err(inconsistent(
-                FlatFoldabilityInputConsistencyIssue::DuplicateHingeEdge { edge: hinge.edge },
-            ));
+            return Err(
+                inconsistent(FlatFoldabilityInputConsistencyIssue::DuplicateHingeEdge {
+                    edge: hinge.edge,
+                })
+                .into(),
+            );
         }
         ensure_face_exists(&keys_by_id, hinge.edge, hinge.first, true)?;
         ensure_face_exists(&keys_by_id, hinge.edge, hinge.second, true)?;
         if hinge.first == hinge.second {
-            return Err(inconsistent(
-                FlatFoldabilityInputConsistencyIssue::SelfHinge {
+            return Err(
+                inconsistent(FlatFoldabilityInputConsistencyIssue::SelfHinge {
                     edge: hinge.edge,
                     face: hinge.first,
-                },
-            ));
+                })
+                .into(),
+            );
         }
         let first_key = keys_by_id.get(&hinge.first).copied().ok_or_else(|| {
             inconsistent(FlatFoldabilityInputConsistencyIssue::UnknownHingeFace {
@@ -1475,24 +2090,30 @@ fn validate_topology(
         if first_key >= second_key {
             return Err(inconsistent(
                 FlatFoldabilityInputConsistencyIssue::NonCanonicalHingeFaces { edge: hinge.edge },
-            ));
+            )
+            .into());
         }
         let Some((left, right, assignment)) = incidence_hinges.get(&hinge.edge).copied() else {
             return Err(inconsistent(
                 FlatFoldabilityInputConsistencyIssue::HingeIncidenceMissing { edge: hinge.edge },
-            ));
+            )
+            .into());
         };
         if assignment != hinge.assignment {
             return Err(inconsistent(
                 FlatFoldabilityInputConsistencyIssue::HingeAssignmentMismatch { edge: hinge.edge },
-            ));
+            )
+            .into());
         }
         let same_faces = (left == hinge.first && right == hinge.second)
             || (left == hinge.second && right == hinge.first);
         if !same_faces {
-            return Err(inconsistent(
-                FlatFoldabilityInputConsistencyIssue::HingeFacesMismatch { edge: hinge.edge },
-            ));
+            return Err(
+                inconsistent(FlatFoldabilityInputConsistencyIssue::HingeFacesMismatch {
+                    edge: hinge.edge,
+                })
+                .into(),
+            );
         }
     }
     if let Some(edge) = incidence_hinges
@@ -1503,7 +2124,8 @@ fn validate_topology(
     {
         return Err(inconsistent(
             FlatFoldabilityInputConsistencyIssue::HingeAdjacencyMissing { edge },
-        ));
+        )
+        .into());
     }
     Ok(canonical_faces)
 }
@@ -1534,11 +2156,11 @@ enum LocalReportEvidence {
 
 fn validate_local_report(
     report: &LocalFlatFoldabilityReport,
-) -> Result<LocalReportEvidence, GlobalFlatFoldabilityUnknownReason> {
+) -> Result<LocalReportEvidence, InputStructureValidationFailure> {
     if report.model != LocalFlatFoldabilityModel::InteriorSingleVertexZeroThicknessV1 {
-        return Err(inconsistent(
-            FlatFoldabilityInputConsistencyIssue::LocalReportStatusMismatch,
-        ));
+        return Err(
+            inconsistent(FlatFoldabilityInputConsistencyIssue::LocalReportStatusMismatch).into(),
+        );
     }
     if report.max_exact_fold_degree != MAX_EXACT_FOLD_DEGREE {
         return Err(inconsistent(
@@ -1546,24 +2168,27 @@ fn validate_local_report(
                 expected: MAX_EXACT_FOLD_DEGREE,
                 actual: report.max_exact_fold_degree,
             },
-        ));
+        )
+        .into());
     }
 
-    let mut vertices = HashSet::with_capacity(report.vertices.len());
+    let mut vertices = try_validation_hash_set_with_capacity(report.vertices.len())?;
     let mut satisfied = 0_usize;
     let mut violated = 0_usize;
     let mut not_applicable = 0_usize;
     let mut indeterminate = 0_usize;
-    let mut violations = Vec::new();
-    let mut vertex_records = report.vertices.iter().collect::<Vec<_>>();
-    vertex_records.sort_by_key(|vertex| vertex.vertex.canonical_bytes());
+    let mut violations = try_validation_vec_with_capacity(report.vertices.len())?;
+    let mut vertex_records = try_validation_vec_with_capacity(report.vertices.len())?;
+    vertex_records.extend(report.vertices.iter());
+    vertex_records.sort_unstable_by_key(|vertex| vertex.vertex.canonical_bytes());
     for vertex in vertex_records {
         if !vertices.insert(vertex.vertex) {
-            return Err(inconsistent(
-                FlatFoldabilityInputConsistencyIssue::DuplicateLocalVertex {
+            return Err(
+                inconsistent(FlatFoldabilityInputConsistencyIssue::DuplicateLocalVertex {
                     vertex: vertex.vertex,
-                },
-            ));
+                })
+                .into(),
+            );
         }
         if vertex
             .mountain_count
@@ -1574,7 +2199,8 @@ fn validate_local_report(
                 FlatFoldabilityInputConsistencyIssue::LocalVertexCountsMismatch {
                     vertex: vertex.vertex,
                 },
-            ));
+            )
+            .into());
         }
         let valid_verdict = match vertex.verdict {
             LocalVertexFoldabilityVerdict::NotApplicable => {
@@ -1621,7 +2247,8 @@ fn validate_local_report(
                 FlatFoldabilityInputConsistencyIssue::LocalVertexVerdictMismatch {
                     vertex: vertex.vertex,
                 },
-            ));
+            )
+            .into());
         }
     }
 
@@ -1638,9 +2265,9 @@ fn validate_local_report(
         || report.not_applicable_vertices != not_applicable
         || report.indeterminate_vertices != indeterminate
     {
-        return Err(inconsistent(
-            FlatFoldabilityInputConsistencyIssue::LocalReportCountsMismatch,
-        ));
+        return Err(
+            inconsistent(FlatFoldabilityInputConsistencyIssue::LocalReportCountsMismatch).into(),
+        );
     }
 
     if report.status == LocalFlatFoldabilityReportStatus::Blocked {
@@ -1651,9 +2278,9 @@ fn validate_local_report(
         {
             return Ok(LocalReportEvidence::Blocked);
         }
-        return Err(inconsistent(
-            FlatFoldabilityInputConsistencyIssue::LocalReportStatusMismatch,
-        ));
+        return Err(
+            inconsistent(FlatFoldabilityInputConsistencyIssue::LocalReportStatusMismatch).into(),
+        );
     }
     let expected_status = if violated != 0 {
         LocalFlatFoldabilityReportStatus::Violated
@@ -1665,11 +2292,11 @@ fn validate_local_report(
         LocalFlatFoldabilityReportStatus::NotApplicable
     };
     if report.status != expected_status {
-        return Err(inconsistent(
-            FlatFoldabilityInputConsistencyIssue::LocalReportStatusMismatch,
-        ));
+        return Err(
+            inconsistent(FlatFoldabilityInputConsistencyIssue::LocalReportStatusMismatch).into(),
+        );
     }
-    violations.sort_by_key(|violation| violation.vertex.canonical_bytes());
+    violations.sort_unstable_by_key(|violation| violation.vertex.canonical_bytes());
     if !violations.is_empty() {
         Ok(LocalReportEvidence::Violated(violations))
     } else if indeterminate != 0 {
@@ -1714,6 +2341,328 @@ mod tests {
     fn fixed_id<T: DeserializeOwned>(suffix: u64) -> T {
         serde_json::from_str(&format!("\"00000000-0000-0000-0000-{suffix:012x}\""))
             .expect("fixed UUID fixture")
+    }
+
+    fn retained_layer_face(id_suffix: u64, key: u8) -> LayerFace {
+        LayerFace {
+            face_id: fixed_id(id_suffix),
+            face_key: FaceKey([key; 32]),
+        }
+    }
+
+    fn retained_exact_rational(seed: u8, numerator_len: usize) -> ExactRationalValue {
+        ExactRationalValue {
+            sign: ExactSign::Positive,
+            numerator_magnitude_be: vec![seed; numerator_len],
+            denominator_be: vec![1, seed.max(1)],
+        }
+    }
+
+    fn retained_exact_point(seed: u8) -> ExactPointValue {
+        ExactPointValue {
+            x: retained_exact_rational(seed, usize::from(seed % 3) + 1),
+            y: retained_exact_rational(seed.wrapping_add(1), usize::from(seed % 4) + 1),
+        }
+    }
+
+    fn retained_exact_transform(seed: u8) -> ExactAffineTransform {
+        ExactAffineTransform {
+            m00: retained_exact_rational(seed, 1),
+            m01: retained_exact_rational(seed.wrapping_add(1), 2),
+            m10: retained_exact_rational(seed.wrapping_add(2), 3),
+            m11: retained_exact_rational(seed.wrapping_add(3), 4),
+            tx: retained_exact_rational(seed.wrapping_add(4), 5),
+            ty: retained_exact_rational(seed.wrapping_add(5), 6),
+        }
+    }
+
+    fn retained_layer_order_snapshot() -> LayerOrderSnapshot {
+        let first = retained_layer_face(0xa01, 1);
+        let second = retained_layer_face(0xa02, 2);
+        let third = retained_layer_face(0xa03, 3);
+        LayerOrderSnapshot {
+            model_id: LAYER_ORDER_MODEL_ID,
+            material_faces: vec![first, second, third],
+            global_bottom_to_top: Some(vec![first, second, third]),
+            provenance: LayerOrderProvenance {
+                source: GlobalFlatFoldabilityProvenance {
+                    identity_namespace: Some(fixed_id(0xa10)),
+                    source_revision: REVISION,
+                    source_fingerprint: Some(FoldModelFingerprintV1([0xa5; 32])),
+                    model_id: GLOBAL_FLAT_FOLDABILITY_MODEL_ID,
+                },
+                derivation: LayerOrderDerivation::FacewiseCertificate {
+                    reference_face: first,
+                    overlap_cell_count: 2,
+                    constraint_count: 2,
+                },
+            },
+            reference_face: Some(third),
+            folded_faces: vec![
+                FoldedFaceSnapshot {
+                    face: first,
+                    source_to_flat: retained_exact_transform(10),
+                    orientation: FoldedFaceOrientation::FrontUp,
+                },
+                FoldedFaceSnapshot {
+                    face: second,
+                    source_to_flat: retained_exact_transform(20),
+                    orientation: FoldedFaceOrientation::BackUp,
+                },
+                FoldedFaceSnapshot {
+                    face: third,
+                    source_to_flat: retained_exact_transform(30),
+                    orientation: FoldedFaceOrientation::FrontUp,
+                },
+            ],
+            overlap_cells: vec![
+                OverlapCellSnapshot {
+                    cell_key: OverlapCellKey([1; 32]),
+                    exact_boundary: vec![retained_exact_point(40), retained_exact_point(50)],
+                    covering_faces: vec![first, second],
+                    bottom_to_top_faces: vec![first.face_id, second.face_id],
+                },
+                OverlapCellSnapshot {
+                    cell_key: OverlapCellKey([2; 32]),
+                    exact_boundary: vec![retained_exact_point(60)],
+                    covering_faces: vec![third],
+                    bottom_to_top_faces: vec![third.face_id],
+                },
+            ],
+            face_pair_orders: vec![
+                FacePairOrderSnapshot {
+                    lower_face: first,
+                    upper_face: second,
+                    supporting_cells: vec![OverlapCellKey([1; 32])],
+                },
+                FacePairOrderSnapshot {
+                    lower_face: second,
+                    upper_face: third,
+                    supporting_cells: vec![OverlapCellKey([2; 32])],
+                },
+            ],
+            proof_summary: Some(FacewiseProofSummary {
+                material_faces: 3,
+                overlap_face_pairs: 2,
+                overlap_cells: 2,
+                constraints: 2,
+                search_nodes: 3,
+                maximum_ply: 2,
+                certificate_bytes: 512,
+            }),
+        }
+    }
+
+    #[test]
+    fn deep_retained_bytes_include_nested_vector_spare_capacity() {
+        let mut snapshot = retained_layer_order_snapshot();
+        let before = snapshot
+            .checked_deep_retained_bytes_v1()
+            .expect("fixture retained bytes");
+        let old_covering_capacity = snapshot.overlap_cells[0].covering_faces.capacity();
+        let old_exact_capacity = snapshot.overlap_cells[0].exact_boundary[0]
+            .x
+            .numerator_magnitude_be
+            .capacity();
+        let old_supporting_capacity = snapshot.face_pair_orders[0].supporting_cells.capacity();
+
+        snapshot.overlap_cells[0].covering_faces.reserve_exact(7);
+        snapshot.overlap_cells[0].exact_boundary[0]
+            .x
+            .numerator_magnitude_be
+            .reserve_exact(17);
+        snapshot.face_pair_orders[0]
+            .supporting_cells
+            .reserve_exact(5);
+
+        let expected_growth = (snapshot.overlap_cells[0].covering_faces.capacity()
+            - old_covering_capacity)
+            * std::mem::size_of::<LayerFace>()
+            + (snapshot.overlap_cells[0].exact_boundary[0]
+                .x
+                .numerator_magnitude_be
+                .capacity()
+                - old_exact_capacity)
+                * std::mem::size_of::<u8>()
+            + (snapshot.face_pair_orders[0].supporting_cells.capacity() - old_supporting_capacity)
+                * std::mem::size_of::<OverlapCellKey>();
+        assert_eq!(
+            snapshot.checked_deep_retained_bytes_v1(),
+            before.checked_add(expected_growth)
+        );
+    }
+
+    #[test]
+    fn fallible_clone_preserves_large_exact_payload() {
+        let mut snapshot = retained_layer_order_snapshot();
+        snapshot.folded_faces[0]
+            .source_to_flat
+            .m00
+            .numerator_magnitude_be = vec![0xab; 1024 * 1024];
+        let retained = snapshot
+            .checked_deep_retained_bytes_v1()
+            .expect("large fixture retained bytes");
+        let cloned = snapshot
+            .try_clone_with_retained_byte_limit_v1(retained)
+            .expect("large exact payload clone");
+        assert_eq!(cloned, snapshot);
+        assert_eq!(cloned.checked_deep_retained_bytes_v1(), Some(retained));
+    }
+
+    #[test]
+    fn restricted_clone_filters_every_face_owned_collection() {
+        let snapshot = retained_layer_order_snapshot();
+        let first = snapshot.material_faces[0];
+        let second = snapshot.material_faces[1];
+        let faces = [first.face_id, second.face_id];
+        let retained = snapshot
+            .checked_restricted_deep_retained_bytes_v1(&faces)
+            .expect("restricted retained bytes");
+        let restricted = snapshot
+            .try_restrict_to_faces_with_retained_byte_limit_v1(&faces, retained)
+            .expect("restricted clone");
+
+        assert_eq!(restricted.material_faces, vec![first, second]);
+        assert_eq!(restricted.global_bottom_to_top, Some(vec![first, second]));
+        assert_eq!(
+            restricted
+                .folded_faces
+                .iter()
+                .map(|folded| folded.face)
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        assert_eq!(restricted.overlap_cells.len(), 1);
+        assert_eq!(
+            restricted.overlap_cells[0].covering_faces,
+            vec![first, second]
+        );
+        assert_eq!(restricted.overlap_cells[0].bottom_to_top_faces, faces);
+        assert_eq!(restricted.face_pair_orders.len(), 1);
+        assert_eq!(restricted.face_pair_orders[0].lower_face, first);
+        assert_eq!(restricted.face_pair_orders[0].upper_face, second);
+        assert_eq!(restricted.reference_face, Some(first));
+        assert_eq!(restricted.checked_deep_retained_bytes_v1(), Some(retained));
+        assert_eq!(
+            snapshot.try_restrict_to_faces_with_retained_byte_limit_v1(&faces, retained - 1),
+            Err(LayerOrderSnapshotCloneErrorV1::ByteLimitExceeded {
+                observed: retained,
+                maximum: retained - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn restricted_clone_does_not_charge_or_copy_excluded_nested_regions() {
+        let mut snapshot = retained_layer_order_snapshot();
+        let first = snapshot.material_faces[0];
+        let second = snapshot.material_faces[1];
+        let faces = [first.face_id, second.face_id];
+        let before = snapshot
+            .checked_restricted_deep_retained_bytes_v1(&faces)
+            .expect("baseline restricted bytes");
+
+        snapshot.overlap_cells[1].exact_boundary[0]
+            .x
+            .numerator_magnitude_be = vec![0xcd; 256 * 1024];
+        snapshot.face_pair_orders[1].supporting_cells = vec![OverlapCellKey([0xee; 32]); 4_096];
+
+        assert_eq!(
+            snapshot.checked_restricted_deep_retained_bytes_v1(&faces),
+            Some(before),
+            "excluded cell geometry and pair support must not enter the projected clone budget"
+        );
+        let restricted = snapshot
+            .try_restrict_to_faces_with_retained_byte_limit_v1(&faces, before)
+            .expect("excluded nested regions are not cloned");
+        assert_eq!(restricted.overlap_cells.len(), 1);
+        assert_eq!(restricted.face_pair_orders.len(), 1);
+        assert_eq!(restricted.checked_deep_retained_bytes_v1(), Some(before));
+    }
+
+    #[test]
+    fn retained_byte_limit_accepts_exact_and_rejects_one_short() {
+        let snapshot = retained_layer_order_snapshot();
+        let projected = checked_layer_order_snapshot_projected_bytes_v1(&snapshot, None)
+            .expect("projected bytes");
+        assert_eq!(
+            snapshot.checked_deep_retained_bytes_v1(),
+            Some(projected),
+            "fixture vectors must have no spare capacity"
+        );
+        assert_eq!(
+            snapshot
+                .try_clone_with_retained_byte_limit_v1(projected)
+                .expect("exact byte limit"),
+            snapshot
+        );
+        assert_eq!(
+            snapshot.try_clone_with_retained_byte_limit_v1(projected - 1),
+            Err(LayerOrderSnapshotCloneErrorV1::ByteLimitExceeded {
+                observed: projected,
+                maximum: projected - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn retained_byte_helpers_report_overflow_and_allocation_failure() {
+        let mut total = usize::MAX;
+        assert_eq!(checked_add_vec_allocation_v1::<u8>(&mut total, 1), None);
+        let mut total = 0;
+        assert_eq!(
+            checked_add_vec_allocation_v1::<u64>(&mut total, usize::MAX),
+            None
+        );
+        assert_eq!(
+            LayerOrderSnapshotCloneBudgetV1::new(usize::MAX)
+                .expect("unbounded test budget")
+                .try_vec_with_exact_capacity::<u8>(usize::MAX),
+            Err(LayerOrderSnapshotCloneErrorV1::AllocationFailed)
+        );
+        let snapshot_bytes = std::mem::size_of::<LayerOrderSnapshot>();
+        let mut exhausted =
+            LayerOrderSnapshotCloneBudgetV1::new(snapshot_bytes).expect("snapshot shell fits");
+        assert!(matches!(
+            exhausted.try_vec_with_exact_capacity::<u8>(1),
+            Err(LayerOrderSnapshotCloneErrorV1::ByteLimitExceeded {
+                observed,
+                maximum,
+            }) if observed > maximum && maximum == snapshot_bytes
+        ));
+        assert_eq!(
+            exhausted.observed, snapshot_bytes,
+            "a rejected allocator capacity must not consume later budget"
+        );
+        for allocation in [
+            try_validation_vec_with_capacity::<u8>(usize::MAX).map(|_| ()),
+            try_validation_hash_set_with_capacity::<u8>(usize::MAX).map(|_| ()),
+            try_validation_hash_map_with_capacity::<u8, u8>(usize::MAX).map(|_| ()),
+        ] {
+            assert!(matches!(
+                allocation,
+                Err(InputStructureValidationFailure::Execution(
+                    GlobalFlatFoldabilityExecutionError::Internal {
+                        reason: GlobalFlatFoldabilityInternalError::AllocationFailed,
+                    }
+                ))
+            ));
+        }
+        assert!(matches!(
+            required_pair_preflight_failure(
+                usize::MAX,
+                GlobalFlatFoldabilityLimits {
+                    max_overlap_face_pairs: usize::MAX,
+                    max_certificate_bytes: usize::MAX,
+                    ..GlobalFlatFoldabilityLimits::default()
+                },
+            ),
+            Some(GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                resource: FlatFoldabilityResource::CertificateBytes,
+                limit: usize::MAX,
+                observed: usize::MAX,
+            })
+        ));
     }
 
     fn face(id_suffix: u64, key: u8) -> Face {
@@ -3502,16 +4451,41 @@ mod tests {
         ));
 
         let mut boundary_work = zero.clone();
-        boundary_work.faces[0].outer.half_edges.push(HalfEdgeRef {
-            edge: fixed_id(0x401),
-            origin: fixed_id(0x501),
-            destination: fixed_id(0x502),
+        let half_edge = |suffix: u64| HalfEdgeRef {
+            edge: fixed_id(0x400 + suffix),
+            origin: fixed_id(0x500 + suffix * 2),
+            destination: fixed_id(0x501 + suffix * 2),
+        };
+        boundary_work.faces[0].outer.half_edges.push(half_edge(1));
+        boundary_work.faces[0].holes.push(BoundaryWalk {
+            half_edges: vec![half_edge(2)],
+            signed_double_area: -1.0,
         });
+        boundary_work.faces[0].seams.push(BoundaryWalk {
+            half_edges: vec![half_edge(3)],
+            signed_double_area: 0.0,
+        });
+        let exact_boundary = analyze(
+            &boundary_work,
+            &empty_local,
+            GlobalFlatFoldabilityLimits {
+                max_face_boundary_half_edges: 3,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+        );
+        assert!(matches!(
+            exact_boundary.outcome,
+            GlobalFlatFoldabilityOutcome::Unknown {
+                reason: GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
+                    reason: FlatFoldabilityProofIncompleteReason::GeometryInputUnavailable
+                }
+            }
+        ));
         let over_boundary = analyze(
             &boundary_work,
             &empty_local,
             GlobalFlatFoldabilityLimits {
-                max_face_boundary_half_edges: 0,
+                max_face_boundary_half_edges: 2,
                 ..GlobalFlatFoldabilityLimits::default()
             },
         );
@@ -3520,8 +4494,8 @@ mod tests {
             GlobalFlatFoldabilityOutcome::Unknown {
                 reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
                     resource: FlatFoldabilityResource::FaceBoundaryHalfEdges,
-                    limit: 0,
-                    observed: 1,
+                    limit: 2,
+                    observed: 3,
                 }
             }
         ));

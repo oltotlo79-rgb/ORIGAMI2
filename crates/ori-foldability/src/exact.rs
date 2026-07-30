@@ -40,6 +40,78 @@ impl ExactRationalValue {
             .to_f64()
             .filter(|value| value.is_finite())
     }
+
+    /// Deterministic finite projection without constructing heap-backed
+    /// `BigInt`/`BigRational` temporaries.
+    #[must_use]
+    pub fn to_f64_without_heap_v1(&self) -> Option<f64> {
+        let (denominator, denominator_exponent) =
+            leading_binary64_from_big_endian_bytes_v1(&self.denominator_be)?;
+        if denominator == 0.0 {
+            return None;
+        }
+        let (numerator, numerator_exponent) =
+            leading_binary64_from_big_endian_bytes_v1(&self.numerator_magnitude_be)?;
+        if numerator == 0.0 || self.sign == ExactSign::Zero {
+            return Some(0.0);
+        }
+        let exponent = numerator_exponent.checked_sub(denominator_exponent)?;
+        let magnitude = scale_binary64_by_power_of_two_v1(numerator / denominator, exponent)?;
+        Some(match self.sign {
+            ExactSign::Negative => -magnitude,
+            ExactSign::Zero => 0.0,
+            ExactSign::Positive => magnitude,
+        })
+    }
+}
+
+fn leading_binary64_from_big_endian_bytes_v1(bytes: &[u8]) -> Option<(f64, i32)> {
+    let bytes = bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .map_or(&[][..], |first| &bytes[first..]);
+    if bytes.is_empty() {
+        return Some((0.0, 0));
+    }
+    let retained = bytes.len().min(8);
+    let mut prefix = 0.0_f64;
+    for byte in &bytes[..retained] {
+        prefix = prefix * 256.0 + f64::from(*byte);
+    }
+    let trailing_bytes = bytes.len().checked_sub(retained)?;
+    let exponent = i32::try_from(trailing_bytes.checked_mul(8)?).ok()?;
+    Some((prefix, exponent))
+}
+
+fn scale_binary64_by_power_of_two_v1(mut value: f64, mut exponent: i32) -> Option<f64> {
+    const UP_512: f64 = f64::from_bits((1023_u64 + 512) << 52);
+    const DOWN_512: f64 = f64::from_bits((1023_u64 - 512) << 52);
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    if exponent > 4096 {
+        return None;
+    }
+    if exponent < -4096 {
+        return Some(0.0);
+    }
+    while exponent > 512 {
+        value *= UP_512;
+        if !value.is_finite() {
+            return None;
+        }
+        exponent -= 512;
+    }
+    while exponent < -512 {
+        value *= DOWN_512;
+        if value == 0.0 {
+            return Some(0.0);
+        }
+        exponent += 512;
+    }
+    let factor_exponent = u64::try_from(1023_i32.checked_add(exponent)?).ok()?;
+    value *= f64::from_bits(factor_exponent << 52);
+    value.is_finite().then_some(value)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -152,15 +224,18 @@ pub(crate) fn rational_value(value: &Rational) -> ExactRationalValue {
 }
 
 pub(crate) fn rational_bytes(value: &Rational) -> Result<Vec<u8>, ExactError> {
-    let encoded = rational_value(value);
+    let capacity = rational_storage_bytes(value)?;
     let mut bytes = Vec::new();
-    bytes.push(match encoded.sign {
-        ExactSign::Negative => 0,
-        ExactSign::Zero => 1,
-        ExactSign::Positive => 2,
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| ExactError::InternalFailure)?;
+    bytes.push(match value.numer().sign() {
+        Sign::Minus => 0,
+        Sign::NoSign => 1,
+        Sign::Plus => 2,
     });
-    append_len_prefixed(&mut bytes, &encoded.numerator_magnitude_be)?;
-    append_len_prefixed(&mut bytes, &encoded.denominator_be)?;
+    append_big_int_magnitude_v1(&mut bytes, value.numer())?;
+    append_big_int_magnitude_v1(&mut bytes, value.denom())?;
     Ok(bytes)
 }
 
@@ -170,13 +245,8 @@ pub(crate) fn rational_bytes(value: &Rational) -> Result<Vec<u8>, ExactError> {
 /// denominator byte vectors, so callers can reserve aggregate certificate
 /// storage before materializing a snapshot value.
 pub(crate) fn rational_storage_bytes(value: &Rational) -> Result<usize, ExactError> {
-    fn magnitude_bytes(bits: u64) -> Result<usize, ExactError> {
-        let rounded = bits.checked_add(7).ok_or(ExactError::InternalFailure)? / 8;
-        usize::try_from(rounded.max(1)).map_err(|_| ExactError::InternalFailure)
-    }
-
-    let numerator_bytes = magnitude_bytes(value.numer().bits())?;
-    let denominator_bytes = magnitude_bytes(value.denom().bits())?;
+    let numerator_bytes = magnitude_byte_len_v1(value.numer().bits())?;
+    let denominator_bytes = magnitude_byte_len_v1(value.denom().bits())?;
     1_usize
         .checked_add(std::mem::size_of::<u64>())
         .and_then(|total| total.checked_add(numerator_bytes))
@@ -185,10 +255,28 @@ pub(crate) fn rational_storage_bytes(value: &Rational) -> Result<usize, ExactErr
         .ok_or(ExactError::InternalFailure)
 }
 
-fn append_len_prefixed(target: &mut Vec<u8>, value: &[u8]) -> Result<(), ExactError> {
-    let len = u64::try_from(value.len()).map_err(|_| ExactError::InternalFailure)?;
-    target.extend_from_slice(&len.to_be_bytes());
-    target.extend_from_slice(value);
+fn magnitude_byte_len_v1(bits: u64) -> Result<usize, ExactError> {
+    let rounded = bits.checked_add(7).ok_or(ExactError::InternalFailure)? / 8;
+    usize::try_from(rounded.max(1)).map_err(|_| ExactError::InternalFailure)
+}
+
+fn append_big_int_magnitude_v1(target: &mut Vec<u8>, value: &BigInt) -> Result<(), ExactError> {
+    let byte_len = magnitude_byte_len_v1(value.bits())?;
+    let encoded_len = u64::try_from(byte_len).map_err(|_| ExactError::InternalFailure)?;
+    target.extend_from_slice(&encoded_len.to_be_bytes());
+    if value.is_zero() {
+        target.push(0);
+        return Ok(());
+    }
+    let leading_byte_count = (byte_len - 1) % 4 + 1;
+    for (index, digit) in value.iter_u32_digits().rev().enumerate() {
+        let bytes = digit.to_be_bytes();
+        if index == 0 {
+            target.extend_from_slice(&bytes[4 - leading_byte_count..]);
+        } else {
+            target.extend_from_slice(&bytes);
+        }
+    }
     Ok(())
 }
 
@@ -551,15 +639,32 @@ mod tests {
 
     #[test]
     fn exact_storage_size_matches_the_canonical_binary_payload() {
+        let large_numerator: BigInt =
+            (BigInt::from(1_u8) << 96_usize) + BigInt::from(0x0102_0304_u32);
+        let large_denominator: BigInt = (BigInt::from(1_u8) << 65_usize) + BigInt::from(3_u8);
         for value in [
             BigRational::from_integer(BigInt::from(0)),
             BigRational::from_integer(BigInt::from(-255)),
             BigRational::new(BigInt::from(65_537), BigInt::from(257)),
+            BigRational::new(-large_numerator, large_denominator),
         ] {
+            let bytes = rational_bytes(&value).expect("canonical payload");
             assert_eq!(
                 rational_storage_bytes(&value).expect("storage size"),
-                rational_bytes(&value).expect("canonical payload").len()
+                bytes.len()
             );
+            let (sign, numerator) = value.numer().to_bytes_be();
+            let (_, denominator) = value.denom().to_bytes_be();
+            let mut reference = vec![match sign {
+                Sign::Minus => 0,
+                Sign::NoSign => 1,
+                Sign::Plus => 2,
+            }];
+            reference.extend_from_slice(&(numerator.len() as u64).to_be_bytes());
+            reference.extend_from_slice(&numerator);
+            reference.extend_from_slice(&(denominator.len() as u64).to_be_bytes());
+            reference.extend_from_slice(&denominator);
+            assert_eq!(bytes, reference);
         }
     }
 
@@ -571,10 +676,51 @@ mod tests {
             denominator_be: vec![2],
         };
         assert_eq!(value.to_f64(), Some(-1.5));
+        assert_eq!(value.to_f64_without_heap_v1(), Some(-1.5));
         let invalid = ExactRationalValue {
             denominator_be: vec![0],
             ..value
         };
         assert_eq!(invalid.to_f64(), None);
+        assert_eq!(invalid.to_f64_without_heap_v1(), None);
+        for sign in [ExactSign::Negative, ExactSign::Zero, ExactSign::Positive] {
+            let zero_over_zero = ExactRationalValue {
+                sign,
+                numerator_magnitude_be: vec![0],
+                denominator_be: vec![0],
+            };
+            assert_eq!(zero_over_zero.to_f64(), None);
+            assert_eq!(zero_over_zero.to_f64_without_heap_v1(), None);
+        }
+    }
+
+    #[test]
+    fn heapless_exact_projection_matches_representative_big_rationals() {
+        for value in [
+            ExactRationalValue {
+                sign: ExactSign::Positive,
+                numerator_magnitude_be: vec![1],
+                denominator_be: vec![3],
+            },
+            ExactRationalValue {
+                sign: ExactSign::Negative,
+                numerator_magnitude_be: vec![0xff; 24],
+                denominator_be: vec![0x80; 24],
+            },
+            ExactRationalValue {
+                sign: ExactSign::Positive,
+                numerator_magnitude_be: vec![1; 32],
+                denominator_be: vec![0xff; 16],
+            },
+        ] {
+            let expected = value.to_f64().expect("finite BigRational projection");
+            let actual = value
+                .to_f64_without_heap_v1()
+                .expect("finite heapless projection");
+            assert!(
+                (actual - expected).abs() <= expected.abs().max(1.0) * f64::EPSILON * 2.0,
+                "heapless projection drifted: expected={expected:?} actual={actual:?}"
+            );
+        }
     }
 }

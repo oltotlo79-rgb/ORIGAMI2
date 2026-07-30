@@ -74,6 +74,8 @@ export function BeginnerDesignConstraints({
           ['horn', APP_TEXT.horns],
           ['ear', APP_TEXT.ears],
           ['wing', APP_TEXT.wings],
+          ['fin', APP_TEXT.fin2],
+          ['antenna', APP_TEXT.antenna2],
           ['tail', APP_TEXT.tails],
         ] as const).map(([kind, label]) => (
           <label className="field" key={kind}>

@@ -2966,7 +2966,11 @@ fn parameterized_symmetric_endpoints_for_target(
     if target.count != count || target.symmetry != BeginnerProtrusionSymmetryV1::Bilateral {
         return None;
     }
-    let (minimum_x, maximum_x, minimum_y, maximum_y) = skeleton_bounds(skeleton_segments)?;
+    let bounds = skeleton_bounds(skeleton_segments)?;
+    if !protrusion_local_outline_within_bounds_v1(target, bounds) {
+        return None;
+    }
+    let (minimum_x, maximum_x, minimum_y, maximum_y) = bounds;
     let span_x = maximum_x.checked_sub(minimum_x)?;
     let span_y = maximum_y.checked_sub(minimum_y)?;
     if span_x <= 0 || span_y <= 0 {
@@ -4243,6 +4247,34 @@ mod tests {
             assert_eq!(
                 generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap()[0].kind,
                 expected_kind
+            );
+
+            let mut contained_outline = constraints.clone();
+            contained_outline.protrusions[0].local_outline_tenths_mm =
+                Some(vec![[-2, -1], [2, -1], [2, 1], [-2, 1]]);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &contained_outline
+            ));
+            assert_eq!(
+                beginner_target_approximation_score_v1(&contained_outline),
+                93
+            );
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &contained_outline).unwrap()
+                    [0]
+                .kind,
+                expected_kind
+            );
+            let mut outside_outline = constraints.clone();
+            outside_outline.protrusions[0].local_outline_tenths_mm =
+                Some(vec![[-11, -1], [11, -1], [11, 1], [-11, 1]]);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &outside_outline
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&outside_outline), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &outside_outline),
+                Err(expected_error)
             );
 
             let mut extra = target;

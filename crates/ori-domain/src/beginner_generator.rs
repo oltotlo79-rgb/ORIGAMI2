@@ -9,6 +9,7 @@ use crate::{
     VertexId,
 };
 
+mod extended_bilateral_endpoints;
 mod radial_endpoints;
 
 pub const BEGINNER_GENERATOR_SCHEMA_VERSION_V1: u32 = 1;
@@ -2097,6 +2098,12 @@ fn bounded_generic_composite_endpoints(
                 target.direction_milli[1].unsigned_abs() > target.direction_milli[0].unsigned_abs(),
             )?
             .to_vec(),
+            (6 | 8, BeginnerProtrusionSymmetryV1::Bilateral) => {
+                extended_bilateral_endpoints::parameterized_extended_bilateral_endpoints_v1(
+                    target,
+                    &constraints.skeleton_segments,
+                )?
+            }
             (2..=8, BeginnerProtrusionSymmetryV1::Radial) => {
                 radial_endpoints::parameterized_radial_endpoints_v1(
                     target,
@@ -3042,6 +3049,84 @@ mod tests {
             })
             .collect();
         assert!(bounded_generic_composite_endpoints(&over_endpoint_limit).is_none());
+    }
+
+    #[test]
+    fn generic_custom_tree_generates_six_and_eight_bilateral_protrusions() {
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x09, 0x93,
+        ]);
+        let ids = ["a", "b", "c", "d"].map(|name| VertexId::derive_v5(namespace, name.as_bytes()));
+        let source = CreasePattern {
+            vertices: ids
+                .iter()
+                .copied()
+                .zip([
+                    Point2::new(0.0, 0.0),
+                    Point2::new(10.0, 0.0),
+                    Point2::new(10.0, 10.0),
+                    Point2::new(0.0, 10.0),
+                ])
+                .map(|(id, position)| Vertex { id, position })
+                .collect(),
+            edges: Vec::new(),
+        };
+        let mut six = bilateral_protrusion(1, 6);
+        six.length_tenths_mm = 20;
+        six.position_tenths_mm = [0, -50, 0];
+        six.direction_milli = [1_000, 0, 0];
+        let mut eight = bilateral_protrusion(2, 8);
+        eight.length_tenths_mm = 20;
+        eight.position_tenths_mm = [0, 50, 0];
+        eight.direction_milli = [0, 1_000, 0];
+        let constraints = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+            skeleton_segments: vec![
+                skeleton(10, -100, -100, 100, -100),
+                skeleton(20, 100, -100, 100, 100),
+            ],
+            protrusions: vec![six, eight],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &constraints
+        ));
+        let endpoints = bounded_generic_composite_endpoints(&constraints)
+            .expect("extended bilateral endpoints");
+        assert_eq!(endpoints.len(), 14);
+        for pair in endpoints[..6]
+            .chunks_exact(2)
+            .chain(endpoints[6..].chunks_exact(2))
+        {
+            assert!((pair[0].0 + pair[1].0 - 1.0).abs() <= f64::EPSILON);
+            assert!((pair[0].1 - pair[1].1).abs() <= f64::EPSILON);
+        }
+
+        let generated = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
+        assert_eq!(generated.len(), 1);
+        assert_eq!(
+            generated[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        );
+        assert_eq!(generated[0].crease_pattern.edges.len(), 16);
+
+        let mut reversed = constraints.clone();
+        reversed.skeleton_segments.reverse();
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &reversed),
+            Ok(generated)
+        );
+
+        let mut off_axis = constraints;
+        off_axis.protrusions[0].position_tenths_mm[0] = 1;
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &off_axis
+        ));
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &off_axis),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
     }
 
     #[test]

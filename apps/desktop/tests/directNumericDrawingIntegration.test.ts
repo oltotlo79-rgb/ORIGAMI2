@@ -50,7 +50,7 @@ test('a selected vertex can create an endpoint from an explicit length and angle
   assert.doesNotMatch(polarSubmit, /Math\.(?:cos|sin)/u)
   assert.match(
     polarSubmit,
-    /polar_endpoint[\s\S]*?await runNativeEdit[\s\S]*?await addConnectedVertex/,
+    /polar_endpoint[\s\S]*?await runCreaseAuthoringEdit[\s\S]*?await addConnectedVertex[\s\S]*?targetLayer/,
   )
   assert.match(
     appSource,

@@ -18,6 +18,7 @@ export type SelectedFaceInspectorProps = Readonly<{
   face: CreaseCanvasFace
   removableEdges: readonly CreaseLine[]
   locked: boolean
+  creaseAuthoringAvailable: boolean
   coreBusy: boolean
   cuttingAllowed: boolean
   displayUnitLabel: string
@@ -31,6 +32,7 @@ export function SelectedFaceInspector({
   face,
   removableEdges,
   locked,
+  creaseAuthoringAvailable,
   coreBusy,
   cuttingAllowed,
   displayUnitLabel,
@@ -92,7 +94,13 @@ export function SelectedFaceInspector({
         </fieldset>
       </form>
       <form onSubmit={onSubmitSplit}>
-        <fieldset disabled={coreBusy || locked || face.vertexIds.length < 4}>
+        <fieldset
+          disabled={
+            coreBusy
+            || !creaseAuthoringAvailable
+            || face.vertexIds.length < 4
+          }
+        >
           <legend>{text(APP_TEXT.addOrSplitAFace)}</legend>
           <label className="field">
             {text(APP_TEXT.startVertex)}

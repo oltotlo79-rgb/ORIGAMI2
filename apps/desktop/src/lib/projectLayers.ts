@@ -53,6 +53,32 @@ export const DEFAULT_PROJECT_LAYER_DOCUMENT_V1: ProjectLayerDocumentV1 =
   })
 
 /**
+ * Resolves the crease layer that new authored edges should target.
+ *
+ * The unlocked default layer preserves legacy behavior. When the default is
+ * locked, stored layer order deterministically selects the first unlocked
+ * crease layer. Annotation and underlay layers are never authoring targets.
+ */
+export function resolveCreaseAuthoringLayerId(
+  document: ProjectLayerDocumentV1 | null | undefined,
+): string | null {
+  if (!document) return null
+  const defaultLayer = document.layers.find(
+    (layer) => layer.id === DEFAULT_PROJECT_LAYER_ID,
+  )
+  if (
+    !defaultLayer
+    || defaultLayer.content_kind !== 'crease_pattern'
+  ) return null
+  if (!defaultLayer.locked) return defaultLayer.id
+  return document.layers.find(
+    (layer) =>
+      layer.content_kind === 'crease_pattern'
+      && !layer.locked,
+  )?.id ?? null
+}
+
+/**
  * Detaches and validates the exact LIN-004 V1 wire document.
  *
  * `patternEdgeRecords` must come from the already-admitted crease-pattern

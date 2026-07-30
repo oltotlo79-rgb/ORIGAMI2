@@ -140,6 +140,7 @@ import { normalizeGeometricConstraintDocument } from './lib/geometricConstraints
 import {
   DEFAULT_PROJECT_LAYER_DOCUMENT_V1,
   normalizeProjectLayerDocument,
+  resolveCreaseAuthoringLayerId,
   type LayerContentKindV1,
 } from './lib/projectLayers'
 import {
@@ -1441,8 +1442,14 @@ function App() {
     ),
     [nativeSnapshot],
   )
+  const creaseAuthoringLayerId = useMemo(
+    () => resolveCreaseAuthoringLayerId(nativeSnapshot?.project_layers),
+    [nativeSnapshot?.project_layers],
+  )
   const nativeLines = nativeLayerView.lines
   const nativeVertices = nativeLayerView.vertices
+  const vertexToolAvailable = !nativeLayerView.defaultLayerLocked
+    || nativeLines.some((line) => !line.locked)
   useEffect(() => {
     const visibleLineIds = new Set(nativeLines.map(({ id }) => id))
     const visibleVertexIds = new Set(nativeVertices.map(({ id }) => id))
@@ -1527,15 +1534,21 @@ function App() {
       )
     : undefined
   useEffect(() => {
+    setPendingEdgeStart(null)
+  }, [creaseAuthoringLayerId])
+  useEffect(() => {
+    const lineToolActive = activeTool === 'mountain'
+      || activeTool === 'valley'
+      || activeTool === 'auxiliary'
+      || activeTool === 'cut'
     if (
-      !nativeLayerView.defaultLayerLocked
-      || activeTool === 'select'
-      || activeTool === 'measure'
+      (!lineToolActive || creaseAuthoringLayerId !== null)
+      && (activeTool !== 'vertex' || vertexToolAvailable)
     ) return
     setActiveTool('select')
     setPendingEdgeStart(null)
     setCancelInteractionToken((token) => token + 1)
-  }, [activeTool, nativeLayerView.defaultLayerLocked])
+  }, [activeTool, creaseAuthoringLayerId, vertexToolAvailable])
   const localFlatFoldabilityPresentation = useMemo(() => {
     if (
       !validation
@@ -2277,6 +2290,39 @@ function App() {
     }
   }, [applySnapshot])
   beginnerNativeEditRef.current = runNativeEdit
+
+  const runCreaseAuthoringEdit = useCallback((
+    action: (
+      projectId: string,
+      revision: number,
+      projectInstanceId: string,
+      targetLayer: string,
+      baseSnapshot: ProjectSnapshot,
+    ) => Promise<ProjectSnapshot>,
+  ) => runNativeEdit((projectId, revision, projectInstanceId) => {
+    const baseSnapshot = latestSnapshotRef.current
+    if (
+      !baseSnapshot
+      || !matchesProjectOccGuard({
+        expectedProjectInstanceId: projectInstanceId,
+        expectedProjectId: projectId,
+        expectedRevision: revision,
+      }, baseSnapshot)
+    ) return Promise.reject(new Error())
+    const targetLayer = resolveCreaseAuthoringLayerId(
+      baseSnapshot.project_layers,
+    )
+    if (!targetLayer) {
+      return Promise.reject(new Error())
+    }
+    return action(
+      projectId,
+      revision,
+      projectInstanceId,
+      targetLayer,
+      baseSnapshot,
+    )
+  }), [runNativeEdit])
 
   const {
     preview: foldTechniqueTimelinePreview,
@@ -3162,7 +3208,7 @@ function App() {
   }, [coreBusy, deleteSelection, keyboardShortcuts, modalOpen, nativeSnapshot, newProjectOpen, recoveryBlocking, runNativeEdit, selectedLine, selectedVertex])
 
   function selectVertexForEdge(vertexId: string) {
-    if (nativeLayerView.defaultLayerLocked) {
+    if (!creaseAuthoringLayerId) {
       setCoreStatus(appMessage(APP_TEXT.theDefaultLayerIsLockedSoANewLineCannot))
       return
     }
@@ -3183,8 +3229,20 @@ function App() {
     }
     const start = pendingEdgeStart
     setPendingEdgeStart(null)
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      addEdge(projectId, revision, projectInstanceId, start, vertexId, activeTool))
+    void runCreaseAuthoringEdit((
+      projectId,
+      revision,
+      projectInstanceId,
+      targetLayer,
+    ) => addEdge(
+      projectId,
+      revision,
+      projectInstanceId,
+      start,
+      vertexId,
+      activeTool,
+      targetLayer,
+    ))
   }
 
   function selectCanvasVertex(vertexId: string) {
@@ -3200,7 +3258,7 @@ function App() {
   async function submitVertexPosition(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const current = latestSnapshotRef.current
-    if (!current || !selectedVertex || selectedVertexLocked) return
+    if (!current || !selectedVertex) return
     const currentVertices = current.crease_pattern.vertices.filter(
       (vertex) => vertex.id === selectedVertex.id,
     )
@@ -3230,9 +3288,20 @@ function App() {
         setCoreStatus(appMessage(APP_TEXT.enterAnAngleFrom0UpTo360ExclusiveWith))
         return
       }
-      const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
-        addRayToFirstTarget(projectId, revision, projectInstanceId, selectedVertex.id,
-          angleMicrodegrees, edgeKind))
+      const succeeded = await runCreaseAuthoringEdit((
+        projectId,
+        revision,
+        projectInstanceId,
+        targetLayer,
+      ) => addRayToFirstTarget(
+        projectId,
+        revision,
+        projectInstanceId,
+        selectedVertex.id,
+        angleMicrodegrees,
+        edgeKind,
+        targetLayer,
+      ))
       if (!succeeded) return
       setSelectedLineId(null)
       setPendingEdgeStart(null)
@@ -3283,10 +3352,11 @@ function App() {
         current.crease_pattern.vertices.map(({ id }) => id),
       )
       const result: { snapshot: ProjectSnapshot | null } = { snapshot: null }
-      const succeeded = await runNativeEdit(async (
+      const succeeded = await runCreaseAuthoringEdit(async (
         projectId,
         revision,
         projectInstanceId,
+        targetLayer,
       ) => {
         const snapshot = await addConnectedVertex(
           projectId,
@@ -3299,6 +3369,7 @@ function App() {
           ),
           angleDegreesExpression,
           edgeKind,
+          targetLayer,
         )
         result.snapshot = snapshot
         return snapshot
@@ -3314,6 +3385,7 @@ function App() {
       setCoreStatus(appMessage(APP_TEXT.addedAnEndpointAndLineFromTheSpecifiedLengthAnd))
       return
     }
+    if (selectedVertexLocked) return
     const xDisplayExpression = String(form.get('x_display') ?? '')
     const yDisplayExpression = String(form.get('y_display') ?? '')
     let x: number | null = null
@@ -3547,7 +3619,7 @@ function App() {
   async function submitSplitSelectedFace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const current = latestSnapshotRef.current
-    if (!current || !selectedFace || selectedFaceLocked) return
+    if (!current || !selectedFace || !creaseAuthoringLayerId) return
     const form = new FormData(event.currentTarget)
     const start = String(form.get('face_split_start') ?? '')
     const end = String(form.get('face_split_end') ?? '')
@@ -3578,8 +3650,20 @@ function App() {
       setCoreStatus(appMessage(APP_TEXT.chooseTwoNonAdjacentFaceVerticesAndAnAvailableLine))
       return
     }
-    await runNativeEdit((projectId, revision, projectInstanceId) =>
-      addEdge(projectId, revision, projectInstanceId, start, end, kind))
+    await runCreaseAuthoringEdit((
+      projectId,
+      revision,
+      projectInstanceId,
+      targetLayer,
+    ) => addEdge(
+      projectId,
+      revision,
+      projectInstanceId,
+      start,
+      end,
+      kind,
+      targetLayer,
+    ))
     setSelectedFaceId(null)
   }
 
@@ -4518,10 +4602,12 @@ function App() {
               disabled={
                 coreBusy
                 || (id === 'cut' && !nativeSnapshot?.cutting_allowed)
+                || (id === 'vertex' && !vertexToolAvailable)
                 || (
                   id !== 'select'
                   && id !== 'measure'
-                  && nativeLayerView.defaultLayerLocked
+                  && id !== 'vertex'
+                  && creaseAuthoringLayerId === null
                 )
               }
               className={activeTool === id ? 'active' : ''}
@@ -5088,6 +5174,7 @@ function App() {
                 face={selectedFace}
                 removableEdges={selectedFaceRemovableEdges}
                 locked={selectedFaceLocked}
+                creaseAuthoringAvailable={creaseAuthoringLayerId !== null}
                 coreBusy={coreBusy}
                 cuttingAllowed={nativeSnapshot?.cutting_allowed ?? false}
                 displayUnitLabel={lengthDisplayUnitLabelText}
@@ -5109,6 +5196,7 @@ function App() {
                 displayUnitLabel={lengthDisplayUnitLabelText}
                 coreBusy={coreBusy}
                 locked={selectedVertexLocked}
+                creaseAuthoringAvailable={creaseAuthoringLayerId !== null}
                 boundary={selectedVertexIsBoundary}
                 boundaryVertexCount={paperBoundaryVertexCount}
                 cuttingAllowed={nativeSnapshot?.cutting_allowed ?? false}

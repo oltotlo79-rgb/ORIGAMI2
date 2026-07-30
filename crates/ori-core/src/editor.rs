@@ -2830,6 +2830,7 @@ impl EditorState {
             &forward.project_layers,
             &forward.beginner_design_profile,
         )?;
+        self.ensure_edge_document_layer_diff_allow(&forward.pattern, &forward.project_layers)?;
 
         speculative_stacked_fold_allocation_checkpoint_v1(
             SpeculativeUnprovenFoldApplyResourceV1::TargetPattern,
@@ -3070,6 +3071,30 @@ impl EditorState {
         )
     }
 
+    /// Plans an authored edge directly on one explicit unlocked crease layer.
+    ///
+    /// The assignment is staged before the edge command so the ordinary
+    /// project-layer lock guard authenticates the real target layer rather
+    /// than incorrectly treating the edge as a default-layer edit.
+    pub fn plan_add_edge_with_intersections_for_layer(
+        &self,
+        expected_revision: Revision,
+        id: EdgeId,
+        start: VertexId,
+        end: VertexId,
+        kind: EdgeKind,
+        authored_layer: LayerId,
+    ) -> Result<Command, CommandError> {
+        self.plan_add_edge_with_intersections_on_layer(
+            expected_revision,
+            id,
+            start,
+            end,
+            kind,
+            Some(authored_layer),
+        )
+    }
+
     fn plan_add_edge_with_intersections_on_layer(
         &self,
         expected_revision: Revision,
@@ -3080,6 +3105,11 @@ impl EditorState {
         authored_layer: Option<LayerId>,
     ) -> Result<Command, CommandError> {
         self.ensure_revision(expected_revision)?;
+        let authored_layer = authored_layer.unwrap_or(DEFAULT_PROJECT_LAYER_ID);
+        self.ensure_crease_authoring_layer(id, authored_layer)?;
+        if self.edge_index(id).is_some() {
+            return Err(CommandError::EdgeAlreadyExists(id));
+        }
         let start_position = self
             .pattern
             .vertices
@@ -3171,6 +3201,7 @@ impl EditorState {
             } else {
                 EdgeId::new()
             };
+            staged.stage_authored_edge_layer(segment_id, authored_layer)?;
             staged.execute(
                 revision,
                 Command::AddEdge {
@@ -3181,16 +3212,6 @@ impl EditorState {
                 },
             )?;
             revision += 1;
-            if let Some(layer) = authored_layer.filter(|layer| *layer != DEFAULT_PROJECT_LAYER_ID) {
-                staged.execute(
-                    revision,
-                    Command::AssignEdgeToLayer {
-                        edge: segment_id,
-                        layer,
-                    },
-                )?;
-                revision += 1;
-            }
             segment_start = segment_end;
         }
         for (_, point) in points {
@@ -3297,6 +3318,38 @@ impl EditorState {
         let command =
             self.plan_add_edge_with_intersections(expected_revision, id, start, end, kind)?;
         self.execute(expected_revision, command)
+    }
+
+    /// Plans one new vertex and its connecting edge on an explicit unlocked
+    /// crease layer as a single normalized history operation.
+    pub fn plan_add_connected_vertex_for_layer(
+        &self,
+        expected_revision: Revision,
+        vertex_id: VertexId,
+        position: Point2,
+        edge_id: EdgeId,
+        start: VertexId,
+        kind: EdgeKind,
+        authored_layer: LayerId,
+    ) -> Result<Command, CommandError> {
+        self.ensure_revision(expected_revision)?;
+        self.ensure_crease_authoring_layer(edge_id, authored_layer)?;
+        let mut staged = self.clone();
+        staged.stage_authored_edge_layer(edge_id, authored_layer)?;
+        staged.execute(
+            expected_revision,
+            Command::AddConnectedVertex {
+                vertex_id,
+                position,
+                edge_id,
+                start,
+                kind,
+            },
+        )?;
+        Ok(Command::ApplyNormalizedEdgeDocument {
+            pattern: staged.pattern,
+            project_layers: staged.project_layers,
+        })
     }
 
     /// Builds a bounded translated copy set on a clone. The returned document
@@ -3885,6 +3938,41 @@ impl EditorState {
         angle_microdegrees: u32,
         kind: EdgeKind,
     ) -> Result<Command, CommandError> {
+        self.plan_add_ray_to_first_target_on_layer(
+            expected_revision,
+            start,
+            angle_microdegrees,
+            kind,
+            None,
+        )
+    }
+
+    /// Plans one ray-authored edge on an explicit unlocked crease layer.
+    pub fn plan_add_ray_to_first_target_for_layer(
+        &self,
+        expected_revision: Revision,
+        start: VertexId,
+        angle_microdegrees: u32,
+        kind: EdgeKind,
+        authored_layer: LayerId,
+    ) -> Result<Command, CommandError> {
+        self.plan_add_ray_to_first_target_on_layer(
+            expected_revision,
+            start,
+            angle_microdegrees,
+            kind,
+            Some(authored_layer),
+        )
+    }
+
+    fn plan_add_ray_to_first_target_on_layer(
+        &self,
+        expected_revision: Revision,
+        start: VertexId,
+        angle_microdegrees: u32,
+        kind: EdgeKind,
+        authored_layer: Option<LayerId>,
+    ) -> Result<Command, CommandError> {
         self.ensure_revision(expected_revision)?;
         if angle_microdegrees >= 360_000_000 {
             return Err(CommandError::InvalidRayAngle);
@@ -4074,12 +4162,13 @@ impl EditorState {
                 }
             };
             staged.execute(0, split)?;
-            let normalized = staged.plan_add_edge_with_intersections(
+            let normalized = staged.plan_add_edge_with_intersections_on_layer(
                 staged.revision(),
                 EdgeId::new(),
                 start,
                 new_vertex,
                 kind,
+                authored_layer,
             )?;
             let Command::ApplyNormalizedEdgeDocument {
                 pattern,
@@ -4101,12 +4190,13 @@ impl EditorState {
         } else {
             return Err(CommandError::RayTargetAmbiguous);
         };
-        let normalized = self.plan_add_edge_with_intersections(
+        let normalized = self.plan_add_edge_with_intersections_on_layer(
             expected_revision,
             EdgeId::new(),
             start,
             target,
             kind,
+            authored_layer,
         )?;
         let Command::ApplyNormalizedEdgeDocument {
             pattern,
@@ -4303,6 +4393,7 @@ impl EditorState {
                     validate_geometric_constraint_record_against_pattern_v1(&pattern, record)
                         .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
                 }
+                self.ensure_normalized_edge_document_layers_allow(&pattern, &project_layers)?;
                 Ok(Inverse::RestoreMirrorSelection {
                     pattern: std::mem::replace(&mut self.pattern, pattern),
                     project_layers: std::mem::replace(&mut self.project_layers, project_layers),
@@ -4324,6 +4415,7 @@ impl EditorState {
                     validate_geometric_constraint_record_against_pattern_v1(pattern, record)
                         .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
                 }
+                self.ensure_normalized_edge_document_layers_allow(pattern, project_layers)?;
                 Ok(Inverse::RestoreMirrorSelection {
                     pattern: std::mem::replace(&mut self.pattern, pattern.clone()),
                     project_layers: std::mem::replace(
@@ -4604,6 +4696,7 @@ impl EditorState {
                     validate_geometric_constraint_record_against_pattern_v1(pattern, record)
                         .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
                 }
+                self.ensure_edge_document_layer_diff_allow(pattern, project_layers)?;
                 Ok(Inverse::RestoreStackedFoldDocument {
                     pattern: std::mem::replace(&mut self.pattern, pattern.clone()),
                     paper: std::mem::replace(&mut self.paper, paper.clone()),
@@ -5209,6 +5302,7 @@ impl EditorState {
                     validate_geometric_constraint_record_against_pattern_v1(&plan.pattern, record)
                         .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
                 }
+                self.ensure_edge_document_layer_diff_allow(&plan.pattern, &plan.project_layers)?;
                 Ok(Inverse::RestoreMirrorSelection {
                     pattern: std::mem::replace(&mut self.pattern, plan.pattern.clone()),
                     project_layers: std::mem::replace(
@@ -5811,6 +5905,7 @@ impl EditorState {
                     validate_geometric_constraint_record_against_pattern_v1(&plan.pattern, record)
                         .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
                 }
+                self.ensure_edge_document_layer_diff_allow(&plan.pattern, &plan.project_layers)?;
                 Ok(Inverse::RestoreMirrorSelection {
                     pattern: std::mem::replace(&mut self.pattern, plan.pattern.clone()),
                     project_layers: std::mem::replace(
@@ -5840,6 +5935,7 @@ impl EditorState {
                     project_layers,
                     beginner_design_profile,
                 )?;
+                self.ensure_edge_document_layer_diff_allow(pattern, project_layers)?;
                 Ok(Inverse::RestoreStackedFoldDocument {
                     pattern: std::mem::replace(&mut self.pattern, pattern.clone()),
                     paper: std::mem::replace(&mut self.paper, paper.clone()),
@@ -6720,10 +6816,12 @@ impl EditorState {
             _ => {}
         }
         match command {
-            Command::AddVertex { .. }
-            | Command::AddEdge { .. }
-            | Command::AddConnectedVertex { .. } => {
-                self.ensure_layer_unlocked(DEFAULT_PROJECT_LAYER_ID)
+            Command::AddVertex { .. } => self.ensure_layer_unlocked(DEFAULT_PROJECT_LAYER_ID),
+            Command::AddEdge { id, .. } => {
+                self.ensure_layer_unlocked(self.project_layers.layer_for_edge(*id))
+            }
+            Command::AddConnectedVertex { edge_id, .. } => {
+                self.ensure_layer_unlocked(self.project_layers.layer_for_edge(*edge_id))
             }
             Command::MoveVertex { id, .. } | Command::RemoveVertex { id } => {
                 if self.vertex_index(*id).is_none() {
@@ -6873,6 +6971,161 @@ impl EditorState {
         }
     }
 
+    fn ensure_normalized_edge_document_layers_allow(
+        &self,
+        pattern: &CreasePattern,
+        project_layers: &ProjectLayerDocumentV1,
+    ) -> Result<(), CommandError> {
+        if project_layers.schema_version != self.project_layers.schema_version
+            || project_layers.layers != self.project_layers.layers
+        {
+            return Err(CommandError::InvalidStackedFoldDocument);
+        }
+        self.ensure_edge_document_layer_diff_allow(pattern, project_layers)
+    }
+
+    fn ensure_edge_document_layer_diff_allow(
+        &self,
+        pattern: &CreasePattern,
+        project_layers: &ProjectLayerDocumentV1,
+    ) -> Result<(), CommandError> {
+        let current_positions = self
+            .pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect::<HashMap<_, _>>();
+        let target_positions = pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect::<HashMap<_, _>>();
+        let current_edges = self
+            .pattern
+            .edges
+            .iter()
+            .map(|edge| (edge.id, edge))
+            .collect::<HashMap<_, _>>();
+        let target_edges = pattern
+            .edges
+            .iter()
+            .map(|edge| (edge.id, edge))
+            .collect::<HashMap<_, _>>();
+        let current_incident_vertices = self
+            .pattern
+            .edges
+            .iter()
+            .flat_map(|edge| [edge.start, edge.end])
+            .collect::<HashSet<_>>();
+        let target_incident_vertices = pattern
+            .edges
+            .iter()
+            .flat_map(|edge| [edge.start, edge.end])
+            .collect::<HashSet<_>>();
+
+        for vertex in &self.pattern.vertices {
+            if !current_incident_vertices.contains(&vertex.id)
+                && target_positions.get(&vertex.id) != Some(&vertex.position)
+            {
+                self.ensure_layer_unlocked(DEFAULT_PROJECT_LAYER_ID)?;
+            }
+        }
+        for vertex in &pattern.vertices {
+            if !current_positions.contains_key(&vertex.id)
+                && !target_incident_vertices.contains(&vertex.id)
+            {
+                self.ensure_layer_unlocked(DEFAULT_PROJECT_LAYER_ID)?;
+                let target_default = project_layers
+                    .layers
+                    .iter()
+                    .find(|layer| layer.id == DEFAULT_PROJECT_LAYER_ID)
+                    .ok_or(CommandError::LayerNotFound(DEFAULT_PROJECT_LAYER_ID))?;
+                if target_default.locked {
+                    return Err(CommandError::LayerLocked(DEFAULT_PROJECT_LAYER_ID));
+                }
+            }
+        }
+
+        for edge in &self.pattern.edges {
+            let target_edge = target_edges.get(&edge.id).copied();
+            let geometry_changed = target_edge.is_none_or(|target_edge| {
+                target_edge != edge
+                    || current_positions.get(&edge.start) != target_positions.get(&edge.start)
+                    || current_positions.get(&edge.end) != target_positions.get(&edge.end)
+            });
+            let old_layer = self.project_layers.layer_for_edge(edge.id);
+            if geometry_changed {
+                self.ensure_layer_unlocked(old_layer)?;
+            }
+
+            if target_edge.is_some() {
+                let new_layer = project_layers.layer_for_edge(edge.id);
+                if old_layer != new_layer {
+                    self.ensure_layer_unlocked(old_layer)?;
+                    self.ensure_normalized_target_crease_layer_unlocked(
+                        edge.id,
+                        new_layer,
+                        project_layers,
+                    )?;
+                }
+            }
+        }
+
+        for edge in &pattern.edges {
+            if !current_edges.contains_key(&edge.id) {
+                self.ensure_normalized_target_crease_layer_unlocked(
+                    edge.id,
+                    project_layers.layer_for_edge(edge.id),
+                    project_layers,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_normalized_target_crease_layer_unlocked(
+        &self,
+        edge: EdgeId,
+        layer: LayerId,
+        project_layers: &ProjectLayerDocumentV1,
+    ) -> Result<(), CommandError> {
+        let target_record = project_layers
+            .layers
+            .iter()
+            .find(|record| record.id == layer)
+            .ok_or(CommandError::LayerNotFound(layer))?;
+        if target_record.content_kind != ori_domain::LayerContentKindV1::CreasePattern {
+            return Err(CommandError::ProjectLayerDocumentInvalid(
+                ProjectLayerDocumentValidationErrorV1::AssignmentLayerWrongContentKind {
+                    edge,
+                    layer,
+                },
+            ));
+        }
+        if target_record.locked {
+            return Err(CommandError::LayerLocked(layer));
+        }
+        if let Some(current_record) = self
+            .project_layers
+            .layers
+            .iter()
+            .find(|record| record.id == layer)
+        {
+            if current_record.content_kind != ori_domain::LayerContentKindV1::CreasePattern {
+                return Err(CommandError::ProjectLayerDocumentInvalid(
+                    ProjectLayerDocumentValidationErrorV1::AssignmentLayerWrongContentKind {
+                        edge,
+                        layer,
+                    },
+                ));
+            }
+            if current_record.locked {
+                return Err(CommandError::LayerLocked(layer));
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_edge_layer_unlocked(&self, edge: EdgeId) -> Result<(), CommandError> {
         if self.edge_index(edge).is_none() {
             return Ok(());
@@ -6892,6 +7145,45 @@ impl EditorState {
         } else {
             Ok(())
         }
+    }
+
+    fn ensure_crease_authoring_layer(
+        &self,
+        edge: EdgeId,
+        layer: LayerId,
+    ) -> Result<(), CommandError> {
+        let record = self
+            .project_layers
+            .layers
+            .iter()
+            .find(|record| record.id == layer)
+            .ok_or(CommandError::LayerNotFound(layer))?;
+        if record.content_kind != ori_domain::LayerContentKindV1::CreasePattern {
+            return Err(CommandError::ProjectLayerDocumentInvalid(
+                ProjectLayerDocumentValidationErrorV1::AssignmentLayerWrongContentKind {
+                    edge,
+                    layer,
+                },
+            ));
+        }
+        self.ensure_layer_unlocked(layer)
+    }
+
+    fn stage_authored_edge_layer(
+        &mut self,
+        edge: EdgeId,
+        layer: LayerId,
+    ) -> Result<(), CommandError> {
+        self.ensure_crease_authoring_layer(edge, layer)?;
+        if layer == DEFAULT_PROJECT_LAYER_ID {
+            return Ok(());
+        }
+        if self.explicit_layer_assignment(edge).is_some() {
+            return Err(CommandError::LayerAssignmentEdgeIdAmbiguous { edge });
+        }
+        self.ensure_layer_assignment_capacity(1)?;
+        self.insert_explicit_layer_assignment(EdgeLayerAssignmentV1 { edge, layer });
+        Ok(())
     }
 
     fn explicit_layer_assignment(&self, edge: EdgeId) -> Option<(usize, EdgeLayerAssignmentV1)> {

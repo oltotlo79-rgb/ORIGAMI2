@@ -7,6 +7,7 @@ import {
   MAX_PROJECT_LAYERS,
   MAX_PROJECT_LAYER_INDEX_EDGES,
   normalizeProjectLayerDocument,
+  resolveCreaseAuthoringLayerId,
 } from '../src/lib/projectLayers.ts'
 
 const CREASE_LAYER_ID = '10000000-0000-4000-8000-000000000001'
@@ -14,6 +15,37 @@ const ANNOTATION_LAYER_ID = '20000000-0000-4000-8000-000000000001'
 const EDGE_A = '30000000-0000-4000-8000-000000000001'
 const EDGE_B = '40000000-0000-4000-8000-000000000001'
 const PATTERN_EDGES = [{ id: EDGE_A }, { id: EDGE_B }] as const
+
+test('resolves crease authoring by default compatibility then stored unlocked order', () => {
+  const document = validDocument()
+  assert.equal(
+    resolveCreaseAuthoringLayerId(document),
+    DEFAULT_PROJECT_LAYER_ID,
+  )
+
+  document.layers[0].locked = true
+  assert.equal(
+    resolveCreaseAuthoringLayerId(document),
+    CREASE_LAYER_ID,
+  )
+
+  document.layers.splice(1, 0, {
+    id: '50000000-0000-4000-8000-000000000001',
+    name: 'Locked first',
+    content_kind: 'crease_pattern',
+    visible: true,
+    locked: true,
+    opacity: 1,
+  })
+  assert.equal(
+    resolveCreaseAuthoringLayerId(document),
+    CREASE_LAYER_ID,
+  )
+
+  document.layers[2].locked = true
+  assert.equal(resolveCreaseAuthoringLayerId(document), null)
+  assert.equal(resolveCreaseAuthoringLayerId(null), null)
+})
 
 test('normalizes, detaches, freezes, and JSON-round-trips the exact V1 document', () => {
   const source = validDocument()

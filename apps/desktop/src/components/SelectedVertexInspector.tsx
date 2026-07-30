@@ -33,6 +33,7 @@ export type SelectedVertexInspectorProps = Readonly<{
   displayUnitLabel: string
   coreBusy: boolean
   locked: boolean
+  creaseAuthoringAvailable?: boolean
   boundary: boolean
   boundaryVertexCount: number
   cuttingAllowed: boolean
@@ -51,6 +52,7 @@ export function SelectedVertexInspector({
   displayUnitLabel,
   coreBusy,
   locked,
+  creaseAuthoringAvailable = true,
   boundary,
   boundaryVertexCount,
   cuttingAllowed,
@@ -181,7 +183,7 @@ export function SelectedVertexInspector({
               inputMode="text"
               maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
               defaultValue={formatLengthInput(10, displayUnit)}
-              disabled={coreBusy || locked}
+              disabled={coreBusy || !creaseAuthoringAvailable}
               aria-label={formattedText(
                 APP_TEXT.lengthFromTheStartVertexUnit,
                 { unit: displayUnitLabel },
@@ -196,7 +198,7 @@ export function SelectedVertexInspector({
               inputMode="text"
               maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
               defaultValue="0"
-              disabled={coreBusy || locked}
+              disabled={coreBusy || !creaseAuthoringAvailable}
               aria-label={text(APP_TEXT.angleFromTheStartVertexDegrees)}
             />
           </label>
@@ -205,7 +207,7 @@ export function SelectedVertexInspector({
             <select
               name="polar_edge_kind"
               defaultValue="mountain"
-              disabled={coreBusy || locked}
+              disabled={coreBusy || !creaseAuthoringAvailable}
               aria-label={text(APP_TEXT.lineTypeForLengthAndAngleDrawing)}
             >
               <option value="mountain">{text(APP_TEXT.mountainFold)}</option>
@@ -223,7 +225,7 @@ export function SelectedVertexInspector({
               type="submit"
               name="vertex_action"
               value="polar_endpoint"
-              disabled={coreBusy || locked}
+              disabled={coreBusy || !creaseAuthoringAvailable}
             >
               {text(APP_TEXT.drawLineByLengthAndAngle)}
             </button>
@@ -232,7 +234,7 @@ export function SelectedVertexInspector({
               name="vertex_action"
               value="ray_to_target"
               data-testid="draw-ray-to-first-target"
-              disabled={coreBusy || locked}
+              disabled={coreBusy || !creaseAuthoringAvailable}
             >
               {text(APP_TEXT.drawToFirstTargetByAngle)}
             </button>

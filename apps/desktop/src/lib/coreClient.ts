@@ -5174,6 +5174,7 @@ export function addEdge(
   start: string,
   end: string,
   kind: 'mountain' | 'valley' | 'auxiliary' | 'cut',
+  targetLayer?: string,
 ) {
   return invoke<ProjectSnapshot>('add_edge', {
     expectedProjectInstanceId,
@@ -5182,6 +5183,7 @@ export function addEdge(
     start,
     end,
     kind,
+    targetLayer,
   })
 }
 
@@ -5192,6 +5194,7 @@ export function addRayToFirstTarget(
   start: string,
   angleMicrodegrees: number,
   kind: 'mountain' | 'valley' | 'auxiliary' | 'cut',
+  targetLayer?: string,
 ) {
   if (!Number.isSafeInteger(angleMicrodegrees) || angleMicrodegrees < 0 || angleMicrodegrees >= 360_000_000) {
     return Promise.reject(new Error('Angle must be an exact microdegree value from 0° up to 360° (exclusive).'))
@@ -5203,6 +5206,7 @@ export function addRayToFirstTarget(
     start,
     angleMicrodegrees,
     kind,
+    targetLayer,
   })
 }
 
@@ -5214,6 +5218,7 @@ export function addConnectedVertex(
   lengthExpression: string,
   angleDegreesExpression: string,
   kind: 'mountain' | 'valley' | 'auxiliary' | 'cut',
+  targetLayer?: string,
 ) {
   return invoke<ProjectSnapshot>('add_connected_vertex', {
     expectedProjectInstanceId,
@@ -5223,6 +5228,7 @@ export function addConnectedVertex(
     lengthExpression,
     angleDegreesExpression,
     kind,
+    targetLayer,
   })
 }
 

@@ -1070,13 +1070,29 @@ pub(super) fn add_edge(
     start: VertexId,
     end: VertexId,
     kind: EdgeKind,
+    target_layer: Option<LayerId>,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
-    let command = project
-        .editor
-        .plan_add_edge_with_intersections(expected_revision, EdgeId::new(), start, end, kind)
-        .map_err(|error| error.to_string())?;
+    let edge = EdgeId::new();
+    let command = match target_layer {
+        Some(layer) => project.editor.plan_add_edge_with_intersections_for_layer(
+            expected_revision,
+            edge,
+            start,
+            end,
+            kind,
+            layer,
+        ),
+        None => project.editor.plan_add_edge_with_intersections(
+            expected_revision,
+            edge,
+            start,
+            end,
+            kind,
+        ),
+    }
+    .map_err(|error| error.to_string())?;
     execute_expected_command(
         &mut project,
         ProjectExpectation::new(
@@ -1097,13 +1113,26 @@ pub(super) fn add_ray_to_first_target(
     start: VertexId,
     angle_microdegrees: u32,
     kind: EdgeKind,
+    target_layer: Option<LayerId>,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
-    let command = project
-        .editor
-        .plan_add_ray_to_first_target(expected_revision, start, angle_microdegrees, kind)
-        .map_err(|error| error.to_string())?;
+    let command = match target_layer {
+        Some(layer) => project.editor.plan_add_ray_to_first_target_for_layer(
+            expected_revision,
+            start,
+            angle_microdegrees,
+            kind,
+            layer,
+        ),
+        None => project.editor.plan_add_ray_to_first_target(
+            expected_revision,
+            start,
+            angle_microdegrees,
+            kind,
+        ),
+    }
+    .map_err(|error| error.to_string())?;
     execute_expected_command(
         &mut project,
         ProjectExpectation::new(
@@ -1125,8 +1154,41 @@ pub(super) fn add_connected_vertex(
     length_expression: String,
     angle_degrees_expression: String,
     kind: EdgeKind,
+    target_layer: Option<LayerId>,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
+    add_connected_vertex_inner(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        start,
+        length_expression,
+        angle_degrees_expression,
+        kind,
+        target_layer,
+    )
+}
+
+fn add_connected_vertex_inner(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    start: VertexId,
+    length_expression: String,
+    angle_degrees_expression: String,
+    kind: EdgeKind,
+    target_layer: Option<LayerId>,
+) -> Result<ProjectSnapshot, String> {
+    ensure_project_expectation(
+        project,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
+    )?;
     let (length_mm, angle_degrees) = evaluate_finite_millimetre_pair(
         length_expression.clone(),
         angle_degrees_expression.clone(),
@@ -1155,20 +1217,34 @@ pub(super) fn add_connected_vertex(
     let x_source = canonical_coordinate_expression_literal_v1(x)?;
     let y_source = canonical_coordinate_expression_literal_v1(y)?;
     let vertex_id = VertexId::new();
+    let edge_id = EdgeId::new();
+    let command = match target_layer {
+        Some(layer) => project.editor.plan_add_connected_vertex_for_layer(
+            expected_revision,
+            vertex_id,
+            Point2::new(x, y),
+            edge_id,
+            start,
+            kind,
+            layer,
+        ),
+        None => Ok(Command::AddConnectedVertex {
+            vertex_id,
+            position: Point2::new(x, y),
+            edge_id,
+            start,
+            kind,
+        }),
+    }
+    .map_err(|error: ori_core::CommandError| error.to_string())?;
     execute_expected_command(
-        &mut project,
+        project,
         ProjectExpectation::new(
             expected_project_instance_id,
             expected_project_id,
             expected_revision,
         ),
-        Command::AddConnectedVertex {
-            vertex_id,
-            position: Point2::new(x, y),
-            edge_id: EdgeId::new(),
-            start,
-            kind,
-        },
+        command,
     )?;
     let mut binding = VertexCoordinateExpressions::new(vertex_id, x_source, y_source, x, y);
     binding.schema_version =
@@ -1186,7 +1262,72 @@ pub(super) fn add_connected_vertex(
         adopted_angle_degrees: angle_degrees,
     });
     project.adopt_vertex_coordinate_expression(binding);
-    Ok(snapshot(&project))
+    Ok(snapshot(project))
+}
+
+#[cfg(test)]
+mod add_connected_vertex_tests {
+    use super::*;
+
+    #[test]
+    fn expectation_failure_precedes_expression_evaluation_and_start_lookup() {
+        let mut project = initial_project_state();
+        let instance_id = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let before = project.document();
+
+        let foreign_instance = add_connected_vertex_inner(
+            &mut project,
+            ProjectId::new(),
+            project_id,
+            revision,
+            VertexId::new(),
+            "(".to_owned(),
+            ")".to_owned(),
+            EdgeKind::Mountain,
+            None,
+        );
+        assert_eq!(
+            foreign_instance.expect_err("foreign instance must fail first"),
+            "the open project instance changed while the file dialog was open",
+        );
+        assert_eq!(project.document(), before);
+
+        let foreign_project = add_connected_vertex_inner(
+            &mut project,
+            instance_id,
+            ProjectId::new(),
+            revision,
+            VertexId::new(),
+            "1".to_owned(),
+            "0".to_owned(),
+            EdgeKind::Mountain,
+            None,
+        );
+        assert_eq!(
+            foreign_project.expect_err("foreign project must fail first"),
+            "the active project changed before the command was applied",
+        );
+        assert_eq!(project.document(), before);
+
+        let stale_revision = add_connected_vertex_inner(
+            &mut project,
+            instance_id,
+            project_id,
+            revision + 1,
+            VertexId::new(),
+            "(".to_owned(),
+            ")".to_owned(),
+            EdgeKind::Mountain,
+            None,
+        );
+        assert_eq!(
+            stale_revision.expect_err("stale revision must fail first"),
+            "the project changed while the file dialog was open",
+        );
+        assert_eq!(project.document(), before);
+    }
 }
 
 pub(super) fn deterministic_polar_endpoint_with_model_support(

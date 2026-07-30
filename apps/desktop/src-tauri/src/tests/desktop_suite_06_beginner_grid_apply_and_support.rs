@@ -491,6 +491,253 @@ fn six_leg_configuration_preserves_existing_four_eight_and_complete_insect_layou
 }
 
 #[test]
+fn standalone_animal_lateral_pairs_reach_all_four_plan_families() {
+    let project = initial_project_state();
+    for (part_kind, expected_plan_kind) in [
+        (
+            ori_domain::BeginnerTargetPartKindV1::Wing,
+            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase,
+        ),
+        (
+            ori_domain::BeginnerTargetPartKindV1::Fin,
+            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase,
+        ),
+        (
+            ori_domain::BeginnerTargetPartKindV1::Ear,
+            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase,
+        ),
+        (
+            ori_domain::BeginnerTargetPartKindV1::Horn,
+            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase,
+        ),
+    ] {
+        let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+        profile.generation_constraints.target_category =
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+        profile.generation_constraints.target_parts = [
+            (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+            (part_kind, 2),
+        ]
+        .into_iter()
+        .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+        .collect();
+        let estimate =
+            ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints).unwrap();
+        assert_eq!(estimate.protrusion_count, 2);
+        configure_symmetric_profile(
+            &mut profile,
+            estimate,
+            estimate.scale_percent,
+            estimate.spacing_percent,
+        );
+        let configured = profile.clone();
+        configure_symmetric_profile(
+            &mut profile,
+            estimate,
+            estimate.scale_percent,
+            estimate.spacing_percent,
+        );
+        assert_eq!(profile, configured);
+        let [target] = profile.generation_constraints.protrusions.as_slice() else {
+            panic!("standalone lateral pair must configure one exact target");
+        };
+        assert_eq!(target.count, 2);
+        assert_eq!(
+            target.symmetry,
+            ori_domain::BeginnerProtrusionSymmetryV1::Bilateral
+        );
+        assert_eq!(target.direction_milli, [1000, 0, 0]);
+        assert_eq!(target.priority, 80);
+        assert_eq!(
+            ori_domain::beginner_target_approximation_score_v1(&profile.generation_constraints),
+            92
+        );
+        let plans = ori_domain::generate_beginner_plans_v1(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            &profile.generation_constraints,
+        )
+        .unwrap();
+        assert_eq!(plans[0].kind, expected_plan_kind);
+        assert_eq!(plans[0].crease_pattern.edges.len(), 4);
+    }
+}
+
+#[test]
+fn lateral_pair_configuration_preserves_axis_composite_and_insect_signatures() {
+    let configured = |category, parts: &[(ori_domain::BeginnerTargetPartKindV1, u8)]| {
+        let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+        profile.generation_constraints.target_category = Some(category);
+        profile.generation_constraints.target_parts = parts
+            .iter()
+            .copied()
+            .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+            .collect();
+        let estimate =
+            ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints).unwrap();
+        configure_symmetric_profile(
+            &mut profile,
+            estimate,
+            estimate.scale_percent,
+            estimate.spacing_percent,
+        );
+        profile
+    };
+    let signature = |profile: &ori_domain::BeginnerDesignProfileV1| {
+        profile
+            .generation_constraints
+            .protrusions
+            .iter()
+            .map(|target| {
+                (
+                    target.id,
+                    target.count,
+                    target.direction_milli,
+                    target.symmetry,
+                    target.priority,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let base = [
+        (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+    ];
+
+    let horn = configured(
+        ori_domain::BeginnerTargetCategoryV1::Animal,
+        &[
+            base[0],
+            base[1],
+            (ori_domain::BeginnerTargetPartKindV1::Horn, 1),
+        ],
+    );
+    assert_eq!(
+        signature(&horn),
+        vec![(
+            1,
+            1,
+            [0, -1000, 0],
+            ori_domain::BeginnerProtrusionSymmetryV1::None,
+            50,
+        )]
+    );
+
+    let tail = configured(
+        ori_domain::BeginnerTargetCategoryV1::Animal,
+        &[
+            base[0],
+            base[1],
+            (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+        ],
+    );
+    assert_eq!(
+        signature(&tail),
+        vec![(
+            1,
+            1,
+            [1000, 0, 0],
+            ori_domain::BeginnerProtrusionSymmetryV1::None,
+            50,
+        )]
+    );
+
+    for (features, expected) in [
+        (
+            vec![
+                (ori_domain::BeginnerTargetPartKindV1::Horn, 1),
+                (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+            ],
+            vec![
+                (
+                    1,
+                    1,
+                    [0, -1000, 0],
+                    ori_domain::BeginnerProtrusionSymmetryV1::None,
+                    50,
+                ),
+                (
+                    2,
+                    1,
+                    [1000, 0, 0],
+                    ori_domain::BeginnerProtrusionSymmetryV1::None,
+                    50,
+                ),
+            ],
+        ),
+        (
+            vec![
+                (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+                (ori_domain::BeginnerTargetPartKindV1::Ear, 2),
+            ],
+            vec![
+                (
+                    1,
+                    1,
+                    [1000, 0, 0],
+                    ori_domain::BeginnerProtrusionSymmetryV1::None,
+                    50,
+                ),
+                (
+                    2,
+                    2,
+                    [1000, 0, 0],
+                    ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                    50,
+                ),
+            ],
+        ),
+        (
+            vec![
+                (ori_domain::BeginnerTargetPartKindV1::Horn, 1),
+                (ori_domain::BeginnerTargetPartKindV1::Ear, 2),
+            ],
+            vec![
+                (
+                    1,
+                    1,
+                    [0, -1000, 0],
+                    ori_domain::BeginnerProtrusionSymmetryV1::None,
+                    50,
+                ),
+                (
+                    2,
+                    2,
+                    [1000, 0, 0],
+                    ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                    50,
+                ),
+            ],
+        ),
+    ] {
+        let parts = [base.as_slice(), features.as_slice()].concat();
+        let profile = configured(ori_domain::BeginnerTargetCategoryV1::Animal, &parts);
+        assert_eq!(signature(&profile), expected);
+    }
+
+    let insect = configured(
+        ori_domain::BeginnerTargetCategoryV1::Insect,
+        &[
+            base[0],
+            base[1],
+            (ori_domain::BeginnerTargetPartKindV1::Wing, 2),
+        ],
+    );
+    assert_eq!(
+        signature(&insect),
+        vec![(
+            1,
+            2,
+            [1000, 0, 0],
+            ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+            50,
+        )]
+    );
+}
+
+#[test]
 fn symmetry_transforms_are_exact_at_cardinal_angles() {
     assert_eq!(
         mirror_point_left_right(Point2::new(3.0, 4.0), 1.0),

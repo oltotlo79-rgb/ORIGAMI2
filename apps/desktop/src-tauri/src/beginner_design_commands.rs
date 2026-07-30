@@ -3741,6 +3741,36 @@ pub(super) fn configure_symmetric_profile(
             .target_parts
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
+    let standalone_animal_lateral_pair = profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+        && estimate.protrusion_count == 2
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .filter(|part| {
+                !matches!(
+                    part.kind,
+                    ori_domain::BeginnerTargetPartKindV1::Head
+                        | ori_domain::BeginnerTargetPartKindV1::Torso
+                )
+            })
+            .count()
+            == 1
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| {
+                part.count == 2
+                    && matches!(
+                        part.kind,
+                        ori_domain::BeginnerTargetPartKindV1::Wing
+                            | ori_domain::BeginnerTargetPartKindV1::Fin
+                            | ori_domain::BeginnerTargetPartKindV1::Ear
+                            | ori_domain::BeginnerTargetPartKindV1::Horn
+                    )
+            });
     let standalone_six_leg_insect = insect
         && estimate.protrusion_count == 6
         && profile
@@ -3796,7 +3826,7 @@ pub(super) fn configure_symmetric_profile(
         position_tenths_mm: [0, 0, 0],
         direction_milli: if single_horn || single_antenna {
             [0, -1000, 0]
-        } else if insect || single_tail {
+        } else if insect || single_tail || standalone_animal_lateral_pair {
             [1000, 0, 0]
         } else {
             [0, 1000, 0]
@@ -3810,7 +3840,11 @@ pub(super) fn configure_symmetric_profile(
         joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
         motion_degrees: [0, 0],
         side: ori_domain::BeginnerProtrusionSideV1::Either,
-        priority: 50,
+        priority: if standalone_animal_lateral_pair {
+            80
+        } else {
+            50
+        },
     }];
     if standalone_six_leg_insect {
         let prototype = profile.generation_constraints.protrusions[0].clone();

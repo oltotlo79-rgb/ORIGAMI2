@@ -3793,6 +3793,32 @@ pub(super) fn configure_symmetric_profile(
             .target_parts
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Fin && part.count == 2);
+    let asymmetric_insect_landmarks = insect
+        && estimate.protrusion_count == 7
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .filter(|part| {
+                !matches!(
+                    part.kind,
+                    ori_domain::BeginnerTargetPartKindV1::Head
+                        | ori_domain::BeginnerTargetPartKindV1::Torso
+                )
+            })
+            .count()
+            == 3
+        && single_tail
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
     let standalone_six_leg_insect = insect
         && estimate.protrusion_count == 6
         && profile
@@ -3862,7 +3888,10 @@ pub(super) fn configure_symmetric_profile(
         joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
         motion_degrees: [0, 0],
         side: ori_domain::BeginnerProtrusionSideV1::Either,
-        priority: if standalone_animal_lateral_pair || asymmetric_fish_landmarks {
+        priority: if standalone_animal_lateral_pair
+            || asymmetric_fish_landmarks
+            || asymmetric_insect_landmarks
+        {
             80
         } else {
             50
@@ -3874,6 +3903,31 @@ pub(super) fn configure_symmetric_profile(
             ([-4, 0, 0], [-1000, 200, 0]),
             ([5, 1, 0], [1000, -100, 0]),
             ([0, -5, 0], [100, -1000, 0]),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (position_tenths_mm, direction_milli))| {
+            let mut landmark = prototype.clone();
+            landmark.id = index as u16 + 1;
+            landmark.count = 1;
+            landmark.position_tenths_mm = position_tenths_mm;
+            landmark.direction_milli = direction_milli;
+            landmark.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::None;
+            landmark.priority = 80;
+            landmark
+        })
+        .collect();
+    }
+    if asymmetric_insect_landmarks {
+        let prototype = profile.generation_constraints.protrusions[0].clone();
+        profile.generation_constraints.protrusions = [
+            ([-4, 0, 0], [-1000, 200, 0]),
+            ([-5, 4, 0], [-1000, 200, 0]),
+            ([5, 4, 0], [1000, 200, 0]),
+            ([-6, 0, 0], [-1000, 0, 0]),
+            ([6, 0, 0], [1000, 0, 0]),
+            ([-5, -4, 0], [-1000, -200, 0]),
+            ([5, -4, 0], [1000, -200, 0]),
         ]
         .into_iter()
         .enumerate()

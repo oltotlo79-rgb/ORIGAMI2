@@ -848,6 +848,14 @@ pub fn estimate_symmetric_parameters_v1(
         {
             4
         }
+        BeginnerTargetCategoryV1::Insect
+            if feature_records == 3
+                && count(BeginnerTargetPartKindV1::Tail) == 1
+                && count(BeginnerTargetPartKindV1::Wing) == 2
+                && count(BeginnerTargetPartKindV1::Leg) == 6 =>
+        {
+            7
+        }
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 4 => 4,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
@@ -5963,6 +5971,82 @@ mod tests {
                 (BeginnerTargetPartKindV1::Ear, 2),
             ])
             .protrusion_count,
+            4
+        );
+    }
+
+    #[test]
+    fn asymmetric_insect_estimate_counts_seven_ordered_landmarks() {
+        let estimate = |features: &[(BeginnerTargetPartKindV1, u8)]| {
+            estimate_symmetric_parameters_v1(&BeginnerGenerationConstraintsV1 {
+                target_category: Some(BeginnerTargetCategoryV1::Insect),
+                target_parts: [
+                    &[
+                        (BeginnerTargetPartKindV1::Head, 1),
+                        (BeginnerTargetPartKindV1::Torso, 1),
+                    ][..],
+                    features,
+                ]
+                .concat()
+                .into_iter()
+                .map(|(kind, count)| BeginnerTargetPartRecordV1 { kind, count })
+                .collect(),
+                ..BeginnerGenerationConstraintsV1::default()
+            })
+            .unwrap()
+        };
+
+        let insect = estimate(&[
+            (BeginnerTargetPartKindV1::Tail, 1),
+            (BeginnerTargetPartKindV1::Wing, 2),
+            (BeginnerTargetPartKindV1::Leg, 6),
+        ]);
+        assert_eq!(
+            insect,
+            BeginnerSymmetricParameterEstimateV1 {
+                protrusion_count: 7,
+                scale_percent: 25,
+                spacing_percent: 50,
+            }
+        );
+        let candidates = symmetric_parameter_candidates_v1(insect);
+        assert_eq!(
+            candidates.map(|candidate| candidate.complexity_score),
+            [95, 94, 96]
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.required_protrusion_count == 7)
+        );
+
+        assert_eq!(
+            estimate(&[(BeginnerTargetPartKindV1::Wing, 2)]).protrusion_count,
+            2
+        );
+        assert_eq!(
+            estimate(&[(BeginnerTargetPartKindV1::Leg, 6)]).protrusion_count,
+            6
+        );
+        assert_eq!(
+            estimate(&[
+                (BeginnerTargetPartKindV1::Wing, 2),
+                (BeginnerTargetPartKindV1::Antenna, 2),
+            ])
+            .protrusion_count,
+            4
+        );
+        assert_eq!(
+            estimate(&[
+                (BeginnerTargetPartKindV1::Wing, 2),
+                (BeginnerTargetPartKindV1::Antenna, 2),
+                (BeginnerTargetPartKindV1::Leg, 6),
+            ])
+            .protrusion_count,
+            10
+        );
+        assert_eq!(
+            estimate(&[(BeginnerTargetPartKindV1::Wing, 4)]).protrusion_count,
             4
         );
     }

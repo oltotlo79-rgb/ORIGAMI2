@@ -90,6 +90,137 @@ fn asymmetric_fish_live_estimate_configures_three_ordered_landmarks() {
 }
 
 #[test]
+fn asymmetric_insect_live_estimate_configures_seven_ordered_landmarks() {
+    let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+    profile.generation_constraints.target_category =
+        Some(ori_domain::BeginnerTargetCategoryV1::Insect);
+    profile.generation_constraints.target_parts = [
+        (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Wing, 2),
+        (ori_domain::BeginnerTargetPartKindV1::Leg, 6),
+    ]
+    .into_iter()
+    .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+    .collect();
+    let estimate =
+        ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints).unwrap();
+    assert_eq!(estimate.protrusion_count, 7);
+    configure_symmetric_profile(
+        &mut profile,
+        estimate,
+        estimate.scale_percent,
+        estimate.spacing_percent,
+    );
+    let configured = profile.clone();
+    configure_symmetric_profile(
+        &mut profile,
+        estimate,
+        estimate.scale_percent,
+        estimate.spacing_percent,
+    );
+    assert_eq!(profile, configured);
+    assert_eq!(
+        profile
+            .generation_constraints
+            .protrusions
+            .iter()
+            .map(|target| (
+                target.id,
+                target.count,
+                target.position_tenths_mm,
+                target.direction_milli,
+                target.symmetry,
+                target.priority,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                1,
+                1,
+                [-4, 0, 0],
+                [-1000, 200, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+            (
+                2,
+                1,
+                [-5, 4, 0],
+                [-1000, 200, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+            (
+                3,
+                1,
+                [5, 4, 0],
+                [1000, 200, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+            (
+                4,
+                1,
+                [-6, 0, 0],
+                [-1000, 0, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+            (
+                5,
+                1,
+                [6, 0, 0],
+                [1000, 0, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+            (
+                6,
+                1,
+                [-5, -4, 0],
+                [-1000, -200, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+            (
+                7,
+                1,
+                [5, -4, 0],
+                [1000, -200, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                80,
+            ),
+        ]
+    );
+    assert_eq!(
+        ori_domain::beginner_target_approximation_score_v1(&profile.generation_constraints),
+        92
+    );
+    let project = initial_project_state();
+    let plans = ori_domain::generate_beginner_plans_v1(
+        project.project_id,
+        project.editor.pattern(),
+        &project.editor.paper().boundary_vertices,
+        &profile.generation_constraints,
+    )
+    .unwrap();
+    assert_eq!(
+        plans[0].kind,
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase
+    );
+    assert_eq!(plans[0].crease_pattern.edges.len(), 4);
+    let semantic = plans[0]
+        .semantic_landmark_provenance
+        .as_ref()
+        .expect("asymmetric insect semantic provenance");
+    assert_eq!(semantic.ordered_bindings.len(), 10);
+    assert_eq!(semantic.ordered_bindings[0].role, "head");
+    assert_eq!(semantic.ordered_bindings[9].role, "leg_rear_right");
+}
+
+#[test]
 fn asymmetric_landmark_native_apply_undo_redo_and_archive_round_trip() {
     let _serial = serial_beginner_grid_test();
     for (plan_kind, target_kind, target_count, archive_name, semantic_binding_count) in [

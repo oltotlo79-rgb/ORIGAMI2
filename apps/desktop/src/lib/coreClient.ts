@@ -3114,9 +3114,9 @@ export function applyBeginnerParameterGridCandidate(
 
 export type BeginnerSymmetricParameterEstimateResponse = Readonly<{
   project_instance_id: string; project_id: string; revision: number
-  estimate: Readonly<{ protrusion_count: 1 | 2 | 3 | 4 | 6 | 8 | 10; scale_percent: number; spacing_percent: number }>
+  estimate: Readonly<{ protrusion_count: 1 | 2 | 3 | 4 | 6 | 7 | 8 | 10; scale_percent: number; spacing_percent: number }>
   candidates: ReadonlyArray<Readonly<{ id: number; scale_percent: number; spacing_percent: number
-    approximation_score: number; complexity_score: number; required_protrusion_count: 1 | 2 | 3 | 4 | 6 | 8 | 10 }>>
+    approximation_score: number; complexity_score: number; required_protrusion_count: 1 | 2 | 3 | 4 | 6 | 7 | 8 | 10 }>>
 }>
 
 export async function getBeginnerSymmetricParameterEstimate(
@@ -3131,7 +3131,7 @@ export async function getBeginnerSymmetricParameterEstimate(
     expectedProjectInstanceId: projectInstanceId,
     expectedProjectId: projectId,
     expectedRevision: revision,
-  }, record) || !estimate || ![1, 2, 3, 4, 6, 8, 10].includes(Number(estimate.protrusion_count))
+  }, record) || !estimate || ![1, 2, 3, 4, 6, 7, 8, 10].includes(Number(estimate.protrusion_count))
     || !Number.isInteger(estimate.scale_percent) || Number(estimate.scale_percent) < 10 || Number(estimate.scale_percent) > 45
     || !Number.isInteger(estimate.spacing_percent) || Number(estimate.spacing_percent) < 20 || Number(estimate.spacing_percent) > 80
     || !Array.isArray(record.candidates) || record.candidates.length !== 3) {
@@ -3139,7 +3139,7 @@ export async function getBeginnerSymmetricParameterEstimate(
   }
   const candidates = record.candidates.map((value, index) => {
     const item = exactCoreDataRecord(value, ['id', 'scale_percent', 'spacing_percent', 'approximation_score', 'complexity_score', 'required_protrusion_count'] as const)
-    if (!item || item.id !== index || ![1, 2, 3, 4, 6, 8, 10].includes(Number(item.required_protrusion_count))
+    if (!item || item.id !== index || ![1, 2, 3, 4, 6, 7, 8, 10].includes(Number(item.required_protrusion_count))
       || Number(item.required_protrusion_count) !== Number(estimate.protrusion_count)
       || !Number.isInteger(item.scale_percent) || Number(item.scale_percent) < 10 || Number(item.scale_percent) > 45
       || !Number.isInteger(item.spacing_percent) || Number(item.spacing_percent) < 20 || Number(item.spacing_percent) > 80

@@ -58,6 +58,16 @@ function completeAnimalEstimate() {
   return response
 }
 
+function asymmetricInsectEstimate() {
+  const response = completeInsectEstimate()
+  response.estimate.protrusion_count = 7
+  response.candidates.forEach((candidate, index) => {
+    candidate.required_protrusion_count = 7
+    candidate.complexity_score = [95, 94, 96][index]!
+  })
+  return response
+}
+
 async function readEstimate() {
   return getBeginnerSymmetricParameterEstimate(
     PROJECT_ID,
@@ -109,6 +119,20 @@ describe('beginner symmetric estimate strict client', () => {
     )).toEqual([105, 104, 106])
   })
 
+  it('accepts all three asymmetric-insect count-seven candidates', async () => {
+    nativeInvoke.mockResolvedValue(asymmetricInsectEstimate())
+
+    const response = await readEstimate()
+
+    expect(response.estimate.protrusion_count).toBe(7)
+    expect(response.candidates.map(
+      (candidate) => candidate.required_protrusion_count,
+    )).toEqual([7, 7, 7])
+    expect(response.candidates.map(
+      (candidate) => candidate.complexity_score,
+    )).toEqual([95, 94, 96])
+  })
+
   it('rejects an estimate and candidate count mismatch in either direction', async () => {
     const candidateTamper = completeAnimalEstimate()
     candidateTamper.candidates[1]!.required_protrusion_count = 10
@@ -126,7 +150,7 @@ describe('beginner symmetric estimate strict client', () => {
   })
 
   it('keeps neighboring undeclared protrusion counts closed', async () => {
-    for (const invalid of [5, 7, 9]) {
+    for (const invalid of [5, 9]) {
       const invalidEstimate = completeAnimalEstimate()
       invalidEstimate.estimate.protrusion_count = invalid
       nativeInvoke.mockResolvedValueOnce(invalidEstimate)

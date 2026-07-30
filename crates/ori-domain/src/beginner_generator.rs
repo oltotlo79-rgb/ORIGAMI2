@@ -1820,6 +1820,7 @@ fn parameterized_center_axis_endpoint_for_target(
     if span_x <= 0
         || span_y <= 0
         || target.position_tenths_mm[0].checked_mul(2)? != minimum_x.checked_add(maximum_x)?
+        || !(minimum_y..=maximum_y).contains(&target.position_tenths_mm[1])
     {
         return None;
     }
@@ -4107,6 +4108,16 @@ mod tests {
             assert_eq!(beginner_target_approximation_score_v1(&outside_outline), 0);
             assert_eq!(
                 generate_beginner_plans_v1(namespace, &source, &ids, &outside_outline),
+                Err(expected_error)
+            );
+            let mut outside_root = constraints.clone();
+            outside_root.protrusions[0].position_tenths_mm[1] = 11;
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &outside_root
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&outside_root), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &outside_root),
                 Err(expected_error)
             );
 

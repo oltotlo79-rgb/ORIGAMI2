@@ -101,7 +101,12 @@ test('image and GLB skeletons admit only bounded acyclic river-axial proposals',
   assert.match(generator, /bounded-tree-node:/u)
   assert.match(generator, /bounded-tree-river:/u)
   assert.match(generator, /bounded_tree_branch_topology_v1/u)
-  assert.match(generator, /o1\.signum\(\) != o2\.signum\(\)/u)
+  assert.match(generator, /fn bounded_tree_segments_intersect_beyond_shared_endpoint_v1/u)
+  assert.match(generator, /on_closed_segment/u)
+  assert.match(
+    generator,
+    /left_vector\.0 \* right_vector\.0 \+ left_vector\.1 \* right_vector\.1 >= 0/u,
+  )
   assert.match(generator, /\(min_x\.\.=max_x\)\.contains\(&position\.x\)/u)
   assert.match(generator, /saturating_mul\(1_000_000\)/u)
   assert.match(skeletonTree, /segments\.length > 16/u)

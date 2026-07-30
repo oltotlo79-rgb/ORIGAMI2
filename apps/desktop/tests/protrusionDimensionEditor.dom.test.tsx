@@ -69,6 +69,39 @@ describe('ProtrusionDimensionEditor', () => {
       count: 6,
     }))
   })
+  it('edits counts only within the selected symmetry family', () => {
+    const change = vi.fn()
+    const { rerender } = render(<ul><ProtrusionDimensionEditor locale="en"
+      target={{ ...target, count: 3, symmetry: 'radial' }} onChange={change}
+      onRemove={() => {}} /></ul>)
+    const radialCount = screen.getByLabelText('Count binding 1') as HTMLSelectElement
+    expect(Array.from(radialCount.options, ({ value }) => Number(value)))
+      .toEqual([2, 3, 4, 5, 6, 7, 8])
+    fireEvent.change(radialCount, { target: { value: '5' } })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({
+      symmetry: 'radial',
+      count: 5,
+    }))
+
+    rerender(<ul><ProtrusionDimensionEditor locale="en"
+      target={{ ...target, count: 2, symmetry: 'bilateral' }} onChange={change}
+      onRemove={() => {}} /></ul>)
+    const bilateralCount = screen.getByLabelText('Count binding 1') as HTMLSelectElement
+    expect(Array.from(bilateralCount.options, ({ value }) => Number(value)))
+      .toEqual([2, 4, 6, 8])
+    fireEvent.change(bilateralCount, { target: { value: '8' } })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({
+      symmetry: 'bilateral',
+      count: 8,
+    }))
+
+    rerender(<ul><ProtrusionDimensionEditor locale="en"
+      target={target} onChange={change} onRemove={() => {}} /></ul>)
+    expect(Array.from(
+      (screen.getByLabelText('Count binding 1') as HTMLSelectElement).options,
+      ({ value }) => Number(value),
+    )).toEqual([1])
+  })
   it('exposes bounded reorder controls', () => {
     const moveUp = vi.fn()
     const moveDown = vi.fn()

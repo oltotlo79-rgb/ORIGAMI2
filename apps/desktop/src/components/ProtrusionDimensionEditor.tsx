@@ -74,6 +74,11 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
     : target.symmetry === 'bilateral'
       ? TEXT.symmetryBilateral
       : TEXT.symmetryRadial)
+  const supportedCounts = target.symmetry === 'none'
+    ? [1]
+    : target.symmetry === 'bilateral'
+      ? [2, 4, 6, 8]
+      : [2, 3, 4, 5, 6, 7, 8]
   return <li>
     <span>{formatLocalizedText(locale, TEXT.bindingSummary, {
       id: target.id, symmetry, count: target.count,
@@ -99,6 +104,16 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
         <option value="none">{label(TEXT.symmetryNone)}</option>
         <option value="bilateral">{label(TEXT.symmetryBilateral)}</option>
         <option value="radial">{label(TEXT.symmetryRadial)}</option>
+      </select>
+    </label>
+    <label>{label(TEXT.count)}
+      <select aria-label={bindingLabel(TEXT.ariaBinding, TEXT.count)}
+        value={target.count}
+        onChange={(event) => {
+          const count = Number(event.currentTarget.value)
+          if (supportedCounts.includes(count)) onChange({ ...target, count })
+        }}>
+        {supportedCounts.map((count) => <option key={count} value={count}>{count}</option>)}
       </select>
     </label>
     <label>{label(TEXT.rootWidthLabel)}

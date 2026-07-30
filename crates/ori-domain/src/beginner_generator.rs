@@ -2042,22 +2042,64 @@ fn animal_target_approximation_score_target_v1(
         .then(|| highest_priority_target_v1(constraints))
         .flatten();
     }
-    let (count, vertical) = if part_count(BeginnerTargetPartKindV1::Leg) == 4 {
-        (4, true)
+    let (count, vertical, minimum_skeleton_segments) =
+        if part_count(BeginnerTargetPartKindV1::Leg) == 4 {
+            (4, true, 3)
+        } else if [
+            BeginnerTargetPartKindV1::Wing,
+            BeginnerTargetPartKindV1::Fin,
+            BeginnerTargetPartKindV1::Ear,
+            BeginnerTargetPartKindV1::Horn,
+        ]
+        .into_iter()
+        .any(|kind| part_count(kind) == 2)
+        {
+            (2, false, 2)
+        } else {
+            return None;
+        };
+    if constraints.skeleton_segments.len() < minimum_skeleton_segments
+        || !has_bilateral_skeleton(constraints)
+        || !has_bilateral_protrusion_count(constraints, count)
+    {
+        None
     } else {
-        (2, false)
-    };
-    parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
-        constraints
-            .protrusions
-            .iter()
-            .find(|target| target.count == count)
-    })
+        parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
+            constraints
+                .protrusions
+                .iter()
+                .find(|target| target.count == count)
+        })
+    }
 }
 
 #[must_use]
 pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationConstraintsV1) -> u8 {
     if !crate::validate_beginner_generation_constraints_v1(constraints) {
+        return 0;
+    }
+    let part_count = |kind| {
+        constraints
+            .target_parts
+            .iter()
+            .find(|part| part.kind == kind)
+            .map_or(0, |part| part.count)
+    };
+    if matches!(
+        constraints.target_category,
+        Some(BeginnerTargetCategoryV1::Animal | BeginnerTargetCategoryV1::Insect)
+    ) && (part_count(BeginnerTargetPartKindV1::Head) != 1
+        || part_count(BeginnerTargetPartKindV1::Torso) != 1)
+    {
+        return 0;
+    }
+    if !constraints
+        .allowed_techniques
+        .contains(&BeginnerFoldTechniqueV1::ValleyFold)
+        && !constraints
+            .allowed_techniques
+            .contains(&BeginnerFoldTechniqueV1::MountainFold)
+    {
         return 0;
     }
     let uses_generic_target = uses_bounded_generic_target_base_v1(constraints);
@@ -2182,12 +2224,27 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                             .then_some(target)
                     })
                 } else {
-                    parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
-                        constraints
-                            .protrusions
-                            .iter()
-                            .find(|target| target.count == 2)
-                    })
+                    let supported_pair = [
+                        BeginnerTargetPartKindV1::Wing,
+                        BeginnerTargetPartKindV1::Antenna,
+                        BeginnerTargetPartKindV1::Leg,
+                    ]
+                    .into_iter()
+                    .any(|kind| part_count(kind) == 2);
+                    if !supported_pair
+                        || constraints.skeleton_segments.len() < 2
+                        || !has_bilateral_skeleton(constraints)
+                        || !has_bilateral_protrusion_count(constraints, 2)
+                    {
+                        None
+                    } else {
+                        parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
+                            constraints
+                                .protrusions
+                                .iter()
+                                .find(|target| target.count == 2)
+                        })
+                    }
                 }
             }
             Some(BeginnerTargetCategoryV1::CustomObject) => None,
@@ -3911,6 +3968,43 @@ mod tests {
                 .iter()
                 .all(|plan| plan.crease_pattern.edges.len() == 1)
         );
+        let mut missing_head = constraints.clone();
+        missing_head
+            .target_parts
+            .retain(|part| part.kind != BeginnerTargetPartKindV1::Head);
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &missing_head
+        ));
+        assert_eq!(beginner_target_approximation_score_v1(&missing_head), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &missing_head),
+            Err(BeginnerGeneratorErrorV1::MissingRequiredParts)
+        );
+        let mut unsupported_techniques = constraints.clone();
+        unsupported_techniques.allowed_techniques =
+            vec![BeginnerFoldTechniqueV1::InsideReverseFold];
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &unsupported_techniques
+        ));
+        assert_eq!(
+            beginner_target_approximation_score_v1(&unsupported_techniques),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &unsupported_techniques),
+            Err(BeginnerGeneratorErrorV1::UnsupportedTechniques)
+        );
+        let mut short_leg_skeleton = constraints.clone();
+        short_leg_skeleton.skeleton_segments.truncate(2);
+        assert!(has_bilateral_skeleton(&short_leg_skeleton));
+        assert_eq!(
+            beginner_target_approximation_score_v1(&short_leg_skeleton),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &short_leg_skeleton),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         for (part_kind, expected_kind) in [
             (
                 BeginnerTargetPartKindV1::Wing,
@@ -3940,7 +4034,35 @@ mod tests {
             assert_eq!(plans[0].kind, expected_kind);
             assert_eq!(plans[0].crease_pattern.edges.len(), 4);
             assert_eq!(beginner_target_approximation_score_v1(&family), 92);
+            let mut non_bilateral = family.clone();
+            non_bilateral.skeleton_segments[1].end.y_tenths_mm += 1;
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &non_bilateral
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&non_bilateral), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &non_bilateral),
+                Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+            );
         }
+        let mut unsupported_animal_family = constraints.clone();
+        unsupported_animal_family.target_parts[2] = BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Antenna,
+            count: 2,
+        };
+        unsupported_animal_family.skeleton_segments.truncate(2);
+        unsupported_animal_family.protrusions[0] = bilateral_protrusion(1, 2);
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &unsupported_animal_family
+        ));
+        assert_eq!(
+            beginner_target_approximation_score_v1(&unsupported_animal_family),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &unsupported_animal_family),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut tail = constraints.clone();
         tail.target_parts[2] = BeginnerTargetPartRecordV1 {
             kind: BeginnerTargetPartKindV1::Tail,
@@ -4539,6 +4661,7 @@ mod tests {
             BeginnerGeneratedPlanKindV1::SymmetricWingBase
         );
         assert_eq!(plans[0].crease_pattern.edges.len(), 4);
+        assert_eq!(beginner_target_approximation_score_v1(&constraints), 92);
         let mut asymmetric = constraints.clone();
         asymmetric.target_category = Some(BeginnerTargetCategoryV1::Animal);
         let mut left = bilateral_protrusion(1, 1);
@@ -4573,6 +4696,20 @@ mod tests {
         assert_eq!(
             antenna_plans[0].kind,
             BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
+        );
+        assert_eq!(beginner_target_approximation_score_v1(&antenna), 92);
+        let mut unsupported_insect_family = constraints.clone();
+        unsupported_insect_family.target_parts[2].kind = BeginnerTargetPartKindV1::Fin;
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &unsupported_insect_family
+        ));
+        assert_eq!(
+            beginner_target_approximation_score_v1(&unsupported_insect_family),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &unsupported_insect_family),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
         );
         let mut wing_antenna = constraints.clone();
         wing_antenna.target_parts.push(BeginnerTargetPartRecordV1 {
@@ -4698,6 +4835,7 @@ mod tests {
             leg_plans[0].kind,
             BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
         );
+        assert_eq!(beginner_target_approximation_score_v1(&leg_pair), 92);
         let mut complete_legs = constraints.clone();
         complete_legs.target_parts[2] = BeginnerTargetPartRecordV1 {
             kind: BeginnerTargetPartKindV1::Leg,
@@ -4776,6 +4914,10 @@ mod tests {
             Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
         );
         constraints.skeleton_segments[1].end.y_tenths_mm = 11;
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &constraints
+        ));
+        assert_eq!(beginner_target_approximation_score_v1(&constraints), 0);
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
             Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
@@ -4816,6 +4958,7 @@ mod tests {
                 spacing_percent: 35,
             })
         );
+        assert_eq!(beginner_target_approximation_score_v1(&constraints), 72);
         let mut ambiguous = constraints;
         ambiguous.target_parts[2].count = 3;
         assert_eq!(estimate_symmetric_parameters_v1(&ambiguous), None);

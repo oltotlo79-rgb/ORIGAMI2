@@ -33,6 +33,19 @@ const CANVAS_RECT = {
   toJSON: () => ({}),
 } as DOMRect
 
+const NO_SNAP_SETTINGS: SnapSettings = Object.freeze({
+  ...DEFAULT_SNAP_SETTINGS,
+  vertex: false,
+  intersection: false,
+  midpoint: false,
+  horizontal: false,
+  vertical: false,
+  parallel: false,
+  angle: false,
+  edge: false,
+  grid: false,
+})
+
 let paintedText: string[] = []
 let paintedStrokeAlphas: number[] = []
 
@@ -293,7 +306,7 @@ describe('CreaseCanvas vertex dragging', () => {
     expect(onMoveVertex).not.toHaveBeenCalledWith('moving', 200, 200)
   })
 
-  it('does not silently snap a moved vertex onto an unsplit proper intersection', () => {
+  it('rejects a raw drag along an unconnected edge through an unsplit intersection', () => {
     const onMoveVertex = vi.fn()
     renderCanvas({
       localeStore: localeFixture('en'),
@@ -324,8 +337,72 @@ describe('CreaseCanvas vertex dragging', () => {
     fireEvent.pointerMove(canvas, { clientX: 246, clientY: 246, pointerId: 8 })
     fireEvent.pointerUp(canvas, { clientX: 246, clientY: 246, pointerId: 8 })
 
-    expect(onMoveVertex).toHaveBeenCalledOnce()
-    expect(onMoveVertex).not.toHaveBeenCalledWith('moving', 200, 200)
+    expect(onMoveVertex).not.toHaveBeenCalled()
+  })
+
+  it('rejects an exact raw drag onto an unconnected edge when edge snapping is disabled', () => {
+    const onMoveVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'select',
+      vertices: [
+        { id: 'moving', x: 100, y: 100 },
+        { id: 'left', x: 0, y: 200 },
+        { id: 'right', x: 400, y: 200 },
+      ],
+      lines: [{
+        id: 'target-edge',
+        startVertexId: 'left',
+        endVertexId: 'right',
+        x1: 0,
+        y1: 200,
+        x2: 400,
+        y2: 200,
+        kind: 'mountain',
+      }],
+      snapSettings: NO_SNAP_SETTINGS,
+      selectedVertexId: 'moving',
+      onSelectVertex: () => undefined,
+      onMoveVertex,
+    })
+    const canvas = screen.getByLabelText('Crease-pattern editing canvas')
+    fireEvent.pointerDown(canvas, { clientX: 138, clientY: 138, pointerId: 12, button: 0 })
+    fireEvent.pointerMove(canvas, { clientX: 245, clientY: 245, pointerId: 12 })
+    fireEvent.pointerUp(canvas, { clientX: 245, clientY: 245, pointerId: 12 })
+
+    expect(onMoveVertex).not.toHaveBeenCalled()
+  })
+
+  it('allows an endpoint to move along its own incident edge when snapping is disabled', () => {
+    const onMoveVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'select',
+      vertices: [
+        { id: 'moving', x: 100, y: 100 },
+        { id: 'fixed', x: 300, y: 300 },
+      ],
+      lines: [{
+        id: 'incident-edge',
+        startVertexId: 'moving',
+        endVertexId: 'fixed',
+        x1: 100,
+        y1: 100,
+        x2: 300,
+        y2: 300,
+        kind: 'mountain',
+      }],
+      snapSettings: NO_SNAP_SETTINGS,
+      selectedVertexId: 'moving',
+      onSelectVertex: () => undefined,
+      onMoveVertex,
+    })
+    const canvas = screen.getByLabelText('Crease-pattern editing canvas')
+    fireEvent.pointerDown(canvas, { clientX: 138, clientY: 138, pointerId: 13, button: 0 })
+    fireEvent.pointerMove(canvas, { clientX: 245, clientY: 245, pointerId: 13 })
+    fireEvent.pointerUp(canvas, { clientX: 245, clientY: 245, pointerId: 13 })
+
+    expect(onMoveVertex).toHaveBeenCalledWith('moving', 200, 200)
   })
 
   it('keeps grid snapping available for a moved vertex away from topology', () => {

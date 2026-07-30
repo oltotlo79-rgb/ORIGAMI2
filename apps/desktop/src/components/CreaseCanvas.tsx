@@ -978,8 +978,16 @@ export function CreaseCanvas({
     })
     const overlapsOtherVertex = !target &&
       lookupExactVertex(exactVertexIndex, rawPoint, drag.vertexId) !== null
+    const overlapsUnconnectedEdge = !target && lines.some((line) =>
+      line.startVertexId !== drag.vertexId
+      && line.endVertexId !== drag.vertexId
+      && clusterPointLiesOnSegment(rawPoint, line))
     return {
-      point: target?.point ?? (overlapsOtherVertex ? { x: drag.x, y: drag.y } : rawPoint),
+      point: target?.point ?? (
+        overlapsOtherVertex || overlapsUnconnectedEdge
+          ? { x: drag.x, y: drag.y }
+          : rawPoint
+      ),
       rawPoint,
       target,
     }

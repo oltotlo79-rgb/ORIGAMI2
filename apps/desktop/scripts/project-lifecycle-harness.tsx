@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import {
+  BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+  BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+} from '../src/lib/boundaryLengthAuthority.ts'
+import {
+  DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+} from '../src/lib/deterministicTranscendentalModel.ts'
 import { createRecoveryClient, createWindowCloseHandshake, createWindowCloseHandshakeState } from '../src/lib/recoveryClient.ts'
 import { createProjectFileClient, ProjectFileClientError } from '../src/lib/projectFileClient.ts'
 
@@ -157,7 +164,33 @@ function snapshot(dirty: boolean) {
       content_kind: 'crease_pattern', visible: true, locked: false, opacity: 1 }], edge_assignments: [] },
     element_metadata: { vertices: [], edges: [], faces: [] }, annotations: { schema_version: 1, annotations: [] },
     underlays: { schema_version: 1, underlays: [] }, fold_model_fingerprint: 'a'.repeat(64), can_undo: true, can_redo: false,
+    reference_model_assets: [],
+    boundary_length_authority_v1: {
+      schema_version: BOUNDARY_LENGTH_AUTHORITY_SCHEMA_VERSION_V1,
+      model_id: BOUNDARY_LENGTH_AUTHORITY_MODEL_ID_V1,
+      transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+      project_instance_id: INSTANCE,
+      project_id: PROJECT,
+      revision: 7,
+      status: 'unavailable',
+      entries: [],
+    },
+    speculativeUnprovenFolds: {
+      applied: emptyUnprovenCounts(),
+      unappliedRedo: emptyUnprovenCounts(),
+    },
     cutting_allowed: false,
+  }
+}
+
+function emptyUnprovenCounts() {
+  return {
+    awaitingProof: 0,
+    proofBlocked: 0,
+    unknownEvidenceInsufficient: 0,
+    unknownResourceLimit: 0,
+    unknownCancelled: 0,
+    unknownDeadlineReached: 0,
   }
 }
 

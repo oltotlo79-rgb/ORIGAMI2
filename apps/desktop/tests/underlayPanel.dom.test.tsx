@@ -57,4 +57,57 @@ describe('UnderlayPanel', () => {
     }]} onImport={vi.fn()} onUpdate={vi.fn()} onRemove={vi.fn()} />)
     expect((screen.getByRole('button', { name: 'Add image' }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('skips a locked first layer on import and keeps locked targets unavailable while editing', () => {
+    const lockedLayer = {
+      id: '10000000-0000-4000-8000-000000000001',
+      name: 'Locked first',
+      content_kind: 'underlay' as const,
+      visible: true,
+      locked: true,
+      opacity: 1,
+    }
+    const unlockedLayer = {
+      id: '20000000-0000-4000-8000-000000000001',
+      name: 'Writable second',
+      content_kind: 'underlay' as const,
+      visible: true,
+      locked: false,
+      opacity: 1,
+    }
+    const onImport = vi.fn()
+    render(<UnderlayPanel
+      locale="en"
+      layers={[lockedLayer, unlockedLayer]}
+      underlays={[{
+        id: '30000000-0000-4000-8000-000000000001',
+        asset: '40000000-0000-4000-8000-000000000001',
+        transform: {
+          position: { x: 1, y: 2 },
+          scale_x: 0.1,
+          scale_y: 0.2,
+          rotation_degrees: 5,
+        },
+        opacity: 0.8,
+        layer: unlockedLayer.id,
+      }]}
+      onImport={onImport}
+      onUpdate={vi.fn()}
+      onRemove={vi.fn()}
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add image' }))
+    expect(onImport).toHaveBeenCalledOnce()
+    expect(onImport).toHaveBeenCalledWith(expect.objectContaining({
+      layer: unlockedLayer.id,
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Underlay 1' }))
+    expect(
+      (screen.getByRole('option', { name: 'Locked first' }) as HTMLOptionElement).disabled,
+    ).toBe(true)
+    expect(
+      (screen.getByRole('option', { name: 'Writable second' }) as HTMLOptionElement).disabled,
+    ).toBe(false)
+  })
 })

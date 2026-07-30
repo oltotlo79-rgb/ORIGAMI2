@@ -62,7 +62,9 @@ export function UnderlayPanel({ locale, underlays, layers, disabled, onImport, o
     {draft && <form onSubmit={submit} aria-label={text('form')}>
       <label>{text('layer')}<select value={draft.layer} disabled={disabled || locked}
         onChange={(event) => setDraft({ ...draft, layer: event.target.value })}>
-        {underlayLayers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+        {underlayLayers.map((item) => <option key={item.id} value={item.id} disabled={item.locked}>
+          {item.name}
+        </option>)}
       </select></label>
       {(['x', 'y'] as const).map((axis) => <label key={axis}>{axis.toUpperCase()} (mm)
         <input type="number" step="any" value={draft.transform.position[axis]} disabled={disabled || locked}

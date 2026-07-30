@@ -39,6 +39,8 @@ export function AnnotationPanel({
   const selected = annotations.find(({ id }) => id === selectedId) ?? null
   const layer = layers.find(({ id }) => id === draft?.layer)
   const locked = layer?.locked ?? false
+  const annotationLayers = layers.filter(({ content_kind }) => content_kind === 'annotation')
+  const firstUnlockedAnnotationLayer = annotationLayers.find(({ locked: layerLocked }) => !layerLocked)
 
   useEffect(() => {
     if (selected) setDraft(structuredClone(selected))
@@ -49,15 +51,14 @@ export function AnnotationPanel({
   }, [selected, selectedId])
 
   function createDraft() {
-    const firstLayer = layers.find(({ content_kind }) => content_kind === 'annotation')
-    if (!firstLayer) return
+    if (!firstUnlockedAnnotationLayer) return
     setSelectedId(null)
     setDraft({
       id: crypto.randomUUID(),
       text: '',
       anchor: { kind: 'absolute', position: { x: 0, y: 0 } },
       style: { color: DEFAULT_COLOR, font_size_mm: 4, bold: false, italic: false },
-      layer: firstLayer.id,
+      layer: firstUnlockedAnnotationLayer.id,
     })
   }
 
@@ -69,11 +70,10 @@ export function AnnotationPanel({
     else onAdd(record)
   }
 
-  const annotationLayers = layers.filter(({ content_kind }) => content_kind === 'annotation')
   return <section className="panel" aria-labelledby="annotation-panel-title">
     <div className="panel-heading">
       <span id="annotation-panel-title">{text('title')}</span>
-      <button type="button" onClick={createDraft} disabled={disabled || annotationLayers.length === 0}>
+      <button type="button" onClick={createDraft} disabled={disabled || !firstUnlockedAnnotationLayer}>
         {text('new')}
       </button>
     </div>
@@ -96,7 +96,7 @@ export function AnnotationPanel({
       <label>{text('layer')}
         <select value={draft.layer} disabled={disabled || locked}
           onChange={(event) => setDraft({ ...draft, layer: event.target.value })}>
-          {annotationLayers.map((item) => <option key={item.id} value={item.id}>
+          {annotationLayers.map((item) => <option key={item.id} value={item.id} disabled={item.locked}>
             {item.name}{item.locked ? ` (${text('lockedOption')})` : ''}
           </option>)}
         </select>

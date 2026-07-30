@@ -67,7 +67,7 @@ for (const entry of manifest.requirements) {
     if (!/^[0-9a-f]{40}$/u.test(commit)) fail(`commit id must be a full SHA-1: ${entry.id}`)
     try { execFileSync('git', ['-C', root, 'merge-base', '--is-ancestor', commit, 'HEAD'], { stdio: 'ignore' }) } catch { fail(`commit is not an ancestor of HEAD: ${entry.id}`) }
   }
-  if (!Array.isArray(entry.evidence) || entry.evidence.length > 32) fail(`invalid evidence count: ${entry.id}`)
+  if (!Array.isArray(entry.evidence) || entry.evidence.length > 64) fail(`invalid evidence count: ${entry.id}`)
   const identities = new Set()
   const kinds = new Set()
   for (const evidence of entry.evidence) {

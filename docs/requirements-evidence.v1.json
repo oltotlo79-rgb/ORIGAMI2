@@ -226,7 +226,8 @@
         "0fa0203e11a726cb66332143d7ac8c656de380ea",
         "77033836b063b9d62dbc06f46dea2babbaf6f50b",
         "daa556fe67f24322681ba6c215cdf28280f0ef49",
-        "5c8693a539d3edea6accb13465e0bbf80b5a56ab"
+        "5c8693a539d3edea6accb13465e0bbf80b5a56ab",
+        "6c91e5d684cb7a269d78070a0648770064283833"
       ],
       "evidence": [
         {
@@ -388,13 +389,73 @@
           "kind": "test",
           "path": "crates/ori-core/src/constraint_semantic_mus_tests/unit_parallel_fixed_angle_phase.rs",
           "selector": "fn exact_three_id_core_recertifies_every_deletion_in_the_dedicated_phase()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_exactification/singleton_constructive.rs",
+          "selector": "pub fn construct_bounded_singleton_composition_exact_assignment_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive.rs",
+          "selector": "pub(super) fn construct_bounded_component_exact_assignment_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_solver.rs",
+          "selector": "pub(crate) fn residual_referenced_vertices_by_record_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn component_constructor_work_envelope_is_frozen()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn eight_sound_pair_components_certify_at_sixteen_and_seventeen_is_rejected()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn unsupported_or_exhausted_components_never_use_residual_only_collapse_authority()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn three_record_connected_component_without_a_sound_component_template_fails_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
+          "selector": "fn connected_pair_component_and_disjoint_singleton_publish_detached_without_coordinates()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
+          "selector": "fn constructive_attempt_post_checkpoint_covers_some_and_none_results()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
+          "selector": "fn worker_publishes_bounded_multi_record_sat_without_changing_project_state()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/geometricConstraints.ts",
+          "selector": "function isSatisfactionEvidenceKind("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraintPanel.dom.test.tsx",
+          "selector": "labels a detached constructed witness without claiming the current assignment satisfies it"
         }
       ],
       "limitations": [
-        "Semantic MUS v4 covers 24 wire variants in bounded shape-specific families. Newest cores require common-center star: two-hop Parallel plus exact 90 degrees and two unit terminals, or Parallel plus exact 45/135 degrees and one unit terminal. Detached constructive SAT covers one through sixteen bit-compatible singleton records and bounded two-record templates, exposes no coordinates, and never authorizes mutation. Other angles, nonexact, nonunit, longer, nonstar, and generic variants fail closed."
+        "Semantic MUS v4 covers 24 wire variants in bounded shapes. Detached SAT handles one record via singleton construction and partitions 2..16 records by residual-referenced vertices. Size 2 may use pair templates; size 3+ requires bit-compatible singletons. Every component and whole document are recertified. Candidate exhaustion is unknown, never UNSAT. At 17+ detached SAT is skipped, but current-assignment and direct-conflict checks remain. Coordinates stay private; mutation is never authorized."
       ],
       "missingAcceptance": [
-        "Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more singleton compositions, arbitrary-length parallel components, and generic or non-star angle topologies."
+        "Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, incompatible connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies."
       ]
     },
     {

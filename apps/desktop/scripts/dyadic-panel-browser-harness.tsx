@@ -17,6 +17,7 @@ let callback = 0
 let liveRevision = 1
 let consumed = false
 let releaseRead: ((value: unknown) => void) | null = null
+let activeReadRequestId: string | null = null
 const scheduleEntryCount = (args?: { request?: Record<string, unknown> }) => {
   const schedule = args?.request?.cycleScheduleV1
   if (typeof schedule !== 'object' || schedule === null || !('entries' in schedule)) return 0
@@ -26,13 +27,25 @@ Object.assign(window, {
   __ORIGAMI2_DYADIC_PANEL_EVIDENCE__: evidence,
   __TAURI_INTERNALS__: {
     transformCallback: () => ++callback,
-    invoke: async (command: string, args?: { request?: Record<string, unknown> }) => {
+    invoke: async (command: string, args?: {
+      request?: Record<string, unknown>
+      requestId?: unknown
+    }) => {
       if (command === 'plugin:event|listen') return 1
       if (command === 'plugin:event|unlisten') return null
-      if (command === 'cancel_current_stacked_fold_read_v1') { evidence.cancels++; releaseRead?.(null); releaseRead = null; return null }
+      if (command === 'cancel_current_stacked_fold_read_request_v1') {
+        if (typeof args?.requestId !== 'string' || args.requestId !== activeReadRequestId) {
+          throw new Error('foreign scoped cancellation')
+        }
+        evidence.cancels++
+        activeReadRequestId = null
+        releaseRead?.(null)
+        releaseRead = null
+        return null
+      }
       if (command === 'read_live_hinge_registry_v1') return { version: 1, projectInstanceId: instance, projectId: project, revision: liveRevision, poseGeneration: 1, graphFingerprintSha256: 'd'.repeat(64), entries: hinges.map(edge => ({ edge, initialAngleDegrees: 0 })), authorizesProjectMutation: false }
       if (command === 'read_even_cycle_candidates_v1') return { version: 1, projectInstanceId: instance, projectId: project, revision: liveRevision, status: 'ready', reason: 'one bounded candidate', candidates: [{ version: 1, edges: [hinges[0], hinges[3]], reason: 'same_assignment_geometrically_opposite' }], kawasakiEndpoints: [], authorizesProjectMutation: false }
-      if (command === 'read_bounded_dyadic_pose_graph_v1') { evidence.reads++; evidence.readHinges = Array.isArray(args?.request?.targetAngles) ? args.request.targetAngles.length : 0; evidence.readScheduleHinges = scheduleEntryCount(args); if (scenario === 'cancel') return new Promise(resolve => { releaseRead = resolve }); if (['concave', 'cut', 'hole', 'seam', 'duplicate-boundary', 'self-intersection', 'zero-length', 'missing-capability', 'tree-capability'].includes(scenario)) return { version: 1, projectInstanceId: instance, projectId: project, revision: 1, status: 'unsupported', reason: 'unsupported_geometry', stateCount: 0, transitionCount: 0, exploredStateCount: 0, evaluatedTransitionCount: 0, certifiedTransitionCount: 0, certificateBindingSha256: null, positiveThicknessTransitionCount: 0, positiveThicknessCertified: false, positiveThicknessBindingSha256: null, layerTransportTransitionCount: 0, layerTransportCertified: false, layerTransportBindingSha256: null, mutationCandidateReady: false, authorizesProjectMutation: false }; if (scenario === 'no-path') return { version: 1, projectInstanceId: instance, projectId: project, revision: 1, status: 'no_path', reason: 'no_certified_path', stateCount: 3, transitionCount: 4, exploredStateCount: 3, evaluatedTransitionCount: 4, certifiedTransitionCount: 0, certificateBindingSha256: null, positiveThicknessTransitionCount: 0, positiveThicknessCertified: false, positiveThicknessBindingSha256: null, layerTransportTransitionCount: 0, layerTransportCertified: false, layerTransportBindingSha256: null, mutationCandidateReady: false, authorizesProjectMutation: false }; return { version: 1, projectInstanceId: instance, projectId: project, revision: 1, status: 'certified', reason: 'proof_complete', stateCount: 3, transitionCount: 4, exploredStateCount: 3, evaluatedTransitionCount: 1, certifiedTransitionCount: 1, certificateBindingSha256: hash, positiveThicknessTransitionCount: 1, positiveThicknessCertified: true, positiveThicknessBindingSha256: positive, layerTransportTransitionCount: 1, layerTransportCertified: true, layerTransportBindingSha256: layer, mutationCandidateReady: true, authorizesProjectMutation: false } }
+      if (command === 'read_bounded_dyadic_pose_graph_v1') { evidence.reads++; evidence.readHinges = Array.isArray(args?.request?.targetAngles) ? args.request.targetAngles.length : 0; evidence.readScheduleHinges = scheduleEntryCount(args); if (scenario === 'cancel') { activeReadRequestId = typeof args?.request?.progressRequestId === 'string' ? args.request.progressRequestId : null; return new Promise(resolve => { releaseRead = resolve }) } if (['concave', 'cut', 'hole', 'seam', 'duplicate-boundary', 'self-intersection', 'zero-length', 'missing-capability', 'tree-capability'].includes(scenario)) return { version: 1, projectInstanceId: instance, projectId: project, revision: 1, status: 'unsupported', reason: 'unsupported_geometry', stateCount: 0, transitionCount: 0, exploredStateCount: 0, evaluatedTransitionCount: 0, certifiedTransitionCount: 0, certificateBindingSha256: null, positiveThicknessTransitionCount: 0, positiveThicknessCertified: false, positiveThicknessBindingSha256: null, layerTransportTransitionCount: 0, layerTransportCertified: false, layerTransportBindingSha256: null, mutationCandidateReady: false, authorizesProjectMutation: false }; if (scenario === 'no-path') return { version: 1, projectInstanceId: instance, projectId: project, revision: 1, status: 'no_path', reason: 'no_certified_path', stateCount: 3, transitionCount: 4, exploredStateCount: 3, evaluatedTransitionCount: 4, certifiedTransitionCount: 0, certificateBindingSha256: null, positiveThicknessTransitionCount: 0, positiveThicknessCertified: false, positiveThicknessBindingSha256: null, layerTransportTransitionCount: 0, layerTransportCertified: false, layerTransportBindingSha256: null, mutationCandidateReady: false, authorizesProjectMutation: false }; return { version: 1, projectInstanceId: instance, projectId: project, revision: 1, status: 'certified', reason: 'proof_complete', stateCount: 3, transitionCount: 4, exploredStateCount: 3, evaluatedTransitionCount: 1, certifiedTransitionCount: 1, certificateBindingSha256: hash, positiveThicknessTransitionCount: 1, positiveThicknessCertified: true, positiveThicknessBindingSha256: positive, layerTransportTransitionCount: 1, layerTransportCertified: true, layerTransportBindingSha256: layer, mutationCandidateReady: true, authorizesProjectMutation: false } }
       if (command === 'mint_dyadic_pose_path_preview_v1') { evidence.mints++; evidence.mintHinges = Array.isArray(args?.request?.targetAngles) ? args.request.targetAngles.length : 0; evidence.mintScheduleHinges = scheduleEntryCount(args); return { version: 1, previewToken: token, projectInstanceId: instance, projectId: project, revision: 1, targetBindingSha256: 'e'.repeat(64), pathBindingSha256: hash, positiveThicknessBindingSha256: positive, layerTransportBindingSha256: layer, authorizesProjectMutation: false } }
       if (command === 'apply_dyadic_pose_path_preview_v1') {
         evidence.applyAttempts++

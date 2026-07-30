@@ -137,6 +137,9 @@ try {
   await cancel.getByLabel(/Cycle path definition/).fill(exactSchedule(6))
   await cancel.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
   await cancel.getByRole('button', { name: 'Cancel search' }).click()
+  await cancel.waitForFunction(() =>
+    window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__?.cancels === 1,
+  )
   const cancelEvidence = await cancel.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
   if (cancelEvidence.reads !== 1 || cancelEvidence.readHinges !== 6 || cancelEvidence.readScheduleHinges !== 6 || cancelEvidence.cancels !== 1 || cancelEvidence.mutations !== 0) throw new Error(`cancel: ${JSON.stringify(cancelEvidence)}`)
   if (await cancel.getByTestId('dyadic-pose-graph-status').count()) throw new Error('cancel published stale read')

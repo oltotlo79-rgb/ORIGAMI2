@@ -898,11 +898,23 @@ test('Windows CI executes native recovery close and diagnostics persistence cont
 test('CI requires the production C6 dyadic browser and exact native lifecycle', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const desktopPackage = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'))
+  const nativeReadTestsDirectory = join(
+    root,
+    'apps/desktop/src-tauri/src/stacked_fold_read/tests',
+  )
   const nativeRead = [
     readFileSync(
       join(root, 'apps/desktop/src-tauri/src/stacked_fold_read.rs'),
       'utf8',
     ),
+    readFileSync(
+      join(root, 'apps/desktop/src-tauri/src/stacked_fold_read/tests.rs'),
+      'utf8',
+    ),
+    ...readdirSync(nativeReadTestsDirectory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.rs'))
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map((entry) => readFileSync(join(nativeReadTestsDirectory, entry.name), 'utf8')),
     readFileSync(
       join(root, 'apps/desktop/src-tauri/src/stacked_fold_dyadic_scope_tests.rs'),
       'utf8',
@@ -973,7 +985,7 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
   assert.match(nativeRead, /fn revalidates_private_proofs_v1\(/u)
   for (const lifecycle of [
     'balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history',
-    'coupled_cactus_previews_apply_and_round_trip_history',
+    'coupled_cactus_previews_fail_closed_without_continuous_authority',
     'theta_positive_thickness_preview_applies_and_round_trips_history',
   ]) {
     const filter = `stacked_fold_read::tests::${lifecycle}`

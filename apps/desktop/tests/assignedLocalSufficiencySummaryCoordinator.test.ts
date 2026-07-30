@@ -49,6 +49,70 @@ test('busy replacement retries boundedly and publishes only the current generati
   assert.deepEqual(states, ['running', 'retrying', 'ready'])
 })
 
+test('analysis cannot start before its cancellation ordering barrier settles', async () => {
+  let resolveCancel!: () => void
+  let analyzeCalls = 0
+  const coordinator = createAssignedLocalSufficiencySummaryCoordinator({
+    analyze: async () => {
+      analyzeCalls += 1
+      return response
+    },
+    cancel: () => new Promise<void>((resolve) => { resolveCancel = resolve }),
+    onState() {},
+  })
+
+  assert.equal(coordinator.start(context), true)
+  assert.equal(coordinator.getState().status, 'running')
+  await settle()
+  assert.equal(analyzeCalls, 0)
+
+  resolveCancel()
+  await settle()
+  assert.equal(analyzeCalls, 1)
+  assert.equal(coordinator.getState().status, 'ready')
+})
+
+test('a disposed coordinator cancel settles before replacement analysis begins', async () => {
+  const cancelResolvers: (() => void)[] = []
+  let cancelCalls = 0
+  let analyzeCalls = 0
+  const sharedCancel = () => new Promise<void>((resolve) => {
+    cancelCalls += 1
+    cancelResolvers.push(resolve)
+  })
+  const disposed = createAssignedLocalSufficiencySummaryCoordinator({
+    analyze: async () => {
+      throw new Error('disposed coordinator must not analyze')
+    },
+    cancel: sharedCancel,
+    onState() {},
+  })
+  const replacement = createAssignedLocalSufficiencySummaryCoordinator({
+    analyze: async () => {
+      analyzeCalls += 1
+      return response
+    },
+    cancel: sharedCancel,
+    onState() {},
+  })
+
+  disposed.dispose()
+  assert.equal(replacement.start(context), true)
+  await settle()
+  assert.equal(cancelCalls, 1)
+  assert.equal(analyzeCalls, 0)
+
+  cancelResolvers.shift()?.()
+  await settle()
+  assert.equal(cancelCalls, 2)
+  assert.equal(analyzeCalls, 0)
+
+  cancelResolvers.shift()?.()
+  await settle()
+  assert.equal(analyzeCalls, 1)
+  assert.equal(replacement.getState().status, 'ready')
+})
+
 test('retry count is capped and dispose rejects every late completion', async () => {
   const timers: (() => void)[] = []
   const coordinator = createAssignedLocalSufficiencySummaryCoordinator({
@@ -92,11 +156,13 @@ test('a late old completion cannot publish across an instance generation replace
     onState() {},
   })
   coordinator.start(context)
+  await settle()
   const replacement = {
     ...context,
     expectedProjectInstanceId: '018f47a2-4b7a-7cc1-8abc-778899aabbcc',
   }
   coordinator.start(replacement)
+  await settle()
   resolveFirst(response)
   await settle()
   assert.equal(coordinator.getState().status, 'running')

@@ -9,6 +9,29 @@ export const ASSIGNED_LOCAL_SUMMARY_RETRY_DELAY_MS = 25
 export const ASSIGNED_LOCAL_SUMMARY_MAX_RETRIES = 20
 export const ASSIGNED_LOCAL_SUMMARY_MAX_RETRY_MS = 1_000
 
+type AssignedLocalSummaryCancel = typeof cancelCurrentAssignedLocalSufficiencySummaryV1
+
+// React may dispose one coordinator and create its replacement without being
+// able to await cleanup. Serialize calls that share the same native cancel
+// function so every older cancellation settles before a replacement analysis
+// is allowed to begin.
+const assignedLocalSummaryCancelLanes = new WeakMap<AssignedLocalSummaryCancel, Promise<void>>()
+
+function enqueueAssignedLocalSummaryCancellation(cancelNative: AssignedLocalSummaryCancel) {
+  const predecessor = assignedLocalSummaryCancelLanes.get(cancelNative) ?? Promise.resolve()
+  const cancel = async () => {
+    try {
+      await cancelNative()
+    } catch {
+      // Cancellation is best effort, but its settlement remains an ordering
+      // barrier for every later analysis in this lane.
+    }
+  }
+  const barrier = predecessor.then(cancel, cancel)
+  assignedLocalSummaryCancelLanes.set(cancelNative, barrier)
+  return barrier
+}
+
 export type AssignedLocalSummaryContext = Readonly<{
   expectedProjectInstanceId: string
   expectedProjectId: string
@@ -54,7 +77,7 @@ export function createAssignedLocalSufficiencySummaryCoordinator(options: Readon
   const start = (context: AssignedLocalSummaryContext) => {
     if (disposed || generation >= Number.MAX_SAFE_INTEGER) return false
     stopTimer()
-    void cancelNative().catch(() => undefined)
+    const cancellationBarrier = enqueueAssignedLocalSummaryCancellation(cancelNative)
     generation += 1
     const ownGeneration = generation
     let startedAt: number
@@ -64,10 +87,12 @@ export function createAssignedLocalSufficiencySummaryCoordinator(options: Readon
       publish({ status: 'failed', generation, reason: 'native_failure' })
       return true
     }
-    const attempt = (retryCount: number) => {
+    const attempt = (retryCount: number, publishAttempt = true) => {
       if (!isCurrent(ownGeneration)) return
-      publish({ status: retryCount === 0 ? 'running' : 'retrying', generation, retryCount })
-      void analyze(context).then((response) => {
+      if (publishAttempt) {
+        publish({ status: retryCount === 0 ? 'running' : 'retrying', generation, retryCount })
+      }
+      void Promise.resolve().then(() => analyze(context)).then((response) => {
         if (!isCurrent(ownGeneration)
           || response.projectInstanceId !== context.expectedProjectInstanceId
           || response.projectId !== context.expectedProjectId
@@ -106,14 +131,15 @@ export function createAssignedLocalSufficiencySummaryCoordinator(options: Readon
         })
       })
     }
-    attempt(0)
+    publish({ status: 'running', generation, retryCount: 0 })
+    void cancellationBarrier.then(() => attempt(0, false))
     return true
   }
   const dispose = () => {
     if (disposed) return
     disposed = true
     stopTimer()
-    void cancelNative().catch(() => undefined)
+    void enqueueAssignedLocalSummaryCancellation(cancelNative)
     if (generation < Number.MAX_SAFE_INTEGER) generation += 1
     publish({ status: 'idle', generation })
   }

@@ -207,7 +207,7 @@ export function useBeginnerEditorState(input: Readonly<{
   }
 
   function addBeginnerProtrusion(form: HTMLFormElement) {
-    if (beginnerProtrusions.length >= 8) return
+    if (beginnerProtrusions.length >= 32) return
     const data = new FormData(form)
     const number = (name: string) => Number(data.get(name))
     const count = number('protrusion_count')

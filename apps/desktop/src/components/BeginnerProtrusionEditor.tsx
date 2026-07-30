@@ -102,7 +102,7 @@ export function BeginnerProtrusionEditor({
         </label>
         <button
           type="button"
-          disabled={beginnerProtrusions.length >= 8 || coreBusy}
+          disabled={beginnerProtrusions.length >= 32 || coreBusy}
           onClick={(event) => event.currentTarget.form
             && addBeginnerProtrusion(event.currentTarget.form)}
         >

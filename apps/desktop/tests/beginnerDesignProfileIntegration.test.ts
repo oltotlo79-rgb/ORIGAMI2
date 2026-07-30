@@ -261,7 +261,9 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
     'direction_milli', 'symmetry', 'curvature_degrees', 'joint',
     'motion_degrees', 'side', 'priority',
   ]) assert.match(generation, new RegExp(`pub ${field}:`, 'u'))
-  assert.match(generation, /MAX_BEGINNER_PROTRUSIONS_V1/u)
+  assert.match(generation, /MAX_BEGINNER_PROTRUSIONS_V1: usize = 32/u)
+  assert.equal(app.match(/beginnerProtrusions\.length >= 32/gu)?.length, 2)
+  assert.doesNotMatch(app, /beginnerProtrusions\.length >= 8/u)
   assert.match(client, /'protrusions'/u)
   assert.match(client, /protrusionIds/u)
   assert.match(app, /Protrusion targets/u)

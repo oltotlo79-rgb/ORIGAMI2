@@ -335,7 +335,7 @@ fn prepare_strip_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
 }
 
 fn prepare_cactus_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
-    assert!((2..=3).contains(&block_count));
+    assert!((2..=COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1).contains(&block_count));
     let (pattern, paper, _) = match block_count {
         2 => {
             crate::miura_cactus_test_support::independent_three_by_three_miura_blocks_with_document(
@@ -343,7 +343,7 @@ fn prepare_cactus_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
             .1
         }
         3 => crate::miura_cactus_test_support::three_three_by_three_miura_blocks_with_document().1,
-        _ => unreachable!("bounded cactus fixture arity"),
+        _ => crate::miura_cactus_test_support::miura_block_chain_with_document(block_count),
     };
     let namespace = ProjectId::new();
     let paper_thickness_mm = paper.thickness_mm;
@@ -1902,22 +1902,23 @@ fn final_continuous_layer_path_is_positive_and_stops_at_permission_boundary_v1()
 }
 
 #[test]
-fn final_continuous_layer_path_accepts_three_block_cactus_v1() {
-    let authority = prepare_final_path_fixture_with_variants_v1(false, false, 3)
-        .issue(
-            CommonArticulationClearanceLimitsV1::default(),
-            false,
-            None,
-            &CooperativeOperationControlV1::unbounded(),
-        )
-        .expect("three-block final common-articulation path");
-    assert_eq!(authority.block_count_v1(), 3);
-    assert!(authority.authorizes_continuous_motion());
-    assert!(authority.authorizes_collision_clearance());
-    assert!(authority.authorizes_layer_transport());
-    assert!(!authority.authorizes_project_mutation());
-    assert!(!authority.authorizes_apply());
-    assert!(!authority.authorizes_viewer());
+fn final_continuous_layer_path_accepts_three_four_and_eight_blocks_v1() {
+    for block_count in [3, 4, 8] {
+        let fixture = prepare_final_path_fixture_with_variants_v1(false, false, block_count)
+            .issue_for_revalidation();
+        let block_sources = fixture.block_sources.iter().collect::<Vec<_>>();
+        fixture
+            .authority
+            .revalidate_v1(fixture.input(&block_sources))
+            .expect("exact multi-block final authority revalidation");
+        assert_eq!(fixture.authority.block_count_v1(), block_count);
+        assert!(fixture.authority.authorizes_continuous_motion());
+        assert!(fixture.authority.authorizes_collision_clearance());
+        assert!(fixture.authority.authorizes_layer_transport());
+        assert!(!fixture.authority.authorizes_project_mutation());
+        assert!(!fixture.authority.authorizes_apply());
+        assert!(!fixture.authority.authorizes_viewer());
+    }
 }
 
 #[test]

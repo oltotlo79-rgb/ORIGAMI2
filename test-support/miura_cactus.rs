@@ -82,6 +82,21 @@ pub fn three_three_by_three_miura_blocks_with_document() -> ThreeMiuraBlocksWith
     )
 }
 
+pub fn miura_block_chain_with_document(block_count: usize) -> MiuraPatternFixture {
+    assert!((3..=8).contains(&block_count));
+    let namespace = ProjectId::new();
+    let combined = (0..block_count)
+        .flat_map(|index| {
+            let x = i8::try_from(index * 2).expect("bounded block x");
+            let y = if index % 2 == 0 { 0_i8 } else { -2_i8 };
+            (x..=x + 2).flat_map(move |x| (y..=y + 2).map(move |y| (x, y)))
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    pattern_for_cells(&combined, namespace)
+}
+
 fn pattern_for_cells(
     cells: &[(i8, i8)],
     namespace: ProjectId,

@@ -78,6 +78,7 @@ import type {
 import {
   unprovenHistorySummaryFromSnapshotV1,
 } from './speculativeUnprovenWire.ts'
+import { resolveCompleteAnimalBindings } from './completeAnimalBindings.ts'
 export {
   applySpeculativeStackedFoldTransaction,
   normalizeSpeculativeStackedFoldApplyRequestV1,
@@ -701,6 +702,8 @@ function normalizeBeginnerGenerationConstraints(
     return { ...item } as NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
   })
   if (protrusions.some((target) => target === null)) return null
+  const validProtrusions =
+    protrusions as NonNullable<BeginnerGenerationConstraintsV1['protrusions']>
   const completeAnimal = record.target_category === 'animal'
     && targetParts.some((part) => part?.kind === 'horn' && part.count === 1)
     && targetParts.some((part) => part?.kind === 'tail' && part.count === 1)
@@ -710,15 +713,7 @@ function normalizeBeginnerGenerationConstraints(
   const completeAnimalHasWings = animalWingParts.length === 1 && animalWingParts[0]?.count === 2
   if (completeAnimal && (animalWingParts.length > 1
     || (animalWingParts.length === 1 && !completeAnimalHasWings)
-    || protrusions.length !== (completeAnimalHasWings ? 5 : 4)
-    || protrusions[0]?.count !== 1 || protrusions[0]?.symmetry !== 'none'
-    || protrusions[0]?.direction_milli[0] !== 0 || protrusions[0]?.direction_milli[1] === 0
-    || protrusions[1]?.count !== 1 || protrusions[1]?.symmetry !== 'none'
-    || protrusions[1]?.direction_milli[0] === 0 || protrusions[1]?.direction_milli[1] !== 0
-    || protrusions[2]?.count !== 2 || protrusions[2]?.symmetry !== 'bilateral'
-    || protrusions[3]?.count !== 4 || protrusions[3]?.symmetry !== 'bilateral'
-    || (completeAnimalHasWings
-      && (protrusions[4]?.count !== 2 || protrusions[4]?.symmetry !== 'bilateral')))) return null
+    || resolveCompleteAnimalBindings(validProtrusions, completeAnimalHasWings) === null)) return null
   const bulgeIds = new Set<number>()
   const bulgeTargets = record.bulge_targets.map((value) => {
     const item = exactCoreDataRecord(value, [
@@ -855,7 +850,7 @@ function normalizeBeginnerGenerationConstraints(
     ...(silhouetteCropRoi ? { silhouette_crop_roi: silhouetteCropRoi } : {}),
     ...(silhouetteOrientation === undefined ? {} : { silhouette_orientation_degrees: Number(silhouetteOrientation) as 0 | 90 | 180 | 270 }),
     ...(silhouetteMirror ? { silhouette_mirror: silhouetteMirror } : {}),
-    ...(hadProtrusions ? { protrusions } : {}),
+    ...(hadProtrusions ? { protrusions: validProtrusions } : {}),
     ...(hadBulgeTargets ? { bulge_targets: bulgeTargets } : {}),
     target_asset: targetAsset,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),

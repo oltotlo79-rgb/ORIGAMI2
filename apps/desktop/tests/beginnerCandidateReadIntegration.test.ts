@@ -33,6 +33,7 @@ const app = [
   readFileSync(new URL('../src/lib/useBeginnerProfileWorkflow.ts', import.meta.url), 'utf8'),
 ].join('\n')
 const completeAnimalBindingList = readFileSync(new URL('../src/components/CompleteAnimalBindingList.tsx', import.meta.url), 'utf8')
+const completeAnimalBindings = readFileSync(new URL('../src/lib/completeAnimalBindings.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
 
 test('AUT-106 candidate reads bind instance, project, and revision without mutation', () => {
@@ -132,7 +133,7 @@ test('AUT-101 admits only explicit symmetric animal and insect templates', () =>
   )
   assert.match(
     completeAnimalBindingList,
-    /protrusions\.length === 5 \? TEXT\.fivePartCount : TEXT\.fourPartCount/u,
+    /bindings\.wing \? TEXT\.fivePartCount : TEXT\.fourPartCount/u,
   )
   assert.match(
     completeAnimalBindingList,
@@ -156,9 +157,10 @@ test('AUT-101 admits only explicit symmetric animal and insect templates', () =>
     }),
     'Five complete-animal binding dimensions',
   )
-  assert.match(client, /protrusions\.length !== \(completeAnimalHasWings \? 5 : 4\)/)
-  assert.match(client, /protrusions\[4\]\?\.count !== 2/)
-  assert.match(client, /protrusions\[3\]\?\.count !== 4/)
+  assert.match(client, /resolveCompleteAnimalBindings\(validProtrusions, completeAnimalHasWings\)/)
+  assert.match(completeAnimalBindingList, /resolveCompleteAnimalBindings\(/)
+  assert.match(completeAnimalBindings, /const wing = hasWing \? protrusions\[4\]/)
+  assert.match(completeAnimalBindings, /const legs = uniqueMatch/)
   assert.match(
     completeAnimalBindingList,
     /formatLocalizedText\(locale, TEXT\.bindingRow,\s*\{[\s\S]*?id: target\.id,[\s\S]*?count: target\.count,[\s\S]*?length: target\.length_tenths_mm,[\s\S]*?thickness: target\.thickness_tenths_mm,[\s\S]*?\}\)/u,

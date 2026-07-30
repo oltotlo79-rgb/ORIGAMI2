@@ -33,12 +33,13 @@ describe('CompleteAnimalBindingList', () => {
     for (const forged of [
       valid.slice(0, 3),
       [valid[0], valid[1], valid[2], { ...valid[3], id: 3 }],
-      [valid[1], valid[0], valid[2], valid[3]],
+      [valid[0], { ...valid[0], id: 6 }, valid[2], valid[3]],
       [valid[0], valid[1], valid[2], { ...valid[3], count: 9 }],
       [...winged, target(6, 2, [1000, 0, 0], 'bilateral')],
       [...valid, { ...winged[4], id: 4 }],
       [...valid, { ...winged[4], count: 1 }],
       [...valid, { ...winged[4], symmetry: 'none' as const }],
+      [winged[4], ...valid],
     ]) {
       const { unmount } = render(<CompleteAnimalBindingList locale="en" protrusions={forged} />)
       expect(screen.queryByRole('list')).toBeNull()
@@ -46,8 +47,22 @@ describe('CompleteAnimalBindingList', () => {
     }
   })
 
+  it('renders the same semantic order independently of four-role storage order', () => {
+    render(<CompleteAnimalBindingList locale="en" protrusions={[...valid].reverse()} />)
+    const rows = Array.from(screen.getByRole('list').children)
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'Binding 1 · count 1 · length 100 · thickness 10',
+      'Binding 2 · count 1 · length 200 · thickness 20',
+      'Binding 3 · count 2 · length 300 · thickness 30',
+      'Binding 4 · count 4 · length 400 · thickness 40',
+    ])
+  })
+
   it('renders the optional wing pair only as the strict fifth binding', () => {
-    render(<CompleteAnimalBindingList locale="en" protrusions={winged} />)
+    render(<CompleteAnimalBindingList
+      locale="en"
+      protrusions={[valid[3], valid[1], valid[0], valid[2], winged[4]]}
+    />)
     const list = screen.getByRole('list', { name: 'Five complete-animal binding dimensions' })
     expect(list.children).toHaveLength(5)
     expect(screen.getByText('Binding 5 · count 2 · length 500 · thickness 50')).toBeTruthy()

@@ -1077,7 +1077,7 @@ pub fn generate_beginner_plans_v1(
                     min_y,
                     max_y,
                 )
-                .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
             } else if part_count(BeginnerTargetPartKindV1::Horn) == 1
                 && part_count(BeginnerTargetPartKindV1::Tail) == 1
                 && part_count(BeginnerTargetPartKindV1::Ear) == 2
@@ -1448,7 +1448,7 @@ pub fn generate_beginner_plans_v1(
                         .collect::<Vec<_>>()
                         .join(",")
                 );
-                symmetric_template(
+                let plan = symmetric_template(
                     namespace,
                     source,
                     BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
@@ -1460,7 +1460,17 @@ pub fn generate_beginner_plans_v1(
                     &endpoints,
                     &instruction,
                     constraints,
+                );
+                append_bounded_radial_tree_graph(
+                    plan,
+                    constraints,
+                    namespace,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
                 )
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?
             } else if part_count(BeginnerTargetPartKindV1::Wing) == 2
                 && part_count(BeginnerTargetPartKindV1::Antenna) == 2
                 && part_count(BeginnerTargetPartKindV1::Leg) == 6
@@ -1890,12 +1900,14 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
             }
         }
         Some(BeginnerTargetCategoryV1::CustomObject) => {
-            bounded_generic_composite_endpoints(constraints).and_then(|_| {
-                constraints
-                    .protrusions
-                    .iter()
-                    .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
-            })
+            bounded_generic_composite_endpoints(constraints)
+                .and_then(|_| bounded_generic_tree_graph_is_supported_v1(constraints).then_some(()))
+                .and_then(|()| {
+                    constraints
+                        .protrusions
+                        .iter()
+                        .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
+                })
         }
         None => None,
     };
@@ -2156,6 +2168,92 @@ fn bounded_generic_composite_endpoints(
     Some(endpoints)
 }
 
+fn bounded_generic_tree_graph_is_supported_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> bool {
+    let empty_plan = BeginnerGeneratedPlanV1 {
+        schema_version: BEGINNER_GENERATOR_SCHEMA_VERSION_V1,
+        kind: BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+        crease_pattern: CreasePattern {
+            vertices: Vec::new(),
+            edges: Vec::new(),
+        },
+        instruction_codes: Vec::new(),
+        target_parts: Vec::new(),
+        skeleton_segments: Vec::new(),
+        target_asset: None,
+        semantic_landmark_provenance: None,
+    };
+    append_bounded_radial_tree_graph(
+        empty_plan,
+        constraints,
+        ProjectId::schema_namespace([0x67; 16]),
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+    )
+    .is_some()
+}
+
+fn bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+    left: &BeginnerSkeletonSegmentV1,
+    right: &BeginnerSkeletonSegmentV1,
+) -> bool {
+    let point = |value: BeginnerSkeletonPointV1| (value.x_tenths_mm, value.y_tenths_mm);
+    let a = point(left.start);
+    let b = point(left.end);
+    let c = point(right.start);
+    let d = point(right.end);
+    let orient = |first: (i32, i32), second: (i32, i32), third: (i32, i32)| {
+        (i128::from(second.0) - i128::from(first.0)) * (i128::from(third.1) - i128::from(first.1))
+            - (i128::from(second.1) - i128::from(first.1))
+                * (i128::from(third.0) - i128::from(first.0))
+    };
+    let on_closed_segment = |first: (i32, i32), second: (i32, i32), value: (i32, i32)| {
+        orient(first, second, value) == 0
+            && (first.0.min(second.0)..=first.0.max(second.0)).contains(&value.0)
+            && (first.1.min(second.1)..=first.1.max(second.1)).contains(&value.1)
+    };
+
+    let first_shared = (a == c || a == d).then_some(a);
+    let second_shared = (b == c || b == d).then_some(b);
+    if first_shared.is_some() && second_shared.is_some() {
+        return true;
+    }
+    if let Some(shared) = first_shared.or(second_shared) {
+        let left_other = if a == shared { b } else { a };
+        let right_other = if c == shared { d } else { c };
+        if orient(shared, left_other, right_other) != 0 {
+            return false;
+        }
+        let left_vector = (
+            i128::from(left_other.0) - i128::from(shared.0),
+            i128::from(left_other.1) - i128::from(shared.1),
+        );
+        let right_vector = (
+            i128::from(right_other.0) - i128::from(shared.0),
+            i128::from(right_other.1) - i128::from(shared.1),
+        );
+        return left_vector.0 * right_vector.0 + left_vector.1 * right_vector.1 >= 0;
+    }
+
+    let orientations = [
+        orient(a, b, c),
+        orient(a, b, d),
+        orient(c, d, a),
+        orient(c, d, b),
+    ];
+    (orientations[0] == 0 && on_closed_segment(a, b, c))
+        || (orientations[1] == 0 && on_closed_segment(a, b, d))
+        || (orientations[2] == 0 && on_closed_segment(c, d, a))
+        || (orientations[3] == 0 && on_closed_segment(c, d, b))
+        || ((orientations[0] < 0 && orientations[1] > 0
+            || orientations[0] > 0 && orientations[1] < 0)
+            && (orientations[2] < 0 && orientations[3] > 0
+                || orientations[2] > 0 && orientations[3] < 0))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_bounded_radial_tree_graph(
     mut plan: BeginnerGeneratedPlanV1,
@@ -2177,34 +2275,14 @@ fn append_bounded_radial_tree_graph(
     let ratios = bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)?;
     let segments = canonical_bounded_tree_segments(&constraints.skeleton_segments)?;
     let point = |value: BeginnerSkeletonPointV1| (value.x_tenths_mm, value.y_tenths_mm);
-    let orient = |a: (i32, i32), b: (i32, i32), c: (i32, i32)| {
-        (i128::from(b.0) - i128::from(a.0)) * (i128::from(c.1) - i128::from(a.1))
-            - (i128::from(b.1) - i128::from(a.1)) * (i128::from(c.0) - i128::from(a.0))
-    };
     let mut checked_pairs = 0_usize;
     for (index, left) in segments.iter().enumerate() {
-        let a = point(left.start);
-        let b = point(left.end);
         for right in segments.iter().skip(index + 1) {
             checked_pairs = checked_pairs.checked_add(1)?;
             if checked_pairs > MAX_BEGINNER_GENERIC_TREE_INTERSECTION_PAIRS_V1 {
                 return None;
             }
-            let c = point(right.start);
-            let d = point(right.end);
-            if [a, b]
-                .into_iter()
-                .any(|endpoint| endpoint == c || endpoint == d)
-            {
-                continue;
-            }
-            let o1 = orient(a, b, c);
-            let o2 = orient(a, b, d);
-            let o3 = orient(c, d, a);
-            let o4 = orient(c, d, b);
-            if (o1 == 0 || o2 == 0 || o1.signum() != o2.signum())
-                && (o3 == 0 || o4 == 0 || o3.signum() != o4.signum())
-            {
+            if bounded_tree_segments_intersect_beyond_shared_endpoint_v1(left, right) {
                 return None;
             }
         }
@@ -2272,6 +2350,18 @@ fn append_bounded_radial_tree_graph(
             plan.crease_pattern.vertices.push(Vertex { id, position });
         }
     }
+    let allows_valley = constraints
+        .allowed_techniques
+        .contains(&BeginnerFoldTechniqueV1::ValleyFold);
+    let allows_mountain = constraints
+        .allowed_techniques
+        .contains(&BeginnerFoldTechniqueV1::MountainFold);
+    let single_tree_edge_kind = match (allows_valley, allows_mountain) {
+        (true, true) => None,
+        (true, false) => Some(EdgeKind::Valley),
+        (false, true) => Some(EdgeKind::Mountain),
+        (false, false) => return None,
+    };
     for (index, segment) in segments.iter().enumerate() {
         let start = *vertex_ids.get(&point(segment.start))?;
         let end = *vertex_ids.get(&point(segment.end))?;
@@ -2282,11 +2372,13 @@ fn append_bounded_radial_tree_graph(
             ),
             start,
             end,
-            kind: if index % 2 == 0 {
-                EdgeKind::Valley
-            } else {
-                EdgeKind::Mountain
-            },
+            kind: single_tree_edge_kind.unwrap_or_else(|| {
+                if index % 2 == 0 {
+                    EdgeKind::Valley
+                } else {
+                    EdgeKind::Mountain
+                }
+            }),
         });
     }
     plan.instruction_codes.push(format!(
@@ -3238,6 +3330,233 @@ mod tests {
     }
 
     #[test]
+    fn bounded_tree_closed_segment_intersection_preserves_only_endpoint_contact() {
+        let horizontal = skeleton(1, 0, 0, 10, 0);
+        assert!(!bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+            &horizontal,
+            &skeleton(2, 0, 0, 0, 10),
+        ));
+        assert!(!bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+            &horizontal,
+            &skeleton(2, 10, 0, 20, 0),
+        ));
+        assert!(bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+            &horizontal,
+            &skeleton(2, 0, 0, 5, 0),
+        ));
+        assert!(bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+            &horizontal,
+            &skeleton(2, 5, 0, 0, 0),
+        ));
+        assert!(bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+            &horizontal,
+            &skeleton(2, 5, 0, 15, 0),
+        ));
+        assert!(bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+            &skeleton(1, -10, 0, 10, 0),
+            &skeleton(2, 0, -10, 0, 10),
+        ));
+        assert!(bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+            &horizontal,
+            &skeleton(2, 5, 0, 5, 10),
+        ));
+        assert!(!bounded_tree_segments_intersect_beyond_shared_endpoint_v1(
+            &horizontal,
+            &skeleton(2, 20, 0, 30, 0),
+        ));
+
+        let overlap = BeginnerGenerationConstraintsV1 {
+            skeleton_segments: vec![
+                skeleton(10, 0, 0, 100, 0),
+                skeleton(20, 0, 0, 50, 0),
+                skeleton(30, 0, 0, 0, 100),
+            ],
+            protrusions: vec![single_protrusion(1, [0, 50, 0], [0, 1_000, 0])],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(bounded_tree_skeleton_length_ratios(&overlap.skeleton_segments).is_some());
+        assert!(!bounded_generic_tree_graph_is_supported_v1(&overlap));
+
+        let separated_collinear = BeginnerGenerationConstraintsV1 {
+            skeleton_segments: vec![
+                skeleton(10, 0, 0, 10, 0),
+                skeleton(20, 10, 0, 10, 10),
+                skeleton(30, 10, 10, 20, 10),
+                skeleton(40, 20, 10, 20, 0),
+                skeleton(50, 20, 0, 30, 0),
+            ],
+            protrusions: vec![single_protrusion(1, [15, 5, 0], [0, 1_000, 0])],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(bounded_generic_tree_graph_is_supported_v1(
+            &separated_collinear
+        ));
+    }
+
+    #[test]
+    fn generic_insect_plan_includes_tree_topology_and_rejects_crossing_bars() {
+        let namespace = ProjectId::schema_namespace([0x68; 16]);
+        let (ids, source) = square_source(namespace);
+        let constraints = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::Insect),
+            target_parts: vec![
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Head,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Torso,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Tail,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Fin,
+                    count: 1,
+                },
+            ],
+            skeleton_segments: vec![
+                skeleton(10, -100, -100, 100, -100),
+                skeleton(20, 100, -100, 100, 100),
+            ],
+            protrusions: vec![
+                single_protrusion(1, [0, -50, 0], [0, 1_000, 0]),
+                single_protrusion(2, [50, 50, 0], [1_000, 0, 0]),
+            ],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &constraints
+        ));
+        let generated = generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap();
+        assert_eq!(
+            generated[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        );
+        assert_eq!(generated[0].crease_pattern.edges.len(), 4);
+        assert_eq!(generated[0].instruction_codes.len(), 2);
+        assert_eq!(
+            generated[0].instruction_codes[1],
+            "bounded_tree_branch_topology_v1:nodes=3:leaves=2:bars=2"
+        );
+
+        for (allowed_techniques, expected_tree_kinds) in [
+            (
+                vec![BeginnerFoldTechniqueV1::ValleyFold],
+                [EdgeKind::Valley, EdgeKind::Valley],
+            ),
+            (
+                vec![BeginnerFoldTechniqueV1::MountainFold],
+                [EdgeKind::Mountain, EdgeKind::Mountain],
+            ),
+            (
+                vec![
+                    BeginnerFoldTechniqueV1::ValleyFold,
+                    BeginnerFoldTechniqueV1::MountainFold,
+                ],
+                [EdgeKind::Valley, EdgeKind::Mountain],
+            ),
+        ] {
+            let mut technique_case = constraints.clone();
+            technique_case.allowed_techniques = allowed_techniques;
+            let technique_plans =
+                generate_beginner_plans_v1(namespace, &source, &ids, &technique_case).unwrap();
+            assert_eq!(
+                technique_plans[0].crease_pattern.edges[2..]
+                    .iter()
+                    .map(|edge| edge.kind)
+                    .collect::<Vec<_>>(),
+                expected_tree_kinds
+            );
+        }
+        let mut no_tree_fold = constraints.clone();
+        no_tree_fold.allowed_techniques = vec![BeginnerFoldTechniqueV1::InsideReverseFold];
+        assert!(!bounded_generic_tree_graph_is_supported_v1(&no_tree_fold));
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &no_tree_fold),
+            Err(BeginnerGeneratorErrorV1::UnsupportedTechniques)
+        );
+
+        let mut crossing = constraints;
+        crossing.skeleton_segments = vec![
+            skeleton(10, -100, 0, 100, 0),
+            skeleton(20, 0, -100, 0, 100),
+            skeleton(30, 100, 0, 0, 100),
+        ];
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &crossing
+        ));
+        assert!(bounded_generic_composite_endpoints(&crossing).is_some());
+        assert!(!bounded_generic_tree_graph_is_supported_v1(&crossing));
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &crossing),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
+    }
+
+    #[test]
+    fn generic_tree_score_and_error_category_share_the_generation_preflight() {
+        let namespace = ProjectId::schema_namespace([0x69; 16]);
+        let (ids, source) = square_source(namespace);
+        let mut custom = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+            skeleton_segments: vec![
+                skeleton(10, -100, -100, 100, -100),
+                skeleton(20, 100, -100, 100, 100),
+            ],
+            protrusions: vec![
+                single_protrusion(1, [0, -50, 0], [0, 1_000, 0]),
+                single_protrusion(2, [50, 50, 0], [1_000, 0, 0]),
+            ],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(crate::validate_beginner_generation_constraints_v1(&custom));
+        assert_eq!(beginner_target_approximation_score_v1(&custom), 92);
+        assert!(generate_beginner_plans_v1(namespace, &source, &ids, &custom).is_ok());
+
+        custom.skeleton_segments = vec![
+            skeleton(10, -100, 0, 100, 0),
+            skeleton(20, 0, -100, 0, 100),
+            skeleton(30, 100, 0, 0, 100),
+        ];
+        assert!(bounded_generic_composite_endpoints(&custom).is_some());
+        assert!(!bounded_generic_tree_graph_is_supported_v1(&custom));
+        assert_eq!(beginner_target_approximation_score_v1(&custom), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &custom),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+
+        let mut animal = custom;
+        animal.target_category = Some(BeginnerTargetCategoryV1::Animal);
+        animal.target_parts = vec![
+            BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Head,
+                count: 1,
+            },
+            BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Torso,
+                count: 1,
+            },
+            BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Tail,
+                count: 1,
+            },
+            BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Fin,
+                count: 1,
+            },
+        ];
+        assert!(crate::validate_beginner_generation_constraints_v1(&animal));
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &animal),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+    }
+
+    #[test]
     fn generator_is_bounded_deterministic_and_fail_closed() {
         let namespace = ProjectId::new();
         let ids = ["a", "b", "c", "d"].map(|name| VertexId::derive_v5(namespace, name.as_bytes()));
@@ -3943,6 +4262,49 @@ mod tests {
         assert_eq!(candidates[0].approximation_score, 100);
         assert!(candidates[1].approximation_score < candidates[0].approximation_score);
         assert!(candidates[2].complexity_score > candidates[0].complexity_score);
+    }
+
+    fn square_source(namespace: ProjectId) -> ([VertexId; 4], CreasePattern) {
+        let ids = ["a", "b", "c", "d"].map(|name| VertexId::derive_v5(namespace, name.as_bytes()));
+        let source = CreasePattern {
+            vertices: ids
+                .iter()
+                .copied()
+                .zip([
+                    Point2::new(0.0, 0.0),
+                    Point2::new(10.0, 0.0),
+                    Point2::new(10.0, 10.0),
+                    Point2::new(0.0, 10.0),
+                ])
+                .map(|(id, position)| Vertex { id, position })
+                .collect(),
+            edges: Vec::new(),
+        };
+        (ids, source)
+    }
+
+    fn single_protrusion(
+        id: u16,
+        position_tenths_mm: [i32; 3],
+        direction_milli: [i16; 3],
+    ) -> BeginnerProtrusionTargetV1 {
+        BeginnerProtrusionTargetV1 {
+            id,
+            count: 1,
+            length_tenths_mm: 20,
+            thickness_tenths_mm: 2,
+            root_width_tenths_mm: None,
+            tip_width_tenths_mm: None,
+            local_outline_tenths_mm: None,
+            position_tenths_mm,
+            direction_milli,
+            symmetry: BeginnerProtrusionSymmetryV1::None,
+            curvature_degrees: 0,
+            joint: crate::BeginnerProtrusionJointV1::Fixed,
+            motion_degrees: [0, 0],
+            side: crate::BeginnerProtrusionSideV1::Either,
+            priority: 80,
+        }
     }
 
     fn skeleton(

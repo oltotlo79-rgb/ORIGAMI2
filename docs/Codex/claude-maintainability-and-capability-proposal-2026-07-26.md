@@ -359,6 +359,24 @@ edge. Unsupported geometry returns `Ok(None)` and remains an explicit
 - 既存の `continuous_path.rs` の test が 1 件も削除・ignore・緩和されていない。
 - `docs/progress.md` の「3D折り・紙厚・衝突」領域進捗を再評価できる根拠が揃う。
 
+#### 2026-07-29 実装前提の訂正
+
+この候補は classifier の一分岐だけを変更しては実装できない。現行の
+`diagnose_shared_hinge_continuous_corridor_gaps_v1` は各 face pair に対して
+`let [hinge] = hinges.as_slice()` を要求し、gap record は単一の `hinge` とその
+source/target/derivative binding だけを保持する。さらに
+`match_relief_gap_schedules` と coverage report は pair の重複を不完全として拒否する。
+したがって `shared_hinges > 1` を単に `SharedHingeNeedsCorridor` へ分類し直すと、
+後段で `None` または `IncompleteCoverage` となり、一般化にも証明発行にもならない。
+
+実装時は、canonical な non-empty shared-hinge 集合を pair ごとに保持し、各 hinge の
+source/target/derivative binding と local policy を再認証したうえで、その**全て**を
+満たす corridor 共通部分だけを許容する必要がある。pair ごとの複数 hinge は重複ではなく
+必須 coverage として区別し、集合数・hinge 数・policy 数の上限超過は `Unsupported` ではなく
+resource 分類へ閉じる。受入には共有 hinge 2 本・3 本の正例、欠落・余剰・重複 hinge、
+binding 改ざん、one-short resource、既存単一 hinge 互換を含める。この訂正は未実装境界を
+広げず、`docs/progress.md` の「一般tree・複数pair・正厚の解析的CCDは未実装」を維持する。
+
 ---
 
 ## 3. `#![forbid(unsafe_code)]` の全 crate 適用

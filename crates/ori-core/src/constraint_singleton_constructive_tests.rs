@@ -669,7 +669,7 @@ fn shared_vertices_require_bit_identical_singleton_assignments() {
 }
 
 #[test]
-fn bounded_shared_assignments_must_all_be_bit_identical_through_sixteen_records() {
+fn bounded_shared_components_use_bit_identical_singletons_or_sound_pairs_through_sixteen() {
     let mut compatible = FixtureBuilder::new();
     let start = compatible.vertex();
     let end = compatible.vertex();
@@ -690,6 +690,14 @@ fn bounded_shared_assignments_must_all_be_bit_identical_through_sixteen_records(
         construct_three_constraint_exact_assignment_v1(&compatible_pattern, &compatible_document)
             .expect("three bit-identical endpoint assignments may compose");
     assert_eq!(compatible_assignment.certificate().constraint_count(), 3,);
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(
+            compatible_assignment.pattern(),
+            &compatible_document,
+        )
+        .expect("the three-record singleton component remains valid")
+        .is_some(),
+    );
     compatible_document
         .constraints
         .push(record(GeometricConstraintKindV1::Horizontal { edge }));
@@ -697,6 +705,14 @@ fn bounded_shared_assignments_must_all_be_bit_identical_through_sixteen_records(
         construct_four_constraint_exact_assignment_v1(&compatible_pattern, &compatible_document)
             .expect("four bit-identical endpoint assignments may compose");
     assert_eq!(compatible_assignment.certificate().constraint_count(), 4);
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(
+            compatible_assignment.pattern(),
+            &compatible_document,
+        )
+        .expect("the four-record singleton component remains valid")
+        .is_some(),
+    );
     while compatible_document.constraints.len() < MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 {
         compatible_document
             .constraints
@@ -711,21 +727,29 @@ fn bounded_shared_assignments_must_all_be_bit_identical_through_sixteen_records(
         compatible_assignment.certificate().constraint_count(),
         MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
     );
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(
+            compatible_assignment.pattern(),
+            &compatible_document,
+        )
+        .expect("the sixteen-record singleton component remains valid")
+        .is_some(),
+    );
 
-    let mut conflicting = FixtureBuilder::new();
-    let first_start = conflicting.vertex();
-    let shared = conflicting.vertex();
-    let second_end = conflicting.vertex();
-    let detached_start = conflicting.vertex();
-    let detached_end = conflicting.vertex();
-    let first = conflicting.edge(first_start, shared);
-    let second = conflicting.edge(shared, second_end);
-    let detached = conflicting.edge(detached_start, detached_end);
-    let conflicting_pattern = CreasePattern {
-        vertices: conflicting.vertices,
-        edges: conflicting.edges,
+    let mut pair_composed = FixtureBuilder::new();
+    let first_start = pair_composed.vertex();
+    let shared = pair_composed.vertex();
+    let second_end = pair_composed.vertex();
+    let detached_start = pair_composed.vertex();
+    let detached_end = pair_composed.vertex();
+    let first = pair_composed.edge(first_start, shared);
+    let second = pair_composed.edge(shared, second_end);
+    let detached = pair_composed.edge(detached_start, detached_end);
+    let pair_composed_pattern = CreasePattern {
+        vertices: pair_composed.vertices,
+        edges: pair_composed.edges,
     };
-    let mut conflicting_document = document([
+    let mut pair_composed_document = document([
         record(GeometricConstraintKindV1::Horizontal { edge: first }),
         record(GeometricConstraintKindV1::Vertical { edge: second }),
         record(GeometricConstraintKindV1::FixedLength {
@@ -733,39 +757,79 @@ fn bounded_shared_assignments_must_all_be_bit_identical_through_sixteen_records(
             length_mm: 1.0,
         }),
     ]);
+    let three_assignment = construct_three_constraint_exact_assignment_v1(
+        &pair_composed_pattern,
+        &pair_composed_document,
+    )
+    .expect("the shared two-record component must use its sound pair template");
+    assert_eq!(three_assignment.certificate().constraint_count(), 3);
     assert!(
-        construct_three_constraint_exact_assignment_v1(
-            &conflicting_pattern,
-            &conflicting_document,
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(
+            three_assignment.pattern(),
+            &pair_composed_document,
         )
-        .is_none(),
-        "one shared-coordinate disagreement must reject the full composition",
+        .expect("the three-record pair-component candidate remains valid")
+        .is_some(),
     );
-    conflicting_document
+    pair_composed_document
         .constraints
         .push(record(GeometricConstraintKindV1::Horizontal {
             edge: detached,
         }));
+    let four_assignment = construct_four_constraint_exact_assignment_v1(
+        &pair_composed_pattern,
+        &pair_composed_document,
+    )
+    .expect("the pair component and compatible singleton component must compose");
+    assert_eq!(four_assignment.certificate().constraint_count(), 4);
     assert!(
-        construct_four_constraint_exact_assignment_v1(&conflicting_pattern, &conflicting_document,)
-            .is_none(),
-        "one shared-coordinate disagreement must reject all four records",
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(
+            four_assignment.pattern(),
+            &pair_composed_document,
+        )
+        .expect("the four-record pair-component candidate remains valid")
+        .is_some(),
     );
-    while conflicting_document.constraints.len() < MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1
+    while pair_composed_document.constraints.len()
+        < MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1
     {
-        conflicting_document
+        pair_composed_document
             .constraints
             .push(record(GeometricConstraintKindV1::Horizontal {
                 edge: detached,
             }));
     }
+    let sixteen_assignment = construct_bounded_singleton_composition_exact_assignment_v1(
+        &pair_composed_pattern,
+        &pair_composed_document,
+    )
+    .expect("the pair component must compose through the sixteen-record boundary");
+    assert_eq!(
+        sixteen_assignment.certificate().constraint_count(),
+        MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    );
     assert!(
-        construct_bounded_singleton_composition_exact_assignment_v1(
-            &conflicting_pattern,
-            &conflicting_document,
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(
+            sixteen_assignment.pattern(),
+            &pair_composed_document,
         )
-        .is_none(),
-        "one shared-coordinate disagreement must reject the sixteen-record boundary",
+        .expect("the sixteen-record pair-component candidate remains valid")
+        .is_some(),
+    );
+
+    let mut reordered_pattern = pair_composed_pattern.clone();
+    reordered_pattern.vertices.reverse();
+    reordered_pattern.edges.reverse();
+    let mut reordered_document = pair_composed_document.clone();
+    reordered_document.constraints.reverse();
+    let reordered = construct_bounded_singleton_composition_exact_assignment_v1(
+        &reordered_pattern,
+        &reordered_document,
+    )
+    .expect("component and storage order must remain canonical at sixteen records");
+    assert_eq!(
+        position_bits(sixteen_assignment.pattern()),
+        position_bits(reordered.pattern()),
     );
 }
 

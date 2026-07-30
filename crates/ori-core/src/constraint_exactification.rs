@@ -8,6 +8,7 @@ use crate::{
     prepare_geometric_constraints_v1,
 };
 
+mod component_constructive;
 mod length_constructive;
 mod pair_constructive;
 mod singleton_constructive;
@@ -92,6 +93,10 @@ impl CurrentRuntimeExactConstraintAssignmentV1 {
     #[must_use]
     pub const fn certificate(&self) -> Binary64ExactConstraintSatisfactionV1 {
         self.certificate
+    }
+
+    pub(crate) fn into_pattern(self) -> CreasePattern {
+        self.pattern
     }
 }
 
@@ -273,3 +278,7 @@ mod zero_closure_constructive_tests;
 #[cfg(test)]
 #[path = "constraint_singleton_constructive_tests.rs"]
 mod singleton_constructive_tests;
+
+#[cfg(test)]
+#[path = "constraint_exactification/component_constructive_tests.rs"]
+mod component_constructive_tests;

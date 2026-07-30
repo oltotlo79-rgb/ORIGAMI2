@@ -1,8 +1,5 @@
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -242,6 +239,21 @@ fn expected_positive_document(
     }
 }
 
+fn expected_current_document(
+    constraint_count: usize,
+    equation_count: usize,
+) -> GeometricConstraintPreflightResult {
+    GeometricConstraintPreflightResult::ProvenSatisfiable {
+        model_id: ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1,
+        transcendental_model_id: ori_numeric::DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+        evidence_kind: GeometricConstraintSatisfactionEvidenceKind::CurrentAssignment,
+        constraint_count,
+        equation_count,
+        authorizes_project_mutation: false,
+        replayable_across_runtimes: ori_numeric::deterministic_transcendental_model_supported_v1(),
+    }
+}
+
 #[test]
 fn all_eleven_unsatisfied_singleton_kinds_publish_only_a_constructive_sat_observation() {
     for case in singleton_cases() {
@@ -341,7 +353,7 @@ fn bounded_two_record_pair_templates_publish_only_detached_constructive_sat() {
 }
 
 #[test]
-fn bounded_three_through_sixteen_record_constructive_sat_requires_compatible_singletons() {
+fn bounded_singleton_components_certify_through_sixteen_and_unsupported_pairs_fail_closed() {
     let mut compatible = FixtureBuilder::default();
     let start = compatible.vertex(0.0, 0.0);
     let end = compatible.vertex(3.0, 4.0);
@@ -443,6 +455,187 @@ fn bounded_three_through_sixteen_record_constructive_sat_requires_compatible_sin
         analyze_geometric_constraint_document(&conflicting_pattern, &conflicting_document),
         GeometricConstraintPreflightResult::NoDirectConflict,
     );
+}
+
+#[test]
+fn connected_pair_component_and_disjoint_singleton_publish_detached_without_coordinates() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(0.0, 0.0);
+    let shared = fixture.vertex(3.0, 4.0);
+    let second_end = fixture.vertex(8.0, 1.0);
+    let detached_start = fixture.vertex(20.0, 2.0);
+    let detached_end = fixture.vertex(23.0, 6.0);
+    let first = fixture.edge(first_start, shared);
+    let second = fixture.edge(shared, second_end);
+    let detached = fixture.edge(detached_start, detached_end);
+    let pattern = CreasePattern {
+        vertices: fixture.vertices,
+        edges: fixture.edges,
+    };
+    let document = document([
+        GeometricConstraintKindV1::Horizontal { edge: first },
+        GeometricConstraintKindV1::Vertical { edge: second },
+        GeometricConstraintKindV1::FixedLength {
+            edge: detached,
+            length_mm: 1.0,
+        },
+    ]);
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(&pattern, &document)
+            .expect("the component source fixture is structurally valid")
+            .is_none(),
+        "the source must not already satisfy the three-record document",
+    );
+
+    let result = analyze_geometric_constraint_document(&pattern, &document);
+    assert_eq!(result, expected_positive_document(3, 3));
+    let encoded =
+        serde_json::to_value(&result).expect("serialize connected pair-component SAT result");
+    let object = encoded
+        .as_object()
+        .expect("the tagged pair-component SAT response is an object");
+    assert_eq!(object.len(), 8);
+    assert_eq!(
+        object.get("evidence_kind"),
+        Some(&serde_json::json!("detached_constructed_assignment")),
+    );
+    for forbidden in ["pattern", "vertices", "positions", "assignment"] {
+        assert!(
+            !object.contains_key(forbidden),
+            "component coordinates must not cross the DTO as {forbidden}",
+        );
+    }
+}
+
+#[test]
+fn eight_pair_components_publish_at_sixteen_and_seventeen_falls_through() {
+    let mut fixture = FixtureBuilder::default();
+    let mut constraints = Vec::new();
+    let mut first_edge = None;
+    for ordinal in 0..8 {
+        let base = ordinal as f64 * 20.0;
+        let start = fixture.vertex(base + 1.0, base + 2.0);
+        let end = fixture.vertex(base + 4.0, base + 7.0);
+        let edge = fixture.edge(start, end);
+        first_edge.get_or_insert(edge);
+        constraints.push(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: ordinal as f64 + 2.0,
+        });
+        constraints.push(GeometricConstraintKindV1::Horizontal { edge });
+    }
+    let pattern = CreasePattern {
+        vertices: fixture.vertices,
+        edges: fixture.edges,
+    };
+    let document = document(constraints);
+    assert_eq!(
+        document.constraints.len(),
+        ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    );
+
+    let result = analyze_geometric_constraint_document(&pattern, &document);
+    assert_eq!(
+        result,
+        expected_positive_document(
+            ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+            ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+        ),
+    );
+    let encoded =
+        serde_json::to_value(&result).expect("serialize sixteen-record component SAT result");
+    let object = encoded
+        .as_object()
+        .expect("the tagged sixteen-record SAT response is an object");
+    assert_eq!(
+        object.get("evidence_kind"),
+        Some(&serde_json::json!("detached_constructed_assignment")),
+    );
+    for forbidden in ["pattern", "vertices", "positions", "assignment"] {
+        assert!(
+            !object.contains_key(forbidden),
+            "sixteen-record coordinates must not cross the DTO as {forbidden}",
+        );
+    }
+
+    let mut seventeen = document.clone();
+    seventeen
+        .constraints
+        .push(record(GeometricConstraintKindV1::Horizontal {
+            edge: first_edge.expect("at least one pair component"),
+        }));
+    assert_eq!(
+        analyze_geometric_constraint_document(&pattern, &seventeen),
+        GeometricConstraintPreflightResult::NoDirectConflict,
+        "seventeen records remain outside detached construction",
+    );
+}
+
+#[test]
+fn exact_current_component_document_precedes_detached_construction() {
+    let mut fixture = FixtureBuilder::default();
+    let pair_start = fixture.vertex(0.0, 0.0);
+    let pair_end = fixture.vertex(2.0, 0.0);
+    let detached_start = fixture.vertex(10.0, 0.0);
+    let detached_end = fixture.vertex(10.0, 1.0);
+    let pair = fixture.edge(pair_start, pair_end);
+    let detached = fixture.edge(detached_start, detached_end);
+    let pattern = CreasePattern {
+        vertices: fixture.vertices,
+        edges: fixture.edges,
+    };
+    let document = document([
+        GeometricConstraintKindV1::FixedLength {
+            edge: pair,
+            length_mm: 2.0,
+        },
+        GeometricConstraintKindV1::Horizontal { edge: pair },
+        GeometricConstraintKindV1::Vertical { edge: detached },
+    ]);
+
+    assert_eq!(
+        analyze_geometric_constraint_document(&pattern, &document),
+        expected_current_document(3, 3),
+        "the exact source assignment must retain current-assignment evidence",
+    );
+}
+
+#[test]
+fn whole_document_direct_conflict_precedes_a_constructible_pair_component() {
+    let mut fixture = FixtureBuilder::default();
+    let pair_start = fixture.vertex(0.0, 0.0);
+    let pair_end = fixture.vertex(3.0, 4.0);
+    let direct_start = fixture.vertex(20.0, 1.0);
+    let direct_end = fixture.vertex(24.0, 6.0);
+    let pair = fixture.edge(pair_start, pair_end);
+    let direct = fixture.edge(direct_start, direct_end);
+    let pattern = CreasePattern {
+        vertices: fixture.vertices,
+        edges: fixture.edges,
+    };
+    let document = document([
+        GeometricConstraintKindV1::FixedLength {
+            edge: pair,
+            length_mm: 2.0,
+        },
+        GeometricConstraintKindV1::Horizontal { edge: pair },
+        GeometricConstraintKindV1::FixedLength {
+            edge: direct,
+            length_mm: 1.0,
+        },
+        GeometricConstraintKindV1::FixedLength {
+            edge: direct,
+            length_mm: 2.0,
+        },
+    ]);
+
+    assert!(matches!(
+        analyze_geometric_constraint_document(&pattern, &document),
+        GeometricConstraintPreflightResult::DirectConflict {
+            ref conflicts,
+            ..
+        } if conflicts.len() == 1
+    ));
 }
 
 #[test]
@@ -686,27 +879,57 @@ fn assert_constructed_sat_publication_rechecks_cancel_and_deadline(
 
 #[test]
 fn constructive_attempt_post_checkpoint_covers_some_and_none_results() {
-    let positive = one_edge_case("horizontal", |edge| GeometricConstraintKindV1::Horizontal {
-        edge,
-    });
-    let assignment = ori_core::construct_single_constraint_exact_assignment_v1(
-        &positive.pattern,
-        &positive.document,
+    let mut positive = FixtureBuilder::default();
+    let first_start = positive.vertex(0.0, 0.0);
+    let shared = positive.vertex(3.0, 4.0);
+    let second_end = positive.vertex(8.0, 1.0);
+    let detached_start = positive.vertex(20.0, 2.0);
+    let detached_end = positive.vertex(23.0, 6.0);
+    let first = positive.edge(first_start, shared);
+    let second = positive.edge(shared, second_end);
+    let detached = positive.edge(detached_start, detached_end);
+    let positive_pattern = CreasePattern {
+        vertices: positive.vertices,
+        edges: positive.edges,
+    };
+    let positive_document = document([
+        GeometricConstraintKindV1::Horizontal { edge: first },
+        GeometricConstraintKindV1::Vertical { edge: second },
+        GeometricConstraintKindV1::FixedLength {
+            edge: detached,
+            length_mm: 1.0,
+        },
+    ]);
+    let assignment = ori_core::construct_bounded_singleton_composition_exact_assignment_v1(
+        &positive_pattern,
+        &positive_document,
     )
-    .expect("positive control must construct");
-    let cancellation = Arc::new(AtomicBool::new(false));
-    let mut cancelled_observer =
-        GeometricConstraintAnalysisObserver::new(GeometricConstraintAnalysisRuntime {
-            cancellation: Arc::clone(&cancellation),
-            deadline: std::time::Instant::now()
-                .checked_add(Duration::from_secs(60))
-                .expect("future cancellation deadline"),
-        });
-    cancellation.store(true, Ordering::Release);
-    assert!(matches!(
-        recheck_after_constructive_assignment_attempt(&mut cancelled_observer, Some(assignment),),
-        Err(GeometricConstraintAnalysisStop::Cancelled),
-    ));
+    .expect("the connected pair-component positive control must construct");
+    for (runtime, expected_stop) in [
+        (
+            GeometricConstraintAnalysisRuntime {
+                cancellation: Arc::new(AtomicBool::new(true)),
+                deadline: std::time::Instant::now()
+                    .checked_add(Duration::from_secs(60))
+                    .expect("future cancellation deadline"),
+            },
+            GeometricConstraintAnalysisStop::Cancelled,
+        ),
+        (
+            GeometricConstraintAnalysisRuntime {
+                cancellation: Arc::new(AtomicBool::new(false)),
+                deadline: std::time::Instant::now(),
+            },
+            GeometricConstraintAnalysisStop::DeadlineReached,
+        ),
+    ] {
+        let stop = recheck_after_constructive_assignment_attempt(
+            &mut GeometricConstraintAnalysisObserver::new(runtime),
+            Some(assignment.clone()),
+        )
+        .expect_err("late stop must suppress a constructed Some result");
+        assert_eq!(stop, expected_stop);
+    }
 
     let unsupported = four_translation_collapse_case();
     let no_assignment = ori_core::construct_single_constraint_exact_assignment_v1(
@@ -714,15 +937,31 @@ fn constructive_attempt_post_checkpoint_covers_some_and_none_results() {
         &unsupported.document,
     );
     assert!(no_assignment.is_none());
-    let mut expired_observer =
-        GeometricConstraintAnalysisObserver::new(GeometricConstraintAnalysisRuntime {
-            cancellation: Arc::new(AtomicBool::new(false)),
-            deadline: std::time::Instant::now(),
-        });
-    assert!(matches!(
-        recheck_after_constructive_assignment_attempt(&mut expired_observer, no_assignment),
-        Err(GeometricConstraintAnalysisStop::DeadlineReached),
-    ));
+    for (runtime, expected_stop) in [
+        (
+            GeometricConstraintAnalysisRuntime {
+                cancellation: Arc::new(AtomicBool::new(true)),
+                deadline: std::time::Instant::now()
+                    .checked_add(Duration::from_secs(60))
+                    .expect("future cancellation deadline"),
+            },
+            GeometricConstraintAnalysisStop::Cancelled,
+        ),
+        (
+            GeometricConstraintAnalysisRuntime {
+                cancellation: Arc::new(AtomicBool::new(false)),
+                deadline: std::time::Instant::now(),
+            },
+            GeometricConstraintAnalysisStop::DeadlineReached,
+        ),
+    ] {
+        let stop = recheck_after_constructive_assignment_attempt(
+            &mut GeometricConstraintAnalysisObserver::new(runtime),
+            no_assignment.clone(),
+        )
+        .expect_err("late stop must suppress a constructive None fallthrough");
+        assert_eq!(stop, expected_stop);
+    }
 }
 
 #[test]

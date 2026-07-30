@@ -103,14 +103,15 @@ pub fn construct_two_constraint_exact_assignment_v1(
     construct_bounded_singleton_composition_v1(pattern, document, 2)
 }
 
-/// Composes the existing singleton construction for exactly three validated
-/// constraints, then re-certifies the complete three-record document.
+/// Composes bounded constructions for exactly three validated constraints,
+/// then re-certifies the complete three-record document.
 ///
-/// This is the same deliberately incomplete family as
-/// [`construct_two_constraint_exact_assignment_v1`]: every record must have a
-/// bounded singleton assignment, and every coordinate assigned to a shared
-/// referenced vertex must be bit-identical across all three assignments. The
-/// merged candidate grants no authority unless the complete production
+/// Records are grouped by the complete referenced-vertex graph. Singleton
+/// components retain the existing canonical construction; an exactly
+/// two-record component may additionally use the existing sound pair
+/// constructor when independent singleton coordinates are incompatible.
+/// Larger connected components retain the bit-identical singleton rule. The
+/// progressive candidate grants no authority unless the complete production
 /// residual verifier re-certifies all three records together.
 ///
 /// Unsupported templates, any shared-coordinate disagreement, direct
@@ -124,15 +125,15 @@ pub fn construct_three_constraint_exact_assignment_v1(
     construct_bounded_singleton_composition_v1(pattern, document, 3)
 }
 
-/// Composes the existing singleton construction for exactly four validated
-/// constraints, then re-certifies the complete four-record document.
+/// Composes bounded constructions for exactly four validated constraints,
+/// then re-certifies the complete four-record document.
 ///
-/// This remains the same deliberately incomplete family as the two- and
-/// three-record constructors. Every record must independently produce a
-/// bounded singleton assignment, all assignments for a shared referenced
-/// vertex must be bit-identical, and the complete production residual verifier
-/// must re-certify the merged candidate before an observational-only
-/// assignment is returned.
+/// Canonically ordered referenced-vertex components are assembled
+/// progressively. One-record components use singleton templates, exactly
+/// two-record components can fall back to the existing sound pair templates,
+/// and larger components retain the bit-identical singleton merge. The
+/// complete production residual verifier must re-certify the merged candidate
+/// before an observational-only assignment is returned.
 ///
 /// Unsupported templates, any shared-coordinate disagreement, direct
 /// conflicts, invalid geometry, and any nonzero full-document residual return
@@ -145,37 +146,37 @@ pub fn construct_four_constraint_exact_assignment_v1(
     construct_bounded_singleton_composition_v1(pattern, document, 4)
 }
 
-/// Composes singleton assignments for a document containing exactly two
-/// through sixteen records and re-certifies the complete document.
+/// Composes bounded component assignments for a document containing exactly
+/// two through sixteen records and re-certifies the complete document.
 ///
 /// This exposes the shared bounded implementation used by the exact-count
-/// wrappers without claiming a general constraint solver. Every candidate that
-/// can escape is independently checked by the production binary64 residual
-/// verifier. On the singleton fallback, every singleton and the final merged
-/// candidate are checked separately, and shared referenced vertices must have
-/// bit-identical coordinates.
+/// wrappers without claiming a general constraint solver. Components are
+/// derived from every explicit vertex role and both endpoints of every
+/// referenced edge. One-record components use the singleton constructor;
+/// exactly two-record components can use the existing ordinary
+/// crease-pattern pair constructor after an incompatible singleton merge.
+/// Larger components retain the bit-identical singleton rule. Every component
+/// and the final candidate are independently checked by the production
+/// binary64 residual verifier.
 ///
 /// At exactly two records, a fixed pair-template prepass runs first. It tries
 /// at most one cardinal-rotation candidate and four ordinary translated
 /// candidates, re-certifying the complete document after every candidate; if
-/// none certifies, the singleton merge remains the fail-closed fallback. That
-/// path has at most fourteen full residual verifications and four
-/// default-limited preparations in total.
+/// none certifies, the component path remains the fail-closed fallback. The
+/// same failed pair is not retried as a component.
 ///
-/// The explicit sixteen-record ceiling bounds both memory and work. At larger
-/// counts, with four fixed singleton translations per record, the worst
-/// successful path performs at most `16 * 4 + 1 = 65` candidate pattern clones
-/// and full residual verifications, plus at most seventeen default-limited
-/// preparations (one for the complete document and one for each singleton).
-/// Across every supported document size, this is at most 82 bounded
-/// preparation-or-verification passes. Work is therefore
-/// `O(record_count * (vertices + edges))` with `record_count <= 16`, rather
-/// than an unbounded combinatorial assignment search.
+/// The explicit sixteen-record ceiling bounds both memory and work. With
+/// `N <= 16` records and at most `P <= 8` two-record components, the
+/// conservative worst case is 138 bounded preparation-or-verification passes
+/// and 112 full-pattern clones: `5N`/`4N` from singleton attempts,
+/// `6P`/`5P` from pair attempts, at most eight component merge
+/// verification/clones, and the whole-document preparation/final verifier.
+/// There is no combinatorial assignment search.
 ///
 /// Documents outside the two-through-sixteen range, unsupported templates,
-/// shared-coordinate disagreement, direct conflicts, invalid geometry, and
-/// nonzero full-document residuals return `None`. Failure is not evidence of
-/// unsatisfiability.
+/// shared-coordinate disagreement, exhaustion of fixed translations, direct
+/// conflicts, invalid geometry, and nonzero full-document residuals return
+/// `None`. Failure is not evidence of unsatisfiability.
 #[must_use]
 pub fn construct_bounded_singleton_composition_exact_assignment_v1(
     pattern: &CreasePattern,
@@ -189,87 +190,14 @@ fn construct_bounded_singleton_composition_v1(
     document: &GeometricConstraintDocumentV1,
     expected_constraint_count: usize,
 ) -> Option<CurrentRuntimeExactConstraintAssignmentV1> {
-    if document.constraints.len() != expected_constraint_count
-        || !(2..=MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1)
-            .contains(&expected_constraint_count)
-    {
-        return None;
-    }
-    if expected_constraint_count == 2
-        && let Some(assignment) =
-            super::construct_pair_constraint_exact_assignment_v1(pattern, document)
-    {
-        return Some(assignment);
-    }
-    let prepared =
-        prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
-            .ok()?;
-    if matches!(
-        prepared.preflight(),
-        ConstraintPreflightV1::DirectConflict { .. }
-    ) {
-        return None;
-    }
-
-    let mut records = document.constraints.iter().collect::<Vec<_>>();
-    records.sort_unstable_by_key(|record| record.id.canonical_bytes());
-    let mut merged = CanonicalAssignment::new();
-    for record in records {
-        let singleton_document = GeometricConstraintDocumentV1 {
-            schema_version: document.schema_version,
-            constraints: vec![(*record).clone()],
-        };
-        let singleton =
-            construct_single_constraint_exact_assignment_v1(pattern, &singleton_document)?;
-        // The canonical singleton template assigns every and only referenced
-        // vertex role. Its keys therefore define the bounded merge surface;
-        // the actual translated coordinates still come from the independently
-        // certified singleton candidate above.
-        let referenced = single_constraint_canonical_assignment(pattern, &record.constraint)?;
-        for (canonical_id, (vertex, _)) in referenced {
-            let assigned = singleton
-                .pattern()
-                .vertices
-                .iter()
-                .find(|candidate| candidate.id == vertex)?;
-            match merged.get(&canonical_id) {
-                Some((existing_vertex, existing_point))
-                    if *existing_vertex != vertex
-                        || !point_bits_equal(*existing_point, assigned.position) =>
-                {
-                    return None;
-                }
-                Some(_) => {}
-                None => {
-                    merged.insert(canonical_id, (vertex, assigned.position));
-                }
-            }
-        }
-    }
-
-    let mut candidate = pattern.clone();
-    for (vertex, point) in merged.values() {
-        let target = candidate
-            .vertices
-            .iter_mut()
-            .find(|candidate| candidate.id == *vertex)?;
-        target.position = *point;
-    }
-    let certificate =
-        certify_binary64_exact_geometric_constraint_satisfaction_v1(&candidate, document)
-            .ok()
-            .flatten()?;
-    Some(CurrentRuntimeExactConstraintAssignmentV1 {
-        pattern: candidate,
-        certificate,
-    })
+    super::component_constructive::construct_bounded_component_exact_assignment_v1(
+        pattern,
+        document,
+        expected_constraint_count,
+    )
 }
 
 type CanonicalAssignment = BTreeMap<[u8; 16], (VertexId, Point2)>;
-
-fn point_bits_equal(left: Point2, right: Point2) -> bool {
-    left.x.to_bits() == right.x.to_bits() && left.y.to_bits() == right.y.to_bits()
-}
 
 fn single_constraint_canonical_assignment(
     pattern: &CreasePattern,

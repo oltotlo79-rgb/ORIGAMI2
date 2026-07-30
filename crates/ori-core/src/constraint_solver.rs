@@ -584,19 +584,39 @@ fn involved_vertices(
     pattern: &CreasePattern,
     document: &GeometricConstraintDocumentV1,
 ) -> Result<HashSet<VertexId>, ConstraintSolveErrorV1> {
+    Ok(
+        residual_referenced_vertices_by_record_v1(pattern, document)?
+            .into_iter()
+            .flatten()
+            .collect(),
+    )
+}
+
+/// Collects the complete vertex set observed by each production residual.
+///
+/// The returned outer order is the raw document order. Each inner vector is
+/// canonical by vertex-ID bytes and contains both endpoints of every
+/// referenced edge in addition to explicit vertex roles. Keeping this helper
+/// beside the residual evaluator prevents constructive component discovery
+/// from drifting away from the actual dependency surface.
+pub(crate) fn residual_referenced_vertices_by_record_v1(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+) -> Result<Vec<Vec<VertexId>>, ConstraintSolveErrorV1> {
     hard_len(document)?;
     let edges = pattern
         .edges
         .iter()
         .map(|edge| (edge.id, edge))
         .collect::<HashMap<_, _>>();
-    let mut result = HashSet::new();
+    let mut by_record = Vec::with_capacity(document.constraints.len());
     for record in &document.constraints {
+        let mut result = HashSet::new();
         match record.constraint {
             GeometricConstraintKindV1::FixedLength { edge, .. }
             | GeometricConstraintKindV1::Horizontal { edge }
             | GeometricConstraintKindV1::Vertical { edge } => {
-                add_edge_vertices(&edges, &mut result, edge)
+                add_edge_vertices(&edges, &mut result, edge)?
             }
             GeometricConstraintKindV1::EqualLength {
                 first_edge,
@@ -606,20 +626,20 @@ fn involved_vertices(
                 first_edge,
                 second_edge,
             } => {
-                add_edge_vertices(&edges, &mut result, first_edge);
-                add_edge_vertices(&edges, &mut result, second_edge);
+                add_edge_vertices(&edges, &mut result, first_edge)?;
+                add_edge_vertices(&edges, &mut result, second_edge)?;
             }
             GeometricConstraintKindV1::PointOnLine { vertex, line_edge } => {
                 result.insert(vertex);
-                add_edge_vertices(&edges, &mut result, line_edge);
+                add_edge_vertices(&edges, &mut result, line_edge)?;
             }
             GeometricConstraintKindV1::LengthRatio {
                 numerator_edge,
                 denominator_edge,
                 ..
             } => {
-                add_edge_vertices(&edges, &mut result, numerator_edge);
-                add_edge_vertices(&edges, &mut result, denominator_edge);
+                add_edge_vertices(&edges, &mut result, numerator_edge)?;
+                add_edge_vertices(&edges, &mut result, denominator_edge)?;
             }
             GeometricConstraintKindV1::FixedAngle {
                 vertex,
@@ -628,8 +648,8 @@ fn involved_vertices(
                 ..
             } => {
                 result.insert(vertex);
-                add_edge_vertices(&edges, &mut result, first_edge);
-                add_edge_vertices(&edges, &mut result, second_edge);
+                add_edge_vertices(&edges, &mut result, first_edge)?;
+                add_edge_vertices(&edges, &mut result, second_edge)?;
             }
             GeometricConstraintKindV1::MirrorSymmetry {
                 first_vertex,
@@ -638,7 +658,7 @@ fn involved_vertices(
             } => {
                 result.insert(first_vertex);
                 result.insert(second_vertex);
-                add_edge_vertices(&edges, &mut result, axis_edge);
+                add_edge_vertices(&edges, &mut result, axis_edge)?;
             }
             GeometricConstraintKindV1::RotationalSymmetry {
                 center_vertex,
@@ -655,23 +675,29 @@ fn involved_vertices(
                 bisector_edge,
             } => {
                 result.insert(vertex);
-                add_edge_vertices(&edges, &mut result, first_edge);
-                add_edge_vertices(&edges, &mut result, second_edge);
-                add_edge_vertices(&edges, &mut result, bisector_edge);
+                add_edge_vertices(&edges, &mut result, first_edge)?;
+                add_edge_vertices(&edges, &mut result, second_edge)?;
+                add_edge_vertices(&edges, &mut result, bisector_edge)?;
             }
         }
+        let mut result = result.into_iter().collect::<Vec<_>>();
+        result.sort_unstable_by_key(VertexId::canonical_bytes);
+        by_record.push(result);
     }
-    Ok(result)
+    Ok(by_record)
 }
 
 fn add_edge_vertices(
     edges: &HashMap<ori_domain::EdgeId, &ori_domain::Edge>,
     result: &mut HashSet<VertexId>,
     id: ori_domain::EdgeId,
-) {
-    let edge = edges[&id];
+) -> Result<(), ConstraintSolveErrorV1> {
+    let edge = edges
+        .get(&id)
+        .ok_or(ConstraintSolveErrorV1::InvalidConstraintDocumentOrGeometry)?;
     result.insert(edge.start);
     result.insert(edge.end);
+    Ok(())
 }
 
 fn residuals(

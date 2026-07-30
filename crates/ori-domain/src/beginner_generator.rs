@@ -818,6 +818,7 @@ pub fn estimate_symmetric_parameters_v1(
         {
             4
         }
+        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 4 => 4,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 1 => 1,
@@ -1630,18 +1631,22 @@ pub fn generate_beginner_plans_v1(
                     constraints,
                 )
             } else {
-                let (plan_kind, instruction) = if part_count(BeginnerTargetPartKindV1::Wing) == 2 {
+                let wing_count = part_count(BeginnerTargetPartKindV1::Wing);
+                let (required_count, plan_kind, instruction) = if matches!(wing_count, 2 | 4) {
                     (
+                        wing_count,
                         BeginnerGeneratedPlanKindV1::SymmetricWingBase,
                         "symmetric_wing_base",
                     )
                 } else if part_count(BeginnerTargetPartKindV1::Antenna) == 2 {
                     (
+                        2,
                         BeginnerGeneratedPlanKindV1::SymmetricAntennaBase,
                         "symmetric_antenna_base",
                     )
                 } else if part_count(BeginnerTargetPartKindV1::Leg) == 2 {
                     (
+                        2,
                         BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase,
                         "symmetric_insect_leg_pair_base",
                     )
@@ -1650,7 +1655,7 @@ pub fn generate_beginner_plans_v1(
                 };
                 let endpoints = exact_single_bilateral_template_target_and_endpoints_v1(
                     constraints,
-                    2,
+                    required_count,
                     false,
                     2,
                 )
@@ -2397,24 +2402,27 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                             .then_some(target)
                     })
                 } else {
-                    let supported_pair = [
-                        BeginnerTargetPartKindV1::Wing,
-                        BeginnerTargetPartKindV1::Antenna,
-                        BeginnerTargetPartKindV1::Leg,
-                    ]
-                    .into_iter()
-                    .any(|kind| part_count(kind) == 2);
-                    if !supported_pair {
-                        None
+                    let supported_count = if part_count(BeginnerTargetPartKindV1::Wing) == 4 {
+                        Some(4)
                     } else {
+                        [
+                            BeginnerTargetPartKindV1::Wing,
+                            BeginnerTargetPartKindV1::Antenna,
+                            BeginnerTargetPartKindV1::Leg,
+                        ]
+                        .into_iter()
+                        .any(|kind| part_count(kind) == 2)
+                        .then_some(2)
+                    };
+                    supported_count.and_then(|count| {
                         exact_single_bilateral_template_target_and_endpoints_v1(
                             constraints,
-                            2,
+                            count,
                             false,
                             2,
                         )
                         .map(|(target, _)| target)
-                    }
+                    })
                 }
             }
             Some(BeginnerTargetCategoryV1::CustomObject) => None,
@@ -5389,6 +5397,58 @@ mod tests {
         );
         assert_eq!(plans[0].crease_pattern.edges.len(), 4);
         assert_eq!(beginner_target_approximation_score_v1(&constraints), 92);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap(),
+            plans
+        );
+        let mut four_wings = constraints.clone();
+        four_wings.target_parts[2].count = 4;
+        four_wings.protrusions[0] = bilateral_protrusion(1, 4);
+        four_wings.protrusions[0].position_tenths_mm[1] = 5;
+        four_wings.protrusions[0].direction_milli = [1_000, 0, 0];
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &four_wings
+        ));
+        let four_wing_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &four_wings).unwrap();
+        assert_eq!(
+            four_wing_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::SymmetricWingBase
+        );
+        assert_eq!(four_wing_plans[0].crease_pattern.edges.len(), 4);
+        assert_eq!(beginner_target_approximation_score_v1(&four_wings), 92);
+        let mut estimated_four_wings = four_wings.clone();
+        estimated_four_wings.protrusions.clear();
+        assert_eq!(
+            estimate_symmetric_parameters_v1(&estimated_four_wings)
+                .unwrap()
+                .protrusion_count,
+            4
+        );
+
+        let assert_unsupported_four_wings = |invalid: &BeginnerGenerationConstraintsV1| {
+            assert!(crate::validate_beginner_generation_constraints_v1(invalid));
+            assert_eq!(beginner_target_approximation_score_v1(invalid), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, invalid),
+                Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+            );
+        };
+        let mut wrong_direction = four_wings.clone();
+        wrong_direction.protrusions[0].direction_milli = [0, 1_000, 0];
+        assert_unsupported_four_wings(&wrong_direction);
+        let mut wrong_symmetry = four_wings.clone();
+        wrong_symmetry.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::Radial;
+        assert_unsupported_four_wings(&wrong_symmetry);
+        let mut multiple_targets = four_wings.clone();
+        let mut extra_wings = multiple_targets.protrusions[0].clone();
+        extra_wings.id = 2;
+        multiple_targets.protrusions.push(extra_wings);
+        assert_unsupported_four_wings(&multiple_targets);
+        let mut outside_root = four_wings.clone();
+        outside_root.protrusions[0].position_tenths_mm[1] = 11;
+        assert_unsupported_four_wings(&outside_root);
+
         let mut asymmetric = constraints.clone();
         asymmetric.target_category = Some(BeginnerTargetCategoryV1::Animal);
         let mut left = bilateral_protrusion(1, 1);

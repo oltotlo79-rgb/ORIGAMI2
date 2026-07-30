@@ -1062,6 +1062,9 @@ pub fn generate_beginner_plans_v1(
                 || feature_records == 4 && horn && tail && ears && legs
                 || feature_records == 5 && horn && tail && ears && legs && wings;
             if asymmetric_landmark_fish {
+                if !protrusion_local_outlines_within_skeleton_bounds_v1(constraints) {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
+                }
                 symmetric_template(
                     namespace,
                     source,
@@ -1404,6 +1407,7 @@ pub fn generate_beginner_plans_v1(
                                 || target.symmetry != BeginnerProtrusionSymmetryV1::None
                                 || target.direction_milli == [0, 0, 0]
                         })
+                        || !protrusion_local_outlines_within_skeleton_bounds_v1(constraints)
                     {
                         return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                     }
@@ -1462,6 +1466,9 @@ pub fn generate_beginner_plans_v1(
                     && wing_antenna
                     && part_count(BeginnerTargetPartKindV1::Leg) == 6;
             if asymmetric_landmark_insect {
+                if !protrusion_local_outlines_within_skeleton_bounds_v1(constraints) {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
+                }
                 let endpoints = [(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)];
                 symmetric_template(
                     namespace,
@@ -1792,6 +1799,25 @@ fn protrusion_local_outline_within_bounds_v1(
         })
 }
 
+fn protrusion_local_outlines_within_skeleton_bounds_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> bool {
+    if constraints
+        .protrusions
+        .iter()
+        .all(|target| target.local_outline_tenths_mm.is_none())
+    {
+        return true;
+    }
+    let Some(bounds) = skeleton_bounds(&constraints.skeleton_segments) else {
+        return false;
+    };
+    constraints
+        .protrusions
+        .iter()
+        .all(|target| protrusion_local_outline_within_bounds_v1(target, bounds))
+}
+
 fn parameterized_center_axis_endpoint(
     constraints: &BeginnerGenerationConstraintsV1,
     vertical: bool,
@@ -2036,7 +2062,9 @@ fn animal_target_approximation_score_target_v1(
             None
         };
     if asymmetric_landmark_fish {
-        return highest_priority_target_v1(constraints);
+        return protrusion_local_outlines_within_skeleton_bounds_v1(constraints)
+            .then(|| highest_priority_target_v1(constraints))
+            .flatten();
     }
 
     let horn = part_count(BeginnerTargetPartKindV1::Horn) == 1;
@@ -2144,7 +2172,8 @@ fn animal_target_approximation_score_target_v1(
                 target.count == 1
                     && target.symmetry == BeginnerProtrusionSymmetryV1::None
                     && target.direction_milli != [0, 0, 0]
-            }))
+            })
+            && protrusion_local_outlines_within_skeleton_bounds_v1(constraints))
         .then(|| highest_priority_target_v1(constraints))
         .flatten();
     }
@@ -2251,10 +2280,13 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                 let declared_wing_antenna = part_count(BeginnerTargetPartKindV1::Wing) == 2
                     && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
                 if asymmetric_landmark_insect {
-                    constraints
-                        .protrusions
-                        .iter()
-                        .max_by_key(|target| (target.priority, std::cmp::Reverse(target.id)))
+                    protrusion_local_outlines_within_skeleton_bounds_v1(constraints)
+                        .then(|| {
+                            constraints.protrusions.iter().max_by_key(|target| {
+                                (target.priority, std::cmp::Reverse(target.id))
+                            })
+                        })
+                        .flatten()
                 } else if declared_complete {
                     insect_complete_bindings_v1(constraints).and_then(|bindings| {
                         let ordered = [
@@ -5103,18 +5135,21 @@ mod tests {
             ..BeginnerGenerationConstraintsV1::default()
         };
 
-        for (constraints, expected_kind) in [
+        for (constraints, expected_kind, expected_error) in [
             (
                 four_leg.clone(),
                 BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase,
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
             ),
             (
                 fish,
                 BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
             ),
             (
                 insect,
                 BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase,
+                BeginnerGeneratorErrorV1::UnsupportedInsectTemplate,
             ),
         ] {
             assert!(crate::validate_beginner_generation_constraints_v1(
@@ -5124,6 +5159,33 @@ mod tests {
             assert_eq!(
                 generate_beginner_plans_v1(namespace, &source, &ids, &constraints).unwrap()[0].kind,
                 expected_kind
+            );
+            let mut contained_outline = constraints.clone();
+            contained_outline.protrusions[0].local_outline_tenths_mm =
+                Some(vec![[-1, -1], [1, -1], [0, 2]]);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &contained_outline
+            ));
+            assert_eq!(
+                beginner_target_approximation_score_v1(&contained_outline),
+                92
+            );
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &contained_outline).unwrap()
+                    [0]
+                .kind,
+                expected_kind
+            );
+            let mut outside_outline = constraints.clone();
+            outside_outline.protrusions[0].local_outline_tenths_mm =
+                Some(vec![[-20, -1], [20, -1], [0, 2]]);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &outside_outline
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&outside_outline), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &outside_outline),
+                Err(expected_error)
             );
         }
 

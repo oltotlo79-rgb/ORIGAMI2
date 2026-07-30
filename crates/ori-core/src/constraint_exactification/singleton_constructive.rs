@@ -14,7 +14,11 @@ use crate::{
 
 pub(crate) const MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1: usize = 4;
 /// Maximum document size accepted by the bounded singleton compositor.
-pub const MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1: usize = 8;
+///
+/// This ceiling is intentionally independent of the bounded direct-MUS
+/// oracle's limit: the two algorithms have different work models and neither
+/// constant grants authority to the other.
+pub const MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1: usize = 16;
 
 /// Constructs a bounded candidate assignment for one validated constraint and
 /// returns it only after the complete production residual language reissues an
@@ -78,12 +82,15 @@ pub fn construct_single_constraint_exact_assignment_v1(
 /// Composes the existing singleton construction for exactly two validated
 /// constraints, then re-certifies the complete two-record document.
 ///
-/// This is deliberately not a general pair solver. Each record must first
-/// produce its own bounded singleton assignment. Their referenced vertex sets
-/// must either be disjoint or assign every shared vertex bit-identical
-/// coordinates. Only those referenced coordinates are merged into a detached
-/// source-pattern clone, and the complete production residual verifier must
-/// then issue an exact certificate for both records together.
+/// This is deliberately not a general pair solver. The complete document first
+/// passes through a fixed pair-template constructor supporting a wider but
+/// still bounded two-record language; it grants no authority without full
+/// residual re-certification. If that prepass is unsupported, each record must
+/// produce its own bounded singleton assignment. The fallback requires
+/// referenced vertex sets to be disjoint or to assign every shared vertex
+/// bit-identical coordinates. Only those referenced coordinates are merged
+/// into a detached source-pattern clone, and the complete production residual
+/// verifier must then issue an exact certificate for both records together.
 ///
 /// Unsupported singleton templates, conflicting shared assignments, direct
 /// conflicts, invalid geometry, and any nonzero full-document residual return
@@ -139,23 +146,33 @@ pub fn construct_four_constraint_exact_assignment_v1(
 }
 
 /// Composes singleton assignments for a document containing exactly two
-/// through eight records and re-certifies the complete document.
+/// through sixteen records and re-certifies the complete document.
 ///
 /// This exposes the shared bounded implementation used by the exact-count
-/// wrappers without claiming a general constraint solver. Every singleton and
-/// the final merged candidate are independently checked by the production
-/// binary64 residual verifier, and shared referenced vertices must have
+/// wrappers without claiming a general constraint solver. Every candidate that
+/// can escape is independently checked by the production binary64 residual
+/// verifier. On the singleton fallback, every singleton and the final merged
+/// candidate are checked separately, and shared referenced vertices must have
 /// bit-identical coordinates.
 ///
-/// The explicit eight-record ceiling bounds both memory and work. With four
-/// fixed singleton translations per record, the worst successful path performs
-/// at most `8 * 4 + 1 = 33` candidate pattern clones and full residual
-/// verifications, plus one default-limited preparation for the complete
-/// document and one for each singleton. Work is therefore
-/// `O(record_count * (vertices + edges))` with `record_count <= 8`, rather than
-/// an unbounded combinatorial assignment search.
+/// At exactly two records, a fixed pair-template prepass runs first. It tries
+/// at most one cardinal-rotation candidate and four ordinary translated
+/// candidates, re-certifying the complete document after every candidate; if
+/// none certifies, the singleton merge remains the fail-closed fallback. That
+/// path has at most fourteen full residual verifications and four
+/// default-limited preparations in total.
 ///
-/// Documents outside the two-through-eight range, unsupported templates,
+/// The explicit sixteen-record ceiling bounds both memory and work. At larger
+/// counts, with four fixed singleton translations per record, the worst
+/// successful path performs at most `16 * 4 + 1 = 65` candidate pattern clones
+/// and full residual verifications, plus at most seventeen default-limited
+/// preparations (one for the complete document and one for each singleton).
+/// Across every supported document size, this is at most 82 bounded
+/// preparation-or-verification passes. Work is therefore
+/// `O(record_count * (vertices + edges))` with `record_count <= 16`, rather
+/// than an unbounded combinatorial assignment search.
+///
+/// Documents outside the two-through-sixteen range, unsupported templates,
 /// shared-coordinate disagreement, direct conflicts, invalid geometry, and
 /// nonzero full-document residuals return `None`. Failure is not evidence of
 /// unsatisfiability.
@@ -177,6 +194,12 @@ fn construct_bounded_singleton_composition_v1(
             .contains(&expected_constraint_count)
     {
         return None;
+    }
+    if expected_constraint_count == 2
+        && let Some(assignment) =
+            super::construct_pair_constraint_exact_assignment_v1(pattern, document)
+    {
+        return Some(assignment);
     }
     let prepared =
         prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())

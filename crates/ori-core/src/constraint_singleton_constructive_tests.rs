@@ -438,6 +438,40 @@ fn two_vertex_disjoint_singleton_assignments_are_merged_and_recertified() {
 }
 
 #[test]
+fn two_record_pair_template_precedes_incompatible_singleton_coordinates() {
+    let case = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
+    let edge = case.pattern.edges[0].id;
+    let source = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge }),
+    ]);
+
+    // The independent singleton templates place this edge at lengths two and
+    // one respectively, so their shared endpoint coordinates cannot merge.
+    // The bounded pair template resolves both records together and still earns
+    // authority only through the complete residual verifier.
+    let exact_two = construct_two_constraint_exact_assignment_v1(&case.pattern, &source)
+        .expect("the wider bounded pair template must construct");
+    let bounded =
+        construct_bounded_singleton_composition_exact_assignment_v1(&case.pattern, &source)
+            .expect("the public bounded compositor must expose the pair prepass");
+    assert_eq!(
+        position_bits(exact_two.pattern()),
+        position_bits(bounded.pattern()),
+    );
+    assert_eq!(bounded.certificate().constraint_count(), 2);
+    assert!(!bounded.authorizes_project_mutation());
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(bounded.pattern(), &source,)
+            .expect("the pair candidate remains structurally valid")
+            .is_some(),
+    );
+}
+
+#[test]
 fn every_singleton_kind_composes_with_a_vertex_disjoint_record() {
     for (name, mut case) in positive_cases() {
         let companion = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
@@ -465,7 +499,7 @@ fn every_singleton_kind_composes_with_a_vertex_disjoint_record() {
 }
 
 #[test]
-fn every_singleton_kind_composes_in_bounded_three_through_eight_record_documents() {
+fn every_singleton_kind_composes_in_bounded_three_through_sixteen_record_documents() {
     for (name, mut case) in positive_cases() {
         let horizontal = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
         let vertical = one_edge(|edge| GeometricConstraintKindV1::Vertical { edge });
@@ -576,7 +610,7 @@ fn every_singleton_kind_composes_in_bounded_three_through_eight_record_documents
             &reordered_pattern,
             &reordered_document,
         )
-        .unwrap_or_else(|| panic!("{name} reordered eight-record composition"));
+        .unwrap_or_else(|| panic!("{name} reordered sixteen-record composition"));
         assert_eq!(
             position_bits(boundary_assignment.pattern()),
             position_bits(reordered.pattern()),
@@ -588,19 +622,21 @@ fn every_singleton_kind_composes_in_bounded_three_through_eight_record_documents
 #[test]
 fn shared_vertices_require_bit_identical_singleton_assignments() {
     let mut compatible = FixtureBuilder::new();
-    let start = compatible.vertex();
-    let end = compatible.vertex();
-    let edge = compatible.edge(start, end);
+    let shared = compatible.vertex();
+    let first_end = compatible.vertex();
+    let second_end = compatible.vertex();
+    let first = compatible.edge(shared, first_end);
+    let second = compatible.edge(shared, second_end);
     let compatible_pattern = CreasePattern {
         vertices: compatible.vertices,
         edges: compatible.edges,
     };
     let compatible_document = document([
         record(GeometricConstraintKindV1::FixedLength {
-            edge,
+            edge: first,
             length_mm: 1.0,
         }),
-        record(GeometricConstraintKindV1::Horizontal { edge }),
+        record(GeometricConstraintKindV1::Vertical { edge: second }),
     ]);
     assert!(
         construct_two_constraint_exact_assignment_v1(&compatible_pattern, &compatible_document,)
@@ -619,7 +655,10 @@ fn shared_vertices_require_bit_identical_singleton_assignments() {
         edges: conflicting.edges,
     };
     let conflicting_document = document([
-        record(GeometricConstraintKindV1::Horizontal { edge: first }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 2.0,
+        }),
         record(GeometricConstraintKindV1::Vertical { edge: second }),
     ]);
     assert!(
@@ -630,7 +669,7 @@ fn shared_vertices_require_bit_identical_singleton_assignments() {
 }
 
 #[test]
-fn bounded_shared_assignments_must_all_be_bit_identical_through_eight_records() {
+fn bounded_shared_assignments_must_all_be_bit_identical_through_sixteen_records() {
     let mut compatible = FixtureBuilder::new();
     let start = compatible.vertex();
     let end = compatible.vertex();
@@ -667,7 +706,7 @@ fn bounded_shared_assignments_must_all_be_bit_identical_through_eight_records() 
         &compatible_pattern,
         &compatible_document,
     )
-    .expect("eight bit-identical endpoint assignments may compose");
+    .expect("sixteen bit-identical endpoint assignments may compose");
     assert_eq!(
         compatible_assignment.certificate().constraint_count(),
         MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
@@ -726,7 +765,7 @@ fn bounded_shared_assignments_must_all_be_bit_identical_through_eight_records() 
             &conflicting_document,
         )
         .is_none(),
-        "one shared-coordinate disagreement must reject the eight-record boundary",
+        "one shared-coordinate disagreement must reject the sixteen-record boundary",
     );
 }
 
@@ -756,8 +795,8 @@ fn two_constraint_composition_is_bounded_to_exactly_two_nondirect_records() {
 }
 
 #[test]
-fn bounded_composition_accepts_two_through_eight_and_rejects_nine_or_direct() {
-    assert_eq!(MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1, 8);
+fn bounded_composition_accepts_two_through_sixteen_and_rejects_seventeen_or_direct() {
+    assert_eq!(MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1, 16);
     let case = one_edge(|edge| GeometricConstraintKindV1::Horizontal { edge });
     assert!(
         construct_three_constraint_exact_assignment_v1(&case.pattern, &case.document).is_none(),
@@ -818,7 +857,7 @@ fn bounded_composition_accepts_two_through_eight_and_rejects_nine_or_direct() {
     assert!(
         construct_bounded_singleton_composition_exact_assignment_v1(&case.pattern, &four_records,)
             .is_none(),
-        "nine records must remain outside the bounded constructor",
+        "seventeen records must remain outside the bounded constructor",
     );
 
     let mut direct_at_boundary = document([

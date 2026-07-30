@@ -24,9 +24,9 @@ const CURRENT_SEMANTIC_MUS_MODEL_ID
 const CURRENT_SEMANTIC_INVENTORY_HEADING
   = '## 2026-07-30 EDT-009 semantic MUS 現行正本訂正（v4・24/24）'
 const EDT_009_LIMITATION
-  = 'Semantic MUS v4 covers all 24 wire variants only in bounded, shape-specific families. Its newest cores require a common-center star: exact two-hop Parallel plus 90 degrees and two unit terminals, or Parallel plus exact 45/135 degrees and one unit terminal. Detached constructive SAT covers only one through eight bit-compatible singleton records, publishes no coordinates, and never authorizes mutation. Other angles, nonexact, nonunit, longer, nonstar, and generic variants fail closed.'
+  = 'Semantic MUS v4 covers 24 wire variants in bounded shape-specific families. Newest cores require common-center star: two-hop Parallel plus exact 90 degrees and two unit terminals, or Parallel plus exact 45/135 degrees and one unit terminal. Detached constructive SAT covers one through sixteen bit-compatible singleton records and bounded two-record templates, exposes no coordinates, and never authorizes mutation. Other angles, nonexact, nonunit, longer, nonstar, and generic variants fail closed.'
 const EDT_009_MISSING_ACCEPTANCE
-  = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including nine or more singleton compositions, arbitrary-length parallel components, and generic or non-star angle topologies.'
+  = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more singleton compositions, arbitrary-length parallel components, and generic or non-star angle topologies.'
 
 test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]

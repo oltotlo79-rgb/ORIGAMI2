@@ -1,5 +1,8 @@
 use std::{
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -267,7 +270,7 @@ fn all_eleven_unsatisfied_singleton_kinds_publish_only_a_constructive_sat_observ
 }
 
 #[test]
-fn bounded_two_record_constructive_sat_requires_compatible_singleton_assignments() {
+fn bounded_two_record_pair_templates_publish_only_detached_constructive_sat() {
     let mut disjoint = FixtureBuilder::default();
     let first_start = disjoint.vertex(0.0, 0.0);
     let first_end = disjoint.vertex(3.0, 4.0);
@@ -309,7 +312,7 @@ fn bounded_two_record_constructive_sat_requires_compatible_singleton_assignments
     let shared_document = document([
         GeometricConstraintKindV1::FixedLength {
             edge,
-            length_mm: 1.0,
+            length_mm: 2.0,
         },
         GeometricConstraintKindV1::Horizontal { edge },
     ]);
@@ -338,7 +341,7 @@ fn bounded_two_record_constructive_sat_requires_compatible_singleton_assignments
 }
 
 #[test]
-fn bounded_three_through_eight_record_constructive_sat_requires_compatible_singletons() {
+fn bounded_three_through_sixteen_record_constructive_sat_requires_compatible_singletons() {
     let mut compatible = FixtureBuilder::default();
     let start = compatible.vertex(0.0, 0.0);
     let end = compatible.vertex(3.0, 4.0);
@@ -373,8 +376,8 @@ fn bounded_three_through_eight_record_constructive_sat_requires_compatible_singl
 
     let compatible_result =
         analyze_geometric_constraint_document(&compatible_pattern, &compatible_document);
-    let encoded =
-        serde_json::to_value(&compatible_result).expect("serialize eight-record constructive SAT");
+    let encoded = serde_json::to_value(&compatible_result)
+        .expect("serialize sixteen-record constructive SAT");
     let object = encoded
         .as_object()
         .expect("the tagged SAT response is an object");
@@ -389,14 +392,14 @@ fn bounded_three_through_eight_record_constructive_sat_requires_compatible_singl
             "constructed coordinates must not cross the DTO as {forbidden}",
         );
     }
-    let mut nine_records = compatible_document.clone();
-    nine_records
+    let mut seventeen_records = compatible_document.clone();
+    seventeen_records
         .constraints
         .push(record(GeometricConstraintKindV1::Horizontal { edge }));
     assert_eq!(
-        analyze_geometric_constraint_document(&compatible_pattern, &nine_records),
+        analyze_geometric_constraint_document(&compatible_pattern, &seventeen_records),
         GeometricConstraintPreflightResult::NoDirectConflict,
-        "nine records remain outside the bounded constructor",
+        "seventeen records remain outside the bounded constructor",
     );
 
     let mut conflicting = FixtureBuilder::default();
@@ -413,7 +416,10 @@ fn bounded_three_through_eight_record_constructive_sat_requires_compatible_singl
         edges: conflicting.edges,
     };
     let mut conflicting_document = document([
-        GeometricConstraintKindV1::Horizontal { edge: first },
+        GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 2.0,
+        },
         GeometricConstraintKindV1::Vertical { edge: second },
         GeometricConstraintKindV1::FixedLength {
             edge: detached,
@@ -510,6 +516,16 @@ fn direct_conflicts_keep_priority_and_conflicting_two_record_composition_falls_t
             .constraints
             .push(record(GeometricConstraintKindV1::Horizontal { edge }));
     }
+    assert!(matches!(
+        analyze_geometric_constraint_document(&pattern, &direct),
+        GeometricConstraintPreflightResult::DirectConflict {
+            ref conflicts,
+            ..
+        } if conflicts.len() == 1
+    ));
+    direct
+        .constraints
+        .push(record(GeometricConstraintKindV1::Horizontal { edge }));
     assert!(matches!(
         analyze_geometric_constraint_document(&pattern, &direct),
         GeometricConstraintPreflightResult::DirectConflict {
@@ -669,6 +685,47 @@ fn assert_constructed_sat_publication_rechecks_cancel_and_deadline(
 }
 
 #[test]
+fn constructive_attempt_post_checkpoint_covers_some_and_none_results() {
+    let positive = one_edge_case("horizontal", |edge| GeometricConstraintKindV1::Horizontal {
+        edge,
+    });
+    let assignment = ori_core::construct_single_constraint_exact_assignment_v1(
+        &positive.pattern,
+        &positive.document,
+    )
+    .expect("positive control must construct");
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let mut cancelled_observer =
+        GeometricConstraintAnalysisObserver::new(GeometricConstraintAnalysisRuntime {
+            cancellation: Arc::clone(&cancellation),
+            deadline: std::time::Instant::now()
+                .checked_add(Duration::from_secs(60))
+                .expect("future cancellation deadline"),
+        });
+    cancellation.store(true, Ordering::Release);
+    assert!(matches!(
+        recheck_after_constructive_assignment_attempt(&mut cancelled_observer, Some(assignment),),
+        Err(GeometricConstraintAnalysisStop::Cancelled),
+    ));
+
+    let unsupported = four_translation_collapse_case();
+    let no_assignment = ori_core::construct_single_constraint_exact_assignment_v1(
+        &unsupported.pattern,
+        &unsupported.document,
+    );
+    assert!(no_assignment.is_none());
+    let mut expired_observer =
+        GeometricConstraintAnalysisObserver::new(GeometricConstraintAnalysisRuntime {
+            cancellation: Arc::new(AtomicBool::new(false)),
+            deadline: std::time::Instant::now(),
+        });
+    assert!(matches!(
+        recheck_after_constructive_assignment_attempt(&mut expired_observer, no_assignment),
+        Err(GeometricConstraintAnalysisStop::DeadlineReached),
+    ));
+}
+
+#[test]
 fn constructed_sat_publication_rechecks_cancel_and_deadline() {
     let case = one_edge_case("horizontal", |edge| GeometricConstraintKindV1::Horizontal {
         edge,
@@ -708,7 +765,7 @@ fn constructed_two_record_sat_publication_rechecks_cancel_and_deadline() {
 }
 
 #[test]
-fn constructed_three_and_eight_record_sat_publication_rechecks_cancel_and_deadline() {
+fn constructed_three_and_sixteen_record_sat_publication_rechecks_cancel_and_deadline() {
     let mut fixture = FixtureBuilder::default();
     let start = fixture.vertex(0.0, 0.0);
     let end = fixture.vertex(3.0, 4.0);
@@ -739,7 +796,7 @@ fn constructed_three_and_eight_record_sat_publication_rechecks_cancel_and_deadli
     }
     let assignment =
         ori_core::construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &document)
-            .expect("the compatible eight-record control must construct");
+            .expect("the compatible sixteen-record control must construct");
     assert_constructed_sat_publication_rechecks_cancel_and_deadline(
         &document,
         assignment.certificate(),
@@ -847,7 +904,7 @@ fn worker_publishes_singleton_sat_without_changing_document_revision_history_or_
 
 #[test]
 fn worker_publishes_bounded_multi_record_sat_without_changing_project_state() {
-    for horizontal_count in [1_usize, 2, 3, 7] {
+    for horizontal_count in [1_usize, 2, 3, 7, 15] {
         let mut project = initial_project_state();
         let edge = {
             let pattern = project.editor.pattern();

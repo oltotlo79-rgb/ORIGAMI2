@@ -1,15 +1,11 @@
-import { chromium } from 'playwright'
-import { spawn } from 'node:child_process'
+import { runBrowserE2E } from './browser-e2e-runtime.mjs'
 
-const origin = 'http://127.0.0.1:4189'
-const server = spawn(process.execPath, ['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '4189', '--strictPort'],
-  { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] })
-let browser
-try {
-  await waitForServer()
-  browser = await chromium.launch({ headless: true })
-  const page = await browser.newPage()
-  await page.goto(`${origin}/scripts/complete-insect-browser-harness.html`, { waitUntil: 'networkidle' })
+await runBrowserE2E({
+  name: 'complete insect browser E2E',
+  port: 4189,
+  harnessPath: '/scripts/complete-insect-browser-harness.html',
+  readyButtonName: 'Try asymmetric insect pair',
+}, async (page) => {
   await page.getByRole('button', { name: 'Try asymmetric insect pair' }).click()
   if (await page.getByRole('list').count()) throw new Error('asymmetric pair reached binding UI')
   await page.getByRole('button', { name: 'Recognize complete insect image' }).click()
@@ -39,20 +35,11 @@ try {
   await page.getByRole('button', { name: 'Cancel candidate generation' }).click()
   await preview.waitFor({ state: 'detached' })
   await page.waitForFunction(() => document.activeElement?.textContent === 'Evaluate complete insect grid')
-  console.log('complete insect browser E2E passed: image/GLB, five bindings, stale/cancel, apply history/save')
-} finally {
-  await browser?.close(); server.kill('SIGTERM')
-}
+})
+console.log('complete insect browser E2E passed: image/GLB, five bindings, stale/cancel, apply history/save')
 
 async function assertBindings(page) {
   const list = page.getByRole('list', { name: 'Five complete-insect binding dimensions' })
   await list.waitFor()
   if (await list.getByRole('listitem').count() !== 5) throw new Error('complete insect binding count changed')
-}
-async function waitForServer() {
-  for (let attempt = 0; attempt < 150; attempt += 1) {
-    try { if ((await fetch(origin)).ok) return } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
-  throw new Error('complete insect browser harness did not start')
 }

@@ -1,12 +1,13 @@
-import { chromium } from 'playwright'
-import { spawn } from 'node:child_process'
-const origin = 'http://127.0.0.1:4190'
-const server = spawn(process.execPath, ['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '4190', '--strictPort'], { cwd: process.cwd(), stdio: 'ignore' })
-let browser
-try {
-  for (let i = 0; i < 150; i += 1) { try { if ((await fetch(origin)).ok) break } catch {}; await new Promise((r) => setTimeout(r, 100)) }
-  browser = await chromium.launch({ headless: true }); const page = await browser.newPage()
-  await page.goto(`${origin}/scripts/generic-target-browser-harness.html`, { waitUntil: 'networkidle' })
+import { runBrowserE2E } from './browser-e2e-runtime.mjs'
+
+await runBrowserE2E({
+  name: 'generic target browser E2E',
+  // Port 4190 is blocked by the Fetch standard (Sieve); readiness probes and
+  // Chromium must use an ordinary HTTP port on every CI platform.
+  port: 4192,
+  harnessPath: '/scripts/generic-target-browser-harness.html',
+  readyButtonName: 'Preview general semantic count 14',
+}, async (page) => {
   await page.getByRole('button', { name: 'Preview general semantic count 14' }).click()
   await page.getByText('General semantic count 14 preview admitted by strict native DTO', { exact: true }).waitFor()
   const general14Preview = page.getByRole('region', { name: 'General semantic count 14 preview' })
@@ -412,8 +413,9 @@ try {
   }
   await page.getByRole('button', { name: 'Try tampered provenance export' }).click()
   await page.getByText('Rejected export: stale or tampered topology provenance', { exact: true }).waitFor()
-  console.log('generic target browser E2E passed: image/GLB, add/remove/reorder bounds, stale/cancel, apply history/save')
-} finally { await browser?.close(); server.kill('SIGTERM') }
+})
+console.log('generic target browser E2E passed: image/GLB, add/remove/reorder bounds, stale/cancel, apply history/save')
+
 async function assertBindings(page) {
   const list = page.getByRole('list', { name: 'Bounded generic target binding dimensions' }); await list.waitFor()
   if (await list.getByRole('listitem').count() !== 2) throw new Error('generic binding count changed')

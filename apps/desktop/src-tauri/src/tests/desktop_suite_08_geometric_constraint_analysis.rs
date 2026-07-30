@@ -171,31 +171,38 @@ fn geometric_constraint_preflight_exposes_exact_positive_and_fail_closed_states(
     );
 
     let edge_ids = pattern.edges.iter().map(|edge| edge.id).collect::<Vec<_>>();
-    let mut solver_required_records = Vec::new();
-    'edge_pairs: for &numerator_edge in &edge_ids {
-        for &denominator_edge in &edge_ids {
-            if numerator_edge == denominator_edge {
-                continue;
-            }
-            solver_required_records.push(GeometricConstraintRecordV1 {
+    let ordered_edge_roles = edge_ids
+        .iter()
+        .flat_map(|&numerator_edge| {
+            edge_ids
+                .iter()
+                .copied()
+                .filter(move |&denominator_edge| numerator_edge != denominator_edge)
+                .map(move |denominator_edge| (numerator_edge, denominator_edge))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !ordered_edge_roles.is_empty(),
+        "the startup pattern must provide at least one valid ordered edge role",
+    );
+    let solver_required_records = (0..=ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1)
+        .map(|index| {
+            let (numerator_edge, denominator_edge) =
+                ordered_edge_roles[index % ordered_edge_roles.len()];
+            GeometricConstraintRecordV1 {
                 id: ConstraintId::new(),
                 constraint: GeometricConstraintKindV1::LengthRatio {
                     numerator_edge,
                     denominator_edge,
                     ratio: 2.0,
                 },
-            });
-            if solver_required_records.len()
-                > ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1
-            {
-                break 'edge_pairs;
             }
-        }
-    }
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
         solver_required_records.len(),
         ori_core::MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 + 1,
-        "the startup pattern must provide nine distinct valid ordered edge roles",
+        "valid ordered edge roles may cycle to cover the seventeen-record boundary",
     );
     let solver_required = GeometricConstraintDocumentV1 {
         schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,

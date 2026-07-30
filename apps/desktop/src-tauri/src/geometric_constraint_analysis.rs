@@ -653,6 +653,13 @@ fn analyze_geometric_constraint_document_outcome_with_observer(
                 _ => None,
             })
             .flatten();
+    let constructive_assignment =
+        match recheck_after_constructive_assignment_attempt(observer, constructive_assignment) {
+            Ok(assignment) => assignment,
+            Err(stop) => {
+                return Ok(stopped_geometric_constraint_analysis_result(document, stop).into());
+            }
+        };
     if let Some(assignment) = constructive_assignment {
         // This is an observation-only SAT witness. The constructed candidate
         // never crosses the native DTO boundary and cannot authorize project
@@ -720,6 +727,21 @@ fn analyze_geometric_constraint_document_outcome_with_observer(
         .into(),
     };
     Ok(outcome)
+}
+
+fn recheck_after_constructive_assignment_attempt<T>(
+    observer: &mut GeometricConstraintAnalysisObserver,
+    attempt: T,
+) -> Result<T, GeometricConstraintAnalysisStop> {
+    // Construction can perform up to the independently bounded sixteen-record
+    // proof envelope without consulting the native runtime observer. Recheck
+    // unconditionally after either `Some` or `None` so cancellation/deadline
+    // that arrived during construction cannot publish a witness or fall
+    // through to a stale clear/unknown result.
+    match observer.checkpoint() {
+        Some(stop) => Err(stop),
+        None => Ok(attempt),
+    }
 }
 
 pub(super) fn finish_exact_geometric_constraint_satisfaction(

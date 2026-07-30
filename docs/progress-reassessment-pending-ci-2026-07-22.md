@@ -9,7 +9,7 @@
 | 要件・基本設計・技術検証 | 5% | 85% | 85% | 4.25% | 据え置き |
 | プロジェクト・保存・履歴 | 8% | 94% | 94% | 7.52% | 据え置き |
 | 2D展開図エディター | 15% | 100% | 100% | 15.00% | 据え置き |
-| 数式・幾何制約 | 9% | 85% | 86% | 7.74% | 互換singleton 1..=8件からdetachedな厳密配置を構成し、全production residualを再認証。current assignment証拠とnative DTO・strict TypeScript・日英UIで区別 |
+| 数式・幾何制約 | 9% | 85% | 86% | 7.74% | 互換singleton 1..=16件と2件時の固定pair templateからdetachedな厳密配置を構成し、全production residualを再認証。current assignment証拠とnative DTO・strict TypeScript・日英UIで区別 |
 | 3D折り・紙厚・衝突 | 17% | 75% | 75% | 12.75% | 4-block正厚作業は未完のため不計上 |
 | 折り可能性・経路探索 | 18% | 78% | 78% | 14.04% | 据え置き |
 | 折り手順・PDF | 10% | 92% | 92% | 9.20% | 据え置き |

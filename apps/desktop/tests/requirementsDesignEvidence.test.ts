@@ -337,12 +337,12 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { path: string, selector: string }) =>
-      item.path === 'apps/desktop/src-tauri/src/tests.rs'
+      item.path === 'apps/desktop/src-tauri/src/tests/desktop_suite_09_geometric_constraint_worker_gates.rs'
       && item.selector === 'fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation()',
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { path: string, selector: string }) =>
-      item.path === 'apps/desktop/src-tauri/src/tests.rs'
+      item.path === 'apps/desktop/src-tauri/src/tests/desktop_suite_09_geometric_constraint_worker_gates.rs'
       && item.selector === 'fn geometric_constraint_pre_cancel_ledger_is_bounded_and_evicts_oldest_only()',
   ))
   assert.ok(edtEvidence.evidence.some(

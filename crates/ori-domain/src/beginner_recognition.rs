@@ -942,7 +942,7 @@ pub fn analyze_marker_png_rgba_v1(
     let shape_bounds = shape_bounds.ok_or(BeginnerRecognitionErrorV1::EmptyShape)?;
 
     let mut visited = vec![false; pixels];
-    let mut part_counts = [0_u8; 7];
+    let mut part_counts = [0_u8; 8];
     let mut skeleton_segments = Vec::new();
     let mut component_count = 0_usize;
     for index in 0..pixels {
@@ -1037,6 +1037,7 @@ fn marker_kind(pixel: &[u8]) -> Option<MarkerKind> {
         [255, 0, 255, 255] => Some(MarkerKind::Part(4)),
         [0, 255, 255, 255] => Some(MarkerKind::Part(5)),
         [255, 128, 0, 255] => Some(MarkerKind::Part(6)),
+        [128, 0, 128, 255] => Some(MarkerKind::Part(7)),
         [0, 0, 0, 255] => Some(MarkerKind::Skeleton),
         _ => None,
     }
@@ -1145,6 +1146,113 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_antenna_markers_without_changing_the_existing_palette() {
+        let existing_rgba = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255, 255, 0, 255, 255, 0,
+            255, 255, 255, 255, 128, 0, 255,
+        ];
+        let existing = analyze_marker_png_rgba_v1(
+            UnderlayId::new(),
+            AssetId::new(),
+            [1; 32],
+            7,
+            1,
+            &existing_rgba,
+        )
+        .unwrap();
+        assert_eq!(
+            existing.target_parts,
+            vec![
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Head,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Torso,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Leg,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Horn,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Ear,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Wing,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Fin,
+                    count: 1,
+                },
+            ]
+        );
+
+        let single = analyze_marker_png_rgba_v1(
+            UnderlayId::new(),
+            AssetId::new(),
+            [2; 32],
+            1,
+            1,
+            &[128, 0, 128, 255],
+        )
+        .unwrap();
+        assert_eq!(
+            single.target_parts,
+            vec![BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Antenna,
+                count: 1,
+            }]
+        );
+
+        let paired = analyze_marker_png_rgba_v1(
+            UnderlayId::new(),
+            AssetId::new(),
+            [3; 32],
+            3,
+            1,
+            &[128, 0, 128, 255, 0, 0, 0, 0, 128, 0, 128, 255],
+        )
+        .unwrap();
+        assert_eq!(
+            paired.target_parts,
+            vec![BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Antenna,
+                count: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_near_antenna_markers_and_the_unassigned_tail_color() {
+        for marker in [
+            [127, 0, 128, 255],
+            [128, 1, 128, 255],
+            [128, 0, 127, 255],
+            [128, 0, 128, 254],
+            [128, 64, 0, 255],
+        ] {
+            assert_eq!(
+                analyze_marker_png_rgba_v1(
+                    UnderlayId::new(),
+                    AssetId::new(),
+                    [4; 32],
+                    1,
+                    1,
+                    &marker,
+                ),
+                Err(BeginnerRecognitionErrorV1::UnsupportedMarker)
+            );
+        }
+    }
+
+    #[test]
     fn rejects_unknown_markers_and_resource_overflow() {
         assert_eq!(
             analyze_marker_png_rgba_v1(
@@ -1187,6 +1295,22 @@ mod tests {
                 &too_many_components,
             ),
             Err(BeginnerRecognitionErrorV1::ComponentLimit)
+        );
+
+        let mut too_many_parts = vec![0_u8; 65 * 4];
+        for x in (0..65).step_by(2) {
+            too_many_parts[x * 4..x * 4 + 4].copy_from_slice(&[128, 0, 128, 255]);
+        }
+        assert_eq!(
+            analyze_marker_png_rgba_v1(
+                UnderlayId::new(),
+                AssetId::new(),
+                [0; 32],
+                65,
+                1,
+                &too_many_parts,
+            ),
+            Err(BeginnerRecognitionErrorV1::PartLimit)
         );
     }
 

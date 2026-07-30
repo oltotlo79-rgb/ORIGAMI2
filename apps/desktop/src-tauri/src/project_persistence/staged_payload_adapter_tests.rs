@@ -7,8 +7,6 @@ use std::{
 
 #[cfg(target_os = "windows")]
 use super::PROJECT_REPLACE_SAVE_FAILED_MESSAGE;
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-use super::commit_unix_staged_project_file_with_journal_and_hooks;
 #[cfg(target_os = "windows")]
 use super::commit_windows_staged_project_file_with_journal_and_hook;
 use super::{
@@ -26,9 +24,16 @@ use super::{
     recover_single_file_journal_for_target_inner_with_pre_open_hook, sha256_hex_bytes,
     target_path_fingerprint, write_complete_staged_payload, write_project_archive_ori2,
 };
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+use super::{
+    commit_unix_staged_project_file_with_journal_and_hooks, publish_unix_staged_file,
+    publish_unix_staged_file_with_pre_publish_hook_v1,
+};
 use ori_core::{Command, EditorState};
 use ori_domain::{CreasePattern, ProjectId};
 use ori_domain::{Point2, VertexId};
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+use std::cell::Cell;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command as ProcessCommand;
@@ -158,6 +163,196 @@ fn replace_confirmed_missing_target_publishes_normally_with_no_replace() {
         "create-only success must leave no staging or recovery journal"
     );
     fs::remove_dir_all(directory).expect("cleanup published directory");
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[test]
+fn unix_create_only_publish_rejects_staged_name_swap_in_existing_pre_publish_hook() {
+    let directory = journal_test_directory("unix-normal-stage-swap");
+    let target = directory.join("project.ori2");
+    let displaced = directory.join("authenticated-stage.ori2");
+    let (archive, bytes) = test_archive_and_bytes("normal staged swap");
+    let replacement_bytes = bytes.clone();
+    let mut replaced_staged_path = None;
+
+    let result = persist_document_atomically_with_pre_publish_hook(
+        &target,
+        &archive,
+        &bytes,
+        ExistingDestinationPolicy::RejectExisting,
+        || {
+            let staged_path = fs::read_dir(&directory)?
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            name.starts_with(".origami2-") && name.ends_with(".tmp")
+                        })
+                })
+                .ok_or_else(|| io::Error::other("staged path was not found"))?;
+            fs::rename(&staged_path, &displaced)?;
+            fs::write(&staged_path, &replacement_bytes)?;
+            replaced_staged_path = Some(staged_path);
+            Ok(())
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "the retained staged handle must seal the pathname before publication"
+    );
+    assert!(!target.exists(), "the replacement stage was not published");
+    assert_eq!(
+        fs::read(&displaced).expect("authenticated stage preserved"),
+        bytes
+    );
+    assert!(
+        replaced_staged_path
+            .as_ref()
+            .is_some_and(|path| !path.exists()),
+        "failed staging cleanup retires only the active staging name"
+    );
+    fs::remove_dir_all(directory).expect("cleanup staged swap directory");
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[test]
+fn unix_normal_replace_publish_accepts_authenticated_single_link_stage() {
+    let directory = journal_test_directory("unix-normal-stage-success");
+    let target = directory.join("project.ori2");
+    fs::write(&target, b"old recovery bytes").expect("old destination");
+    let (archive, bytes) = test_archive_and_bytes("normal staged success");
+    let mut staged = prepare_staged_file(&target, &archive, &bytes).expect("staged project");
+    let staged_path = staged.path.clone();
+
+    publish_unix_staged_file(
+        &mut staged,
+        &target,
+        ExistingDestinationPolicy::ReplaceConfirmed,
+    )
+    .expect("publish authenticated stage");
+
+    assert!(staged.committed);
+    assert_eq!(fs::read(&target).expect("published target"), bytes);
+    assert!(
+        !staged_path.exists(),
+        "authenticated staging name was retired"
+    );
+    drop(staged);
+    fs::remove_dir_all(directory).expect("cleanup normal publish directory");
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[test]
+fn unix_create_only_publish_rejects_staged_name_swap_after_path_seal() {
+    let directory = journal_test_directory("unix-create-stage-post-seal-swap");
+    let target = directory.join("project.ori2");
+    let displaced = directory.join("authenticated-stage.ori2");
+    let (archive, bytes) = test_archive_and_bytes("post-seal create swap");
+    let replacement_bytes = vec![0xa5; bytes.len()];
+    let mut staged = prepare_staged_file(&target, &archive, &bytes).expect("staged project");
+    let staged_path = staged.path.clone();
+
+    let result = publish_unix_staged_file_with_pre_publish_hook_v1(
+        &mut staged,
+        &target,
+        ExistingDestinationPolicy::RejectExisting,
+        || {
+            fs::rename(&staged_path, &displaced)?;
+            fs::write(&staged_path, &replacement_bytes)
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "a post-seal source swap must not be reported as an authenticated publication"
+    );
+    assert!(!target.exists(), "the swapped source was not hard-linked");
+    assert_eq!(
+        fs::read(&staged_path).expect("replacement stage remains"),
+        replacement_bytes
+    );
+    assert_eq!(
+        fs::read(&displaced).expect("authenticated stage preserved"),
+        bytes
+    );
+    drop(staged);
+    fs::remove_dir_all(directory).expect("cleanup post-seal create swap directory");
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[test]
+fn unix_create_only_publish_rejects_same_inode_staged_content_mutation_after_seal() {
+    let directory = journal_test_directory("unix-create-stage-content-mutation");
+    let target = directory.join("project.ori2");
+    let (archive, bytes) = test_archive_and_bytes("post-seal staged mutation");
+    let replacement_bytes = vec![0x3c; bytes.len()];
+    let mut staged = prepare_staged_file(&target, &archive, &bytes).expect("staged project");
+    let staged_path = staged.path.clone();
+
+    let result = publish_unix_staged_file_with_pre_publish_hook_v1(
+        &mut staged,
+        &target,
+        ExistingDestinationPolicy::RejectExisting,
+        || fs::write(&staged_path, &replacement_bytes),
+    );
+
+    assert!(
+        result.is_err(),
+        "the retained content digest must reject same-inode staged mutation"
+    );
+    assert!(!target.exists(), "mutated staging bytes were not published");
+    assert_eq!(
+        fs::read(&staged_path).expect("mutated stage remains"),
+        replacement_bytes
+    );
+    drop(staged);
+    assert!(!staged_path.exists(), "failed stage is cleaned on drop");
+    fs::remove_dir_all(directory).expect("cleanup staged mutation directory");
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[test]
+fn unix_replace_publish_rejects_staged_name_swap_after_path_seal() {
+    let directory = journal_test_directory("unix-replace-stage-post-seal-swap");
+    let target = directory.join("project.ori2");
+    let displaced = directory.join("authenticated-stage.ori2");
+    fs::write(&target, b"old destination").expect("old destination");
+    let (archive, bytes) = test_archive_and_bytes("post-seal replace swap");
+    let replacement_bytes = vec![0x5a; bytes.len()];
+    let mut staged = prepare_staged_file(&target, &archive, &bytes).expect("staged project");
+    let staged_path = staged.path.clone();
+
+    let result = publish_unix_staged_file_with_pre_publish_hook_v1(
+        &mut staged,
+        &target,
+        ExistingDestinationPolicy::ReplaceConfirmed,
+        || {
+            fs::rename(&staged_path, &displaced)?;
+            fs::write(&staged_path, &replacement_bytes)
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "a post-seal rename source swap must fail its destination identity check"
+    );
+    assert_eq!(
+        fs::read(&target).expect("old destination remains"),
+        b"old destination"
+    );
+    assert_eq!(
+        fs::read(&staged_path).expect("replacement stage remains"),
+        replacement_bytes
+    );
+    assert_eq!(
+        fs::read(&displaced).expect("authenticated stage preserved"),
+        bytes
+    );
+    drop(staged);
+    fs::remove_dir_all(directory).expect("cleanup post-seal replace swap directory");
 }
 
 struct InjectedWriter {
@@ -1498,6 +1693,133 @@ fn single_flight_keeps_unix_case_sensitive_targets_distinct() {
 
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 #[test]
+fn unix_journal_commit_rejects_hardlinked_old_destination_before_prepared_journal() {
+    let directory = journal_test_directory("unix-hardlinked-old-reject");
+    let target = directory.join("project.ori2");
+    let alias = directory.join("project-alias.ori2");
+    let old_bytes = b"old hardlinked destination";
+    fs::write(&target, old_bytes).expect("old destination");
+    fs::hard_link(&target, &alias).expect("old destination alias");
+    let (archive, bytes) = test_archive_and_bytes("hardlinked old rejection");
+    let mut staged = prepare_staged_file(&target, &archive, &bytes).expect("staged project");
+    let staged_path = staged.path.clone();
+    let fingerprint = target_path_fingerprint(&target).expect("target fingerprint");
+    let journal = journal_path_for_target(&target, &fingerprint).expect("journal path");
+    let sync_called = Cell::new(false);
+    let old_move_hook_called = Cell::new(false);
+    let publish_hook_called = Cell::new(false);
+
+    let result = commit_unix_staged_project_file_with_journal_and_hooks(
+        &mut staged,
+        &target,
+        archive.document.project_id,
+        || {
+            sync_called.set(true);
+            Ok(())
+        },
+        || {
+            old_move_hook_called.set(true);
+            Ok(())
+        },
+        || {
+            publish_hook_called.set(true);
+            Ok(())
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "a hardlinked old target cannot satisfy the private backup contract"
+    );
+    assert!(!sync_called.get(), "rejection must precede commit barriers");
+    assert!(
+        !old_move_hook_called.get() && !publish_hook_called.get(),
+        "rejection must precede both mutation hooks"
+    );
+    assert_eq!(fs::read(&target).expect("target preserved"), old_bytes);
+    assert_eq!(fs::read(&alias).expect("alias preserved"), old_bytes);
+    assert_eq!(
+        fs::read(&staged_path).expect("staged payload preserved"),
+        bytes
+    );
+    assert!(!journal.exists(), "prepared journal was never created");
+    assert!(
+        fs::read_dir(&directory)
+            .expect("rejection directory")
+            .all(|entry| {
+                !entry
+                    .expect("rejection entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".origami2-backup-")
+            }),
+        "backup creation must not begin"
+    );
+
+    drop(staged);
+    assert!(
+        !staged_path.exists(),
+        "uncommitted stage is cleaned on drop"
+    );
+    assert_eq!(fs::read(&target).expect("target after drop"), old_bytes);
+    assert_eq!(fs::read(&alias).expect("alias after drop"), old_bytes);
+    fs::remove_dir_all(directory).expect("cleanup test directory");
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[test]
+fn unix_journal_commit_replaces_single_link_destination_and_cleans_private_objects() {
+    let directory = journal_test_directory("unix-single-link-old-success");
+    let target = directory.join("project.ori2");
+    fs::write(&target, b"old single-link destination").expect("old destination");
+    let (archive, bytes) = test_archive_and_bytes("single-link replacement");
+    let mut staged = prepare_staged_file(&target, &archive, &bytes).expect("staged project");
+    let staged_path = staged.path.clone();
+    let fingerprint = target_path_fingerprint(&target).expect("target fingerprint");
+    let journal = journal_path_for_target(&target, &fingerprint).expect("journal path");
+    let old_move_hook_called = Cell::new(false);
+    let publish_hook_called = Cell::new(false);
+
+    commit_unix_staged_project_file_with_journal_and_hooks(
+        &mut staged,
+        &target,
+        archive.document.project_id,
+        || Ok(()),
+        || {
+            old_move_hook_called.set(true);
+            Ok(())
+        },
+        || {
+            publish_hook_called.set(true);
+            Ok(())
+        },
+    )
+    .expect("replace single-link destination");
+
+    assert!(old_move_hook_called.get() && publish_hook_called.get());
+    assert!(staged.committed);
+    assert_eq!(fs::read(&target).expect("published target"), bytes);
+    assert!(!staged_path.exists(), "staging name was retired");
+    assert!(!journal.exists(), "completed journal was removed");
+    assert!(
+        fs::read_dir(&directory)
+            .expect("success directory")
+            .all(|entry| {
+                !entry
+                    .expect("success entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".origami2-backup-")
+            }),
+        "completed backup was removed"
+    );
+
+    drop(staged);
+    fs::remove_dir_all(directory).expect("cleanup test directory");
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[test]
 fn unix_journal_commit_rejects_old_destination_swap_after_journal_prepare() {
     let directory = journal_test_directory("unix-commit-old-swap");
     let target = directory.join("project.ori2");
@@ -1534,6 +1856,41 @@ fn unix_journal_commit_rejects_old_destination_swap_after_journal_prepare() {
         b"old-hash"
     );
     assert!(staged_path.exists(), "verified stage remains recoverable");
+    drop(staged);
+    fs::remove_dir_all(directory).expect("cleanup test directory");
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+#[test]
+fn unix_journal_commit_rejects_same_inode_old_destination_mutation() {
+    let directory = journal_test_directory("unix-commit-old-content-mutation");
+    let target = directory.join("project.ori2");
+    fs::write(&target, b"old-hash").expect("old destination");
+    let (archive, bytes) = test_archive_and_bytes("unix old content mutation");
+    let mut staged = prepare_staged_file(&target, &archive, &bytes).expect("staged project");
+    let staged_path = staged.path.clone();
+
+    let result = commit_unix_staged_project_file_with_journal_and_hooks(
+        &mut staged,
+        &target,
+        archive.document.project_id,
+        || Ok(()),
+        || fs::write(&target, b"new-hash"),
+        || Ok(()),
+    );
+
+    assert!(
+        result.is_err(),
+        "the old destination digest must survive until its backup rename"
+    );
+    assert_eq!(
+        fs::read(&target).expect("mutated destination preserved"),
+        b"new-hash"
+    );
+    assert!(
+        staged_path.exists(),
+        "the authenticated stage remains available to explicit recovery"
+    );
     drop(staged);
     fs::remove_dir_all(directory).expect("cleanup test directory");
 }
@@ -1871,6 +2228,47 @@ fn recovery_rename_rejects_authenticated_source_swap_before_publication() {
     assert_eq!(
         fs::read(&displaced).expect("authenticated source preserved"),
         b"old-hash"
+    );
+    fs::remove_dir_all(directory).expect("cleanup test directory");
+}
+
+#[test]
+fn recovery_rename_rejects_same_inode_same_length_content_mutation() {
+    let directory = journal_test_directory("recovery-rename-content-mutation");
+    let target = directory.join("project.ori2");
+    let temp = directory.join("temp.ori2");
+    fs::write(&temp, b"old-hash").expect("authenticated source");
+    let mut adapter = DiskSingleFileRecoveryFs {
+        directory_identity: project_directory_identity(&directory)
+            .expect("recovery directory identity"),
+        authenticated_objects: Default::default(),
+        target: target.clone(),
+        temp: temp.clone(),
+        backup: directory.join("backup.ori2"),
+        journal: directory.join("journal.json"),
+        directory: directory.clone(),
+    };
+    assert_eq!(
+        adapter
+            .object_sha256(SingleFileRecoveryObject::Temp)
+            .expect("authenticate temp"),
+        Some(sha256_hex_bytes(b"old-hash"))
+    );
+
+    let result = adapter.rename_object_with_pre_rename_hook(
+        SingleFileRecoveryObject::Temp,
+        SingleFileRecoveryObject::Target,
+        || fs::write(&temp, b"new-hash"),
+    );
+
+    assert!(
+        result.is_err(),
+        "the authenticated digest must survive until source publication"
+    );
+    assert!(!target.exists());
+    assert_eq!(
+        fs::read(&temp).expect("mutated source preserved"),
+        b"new-hash"
     );
     fs::remove_dir_all(directory).expect("cleanup test directory");
 }

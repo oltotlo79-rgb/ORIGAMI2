@@ -100,16 +100,16 @@ fn project_file_identity_key_with_pre_open_hook(
     entry_metadata: &std::fs::Metadata,
     pre_open_hook: impl FnOnce() -> std::io::Result<()>,
 ) -> Result<String, ()> {
-    let (_file, opened_metadata) = open_inspected_regular_file_no_follow_with_pre_open_hook(
+    let (file, opened_metadata) = open_inspected_regular_file_no_follow_with_pre_open_hook(
         path,
         entry_metadata,
         false,
         pre_open_hook,
     )
     .map_err(|_| ())?;
-    let RegularFileIdentityV1(first, second) =
-        regular_file_identity_v1(&opened_metadata).ok_or(())?;
-    Ok(format!("file:{first}:{second}"))
+    let FileSystemObjectIdentityV1(first, second, third) =
+        regular_file_identity_v1(&file, &opened_metadata).ok_or(())?;
+    Ok(format!("file:{first}:{second}:{third}"))
 }
 
 use ori_domain::ProjectId;
@@ -296,7 +296,8 @@ fn recover_authenticated_single_file_v1(
 struct DiskSingleFileRecoveryFs {
     directory: PathBuf,
     directory_identity: ProjectDirectoryIdentity,
-    authenticated_objects: RefCell<HashMap<SingleFileRecoveryObject, AuthenticatedRegularFileV1>>,
+    authenticated_objects:
+        RefCell<HashMap<SingleFileRecoveryObject, AuthenticatedRecoveryObjectV1>>,
     target: PathBuf,
     temp: PathBuf,
     backup: PathBuf,
@@ -326,7 +327,7 @@ impl DiskSingleFileRecoveryFs {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err(()),
         };
-        let (hash, _file, opened_metadata) =
+        let (hash, file, opened_metadata) =
             hash_inspected_regular_file_no_follow_with_pre_open_hook(
                 path,
                 &entry_metadata,
@@ -334,10 +335,14 @@ impl DiskSingleFileRecoveryFs {
                 pre_open_hook,
             )
             .map_err(|_| ())?;
-        let authenticated = authenticated_regular_file_v1(&opened_metadata).ok_or(())?;
-        self.authenticated_objects
-            .borrow_mut()
-            .insert(object, authenticated);
+        let authenticated = authenticated_regular_file_v1(&file, &opened_metadata).ok_or(())?;
+        self.authenticated_objects.borrow_mut().insert(
+            object,
+            AuthenticatedRecoveryObjectV1 {
+                authenticated,
+                sha256: hash.clone(),
+            },
+        );
         Ok(Some(hash))
     }
 
@@ -355,30 +360,47 @@ impl DiskSingleFileRecoveryFs {
             .authenticated_objects
             .borrow()
             .get(&from)
-            .copied()
+            .cloned()
             .ok_or(())?;
         let source = self.path(from);
         let destination = self.path(to);
         let entry_metadata = std::fs::symlink_metadata(source).map_err(|_| ())?;
         let require_single_link = from != SingleFileRecoveryObject::Target;
-        if require_single_link && authenticated_source.link_count != 1 {
+        if require_single_link && authenticated_source.authenticated.link_count != 1 {
             return Err(());
         }
-        let source_file =
+        let mut source_file =
             open_regular_file_for_authenticated_rename_no_follow_v1(source).map_err(|_| ())?;
         let opened_metadata = source_file.metadata().map_err(|_| ())?;
         if !regular_file_metadata_matches_v1(&entry_metadata, &opened_metadata, require_single_link)
-            || authenticated_regular_file_v1(&opened_metadata) != Some(authenticated_source)
+            || authenticated_regular_file_v1(&source_file, &opened_metadata)
+                != Some(authenticated_source.authenticated)
         {
             return Err(());
         }
+        revalidate_opened_regular_file_content_v1(
+            &mut source_file,
+            authenticated_source.authenticated,
+            &authenticated_source.sha256,
+            require_single_link,
+        )
+        .map_err(|_| ())?;
 
         pre_rename_hook().map_err(|_| ())?;
         self.verify_directory_identity()?;
-        let rename_metadata = std::fs::symlink_metadata(source).map_err(|_| ())?;
-        if authenticated_regular_file_v1(&rename_metadata) != Some(authenticated_source) {
-            return Err(());
-        }
+        revalidate_opened_regular_file_content_v1(
+            &mut source_file,
+            authenticated_source.authenticated,
+            &authenticated_source.sha256,
+            require_single_link,
+        )
+        .map_err(|_| ())?;
+        revalidate_path_against_authenticated_regular_file_v1(
+            source,
+            authenticated_source.authenticated,
+            require_single_link,
+        )
+        .map_err(|_| ())?;
         // Destination no-replace is atomic on supported platforms. Windows
         // renames the validated handle itself; Unix exposes only a path-based
         // no-replace primitive here, so the immediate source recheck and the
@@ -395,10 +417,19 @@ impl DiskSingleFileRecoveryFs {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             _ => return Err(()),
         }
-        let destination_metadata = std::fs::symlink_metadata(destination).map_err(|_| ())?;
-        if authenticated_regular_file_v1(&destination_metadata) != Some(authenticated_source) {
-            return Err(());
-        }
+        revalidate_opened_regular_file_content_v1(
+            &mut source_file,
+            authenticated_source.authenticated,
+            &authenticated_source.sha256,
+            require_single_link,
+        )
+        .map_err(|_| ())?;
+        revalidate_path_against_authenticated_regular_file_v1(
+            destination,
+            authenticated_source.authenticated,
+            require_single_link,
+        )
+        .map_err(|_| ())?;
         drop(source_file);
         let mut authenticated_objects = self.authenticated_objects.borrow_mut();
         authenticated_objects.remove(&from);
@@ -420,7 +451,7 @@ impl DiskSingleFileRecoveryFs {
             Err(_) => return Err(()),
         };
         let require_single_link = object != SingleFileRecoveryObject::Target;
-        let (opened_file, opened_metadata) =
+        let (mut opened_file, opened_metadata) =
             open_inspected_regular_file_no_follow_with_pre_open_hook(
                 path,
                 &entry_metadata,
@@ -428,26 +459,39 @@ impl DiskSingleFileRecoveryFs {
                 || Ok(()),
             )
             .map_err(|_| ())?;
-        if self
-            .authenticated_objects
-            .borrow()
-            .get(&object)
-            .is_some_and(|authenticated| {
-                authenticated_regular_file_v1(&opened_metadata) != Some(*authenticated)
-            })
-        {
+        let (opened_sha256, hashed_metadata) = hash_opened_regular_file_from_start_v1(
+            &mut opened_file,
+            &opened_metadata,
+            require_single_link,
+        )
+        .map_err(|_| ())?;
+        let authenticated =
+            authenticated_regular_file_v1(&opened_file, &hashed_metadata).ok_or(())?;
+        let cached_authenticated = self.authenticated_objects.borrow().get(&object).cloned();
+        if cached_authenticated.as_ref().is_some_and(|cached| {
+            cached.authenticated != authenticated || cached.sha256 != opened_sha256
+        }) {
             return Err(());
         }
+        let authenticated = cached_authenticated.unwrap_or(AuthenticatedRecoveryObjectV1 {
+            authenticated,
+            sha256: opened_sha256,
+        });
         pre_delete_hook().map_err(|_| ())?;
         self.verify_directory_identity()?;
-        let delete_metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
-        if !regular_file_metadata_matches_v1(
-            &opened_metadata,
-            &delete_metadata,
+        revalidate_opened_regular_file_content_v1(
+            &mut opened_file,
+            authenticated.authenticated,
+            &authenticated.sha256,
             require_single_link,
-        ) {
-            return Err(());
-        }
+        )
+        .map_err(|_| ())?;
+        revalidate_path_against_authenticated_regular_file_v1(
+            path,
+            authenticated.authenticated,
+            require_single_link,
+        )
+        .map_err(|_| ())?;
 
         // Rust has no portable handle-bound unlink operation. Keep the
         // no-follow handle alive, revalidate the named entry immediately
@@ -471,7 +515,82 @@ impl DiskSingleFileRecoveryFs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProjectDirectoryIdentity(u64, u64);
+struct FileSystemObjectIdentityV1(u64, u64, u64);
+
+type ProjectDirectoryIdentity = FileSystemObjectIdentityV1;
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_file_identity_from_full_file_id_v1(
+    volume_serial_number: u64,
+    identifier: [u8; 16],
+) -> Option<FileSystemObjectIdentityV1> {
+    if volume_serial_number == 0
+        || identifier.iter().all(|byte| *byte == 0)
+        || identifier.iter().all(|byte| *byte == u8::MAX)
+    {
+        return None;
+    }
+    let low = u64::from_le_bytes(identifier[..8].try_into().ok()?);
+    let high = u64::from_le_bytes(identifier[8..].try_into().ok()?);
+    Some(FileSystemObjectIdentityV1(volume_serial_number, low, high))
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy)]
+struct WindowsHandleInformationV1 {
+    identity: FileSystemObjectIdentityV1,
+    attributes: u32,
+    link_count: u64,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_handle_information_v1(file: &File) -> Option<WindowsHandleInformationV1> {
+    use std::{
+        mem::{MaybeUninit, size_of},
+        os::windows::io::AsRawHandle,
+        ptr,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx,
+    };
+
+    let mut legacy_information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: the output storage and retained handle are valid for the call.
+    if unsafe {
+        GetFileInformationByHandle(file.as_raw_handle() as _, legacy_information.as_mut_ptr())
+    } == 0
+    {
+        return None;
+    }
+    // SAFETY: success initialized the structure.
+    let legacy_information = unsafe { legacy_information.assume_init() };
+
+    let mut full_identity = FILE_ID_INFO::default();
+    let full_identity_size = u32::try_from(size_of::<FILE_ID_INFO>()).ok()?;
+    // SAFETY: the retained handle is valid and `full_identity` provides
+    // writable storage of exactly the size passed to the API.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileIdInfo,
+            ptr::addr_of_mut!(full_identity).cast(),
+            full_identity_size,
+        )
+    } == 0
+    {
+        return None;
+    }
+    let identity = windows_file_identity_from_full_file_id_v1(
+        full_identity.VolumeSerialNumber,
+        full_identity.FileId.Identifier,
+    )?;
+    Some(WindowsHandleInformationV1 {
+        identity,
+        attributes: legacy_information.dwFileAttributes,
+        link_count: u64::from(legacy_information.nNumberOfLinks),
+    })
+}
 
 #[cfg(unix)]
 fn project_directory_identity(path: &Path) -> Result<ProjectDirectoryIdentity, ()> {
@@ -489,7 +608,11 @@ fn project_directory_identity(path: &Path) -> Result<ProjectDirectoryIdentity, (
     if !metadata.file_type().is_dir() {
         return Err(());
     }
-    Ok(ProjectDirectoryIdentity(metadata.dev(), metadata.ino()))
+    Ok(FileSystemObjectIdentityV1(
+        metadata.dev(),
+        metadata.ino(),
+        0,
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -511,30 +634,15 @@ fn project_directory_identity(path: &Path) -> Result<ProjectDirectoryIdentity, (
 fn project_directory_identity_from_handle(
     directory: &File,
 ) -> Result<ProjectDirectoryIdentity, ()> {
-    use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
-    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 
-    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-    // SAFETY: the output storage and directory handle are valid for the call.
-    if unsafe {
-        GetFileInformationByHandle(directory.as_raw_handle() as _, information.as_mut_ptr())
-    } == 0
+    let information = windows_handle_information_v1(directory).ok_or(())?;
+    if information.attributes & FILE_ATTRIBUTE_DIRECTORY == 0
+        || information.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
     {
         return Err(());
     }
-    // SAFETY: success initialized the structure.
-    let information = unsafe { information.assume_init() };
-    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(());
-    }
-    let index =
-        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
-    Ok(ProjectDirectoryIdentity(
-        u64::from(information.dwVolumeSerialNumber),
-        index,
-    ))
+    Ok(information.identity)
 }
 
 impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
@@ -621,19 +729,23 @@ fn recover_single_file_journal_for_target_inner_with_pre_open_hook(
     if entry_metadata.len() > MAX_JOURNAL_BYTES {
         return Err(());
     }
-    let (journal_file, opened_metadata) = open_inspected_regular_file_no_follow_with_pre_open_hook(
+    let (mut journal_file, opened_metadata) =
+        open_inspected_regular_file_no_follow_for_stable_read_with_pre_open_hook(
+            &journal_path,
+            &entry_metadata,
+            true,
+            pre_journal_open_hook,
+        )
+        .map_err(|_| ())?;
+    let bytes = read_opened_regular_file_bounded_stably_with_post_read_hook_v1(
         &journal_path,
-        &entry_metadata,
+        &mut journal_file,
+        &opened_metadata,
         true,
-        pre_journal_open_hook,
+        MAX_JOURNAL_BYTES,
+        || Ok(()),
     )
     .map_err(|_| ())?;
-    let capacity = usize::try_from(opened_metadata.len())
-        .unwrap_or(0)
-        .min(usize::try_from(MAX_JOURNAL_BYTES).unwrap_or(usize::MAX));
-    let mut bytes = Vec::with_capacity(capacity);
-    let mut bounded_reader = journal_file.take(MAX_JOURNAL_BYTES.saturating_add(1));
-    bounded_reader.read_to_end(&mut bytes).map_err(|_| ())?;
     if bytes.len() as u64 > MAX_JOURNAL_BYTES {
         return Err(());
     }
@@ -844,25 +956,27 @@ fn load_project_archive_from_path_with_pre_open_hook(
     if declared_size > limits.max_archive_size {
         return Err(PROJECT_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
-    let (file, opened_metadata) = open_inspected_regular_file_no_follow_with_pre_open_hook(
-        path,
-        &entry_metadata,
-        false,
-        pre_open_hook,
-    )
-    .map_err(|_| PROJECT_FILE_OPEN_FAILED_MESSAGE.to_owned())?;
+    let (mut file, opened_metadata) =
+        open_inspected_regular_file_no_follow_for_stable_read_with_pre_open_hook(
+            path,
+            &entry_metadata,
+            false,
+            pre_open_hook,
+        )
+        .map_err(|_| PROJECT_FILE_OPEN_FAILED_MESSAGE.to_owned())?;
     if opened_metadata.len() > limits.max_archive_size {
         return Err(PROJECT_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
 
-    let capacity = usize::try_from(declared_size)
-        .unwrap_or(0)
-        .min(usize::try_from(limits.max_archive_size).unwrap_or(usize::MAX));
-    let mut bytes = Vec::with_capacity(capacity);
-    let mut bounded_reader = file.take(limits.max_archive_size.saturating_add(1));
-    bounded_reader
-        .read_to_end(&mut bytes)
-        .map_err(|_| PROJECT_FILE_READ_FAILED_MESSAGE.to_owned())?;
+    let bytes = read_opened_regular_file_bounded_stably_with_post_read_hook_v1(
+        path,
+        &mut file,
+        &opened_metadata,
+        false,
+        limits.max_archive_size,
+        || Ok(()),
+    )
+    .map_err(|_| PROJECT_FILE_READ_FAILED_MESSAGE.to_owned())?;
     if bytes.len() as u64 > limits.max_archive_size {
         return Err(PROJECT_FILE_TOO_LARGE_MESSAGE.to_owned());
     }
@@ -900,15 +1014,16 @@ fn inspect_recovery_project_with_pre_open_hook(
         return RecoveryProjectLoad::Invalid;
     }
 
-    let (file, metadata) = match open_inspected_regular_file_no_follow_with_pre_open_hook(
-        path,
-        &entry_metadata,
-        false,
-        pre_open_hook,
-    ) {
-        Ok(opened) => opened,
-        Err(_) => return RecoveryProjectLoad::Invalid,
-    };
+    let (mut file, metadata) =
+        match open_inspected_regular_file_no_follow_for_stable_read_with_pre_open_hook(
+            path,
+            &entry_metadata,
+            false,
+            pre_open_hook,
+        ) {
+            Ok(opened) => opened,
+            Err(_) => return RecoveryProjectLoad::Invalid,
+        };
     if metadata.len() > limits.max_archive_size {
         return RecoveryProjectLoad::Invalid;
     }
@@ -917,16 +1032,17 @@ fn inspect_recovery_project_with_pre_open_hook(
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .and_then(frontend_safe_unix_millis);
-    let capacity = usize::try_from(metadata.len())
-        .unwrap_or(0)
-        .min(usize::try_from(limits.max_archive_size).unwrap_or(usize::MAX));
-    let mut bytes = Vec::with_capacity(capacity);
-    let mut bounded_reader = file.take(limits.max_archive_size.saturating_add(1));
-    if bounded_reader.read_to_end(&mut bytes).is_err()
-        || bytes.len() as u64 > limits.max_archive_size
-    {
-        return RecoveryProjectLoad::Invalid;
-    }
+    let bytes = match read_opened_regular_file_bounded_stably_with_post_read_hook_v1(
+        path,
+        &mut file,
+        &metadata,
+        false,
+        limits.max_archive_size,
+        || Ok(()),
+    ) {
+        Ok(bytes) if bytes.len() as u64 <= limits.max_archive_size => bytes,
+        Ok(_) | Err(_) => return RecoveryProjectLoad::Invalid,
+    };
     let Ok(project) = read_project_archive_ori2_with_limits(&bytes, limits) else {
         return RecoveryProjectLoad::Invalid;
     };
@@ -962,6 +1078,25 @@ pub(super) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> 
 #[cfg(not(any(unix, target_os = "windows")))]
 pub(super) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
     File::open(path)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_regular_file_no_follow_for_stable_read_v1(path: &Path) -> std::io::Result<File> {
+    open_regular_file_no_follow(path)
+}
+
+#[cfg(target_os = "windows")]
+fn open_regular_file_no_follow_for_stable_read_v1(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .access_mode(FILE_GENERIC_READ)
+        // Keep delete sharing so identity-swap detection remains testable and
+        // fail-closed, but deny writer sharing for the complete read window.
+        // Save/rename handles continue to use `open_regular_file_no_follow`.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    options.open(path)
 }
 
 pub(super) fn metadata_is_plain_regular_file(metadata: &std::fs::Metadata) -> bool {
@@ -1127,7 +1262,8 @@ fn rename_recovery_entry_no_replace_in_directory(
         .open(source_parent)
         .map_err(|_| RecoveryPersistenceError)?;
     let metadata = directory.metadata().map_err(|_| RecoveryPersistenceError)?;
-    if ProjectDirectoryIdentity(metadata.dev(), metadata.ino()) != expected_directory_identity {
+    if FileSystemObjectIdentityV1(metadata.dev(), metadata.ino(), 0) != expected_directory_identity
+    {
         return Err(RecoveryPersistenceError);
     }
     let source = CString::new(
@@ -1513,15 +1649,20 @@ where
         .map_err(|()| std::io::Error::other("save directory identity failed"))?;
     let backup = parent.join(&backup_name);
     let old_entry_metadata = std::fs::symlink_metadata(destination)?;
-    let (old_sha256, old_file, old_metadata) =
+    let (old_sha256, mut old_file, old_metadata) =
         hash_inspected_regular_file_no_follow_with_pre_open_hook(
             destination,
             &old_entry_metadata,
             false,
             || Ok(()),
         )?;
-    let old_authenticated = authenticated_regular_file_v1(&old_metadata)
+    let old_authenticated = authenticated_regular_file_v1(&old_file, &old_metadata)
         .ok_or_else(|| std::io::Error::other("old destination identity is unavailable"))?;
+    if old_authenticated.link_count != 1 {
+        return Err(std::io::Error::other(
+            "old destination is not exclusively linked",
+        ));
+    }
     let (temp_sha256, staged_authenticated) = hash_staged_file_with_retained_seal_v1(staged)?;
     let mut payload = SingleFileJournalPayloadV1 {
         schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
@@ -1545,15 +1686,26 @@ where
         if project_directory_identity(parent).ok() != Some(directory_identity) {
             return Err(std::io::Error::other("save directory changed"));
         }
-        if authenticated_regular_file_v1(&old_file.metadata()?) != Some(old_authenticated) {
+        if authenticated_regular_file_v1(&old_file, &old_file.metadata()?)
+            != Some(old_authenticated)
+        {
             return Err(std::io::Error::other(
                 "old destination handle changed before backup",
             ));
         }
+        revalidate_opened_regular_file_content_v1(
+            &mut old_file,
+            old_authenticated,
+            payload
+                .old_sha256
+                .as_deref()
+                .ok_or_else(|| std::io::Error::other("old destination digest is unavailable"))?,
+            true,
+        )?;
         revalidate_path_against_authenticated_regular_file_v1(
             destination,
             old_authenticated,
-            false,
+            true,
         )?;
         rename_opened_regular_file_no_replace_v1(
             destination,
@@ -1570,7 +1722,16 @@ where
                 ));
             }
         }
-        revalidate_path_against_authenticated_regular_file_v1(&backup, old_authenticated, false)?;
+        revalidate_opened_regular_file_content_v1(
+            &mut old_file,
+            old_authenticated,
+            payload
+                .old_sha256
+                .as_deref()
+                .ok_or_else(|| std::io::Error::other("old destination digest is unavailable"))?,
+            true,
+        )?;
+        revalidate_path_against_authenticated_regular_file_v1(&backup, old_authenticated, true)?;
         sync_directory()?;
         payload.phase = SingleFileJournalPhaseV1::OldMoved;
         persist_single_file_journal_phase(destination, &payload, false)
@@ -1581,11 +1742,19 @@ where
         if project_directory_identity(parent).ok() != Some(directory_identity) {
             return Err(std::io::Error::other("save directory changed"));
         }
-        if authenticated_regular_file_v1(&staged.file().metadata()?) != Some(staged_authenticated) {
+        if authenticated_regular_file_v1(staged.file(), &staged.file().metadata()?)
+            != Some(staged_authenticated)
+        {
             return Err(std::io::Error::other(
                 "staged handle changed before publication",
             ));
         }
+        revalidate_opened_regular_file_content_v1(
+            staged.file_mut(),
+            staged_authenticated,
+            &payload.temp_sha256,
+            true,
+        )?;
         revalidate_path_against_authenticated_regular_file_v1(
             &staged.path,
             staged_authenticated,
@@ -1606,6 +1775,12 @@ where
                 ));
             }
         }
+        revalidate_opened_regular_file_content_v1(
+            staged.file_mut(),
+            staged_authenticated,
+            &payload.temp_sha256,
+            true,
+        )?;
         revalidate_path_against_authenticated_regular_file_v1(
             destination,
             staged_authenticated,
@@ -1617,7 +1792,7 @@ where
             .map_err(|()| std::io::Error::other("new-published journal failed"))?;
         #[cfg(test)]
         abort_at_single_file_save_failpoint("new_published");
-        revalidate_path_against_authenticated_regular_file_v1(&backup, old_authenticated, false)?;
+        revalidate_path_against_authenticated_regular_file_v1(&backup, old_authenticated, true)?;
         std::fs::remove_file(&backup)?;
         match std::fs::symlink_metadata(&backup) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1647,8 +1822,7 @@ fn abort_at_single_file_save_failpoint(expected: &str) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RegularFileIdentityV1(u64, u64);
+type RegularFileIdentityV1 = FileSystemObjectIdentityV1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AuthenticatedRegularFileV1 {
@@ -1657,64 +1831,248 @@ struct AuthenticatedRegularFileV1 {
     link_count: u64,
 }
 
-#[cfg(unix)]
-fn regular_file_identity_v1(metadata: &std::fs::Metadata) -> Option<RegularFileIdentityV1> {
-    use std::os::unix::fs::MetadataExt;
-
-    Some(RegularFileIdentityV1(metadata.dev(), metadata.ino()))
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuthenticatedRecoveryObjectV1 {
+    authenticated: AuthenticatedRegularFileV1,
+    sha256: String,
 }
 
-#[cfg(target_os = "windows")]
-fn regular_file_identity_v1(metadata: &std::fs::Metadata) -> Option<RegularFileIdentityV1> {
-    Some(RegularFileIdentityV1(
-        u64::from(metadata.volume_serial_number()?),
-        metadata.file_index()?,
+#[cfg(unix)]
+fn regular_file_identity_v1(
+    _file: &File,
+    metadata: &std::fs::Metadata,
+) -> Option<RegularFileIdentityV1> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(FileSystemObjectIdentityV1(
+        metadata.dev(),
+        metadata.ino(),
+        0,
     ))
 }
 
+#[cfg(target_os = "windows")]
+fn regular_file_identity_v1(
+    file: &File,
+    _metadata: &std::fs::Metadata,
+) -> Option<RegularFileIdentityV1> {
+    regular_file_information_from_handle_v1(file).map(|(identity, _)| identity)
+}
+
 #[cfg(not(any(unix, target_os = "windows")))]
-fn regular_file_identity_v1(_metadata: &std::fs::Metadata) -> Option<RegularFileIdentityV1> {
+fn regular_file_identity_v1(
+    _file: &File,
+    _metadata: &std::fs::Metadata,
+) -> Option<RegularFileIdentityV1> {
     None
 }
 
 #[cfg(unix)]
-fn regular_file_link_count_v1(metadata: &std::fs::Metadata) -> Option<u64> {
+fn regular_file_link_count_v1(_file: &File, metadata: &std::fs::Metadata) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
 
     Some(metadata.nlink())
 }
 
 #[cfg(target_os = "windows")]
-fn regular_file_link_count_v1(metadata: &std::fs::Metadata) -> Option<u64> {
-    Some(u64::from(metadata.number_of_links()?))
+fn regular_file_link_count_v1(file: &File, _metadata: &std::fs::Metadata) -> Option<u64> {
+    regular_file_information_from_handle_v1(file).map(|(_, link_count)| link_count)
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
-fn regular_file_link_count_v1(_metadata: &std::fs::Metadata) -> Option<u64> {
+fn regular_file_link_count_v1(_file: &File, _metadata: &std::fs::Metadata) -> Option<u64> {
     None
 }
 
 fn authenticated_regular_file_v1(
+    file: &File,
     metadata: &std::fs::Metadata,
 ) -> Option<AuthenticatedRegularFileV1> {
     metadata_is_plain_regular_file(metadata).then_some(())?;
     Some(AuthenticatedRegularFileV1 {
-        identity: regular_file_identity_v1(metadata)?,
+        identity: regular_file_identity_v1(file, metadata)?,
         length: metadata.len(),
-        link_count: regular_file_link_count_v1(metadata)?,
+        link_count: regular_file_link_count_v1(file, metadata)?,
     })
 }
 
+fn authenticated_regular_file_with_link_policy_v1(
+    file: &File,
+    metadata: &std::fs::Metadata,
+    require_single_link: bool,
+) -> std::io::Result<AuthenticatedRegularFileV1> {
+    let authenticated = authenticated_regular_file_v1(file, metadata)
+        .ok_or_else(|| std::io::Error::other("regular file identity is unavailable"))?;
+    if require_single_link && authenticated.link_count != 1 {
+        return Err(std::io::Error::other(
+            "private file is not exclusively linked",
+        ));
+    }
+    Ok(authenticated)
+}
+
+#[cfg(target_os = "windows")]
+fn regular_file_information_from_handle_v1(file: &File) -> Option<(RegularFileIdentityV1, u64)> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+
+    let information = windows_handle_information_v1(file)?;
+    if information.attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+        || information.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return None;
+    }
+    Some((information.identity, information.link_count))
+}
+
+#[cfg(unix)]
 fn regular_file_metadata_matches_v1(
     expected: &std::fs::Metadata,
     actual: &std::fs::Metadata,
     require_single_link: bool,
 ) -> bool {
-    authenticated_regular_file_v1(expected)
-        .zip(authenticated_regular_file_v1(actual))
-        .is_some_and(|(expected, actual)| {
-            expected == actual && (!require_single_link || expected.link_count == 1)
-        })
+    use std::os::unix::fs::MetadataExt;
+
+    metadata_is_plain_regular_file(expected)
+        && metadata_is_plain_regular_file(actual)
+        && expected.dev() == actual.dev()
+        && expected.ino() == actual.ino()
+        && expected.len() == actual.len()
+        && expected.nlink() == actual.nlink()
+        && (!require_single_link || expected.nlink() == 1)
+}
+
+#[cfg(target_os = "windows")]
+fn regular_file_metadata_matches_v1(
+    expected: &std::fs::Metadata,
+    actual: &std::fs::Metadata,
+    _require_single_link: bool,
+) -> bool {
+    metadata_is_plain_regular_file(expected)
+        && metadata_is_plain_regular_file(actual)
+        && expected.len() == actual.len()
+        && expected.file_attributes() == actual.file_attributes()
+        && expected.creation_time() == actual.creation_time()
+        && expected.last_write_time() == actual.last_write_time()
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn regular_file_metadata_matches_v1(
+    _expected: &std::fs::Metadata,
+    _actual: &std::fs::Metadata,
+    _require_single_link: bool,
+) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn stable_read_metadata_matches_v1(
+    expected: &std::fs::Metadata,
+    actual: &std::fs::Metadata,
+    require_single_link: bool,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    regular_file_metadata_matches_v1(expected, actual, require_single_link)
+        && expected.mode() == actual.mode()
+        && expected.uid() == actual.uid()
+        && expected.gid() == actual.gid()
+        && expected.mtime() == actual.mtime()
+        && expected.mtime_nsec() == actual.mtime_nsec()
+        && expected.ctime() == actual.ctime()
+        && expected.ctime_nsec() == actual.ctime_nsec()
+}
+
+#[cfg(target_os = "windows")]
+fn stable_read_metadata_matches_v1(
+    expected: &std::fs::Metadata,
+    actual: &std::fs::Metadata,
+    require_single_link: bool,
+) -> bool {
+    regular_file_metadata_matches_v1(expected, actual, require_single_link)
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn stable_read_metadata_matches_v1(
+    _expected: &std::fs::Metadata,
+    _actual: &std::fs::Metadata,
+    _require_single_link: bool,
+) -> bool {
+    false
+}
+
+fn read_opened_regular_file_bounded_stably_with_post_read_hook_v1(
+    path: &Path,
+    file: &mut File,
+    opened_metadata: &std::fs::Metadata,
+    require_single_link: bool,
+    max_bytes: u64,
+    post_read_hook: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<Vec<u8>> {
+    let opened_authenticated =
+        authenticated_regular_file_with_link_policy_v1(file, opened_metadata, require_single_link)?;
+    file.seek(SeekFrom::Start(0))?;
+    let capacity = usize::try_from(opened_metadata.len())
+        .unwrap_or(0)
+        .min(usize::try_from(max_bytes).unwrap_or(usize::MAX));
+    let mut bytes = Vec::with_capacity(capacity);
+    {
+        let mut bounded_reader = (&mut *file).take(max_bytes.saturating_add(1));
+        bounded_reader.read_to_end(&mut bytes)?;
+    }
+    post_read_hook()?;
+
+    // Timestamp resolution is not a sufficient mutation detector on every
+    // supported Unix filesystem. Re-read through the retained handle and
+    // compare the exact bytes without allocating a second archive-sized
+    // buffer, then retain the metadata/identity checks below as an independent
+    // seal against replacement and size/link changes.
+    file.seek(SeekFrom::Start(0))?;
+    let mut verified_bytes = 0_usize;
+    let mut verification_buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut verification_buffer)?;
+        if read == 0 {
+            break;
+        }
+        let verified_end = verified_bytes
+            .checked_add(read)
+            .ok_or_else(|| std::io::Error::other("regular file verification overflow"))?;
+        if verified_end > bytes.len()
+            || bytes[verified_bytes..verified_end] != verification_buffer[..read]
+        {
+            return Err(std::io::Error::other(
+                "regular file changed while being read",
+            ));
+        }
+        verified_bytes = verified_end;
+    }
+    if verified_bytes != bytes.len() {
+        return Err(std::io::Error::other(
+            "regular file changed while being read",
+        ));
+    }
+
+    let final_metadata = file.metadata()?;
+    let final_authenticated =
+        authenticated_regular_file_with_link_policy_v1(file, &final_metadata, require_single_link)?;
+    let bytes_read = u64::try_from(bytes.len())
+        .map_err(|_| std::io::Error::other("regular file read length overflow"))?;
+    if bytes_read != opened_metadata.len()
+        || bytes_read != final_metadata.len()
+        || !stable_read_metadata_matches_v1(opened_metadata, &final_metadata, require_single_link)
+        || final_authenticated != opened_authenticated
+    {
+        return Err(std::io::Error::other(
+            "regular file changed while being read",
+        ));
+    }
+    revalidate_path_against_authenticated_regular_file_v1(
+        path,
+        opened_authenticated,
+        require_single_link,
+    )
+    .map_err(|_| std::io::Error::other("regular file path changed while being read"))?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -1754,6 +2112,8 @@ fn hash_opened_regular_file_from_start_v1(
     opened_metadata: &std::fs::Metadata,
     require_single_link: bool,
 ) -> std::io::Result<(String, std::fs::Metadata)> {
+    let opened_authenticated =
+        authenticated_regular_file_with_link_policy_v1(file, opened_metadata, require_single_link)?;
     file.seek(SeekFrom::Start(0))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -1772,8 +2132,11 @@ fn hash_opened_regular_file_from_start_v1(
         hasher.update(&buffer[..read]);
     }
     let final_metadata = file.metadata()?;
+    let final_authenticated =
+        authenticated_regular_file_with_link_policy_v1(file, &final_metadata, require_single_link)?;
     if total_read != final_metadata.len()
         || !regular_file_metadata_matches_v1(opened_metadata, &final_metadata, require_single_link)
+        || final_authenticated != opened_authenticated
     {
         return Err(std::io::Error::other("regular file changed while hashing"));
     }
@@ -1787,19 +2150,46 @@ fn hash_opened_regular_file_from_start_v1(
     ))
 }
 
+fn revalidate_opened_regular_file_content_v1(
+    file: &mut File,
+    expected_authenticated: AuthenticatedRegularFileV1,
+    expected_sha256: &str,
+    require_single_link: bool,
+) -> std::io::Result<()> {
+    let opened_metadata = file.metadata()?;
+    if authenticated_regular_file_with_link_policy_v1(file, &opened_metadata, require_single_link)?
+        != expected_authenticated
+    {
+        return Err(std::io::Error::other(
+            "regular file handle changed before content validation",
+        ));
+    }
+    let (actual_sha256, final_metadata) =
+        hash_opened_regular_file_from_start_v1(file, &opened_metadata, require_single_link)?;
+    if actual_sha256 != expected_sha256
+        || authenticated_regular_file_v1(file, &final_metadata) != Some(expected_authenticated)
+    {
+        return Err(std::io::Error::other(
+            "regular file content changed before use",
+        ));
+    }
+    Ok(())
+}
+
 fn hash_staged_file_with_retained_seal_v1(
     staged: &mut StagedFile,
 ) -> std::io::Result<(String, AuthenticatedRegularFileV1)> {
-    let entry_metadata = std::fs::symlink_metadata(&staged.path)?;
     let opened_metadata = staged.file().metadata()?;
-    if !regular_file_metadata_matches_v1(&entry_metadata, &opened_metadata, true) {
-        return Err(std::io::Error::other(
-            "staged file path no longer names its open handle",
-        ));
-    }
+    let opened_authenticated =
+        authenticated_regular_file_with_link_policy_v1(staged.file(), &opened_metadata, true)?;
+    revalidate_path_against_authenticated_regular_file_v1(
+        &staged.path,
+        opened_authenticated,
+        true,
+    )?;
     let (hash, final_metadata) =
         hash_opened_regular_file_from_start_v1(staged.file_mut(), &opened_metadata, true)?;
-    let authenticated = authenticated_regular_file_v1(&final_metadata)
+    let authenticated = authenticated_regular_file_v1(staged.file(), &final_metadata)
         .ok_or_else(|| std::io::Error::other("staged file identity is unavailable"))?;
     Ok((hash, authenticated))
 }
@@ -1815,16 +2205,13 @@ fn revalidate_path_against_authenticated_regular_file_v1(
         ));
     }
     let entry_metadata = std::fs::symlink_metadata(path)?;
-    if authenticated_regular_file_v1(&entry_metadata) != Some(authenticated) {
-        return Err(std::io::Error::other("regular file identity changed"));
-    }
-    let (_file, opened_metadata) = open_inspected_regular_file_no_follow_with_pre_open_hook(
+    let (file, opened_metadata) = open_inspected_regular_file_no_follow_with_pre_open_hook(
         path,
         &entry_metadata,
         require_single_link,
         || Ok(()),
     )?;
-    if authenticated_regular_file_v1(&opened_metadata) != Some(authenticated) {
+    if authenticated_regular_file_v1(&file, &opened_metadata) != Some(authenticated) {
         return Err(std::io::Error::other("regular file identity changed"));
     }
     Ok(())
@@ -1836,13 +2223,63 @@ fn open_inspected_regular_file_no_follow_with_pre_open_hook(
     require_single_link: bool,
     pre_open_hook: impl FnOnce() -> std::io::Result<()>,
 ) -> std::io::Result<(File, std::fs::Metadata)> {
+    open_inspected_regular_file_no_follow_with_opener_and_pre_open_hook(
+        path,
+        entry_metadata,
+        require_single_link,
+        open_regular_file_no_follow,
+        pre_open_hook,
+    )
+}
+
+fn open_inspected_regular_file_no_follow_for_stable_read_with_pre_open_hook(
+    path: &Path,
+    entry_metadata: &std::fs::Metadata,
+    require_single_link: bool,
+    pre_open_hook: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<(File, std::fs::Metadata)> {
+    open_inspected_regular_file_no_follow_with_opener_and_pre_open_hook(
+        path,
+        entry_metadata,
+        require_single_link,
+        open_regular_file_no_follow_for_stable_read_v1,
+        pre_open_hook,
+    )
+}
+
+fn open_inspected_regular_file_no_follow_with_opener_and_pre_open_hook(
+    path: &Path,
+    entry_metadata: &std::fs::Metadata,
+    require_single_link: bool,
+    open_file: fn(&Path) -> std::io::Result<File>,
+    pre_open_hook: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<(File, std::fs::Metadata)> {
     if !regular_file_metadata_matches_v1(entry_metadata, entry_metadata, require_single_link) {
         return Err(std::io::Error::other("not a regular no-follow file"));
     }
+    let expected_file = open_file(path)?;
+    let expected_metadata = expected_file.metadata()?;
+    if !regular_file_metadata_matches_v1(entry_metadata, &expected_metadata, require_single_link) {
+        return Err(std::io::Error::other(
+            "regular file changed before inspection",
+        ));
+    }
+    let expected_authenticated = authenticated_regular_file_with_link_policy_v1(
+        &expected_file,
+        &expected_metadata,
+        require_single_link,
+    )?;
     pre_open_hook()?;
-    let file = open_regular_file_no_follow(path)?;
+    let file = open_file(path)?;
     let opened_metadata = file.metadata()?;
-    if !regular_file_metadata_matches_v1(entry_metadata, &opened_metadata, require_single_link) {
+    let opened_authenticated = authenticated_regular_file_with_link_policy_v1(
+        &file,
+        &opened_metadata,
+        require_single_link,
+    )?;
+    if !regular_file_metadata_matches_v1(&expected_metadata, &opened_metadata, require_single_link)
+        || opened_authenticated != expected_authenticated
+    {
         return Err(std::io::Error::other("regular file changed before use"));
     }
     Ok((file, opened_metadata))
@@ -1858,7 +2295,9 @@ fn open_regular_file_for_authenticated_rename_no_follow_v1(path: &Path) -> std::
     let mut options = OpenOptions::new();
     options
         .read(true)
-        .access_mode(DELETE | FILE_READ_ATTRIBUTES)
+        // Content is re-hashed immediately before and after publication, so
+        // the retained handle needs read-data access in addition to DELETE.
+        .access_mode(FILE_GENERIC_READ | DELETE)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     options.open(path)
@@ -1998,7 +2437,7 @@ fn commit_windows_staged_project_file_with_journal_and_hook(
     );
     let old_entry_metadata =
         std::fs::symlink_metadata(destination).map_err(|error| error.to_string())?;
-    let (old_sha256, old_file, old_metadata) =
+    let (old_sha256, mut old_file, old_metadata) =
         hash_inspected_regular_file_no_follow_with_pre_open_hook(
             destination,
             &old_entry_metadata,
@@ -2006,7 +2445,7 @@ fn commit_windows_staged_project_file_with_journal_and_hook(
             || Ok(()),
         )
         .map_err(|error| error.to_string())?;
-    let old_authenticated = authenticated_regular_file_v1(&old_metadata)
+    let old_authenticated = authenticated_regular_file_v1(&old_file, &old_metadata)
         .ok_or_else(|| "old destination identity is unavailable".to_owned())?;
     let (temp_sha256, staged_authenticated) =
         hash_staged_file_with_retained_seal_v1(staged).map_err(|error| error.to_string())?;
@@ -2029,14 +2468,27 @@ fn commit_windows_staged_project_file_with_journal_and_hook(
     if project_directory_identity(parent).ok() != Some(directory_identity) {
         return Err("the save directory changed before commit".to_owned());
     }
-    if authenticated_regular_file_v1(&old_file.metadata().map_err(|error| error.to_string())?)
-        != Some(old_authenticated)
+    if authenticated_regular_file_v1(
+        &old_file,
+        &old_file.metadata().map_err(|error| error.to_string())?,
+    ) != Some(old_authenticated)
     {
         return Err("the old destination handle changed before commit".to_owned());
     }
+    revalidate_opened_regular_file_content_v1(
+        &mut old_file,
+        old_authenticated,
+        payload
+            .old_sha256
+            .as_deref()
+            .ok_or_else(|| "the old destination digest is unavailable".to_owned())?,
+        false,
+    )
+    .map_err(|error| error.to_string())?;
     revalidate_path_against_authenticated_regular_file_v1(destination, old_authenticated, false)
         .map_err(|error| error.to_string())?;
     if authenticated_regular_file_v1(
+        staged.file(),
         &staged
             .file()
             .metadata()
@@ -2045,6 +2497,13 @@ fn commit_windows_staged_project_file_with_journal_and_hook(
     {
         return Err("the staged handle changed before commit".to_owned());
     }
+    revalidate_opened_regular_file_content_v1(
+        staged.file_mut(),
+        staged_authenticated,
+        &payload.temp_sha256,
+        true,
+    )
+    .map_err(|error| error.to_string())?;
     revalidate_path_against_authenticated_regular_file_v1(&staged.path, staged_authenticated, true)
         .map_err(|error| error.to_string())?;
     super::rename_windows_staged_file_with_policy(
@@ -2057,6 +2516,13 @@ fn commit_windows_staged_project_file_with_journal_and_hook(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         _ => return Err("the staged name remained after commit".to_owned()),
     }
+    revalidate_opened_regular_file_content_v1(
+        staged.file_mut(),
+        staged_authenticated,
+        &payload.temp_sha256,
+        true,
+    )
+    .map_err(|error| error.to_string())?;
     revalidate_path_against_authenticated_regular_file_v1(destination, staged_authenticated, true)
         .map_err(|error| error.to_string())?;
     drop(old_file);
@@ -2077,9 +2543,73 @@ pub(super) fn publish_unix_staged_file(
     destination: &Path,
     existing_destination_policy: ExistingDestinationPolicy,
 ) -> std::io::Result<()> {
+    publish_unix_staged_file_with_pre_publish_hook_v1(
+        staged,
+        destination,
+        existing_destination_policy,
+        || Ok(()),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn publish_unix_staged_file_with_pre_publish_hook_v1(
+    staged: &mut StagedFile,
+    destination: &Path,
+    existing_destination_policy: ExistingDestinationPolicy,
+    pre_publish_hook: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let staged_metadata = staged.file().metadata()?;
+    let opened_authenticated =
+        authenticated_regular_file_with_link_policy_v1(staged.file(), &staged_metadata, true)?;
+    let (staged_sha256, hashed_metadata) =
+        hash_opened_regular_file_from_start_v1(staged.file_mut(), &staged_metadata, true)?;
+    let staged_authenticated =
+        authenticated_regular_file_with_link_policy_v1(staged.file(), &hashed_metadata, true)?;
+    if staged_authenticated != opened_authenticated {
+        return Err(std::io::Error::other(
+            "staged file changed while its content was sealed",
+        ));
+    }
+    revalidate_path_against_authenticated_regular_file_v1(
+        &staged.path,
+        staged_authenticated,
+        true,
+    )?;
+    pre_publish_hook()?;
+    revalidate_opened_regular_file_content_v1(
+        staged.file_mut(),
+        staged_authenticated,
+        &staged_sha256,
+        true,
+    )?;
+    revalidate_path_against_authenticated_regular_file_v1(
+        &staged.path,
+        staged_authenticated,
+        true,
+    )?;
+
     match existing_destination_policy {
         ExistingDestinationPolicy::ReplaceConfirmed => {
             std::fs::rename(&staged.path, destination)?;
+            match std::fs::symlink_metadata(&staged.path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(std::io::Error::other(
+                        "staged name remained after publication",
+                    ));
+                }
+            }
+            revalidate_opened_regular_file_content_v1(
+                staged.file_mut(),
+                staged_authenticated,
+                &staged_sha256,
+                true,
+            )?;
+            revalidate_path_against_authenticated_regular_file_v1(
+                destination,
+                staged_authenticated,
+                true,
+            )?;
             staged.committed = true;
         }
         ExistingDestinationPolicy::RejectExisting => {
@@ -2089,12 +2619,63 @@ pub(super) fn publish_unix_staged_file(
             // this cannot replace a path created by another process in the
             // intervening window.
             std::fs::hard_link(&staged.path, destination)?;
-            if std::fs::remove_file(&staged.path).is_ok() {
-                staged.committed = true;
+            let published_authenticated = AuthenticatedRegularFileV1 {
+                // The retained stage was authenticated with the single-link
+                // policy immediately above. Publication adds exactly one name.
+                link_count: 2,
+                ..staged_authenticated
+            };
+            if authenticated_regular_file_v1(staged.file(), &staged.file().metadata()?)
+                != Some(published_authenticated)
+            {
+                return Err(std::io::Error::other(
+                    "published file does not match the retained staged handle",
+                ));
             }
-            // If unlinking the staging name failed, Drop retries it. The
-            // destination is already the verified inode and must be reported
-            // as committed rather than encouraging a duplicate save.
+            revalidate_opened_regular_file_content_v1(
+                staged.file_mut(),
+                published_authenticated,
+                &staged_sha256,
+                false,
+            )?;
+            revalidate_path_against_authenticated_regular_file_v1(
+                destination,
+                published_authenticated,
+                false,
+            )?;
+
+            // The destination now names the authenticated staged inode. From
+            // this point cleanup must not turn a successful publication into
+            // a retryable save error. Mark it committed before best-effort
+            // retirement so Drop cannot later unlink a swapped staging name.
+            staged.committed = true;
+            if revalidate_path_against_authenticated_regular_file_v1(
+                &staged.path,
+                published_authenticated,
+                false,
+            )
+            .is_ok()
+            {
+                let _ = std::fs::remove_file(&staged.path);
+            }
+            let final_authenticated =
+                authenticated_regular_file_v1(staged.file(), &staged.file().metadata()?)
+                    .ok_or_else(|| {
+                        std::io::Error::other(
+                            "published file identity is unavailable after staging cleanup",
+                        )
+                    })?;
+            revalidate_opened_regular_file_content_v1(
+                staged.file_mut(),
+                final_authenticated,
+                &staged_sha256,
+                false,
+            )?;
+            revalidate_path_against_authenticated_regular_file_v1(
+                destination,
+                final_authenticated,
+                false,
+            )?;
         }
     }
     Ok(())
@@ -2296,337 +2877,8 @@ pub(super) fn verify_generated_ori2(
 }
 
 #[cfg(test)]
-mod recovery_entry_tests {
-    use std::{
-        fs,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    use ori_domain::CreasePattern;
-
-    use super::*;
-
-    static NEXT_TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
-
-    struct TestDirectory(PathBuf);
-
-    impl TestDirectory {
-        fn new(label: &str) -> Self {
-            for _ in 0..128 {
-                let id = NEXT_TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
-                let path = std::env::temp_dir().join(format!(
-                    "origami2-recovery-entry-{label}-{}-{id}",
-                    std::process::id()
-                ));
-                match fs::create_dir(&path) {
-                    Ok(()) => return Self(path),
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                    Err(error) => panic!("create recovery entry test directory: {error}"),
-                }
-            }
-            panic!("allocate recovery entry test directory");
-        }
-
-        fn slot(&self) -> PathBuf {
-            self.0.join("current-project.ori2")
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            remove_test_entry(&self.slot());
-            for name in RECOVERY_QUARANTINE_NAMES {
-                remove_test_entry(&self.0.join(name));
-            }
-            remove_test_entry(&self.0.join("target-file.ori2"));
-            remove_test_entry(&self.0.join("target-directory"));
-            let _ = fs::remove_dir(&self.0);
-        }
-    }
-
-    fn remove_test_entry(path: &Path) {
-        let _ = fs::remove_file(path.join("sentinel"));
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_dir(path);
-    }
-
-    fn write_valid_document(path: &Path) {
-        let document = ProjectDocument::new("recovery test", CreasePattern::empty());
-        let bytes = write_project_archive_ori2(&Ori2ProjectArchive::document_only(document))
-            .expect("serialize recovery test project");
-        fs::write(path, bytes).expect("write recovery test project");
-    }
-
-    #[test]
-    fn missing_recovery_entry_clear_is_idempotent() {
-        let directory = TestDirectory::new("missing");
-        let slot = directory.slot();
-
-        assert_eq!(
-            inspect_recovery_project(&slot),
-            RecoveryProjectLoad::Missing
-        );
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-    }
-
-    #[test]
-    fn corrupt_regular_recovery_entry_is_retired_and_unlinked() {
-        let directory = TestDirectory::new("corrupt-file");
-        let slot = directory.slot();
-        fs::write(&slot, b"not an ori2 archive").expect("write corrupt recovery entry");
-
-        assert_eq!(
-            inspect_recovery_project(&slot),
-            RecoveryProjectLoad::Invalid
-        );
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert!(matches!(
-            fs::symlink_metadata(&slot),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-        ));
-        assert!(RECOVERY_QUARANTINE_NAMES.iter().all(|name| {
-            matches!(
-                fs::symlink_metadata(directory.0.join(name)),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound
-            )
-        }));
-    }
-
-    #[test]
-    fn empty_real_directory_recovery_entry_is_retired_then_removed() {
-        let directory = TestDirectory::new("empty-directory");
-        let slot = directory.slot();
-        fs::create_dir(&slot).expect("create empty recovery directory");
-
-        assert_eq!(
-            inspect_recovery_project(&slot),
-            RecoveryProjectLoad::Invalid
-        );
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert!(!slot.exists());
-    }
-
-    #[test]
-    fn nonempty_real_directory_is_moved_out_of_the_active_slot_without_recursion() {
-        let directory = TestDirectory::new("nonempty-directory");
-        let slot = directory.slot();
-        fs::create_dir(&slot).expect("create nonempty recovery directory");
-        fs::write(slot.join("sentinel"), b"keep").expect("write recovery sentinel");
-
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert!(matches!(
-            fs::symlink_metadata(&slot),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-        ));
-        let occupied = RECOVERY_QUARANTINE_NAMES
-            .iter()
-            .map(|name| directory.0.join(name))
-            .filter(|path| fs::symlink_metadata(path).is_ok())
-            .collect::<Vec<_>>();
-        assert_eq!(occupied.len(), 1);
-        assert_eq!(
-            fs::read(occupied[0].join("sentinel")).expect("read quarantined sentinel"),
-            b"keep"
-        );
-    }
-
-    #[test]
-    fn eight_nonempty_quarantine_directories_fail_closed_without_moving_active_entry() {
-        let directory = TestDirectory::new("quarantine-full");
-        let slot = directory.slot();
-        fs::write(&slot, b"active").expect("write active recovery entry");
-        for name in RECOVERY_QUARANTINE_NAMES {
-            let quarantine = directory.0.join(name);
-            fs::create_dir(&quarantine).expect("create occupied quarantine");
-            fs::write(quarantine.join("sentinel"), b"keep").expect("write quarantine sentinel");
-        }
-
-        assert_eq!(
-            clear_recovery_document(&slot),
-            Err(RecoveryPersistenceError)
-        );
-        assert_eq!(fs::read(&slot).expect("read active entry"), b"active");
-        for name in RECOVERY_QUARANTINE_NAMES {
-            assert_eq!(
-                fs::read(directory.0.join(name).join("sentinel"))
-                    .expect("read retained quarantine sentinel"),
-                b"keep"
-            );
-        }
-    }
-
-    #[test]
-    fn removable_stale_quarantine_entry_is_unlinked_before_exclusive_retirement() {
-        let directory = TestDirectory::new("stale-quarantine");
-        let slot = directory.slot();
-        fs::write(&slot, b"active").expect("write active recovery entry");
-        let first_quarantine = directory.0.join(RECOVERY_QUARANTINE_NAMES[0]);
-        fs::write(&first_quarantine, b"stale").expect("write stale quarantine entry");
-
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert!(!slot.exists());
-        assert!(!first_quarantine.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn final_component_file_symlink_is_invalid_and_clear_never_follows_target() {
-        use std::os::unix::fs::symlink;
-
-        let directory = TestDirectory::new("file-symlink");
-        let target = directory.0.join("target-file.ori2");
-        let slot = directory.slot();
-        write_valid_document(&target);
-        assert!(matches!(
-            inspect_recovery_project(&target),
-            RecoveryProjectLoad::Available { .. }
-        ));
-        symlink(&target, &slot).expect("create recovery file symlink");
-
-        assert_eq!(
-            inspect_recovery_project(&slot),
-            RecoveryProjectLoad::Invalid
-        );
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert!(matches!(
-            inspect_recovery_project(&target),
-            RecoveryProjectLoad::Available { .. }
-        ));
-        assert!(matches!(
-            fs::symlink_metadata(&slot),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn final_component_directory_symlink_is_unlinked_without_touching_target_contents() {
-        use std::os::unix::fs::symlink;
-
-        let directory = TestDirectory::new("directory-symlink");
-        let target = directory.0.join("target-directory");
-        let slot = directory.slot();
-        fs::create_dir(&target).expect("create symlink target directory");
-        fs::write(target.join("sentinel"), b"keep").expect("write target sentinel");
-        symlink(&target, &slot).expect("create recovery directory symlink");
-
-        assert_eq!(
-            inspect_recovery_project(&slot),
-            RecoveryProjectLoad::Invalid
-        );
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert_eq!(
-            fs::read(target.join("sentinel")).expect("read target sentinel"),
-            b"keep"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn final_component_fifo_is_retired_as_a_special_entry_without_opening_it() {
-        use std::{ffi::CString, os::unix::ffi::OsStrExt};
-
-        let directory = TestDirectory::new("fifo");
-        let slot = directory.slot();
-        let slot_c = CString::new(slot.as_os_str().as_bytes()).expect("fifo path has no NUL");
-        let created = unsafe {
-            // SAFETY: `slot_c` is a live NUL-terminated path and the mode is a
-            // conventional owner-only FIFO mode.
-            libc::mkfifo(slot_c.as_ptr(), 0o600)
-        };
-        assert_eq!(created, 0, "create recovery FIFO");
-
-        assert_eq!(
-            inspect_recovery_project(&slot),
-            RecoveryProjectLoad::Invalid
-        );
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert!(matches!(
-            fs::symlink_metadata(&slot),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-        ));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn exclusive_retirement_handle_blocks_path_replacement_until_it_is_released() {
-        let directory = TestDirectory::new("windows-exclusive-retirement");
-        let slot = directory.slot();
-        let retired = directory.0.join(RECOVERY_QUARANTINE_NAMES[0]);
-        fs::write(&slot, b"active").expect("write active recovery entry");
-        let handle = open_recovery_entry_for_exclusive_retirement(&slot)
-            .expect("open exclusive retirement handle");
-
-        assert!(
-            fs::rename(&slot, &retired).is_err(),
-            "another path handle must not rename the active slot"
-        );
-        assert!(
-            fs::remove_file(&slot).is_err(),
-            "another path handle must not delete the active slot"
-        );
-        assert_eq!(
-            fs::read(&slot).expect("read retained active slot"),
-            b"active"
-        );
-
-        drop(handle);
-        fs::rename(&slot, &retired).expect("rename succeeds after ownership is released");
-        assert_eq!(fs::read(&retired).expect("read retired entry"), b"active");
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn final_component_file_reparse_point_is_invalid_and_clear_preserves_target() {
-        use std::os::windows::fs::symlink_file;
-
-        let directory = TestDirectory::new("windows-file-link");
-        let target = directory.0.join("target-file.ori2");
-        let slot = directory.slot();
-        write_valid_document(&target);
-        if symlink_file(&target, &slot).is_err() {
-            // Symlink creation still requires Developer Mode or a privilege on
-            // some supported Windows configurations.
-            return;
-        }
-
-        assert_eq!(
-            inspect_recovery_project(&slot),
-            RecoveryProjectLoad::Invalid
-        );
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert!(matches!(
-            inspect_recovery_project(&target),
-            RecoveryProjectLoad::Available { .. }
-        ));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn final_component_directory_reparse_point_clear_preserves_target_contents() {
-        use std::os::windows::fs::symlink_dir;
-
-        let directory = TestDirectory::new("windows-directory-link");
-        let target = directory.0.join("target-directory");
-        let slot = directory.slot();
-        fs::create_dir(&target).expect("create directory link target");
-        fs::write(target.join("sentinel"), b"keep").expect("write target sentinel");
-        if symlink_dir(&target, &slot).is_err() {
-            return;
-        }
-
-        assert_eq!(
-            inspect_recovery_project(&slot),
-            RecoveryProjectLoad::Invalid
-        );
-        assert_eq!(clear_recovery_document(&slot), Ok(()));
-        assert_eq!(
-            fs::read(target.join("sentinel")).expect("read target sentinel"),
-            b"keep"
-        );
-    }
-}
+#[path = "project_persistence/recovery_entry_tests.rs"]
+mod recovery_entry_tests;
 
 #[cfg(all(test, target_os = "windows"))]
 mod windows_large_archive_budget_tests {

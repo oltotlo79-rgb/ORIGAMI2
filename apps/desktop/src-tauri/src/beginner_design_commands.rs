@@ -5,10 +5,48 @@
 //! reference-model workflows.
 
 use super::*;
+use std::sync::atomic::AtomicU64;
+
+// These registries contain only native jobs that are simultaneously owned by
+// live command scopes. Bounding them prevents untrusted generation IDs from
+// turning command registration into unbounded process-global allocation.
+pub(super) const MAX_REFERENCE_CONSENSUS_WORK_REGISTRATIONS_V1: usize = 64;
+pub(super) const MAX_BEGINNER_GRID_WORK_REGISTRATIONS_V1: usize = 64;
+
+struct ActiveWorkRegistrationClaimV1<'a> {
+    active: &'a AtomicBool,
+    committed: bool,
+}
+
+impl<'a> ActiveWorkRegistrationClaimV1<'a> {
+    fn try_claim(active: &'a AtomicBool, reused_error: &'static str) -> Result<Self, String> {
+        active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| reused_error.to_owned())?;
+        Ok(Self {
+            active,
+            committed: false,
+        })
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for ActiveWorkRegistrationClaimV1<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.active.store(false, Ordering::Release);
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct ReferenceConsensusWorkV1 {
     pub(super) cancelled: AtomicBool,
+    pub(super) terminal: AtomicU64,
+    pub(super) registration_active: AtomicBool,
 }
 static REFERENCE_CONSENSUS_WORK_V1: OnceLock<
     Mutex<HashMap<ProjectId, Arc<ReferenceConsensusWorkV1>>>,
@@ -18,6 +56,125 @@ pub(super) fn reference_consensus_work_v1()
     REFERENCE_CONSENSUS_WORK_V1.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn lock_recovering_registry_v1<T>(registry: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match registry.lock() {
+        Ok(entries) => entries,
+        Err(poisoned) => {
+            let entries = poisoned.into_inner();
+            registry.clear_poison();
+            entries
+        }
+    }
+}
+
+#[must_use = "dropping the registration releases only its exact consensus work"]
+pub(super) struct ReferenceConsensusWorkRegistration {
+    request_generation_id: ProjectId,
+    work: Arc<ReferenceConsensusWorkV1>,
+}
+
+impl Drop for ReferenceConsensusWorkRegistration {
+    fn drop(&mut self) {
+        let mut entries = lock_recovering_registry_v1(reference_consensus_work_v1());
+        let exact_owner = entries
+            .get(&self.request_generation_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.work));
+        let _ = self
+            .work
+            .terminal
+            .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
+        self.work
+            .registration_active
+            .store(false, Ordering::Release);
+        if exact_owner {
+            entries.remove(&self.request_generation_id);
+        }
+    }
+}
+
+fn reference_consensus_work_is_fresh_v1(work: &ReferenceConsensusWorkV1) -> bool {
+    work.terminal.load(Ordering::Acquire) == 0 && !work.cancelled.load(Ordering::Acquire)
+}
+
+pub(super) fn register_reference_consensus_work_v1(
+    request_generation_id: ProjectId,
+    work: &Arc<ReferenceConsensusWorkV1>,
+) -> Result<ReferenceConsensusWorkRegistration, String> {
+    let mut registry = lock_recovering_registry_v1(reference_consensus_work_v1());
+    registry.retain(|_, existing| existing.registration_active.load(Ordering::Acquire));
+    if registry.contains_key(&request_generation_id) {
+        return Err("reference_consensus_generation_reused".to_owned());
+    }
+    let claim = ActiveWorkRegistrationClaimV1::try_claim(
+        &work.registration_active,
+        "reference_consensus_work_reused",
+    )?;
+    if !reference_consensus_work_is_fresh_v1(work) {
+        return Err("reference_consensus_work_not_fresh".to_owned());
+    }
+    if registry.len() >= MAX_REFERENCE_CONSENSUS_WORK_REGISTRATIONS_V1
+        || registry.try_reserve(1).is_err()
+    {
+        return Err("reference_consensus_registry_resource_limit".to_owned());
+    }
+    let registration_work = Arc::clone(work);
+    registry.insert(request_generation_id, Arc::clone(work));
+    claim.commit();
+    Ok(ReferenceConsensusWorkRegistration {
+        request_generation_id,
+        work: registration_work,
+    })
+}
+
+fn finish_reference_consensus_work_v1<T>(
+    request_generation_id: ProjectId,
+    work: &ReferenceConsensusWorkV1,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    let registry = lock_recovering_registry_v1(reference_consensus_work_v1());
+    let owns_generation = work.registration_active.load(Ordering::Acquire)
+        && registry
+            .get(&request_generation_id)
+            .is_some_and(|current| std::ptr::eq(Arc::as_ptr(current), work));
+    if !owns_generation {
+        let _ = work
+            .terminal
+            .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
+        return Err("reference_consensus_failed".to_owned());
+    }
+    match result {
+        Ok(response) => {
+            match work
+                .terminal
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => Ok(response),
+                Err(2) => Err("reference_consensus_cancelled".to_owned()),
+                Err(_) => Err("reference_consensus_failed".to_owned()),
+            }
+        }
+        Err(error) => {
+            match work
+                .terminal
+                .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => Err(error),
+                Err(2) => Err("reference_consensus_cancelled".to_owned()),
+                Err(_) => Err(error),
+            }
+        }
+    }
+}
+
+pub(super) fn run_registered_reference_consensus_work_v1<T>(
+    request_generation_id: ProjectId,
+    work: &Arc<ReferenceConsensusWorkV1>,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _registration = register_reference_consensus_work_v1(request_generation_id, work)?;
+    finish_reference_consensus_work_v1(request_generation_id, work, operation())
+}
+
 #[derive(Default)]
 pub(super) struct BeginnerGridWork {
     pub(super) cancelled: AtomicBool,
@@ -25,6 +182,7 @@ pub(super) struct BeginnerGridWork {
     pub(super) global_checked: AtomicU64,
     pub(super) refinement_iterations: AtomicU64,
     pub(super) terminal: AtomicU64,
+    pub(super) registration_active: AtomicBool,
 }
 
 static BEGINNER_GRID_WORK: OnceLock<Mutex<HashMap<ProjectId, Arc<BeginnerGridWork>>>> =
@@ -34,17 +192,111 @@ pub(super) fn beginner_grid_work() -> &'static Mutex<HashMap<ProjectId, Arc<Begi
     BEGINNER_GRID_WORK.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-struct BeginnerGridWorkRegistration(ProjectId);
+#[must_use = "dropping the registration completes only its exact grid work"]
+pub(super) struct BeginnerGridWorkRegistration {
+    work: Arc<BeginnerGridWork>,
+}
+
 impl Drop for BeginnerGridWorkRegistration {
     fn drop(&mut self) {
-        if let Ok(registry) = beginner_grid_work().lock() {
-            if let Some(work) = registry.get(&self.0) {
-                let _ = work
-                    .terminal
-                    .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
+        // Serialize release with registry pruning/registration. The registry
+        // intentionally retains exact terminal grid work as queryable history.
+        let _entries = lock_recovering_registry_v1(beginner_grid_work());
+        let _ = self
+            .work
+            .terminal
+            .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
+        self.work
+            .registration_active
+            .store(false, Ordering::Release);
+    }
+}
+
+fn beginner_grid_work_is_fresh_v1(work: &BeginnerGridWork) -> bool {
+    work.terminal.load(Ordering::Acquire) == 0
+        && !work.cancelled.load(Ordering::Acquire)
+        && work.enumerated.load(Ordering::Acquire) == 0
+        && work.global_checked.load(Ordering::Acquire) == 0
+        && work.refinement_iterations.load(Ordering::Acquire) == 0
+}
+
+pub(super) fn register_beginner_grid_work_v1(
+    request_generation_id: ProjectId,
+    work: &Arc<BeginnerGridWork>,
+) -> Result<BeginnerGridWorkRegistration, String> {
+    let mut registry = lock_recovering_registry_v1(beginner_grid_work());
+    registry.retain(|_, existing| existing.registration_active.load(Ordering::Acquire));
+    if registry.contains_key(&request_generation_id) {
+        return Err("grid_generation_reused".to_owned());
+    }
+    let claim =
+        ActiveWorkRegistrationClaimV1::try_claim(&work.registration_active, "grid_work_reused")?;
+    if !beginner_grid_work_is_fresh_v1(work) {
+        return Err("grid_work_not_fresh".to_owned());
+    }
+    if registry.len() >= MAX_BEGINNER_GRID_WORK_REGISTRATIONS_V1 || registry.try_reserve(1).is_err()
+    {
+        return Err("grid_registry_resource_limit".to_owned());
+    }
+    let registration_work = Arc::clone(work);
+    registry.insert(request_generation_id, Arc::clone(work));
+    claim.commit();
+    Ok(BeginnerGridWorkRegistration {
+        work: registration_work,
+    })
+}
+
+fn beginner_grid_cancelled_v1(work: &BeginnerGridWork) -> bool {
+    work.terminal.load(Ordering::Acquire) == 2 || work.cancelled.load(Ordering::Acquire)
+}
+
+pub(super) fn finish_beginner_grid_work_v1<T>(
+    request_generation_id: ProjectId,
+    work: &BeginnerGridWork,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    let registry = lock_recovering_registry_v1(beginner_grid_work());
+    let owns_generation = work.registration_active.load(Ordering::Acquire)
+        && registry
+            .get(&request_generation_id)
+            .is_some_and(|current| std::ptr::eq(Arc::as_ptr(current), work));
+    if !owns_generation {
+        let _ = work
+            .terminal
+            .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
+        return Err("grid_evaluation_failed".to_owned());
+    }
+    match result {
+        Ok(response) => {
+            match work
+                .terminal
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => Ok(response),
+                Err(2) => Err("grid_evaluation_cancelled".to_owned()),
+                Err(_) => Err("grid_evaluation_failed".to_owned()),
+            }
+        }
+        Err(error) => {
+            match work
+                .terminal
+                .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => Err(error),
+                Err(2) => Err("grid_evaluation_cancelled".to_owned()),
+                Err(_) => Err(error),
             }
         }
     }
+}
+
+pub(super) fn run_registered_beginner_grid_work_v1<T>(
+    request_generation_id: ProjectId,
+    work: &Arc<BeginnerGridWork>,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _registration = register_beginner_grid_work_v1(request_generation_id, work)?;
+    finish_beginner_grid_work_v1(request_generation_id, work, operation())
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +314,195 @@ pub(super) struct BeginnerCandidateResponse {
     plan_assessments: Vec<BeginnerGeneratedPlanAssessment>,
     multi_reference_fusion: Option<BeginnerMultiReferenceFusionV1>,
     reference_consensus_analysis: Option<BeginnerReferenceConsensusAnalysisV1>,
+}
+
+/// The candidate evaluator deliberately works from this detached copy.  A
+/// reference image/model can be expensive to decode, and retaining the live
+/// project mutex while doing so would otherwise block unrelated editor work.
+/// Asset bytes are copied with the archive's aggregate bounds and fallible
+/// reservations before the mutex is released.
+pub(super) struct BeginnerCandidateAnalysisSnapshotV1 {
+    project: ProjectState,
+    expectation: ProjectExpectation,
+}
+
+const BEGINNER_CANDIDATE_ANALYSIS_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(750);
+
+struct BeginnerCandidateAnalysisControlV1<'a> {
+    deadline: std::time::Instant,
+    cancelled: Option<&'a AtomicBool>,
+    cancelled_error: &'static str,
+    deadline_error: &'static str,
+}
+
+impl BeginnerCandidateAnalysisControlV1<'_> {
+    fn checkpoint(&self) -> Result<(), String> {
+        if self
+            .cancelled
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+        {
+            return Err(self.cancelled_error.to_owned());
+        }
+        if std::time::Instant::now() >= self.deadline {
+            return Err(self.deadline_error.to_owned());
+        }
+        Ok(())
+    }
+}
+
+fn beginner_candidate_analysis_control_v1<'a>(
+    cancelled: Option<&'a AtomicBool>,
+    cancelled_error: &'static str,
+    deadline_error: &'static str,
+) -> BeginnerCandidateAnalysisControlV1<'a> {
+    let now = std::time::Instant::now();
+    BeginnerCandidateAnalysisControlV1 {
+        deadline: now
+            .checked_add(BEGINNER_CANDIDATE_ANALYSIS_TIMEOUT)
+            .unwrap_or(now),
+        cancelled,
+        cancelled_error,
+        deadline_error,
+    }
+}
+
+fn clone_beginner_texture_assets_v1(
+    assets: &[ori_formats::ProjectTextureAssetV1],
+    control: &BeginnerCandidateAnalysisControlV1<'_>,
+) -> Result<Vec<ori_formats::ProjectTextureAssetV1>, String> {
+    control.checkpoint()?;
+    let total = assets
+        .iter()
+        .try_fold(0_usize, |total, asset| total.checked_add(asset.bytes.len()));
+    if assets.len() > ori_formats::MAX_PROJECT_TEXTURE_ASSETS
+        || total.is_none_or(|total| total > MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES)
+    {
+        return Err("beginner_candidate_snapshot_resource_limit".to_owned());
+    }
+    let mut copied = Vec::new();
+    copied
+        .try_reserve_exact(assets.len())
+        .map_err(|_| "beginner_candidate_snapshot_resource_limit".to_owned())?;
+    for asset in assets {
+        control.checkpoint()?;
+        if asset.bytes.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES {
+            return Err("beginner_candidate_snapshot_resource_limit".to_owned());
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(asset.bytes.len())
+            .map_err(|_| "beginner_candidate_snapshot_resource_limit".to_owned())?;
+        bytes.extend_from_slice(&asset.bytes);
+        copied.push(ori_formats::ProjectTextureAssetV1 {
+            id: asset.id,
+            media_type: asset.media_type,
+            bytes,
+        });
+    }
+    control.checkpoint()?;
+    Ok(copied)
+}
+
+fn clone_beginner_reference_model_assets_v1(
+    assets: &[ori_formats::ProjectReferenceModelAssetV1],
+    control: &BeginnerCandidateAnalysisControlV1<'_>,
+) -> Result<Vec<ori_formats::ProjectReferenceModelAssetV1>, String> {
+    control.checkpoint()?;
+    let total = assets
+        .iter()
+        .try_fold(0_usize, |total, asset| total.checked_add(asset.bytes.len()));
+    if assets.len() > ori_formats::MAX_PROJECT_REFERENCE_MODEL_ASSETS
+        || total
+            .is_none_or(|total| total > ori_formats::MAX_PROJECT_REFERENCE_MODEL_ASSET_TOTAL_BYTES)
+    {
+        return Err("beginner_candidate_snapshot_resource_limit".to_owned());
+    }
+    let mut copied = Vec::new();
+    copied
+        .try_reserve_exact(assets.len())
+        .map_err(|_| "beginner_candidate_snapshot_resource_limit".to_owned())?;
+    for asset in assets {
+        control.checkpoint()?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(asset.bytes.len())
+            .map_err(|_| "beginner_candidate_snapshot_resource_limit".to_owned())?;
+        bytes.extend_from_slice(&asset.bytes);
+        copied.push(ori_formats::ProjectReferenceModelAssetV1 {
+            id: asset.id,
+            bytes,
+        });
+    }
+    control.checkpoint()?;
+    Ok(copied)
+}
+
+#[cfg(test)]
+pub(super) fn capture_beginner_candidate_analysis_snapshot_v1(
+    project: &ProjectState,
+    expectation: ProjectExpectation,
+) -> Result<BeginnerCandidateAnalysisSnapshotV1, String> {
+    let control = beginner_candidate_analysis_control_v1(
+        None,
+        "beginner_candidate_cancelled",
+        "beginner_candidate_deadline_exceeded",
+    );
+    capture_beginner_candidate_analysis_snapshot_with_control_v1(project, expectation, &control)
+}
+
+fn capture_beginner_candidate_analysis_snapshot_with_control_v1(
+    project: &ProjectState,
+    expectation: ProjectExpectation,
+    control: &BeginnerCandidateAnalysisControlV1<'_>,
+) -> Result<BeginnerCandidateAnalysisSnapshotV1, String> {
+    control.checkpoint()?;
+    ensure_project_expectation(project, expectation)?;
+    let texture_assets = clone_beginner_texture_assets_v1(&project.texture_assets, control)?;
+    let reference_model_assets =
+        clone_beginner_reference_model_assets_v1(&project.reference_model_assets, control)?;
+    control.checkpoint()?;
+    // Candidate analysis needs only the current geometry, paper, underlays,
+    // and beginner profile. Rebuilding that view avoids copying undo/redo
+    // history while the live project mutex is held.
+    let pattern = project.editor.pattern().clone();
+    control.checkpoint()?;
+    let paper = project.editor.paper().clone();
+    let underlays = project.editor.underlays().clone();
+    let profile = project.editor.beginner_design_profile().clone();
+    control.checkpoint()?;
+    let mut editor = EditorState::with_paper(pattern, paper);
+    editor.restore_underlays(underlays);
+    editor
+        .restore_beginner_design_profile(profile)
+        .map_err(|_| "beginner_candidate_snapshot_invalid".to_owned())?;
+    control.checkpoint()?;
+    Ok(BeginnerCandidateAnalysisSnapshotV1 {
+        project: ProjectState {
+            instance_id: project.instance_id,
+            project_id: project.project_id,
+            name: String::new(),
+            current_path: None,
+            editor,
+            applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            current_layer_evidence: None,
+            numeric_expressions: ProjectNumericExpressions::default(),
+            texture_assets,
+            reference_model_assets,
+            material_void_evidence: Default::default(),
+            saved_revision: None,
+            saved_document: None,
+            saved_speculative_unproven_state: None,
+        },
+        expectation,
+    })
+}
+
+pub(super) fn beginner_candidate_snapshot_is_current_v1(
+    project: &ProjectState,
+    snapshot: &BeginnerCandidateAnalysisSnapshotV1,
+) -> Result<(), String> {
+    ensure_project_expectation(project, snapshot.expectation)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,7 +550,28 @@ fn beginner_reference_consensus_analysis_v1(
     project: &ProjectState,
     progress: Option<(&AppHandle, ProjectId, &ReferenceConsensusWorkV1)>,
 ) -> Option<BeginnerReferenceConsensusAnalysisV1> {
+    let now = std::time::Instant::now();
+    beginner_reference_consensus_analysis_with_deadline_v1(
+        project,
+        progress,
+        now.checked_add(BEGINNER_CANDIDATE_ANALYSIS_TIMEOUT)
+            .unwrap_or(now),
+    )
+}
+
+fn beginner_reference_consensus_analysis_with_deadline_v1(
+    project: &ProjectState,
+    progress: Option<(&AppHandle, ProjectId, &ReferenceConsensusWorkV1)>,
+    deadline: std::time::Instant,
+) -> Option<BeginnerReferenceConsensusAnalysisV1> {
     use ori_domain::BeginnerReferenceBindingKindV1::{Image, ReferenceModel};
+    let stopped = || {
+        std::time::Instant::now() >= deadline
+            || progress.is_some_and(|(_, _, work)| work.cancelled.load(Ordering::Acquire))
+    };
+    if stopped() {
+        return None;
+    }
     let profile = project.editor.beginner_design_profile();
     let consensus = profile.reference_consensus_v1.as_ref()?;
     let mut descriptors = Vec::with_capacity(consensus.bindings.len());
@@ -121,6 +583,9 @@ fn beginner_reference_consensus_analysis_v1(
     let total_pairs =
         (usize::from(total_assets) * usize::from(total_assets.saturating_sub(1)) / 2).min(6) as u8;
     for binding in &consensus.bindings {
+        if stopped() {
+            return None;
+        }
         if consensus.excluded_asset_id == Some(binding.asset_id) {
             continue;
         }
@@ -192,6 +657,9 @@ fn beginner_reference_consensus_analysis_v1(
             }));
         }
     }
+    if stopped() {
+        return None;
+    }
     if descriptors.len() < 2 {
         return None;
     }
@@ -202,6 +670,9 @@ fn beginner_reference_consensus_analysis_v1(
     let mut pairs = Vec::new();
     for left in 0..descriptors.len() {
         for right in (left + 1)..descriptors.len() {
+            if stopped() {
+                return None;
+            }
             if pairs.len() == 6 {
                 return None;
             }
@@ -268,6 +739,9 @@ fn beginner_reference_consensus_analysis_v1(
         .sum::<u16>()
         / pairs.len() as u16;
     let apply_allowed = disagreement_count < 2;
+    if stopped() {
+        return None;
+    }
     Some(BeginnerReferenceConsensusAnalysisV1 {
         schema_version: 1,
         revision: project.editor.revision(),
@@ -869,7 +1343,10 @@ fn compare_flat_surface_to_reference_model_v1(
         .unwrap_or(0)
 }
 
-struct BeginnerGlobalFoldabilityDeadline(std::time::Instant);
+struct BeginnerGlobalFoldabilityDeadline<'a> {
+    deadline: std::time::Instant,
+    cancelled: Option<&'a AtomicBool>,
+}
 
 const MAX_BEGINNER_FOLD_PATH_CREASES_V1: usize = 256;
 
@@ -879,6 +1356,25 @@ pub(super) fn certify_beginner_fold_path_v1(
     candidate_pattern: &CreasePattern,
     topology: &TopologySnapshot,
 ) -> Option<[u8; 32]> {
+    certify_beginner_fold_path_with_control_v1(
+        plan,
+        paper,
+        candidate_pattern,
+        topology,
+        &ori_collision::CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+fn certify_beginner_fold_path_with_control_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    paper: &Paper,
+    candidate_pattern: &CreasePattern,
+    topology: &TopologySnapshot,
+    control: &ori_collision::CooperativeOperationControlV1<'_>,
+) -> Option<[u8; 32]> {
+    if control.checkpoint().is_err() {
+        return None;
+    }
     let creases = plan
         .crease_pattern
         .edges
@@ -935,6 +1431,9 @@ pub(super) fn certify_beginner_fold_path_v1(
             ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
         )
         .ok()?;
+        if control.checkpoint().is_err() {
+            return None;
+        }
         (path.continuous_certificate_model_id()?, requested)
     } else {
         let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
@@ -953,6 +1452,9 @@ pub(super) fn certify_beginner_fold_path_v1(
         fixed_faces.sort_unstable_by_key(|face| face.canonical_bytes());
         let requested = 1.0e-8;
         let certificate_model = fixed_faces.into_iter().find_map(|fixed_face| {
+            if control.checkpoint().is_err() {
+                return None;
+            }
             let generated = if geometry.hinges().len() == 4 {
                 ori_kinematics::generate_kawasaki_120_120_60_60_path_candidate_v1(
                     &geometry,
@@ -1015,10 +1517,28 @@ pub(super) fn certify_beginner_fold_path_v1(
                 },
             ).ok()?;
             if paper.thickness_mm > 0.0 {
-                let certificate = ori_collision::certify_canonical_positive_thickness_cycle_schedule_path_v1(
-                    &geometry, &audit, fixed_face, generated.schedule(), &closure, paper.thickness_mm, 32,
-                )?;
-                certificate.is_for(&geometry, &audit, fixed_face, generated.schedule(), &closure, paper.thickness_mm)
+                let certificate = ori_collision::certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1(
+                    &geometry,
+                    &audit,
+                    fixed_face,
+                    generated.schedule(),
+                    &closure,
+                    paper.thickness_mm,
+                    32,
+                    control,
+                )
+                .ok()??;
+                if control.checkpoint().is_err() {
+                    return None;
+                }
+                certificate.is_for(
+                    &geometry,
+                    &audit,
+                    fixed_face,
+                    generated.schedule(),
+                    &closure,
+                    paper.thickness_mm,
+                )
                     .then_some(ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
             } else if paper.thickness_mm == 0.0 {
                 ori_collision::diagnose_scheduled_cycle_path_v1(
@@ -1026,8 +1546,14 @@ pub(super) fn certify_beginner_fold_path_v1(
                 ).continuous_certificate_model_id()
             } else { None }
         })?;
+        if control.checkpoint().is_err() {
+            return None;
+        }
         (certificate_model, requested)
     };
+    if control.checkpoint().is_err() {
+        return None;
+    }
     let bytes = serde_json::to_vec(&(
         "bounded_native_fold_path_v2",
         certificate_model,
@@ -1040,9 +1566,13 @@ pub(super) fn certify_beginner_fold_path_v1(
     Some(sha2::Sha256::digest(bytes).into())
 }
 
-impl GlobalFlatFoldabilityObserver for BeginnerGlobalFoldabilityDeadline {
+impl GlobalFlatFoldabilityObserver for BeginnerGlobalFoldabilityDeadline<'_> {
     fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
-        if std::time::Instant::now() >= self.0 {
+        if self
+            .cancelled
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+            || std::time::Instant::now() >= self.deadline
+        {
             GlobalFlatFoldabilityCheckpoint::DeadlineReached
         } else {
             GlobalFlatFoldabilityCheckpoint::Continue
@@ -1057,13 +1587,14 @@ pub(super) fn assess_beginner_generated_plan(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     reference: Option<&BeginnerReferenceModelSuggestionV1>,
 ) -> BeginnerGeneratedPlanAssessment {
-    assess_beginner_generated_plan_with_deadline(
+    assess_beginner_generated_plan_with_control_v1(
         project_authority,
         paper,
         current_pattern,
         plan,
         reference,
         std::time::Instant::now() + std::time::Duration::from_millis(250),
+        None,
     )
 }
 
@@ -1074,6 +1605,26 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     reference: Option<&BeginnerReferenceModelSuggestionV1>,
     deadline: std::time::Instant,
+) -> BeginnerGeneratedPlanAssessment {
+    assess_beginner_generated_plan_with_control_v1(
+        _project_authority,
+        paper,
+        current_pattern,
+        plan,
+        reference,
+        deadline,
+        None,
+    )
+}
+
+pub(super) fn assess_beginner_generated_plan_with_control_v1(
+    _project_authority: ProjectId,
+    paper: &Paper,
+    current_pattern: &CreasePattern,
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    reference: Option<&BeginnerReferenceModelSuggestionV1>,
+    deadline: std::time::Instant,
+    cancelled: Option<&AtomicBool>,
 ) -> BeginnerGeneratedPlanAssessment {
     let (mut shape_approximation_score, mut shape_difference_reason) = reference
         .map(|reference| compare_plan_to_reference_model_v1(plan, reference))
@@ -1096,7 +1647,8 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
         shape_difference_reason,
         component_shape_comparison,
     };
-    if std::time::Instant::now() >= deadline {
+    let deadline_control = ori_collision::CooperativeOperationControlV1::new(cancelled, deadline);
+    if deadline_control.checkpoint().is_err() {
         return deadline_assessment();
     }
     if let Err(reason) = validate_beginner_manufacturability_v1(&plan.crease_pattern, paper) {
@@ -1203,7 +1755,15 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
         None
     };
     if let Some(snapshot) = candidate_snapshot.as_ref() {
-        if certify_beginner_fold_path_v1(plan, paper, &candidate_pattern, snapshot).is_some() {
+        if certify_beginner_fold_path_with_control_v1(
+            plan,
+            paper,
+            &candidate_pattern,
+            snapshot,
+            &deadline_control,
+        )
+        .is_some()
+        {
             return BeginnerGeneratedPlanAssessment {
                 kind: plan.kind,
                 expected_candidate_edge_id,
@@ -1241,7 +1801,10 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
         } else {
             let identity_namespace = geometry_authority;
             if let Some(snapshot) = candidate_snapshot.as_ref() {
-                let mut observer = BeginnerGlobalFoldabilityDeadline(deadline);
+                let mut observer = BeginnerGlobalFoldabilityDeadline {
+                    deadline,
+                    cancelled,
+                };
                 match analyze_global_flat_foldability_with_observer(
                     GlobalFlatFoldabilityInput::current_with_geometry(
                         identity_namespace,
@@ -1255,11 +1818,12 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
                 ) {
                     Ok(report) => match report.outcome {
                         GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
-                            if certify_beginner_fold_path_v1(
+                            if certify_beginner_fold_path_with_control_v1(
                                 plan,
                                 paper,
                                 &candidate_pattern,
                                 snapshot,
+                                &deadline_control,
                             )
                             .is_none()
                             {
@@ -1270,20 +1834,21 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
                                 proof_scope = "sufficient";
                                 reason = "global_flat_foldability_proven";
                             }
-                            if component_shape_comparison.is_none()
-                                && let (Some(reference), Some(surface)) = (
+                            if component_shape_comparison.is_none() {
+                                if let (Some(reference), Some(surface)) = (
                                     reference,
                                     ori_core::extract_certified_flat_surface_v1(
                                         &candidate_pattern,
                                         snapshot,
                                         &layer_order,
                                     ),
-                                )
-                            {
-                                shape_approximation_score = Some(
-                                    compare_flat_surface_to_reference_model_v1(&surface, reference),
-                                );
-                                shape_difference_reason = Some("certified_flat_surface_v1");
+                                ) {
+                                    shape_approximation_score =
+                                        Some(compare_flat_surface_to_reference_model_v1(
+                                            &surface, reference,
+                                        ));
+                                    shape_difference_reason = Some("certified_flat_surface_v1");
+                                }
                             }
                         }
                         GlobalFlatFoldabilityOutcome::Impossible { .. } => {
@@ -1325,7 +1890,7 @@ pub(super) fn assess_beginner_generated_plan_with_deadline(
             }
         }
     }
-    if std::time::Instant::now() >= deadline {
+    if deadline_control.checkpoint().is_err() {
         return deadline_assessment();
     }
     BeginnerGeneratedPlanAssessment {
@@ -1353,162 +1918,197 @@ pub(super) fn evaluate_beginner_candidates(
     if !(1..=ori_domain::MAX_BEGINNER_CANDIDATES_V1 as u8).contains(&requested_candidate_count) {
         return Err("requested candidate count must be between 1 and 3".to_owned());
     }
-    let project = lock_project(&state)?;
     let work = Arc::new(ReferenceConsensusWorkV1::default());
-    reference_consensus_work_v1()
-        .lock()
-        .map_err(|_| "reference_consensus_work_unavailable")?
-        .insert(request_generation_id, Arc::clone(&work));
-    ensure_project_expectation(
-        &project,
-        ProjectExpectation::new(
+    run_registered_reference_consensus_work_v1(request_generation_id, &work, || {
+        let control = beginner_candidate_analysis_control_v1(
+            Some(&work.cancelled),
+            "reference_consensus_cancelled",
+            "beginner_candidate_deadline_exceeded",
+        );
+        let expectation = ProjectExpectation::new(
             expected_project_instance_id,
             expected_project_id,
             expected_revision,
-        ),
-    )?;
-    let pattern = project.editor.pattern();
-    let crease_count = pattern
-        .edges
-        .iter()
-        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
-        .count();
-    let constraints = &project
-        .editor
-        .beginner_design_profile()
-        .generation_constraints;
-    let mut candidates = ori_domain::score_beginner_candidates_v1(
-        ori_domain::BeginnerCandidateInputV1 {
-            vertex_count: pattern.vertices.len(),
-            edge_count: pattern.edges.len(),
-            crease_count,
-            target_approximation_score: ori_domain::beginner_target_approximation_score_v1(
+        );
+        let snapshot = {
+            let project = lock_project(&state)?;
+            control.checkpoint()?;
+            capture_beginner_candidate_analysis_snapshot_with_control_v1(
+                &project,
+                expectation,
+                &control,
+            )?
+        };
+        control.checkpoint()?;
+        let project = &snapshot.project;
+        let pattern = project.editor.pattern();
+        let crease_count = pattern
+            .edges
+            .iter()
+            .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+            .count();
+        let constraints = &project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints;
+        let mut candidates = ori_domain::score_beginner_candidates_v1(
+            ori_domain::BeginnerCandidateInputV1 {
+                vertex_count: pattern.vertices.len(),
+                edge_count: pattern.edges.len(),
+                crease_count,
+                target_approximation_score: ori_domain::beginner_target_approximation_score_v1(
+                    constraints,
+                ),
+            },
+            project.editor.beginner_design_profile(),
+        );
+        candidates.truncate(usize::from(requested_candidate_count));
+        control.checkpoint()?;
+        let generation = if target_asset_reference_is_live(&project, constraints.target_asset) {
+            ori_domain::generate_beginner_plans_v1(
+                project.project_id,
+                pattern,
+                &project.editor.paper().boundary_vertices,
                 constraints,
-            ),
-        },
-        project.editor.beginner_design_profile(),
-    );
-    candidates.truncate(usize::from(requested_candidate_count));
-    let generation = if target_asset_reference_is_live(&project, constraints.target_asset) {
-        ori_domain::generate_beginner_plans_v1(
-            project.project_id,
-            pattern,
-            &project.editor.paper().boundary_vertices,
-            constraints,
-        )
-    } else {
-        return Ok(BeginnerCandidateResponse {
-            schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
-            project_instance_id: project.instance_id,
-            project_id: project.project_id,
-            revision: project.editor.revision(),
-            requested_candidate_count,
-            bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1::TargetShapeApproximation,
-            elasticity_model: ori_domain::BeginnerElasticityModelV1::NotComputed,
-            candidates,
-            generation_status: "missing_target_asset",
-            generated_plans: Vec::new(),
-            plan_assessments: Vec::new(),
-            multi_reference_fusion: None,
-            reference_consensus_analysis: None,
-        });
-    };
-    let (generation_status, mut generated_plans) = match generation {
-        Ok(plans) => ("ready", plans),
-        Err(ori_domain::BeginnerGeneratorErrorV1::ResourceLimit) => ("resource_limit", Vec::new()),
-        Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedPaper) => {
-            ("unsupported_paper", Vec::new())
+            )
+        } else {
+            control.checkpoint()?;
+            let current = lock_project(&state)?;
+            beginner_candidate_snapshot_is_current_v1(&current, &snapshot)?;
+            control.checkpoint()?;
+            return Ok(BeginnerCandidateResponse {
+                schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
+                project_instance_id: project.instance_id,
+                project_id: project.project_id,
+                revision: snapshot.expectation.revision,
+                requested_candidate_count,
+                bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1::TargetShapeApproximation,
+                elasticity_model: ori_domain::BeginnerElasticityModelV1::NotComputed,
+                candidates,
+                generation_status: "missing_target_asset",
+                generated_plans: Vec::new(),
+                plan_assessments: Vec::new(),
+                multi_reference_fusion: None,
+                reference_consensus_analysis: None,
+            });
+        };
+        let (generation_status, mut generated_plans) = match generation {
+            Ok(plans) => ("ready", plans),
+            Err(ori_domain::BeginnerGeneratorErrorV1::ResourceLimit) => {
+                ("resource_limit", Vec::new())
+            }
+            Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedPaper) => {
+                ("unsupported_paper", Vec::new())
+            }
+            Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedTechniques) => {
+                ("unsupported_techniques", Vec::new())
+            }
+            Err(ori_domain::BeginnerGeneratorErrorV1::MissingTargetCategory) => {
+                ("missing_target_category", Vec::new())
+            }
+            Err(ori_domain::BeginnerGeneratorErrorV1::MissingRequiredParts) => {
+                ("missing_required_parts", Vec::new())
+            }
+            Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate) => {
+                ("unsupported_animal_template", Vec::new())
+            }
+            Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedInsectTemplate) => {
+                ("unsupported_insect_template", Vec::new())
+            }
+        };
+        generated_plans.truncate(usize::from(requested_candidate_count));
+        control.checkpoint()?;
+        let reference_suggestion = live_reference_model_suggestion_v1(&project).ok();
+        let mut multi_reference_fusion = reference_suggestion
+            .as_ref()
+            .and_then(|reference| beginner_multi_reference_fusion_v1(&project, reference));
+        if let Some(fusion) = &mut multi_reference_fusion {
+            fusion.revision = snapshot.expectation.revision;
         }
-        Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedTechniques) => {
-            ("unsupported_techniques", Vec::new())
+        control.checkpoint()?;
+        let mut reference_consensus_analysis =
+            beginner_reference_consensus_analysis_with_deadline_v1(
+                &project,
+                Some((&app, request_generation_id, &work)),
+                control.deadline,
+            );
+        if let Some(analysis) = &mut reference_consensus_analysis {
+            analysis.revision = snapshot.expectation.revision;
         }
-        Err(ori_domain::BeginnerGeneratorErrorV1::MissingTargetCategory) => {
-            ("missing_target_category", Vec::new())
-        }
-        Err(ori_domain::BeginnerGeneratorErrorV1::MissingRequiredParts) => {
-            ("missing_required_parts", Vec::new())
-        }
-        Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate) => {
-            ("unsupported_animal_template", Vec::new())
-        }
-        Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedInsectTemplate) => {
-            ("unsupported_insect_template", Vec::new())
-        }
-    };
-    generated_plans.truncate(usize::from(requested_candidate_count));
-    let reference_suggestion = live_reference_model_suggestion_v1(&project).ok();
-    let multi_reference_fusion = reference_suggestion
-        .as_ref()
-        .and_then(|reference| beginner_multi_reference_fusion_v1(&project, reference));
-    let reference_consensus_analysis = beginner_reference_consensus_analysis_v1(
-        &project,
-        Some((&app, request_generation_id, &work)),
-    );
-    reference_consensus_work_v1()
-        .lock()
-        .map_err(|_| "reference_consensus_work_unavailable")?
-        .remove(&request_generation_id);
-    if work.cancelled.load(Ordering::Acquire) {
-        return Err("reference_consensus_cancelled".to_owned());
-    }
-    let mut plan_assessments: Vec<BeginnerGeneratedPlanAssessment> = generated_plans
-        .iter()
-        .map(|plan| {
-            assess_beginner_generated_plan(
+        control.checkpoint()?;
+        let mut plan_assessments = Vec::new();
+        plan_assessments
+            .try_reserve(generated_plans.len())
+            .map_err(|_| "beginner_candidate_snapshot_resource_limit".to_owned())?;
+        for plan in &generated_plans {
+            control.checkpoint()?;
+            let assessment = assess_beginner_generated_plan_with_control_v1(
                 project.project_id,
                 project.editor.paper(),
                 pattern,
                 plan,
                 reference_suggestion.as_ref(),
-            )
+                control.deadline,
+                Some(&work.cancelled),
+            );
+            control.checkpoint()?;
+            plan_assessments.push(assessment);
+        }
+        if multi_reference_fusion
+            .as_ref()
+            .is_some_and(|fusion| !fusion.apply_allowed)
+        {
+            for assessment in &mut plan_assessments {
+                assessment.apply_allowed = false;
+                assessment.proof_scope = "indeterminate";
+                assessment.reason = "multi_reference_disagreement";
+            }
+        }
+        if reference_consensus_analysis
+            .as_ref()
+            .is_some_and(|analysis| !analysis.apply_allowed)
+        {
+            for assessment in &mut plan_assessments {
+                assessment.apply_allowed = false;
+                assessment.proof_scope = "indeterminate";
+                assessment.reason = "multi_reference_disagreement";
+            }
+        }
+        control.checkpoint()?;
+        let current = lock_project(&state)?;
+        beginner_candidate_snapshot_is_current_v1(&current, &snapshot)?;
+        control.checkpoint()?;
+        Ok(BeginnerCandidateResponse {
+            schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision: snapshot.expectation.revision,
+            requested_candidate_count,
+            bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1::TargetShapeApproximation,
+            elasticity_model: ori_domain::BeginnerElasticityModelV1::NotComputed,
+            candidates,
+            generation_status,
+            generated_plans,
+            plan_assessments,
+            multi_reference_fusion,
+            reference_consensus_analysis,
         })
-        .collect();
-    if multi_reference_fusion
-        .as_ref()
-        .is_some_and(|fusion| !fusion.apply_allowed)
-    {
-        for assessment in &mut plan_assessments {
-            assessment.apply_allowed = false;
-            assessment.proof_scope = "indeterminate";
-            assessment.reason = "multi_reference_disagreement";
-        }
-    }
-    if reference_consensus_analysis
-        .as_ref()
-        .is_some_and(|analysis| !analysis.apply_allowed)
-    {
-        for assessment in &mut plan_assessments {
-            assessment.apply_allowed = false;
-            assessment.proof_scope = "indeterminate";
-            assessment.reason = "multi_reference_disagreement";
-        }
-    }
-    Ok(BeginnerCandidateResponse {
-        schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
-        project_instance_id: project.instance_id,
-        project_id: project.project_id,
-        revision: project.editor.revision(),
-        requested_candidate_count,
-        bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1::TargetShapeApproximation,
-        elasticity_model: ori_domain::BeginnerElasticityModelV1::NotComputed,
-        candidates,
-        generation_status,
-        generated_plans,
-        plan_assessments,
-        multi_reference_fusion,
-        reference_consensus_analysis,
     })
 }
 
 #[tauri::command]
 pub(super) fn cancel_reference_consensus(request_generation_id: ProjectId) -> Result<(), String> {
-    let registry = reference_consensus_work_v1()
-        .lock()
-        .map_err(|_| "reference_consensus_work_unavailable")?;
+    let registry = lock_recovering_registry_v1(reference_consensus_work_v1());
     let work = registry
         .get(&request_generation_id)
         .ok_or_else(|| "reference_consensus_generation_not_running".to_owned())?;
-    work.cancelled.store(true, Ordering::Release);
+    match work
+        .terminal
+        .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+    {
+        Ok(_) | Err(2) => work.cancelled.store(true, Ordering::Release),
+        Err(_) => {}
+    }
     Ok(())
 }
 
@@ -2682,7 +3282,7 @@ fn refine_beginner_grid_plan_v1(
     let mut improvements = 0_u8;
     let mut proposals = 0_usize;
     for (scale_delta, spacing_delta) in [(-4_i16, 0_i16), (4, 0), (0, -6), (0, 6)] {
-        if work.cancelled.load(Ordering::Acquire) {
+        if beginner_grid_cancelled_v1(work) {
             return Err("grid_evaluation_cancelled".to_owned());
         }
         if std::time::Instant::now() >= deadline {
@@ -2731,7 +3331,7 @@ fn refine_beginner_grid_plan_v1(
         improvements = 1;
     }
     for _ in 0..MAX_BEGINNER_REFINEMENT_ITERATIONS_V1 {
-        if work.cancelled.load(Ordering::Acquire) {
+        if beginner_grid_cancelled_v1(work) {
             return Err("grid_evaluation_cancelled".to_owned());
         }
         if std::time::Instant::now() >= deadline {
@@ -2825,187 +3425,191 @@ pub(super) fn evaluate_beginner_parameter_grid(
     expected_revision: u64,
     request_generation_id: ProjectId,
 ) -> Result<BeginnerGridEvaluationResponse, String> {
-    let project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
+    let work = Arc::new(BeginnerGridWork::default());
+    run_registered_beginner_grid_work_v1(request_generation_id, &work, || {
+        let control = beginner_candidate_analysis_control_v1(
+            Some(&work.cancelled),
+            "grid_evaluation_cancelled",
+            "grid_evaluation_deadline_exceeded",
+        );
+        let expectation = ProjectExpectation::new(
             expected_project_instance_id,
             expected_project_id,
             expected_revision,
-        ),
-    )?;
-    let profile = project.editor.beginner_design_profile();
-    if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
-        return Err("missing_target_asset".to_owned());
-    }
-    let estimate = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
-        .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
-    let work = Arc::new(BeginnerGridWork::default());
-    {
-        let mut registry = beginner_grid_work()
-            .lock()
-            .map_err(|_| "grid_work_unavailable")?;
-        registry.retain(|_, existing| existing.terminal.load(Ordering::Acquire) == 0);
-        if registry
-            .insert(request_generation_id, Arc::clone(&work))
-            .is_some()
-        {
-            return Err("grid_generation_reused".to_owned());
-        }
-    }
-    let _registration = BeginnerGridWorkRegistration(request_generation_id);
-    let grid = ori_domain::beginner_parameter_grid_v1();
-    let expected_kind = symmetric_plan_kind(profile);
-    let mut primary = Vec::with_capacity(MAX_BEGINNER_GENERIC_TREE_PRIMARY_WORK_V1);
-    for point in grid.iter().copied() {
-        if work.cancelled.load(Ordering::Acquire) {
-            work.terminal.store(2, Ordering::Release);
-            return Err("grid_evaluation_cancelled".to_owned());
-        }
-        let plans = grid_template_plan(
-            project.project_id,
-            project.editor.pattern(),
-            &project.editor.paper().boundary_vertices,
-            profile,
-            point,
-        )
-        .map_err(|_| "grid_template_generation_failed".to_owned())?
-        .into_iter()
-        .filter(|plan| plan.kind == expected_kind)
-        .take(MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1)
-        .collect::<Vec<_>>();
-        if plans.is_empty() {
-            return Err("grid_template_generation_failed".to_owned());
-        }
-        let deviation = u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
-            + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5;
-        let detail_penalty = if point.detail_level == profile.generation_constraints.detail_level {
-            0
-        } else {
-            10
+        );
+        let snapshot = {
+            let project = lock_project(&state)?;
+            control.checkpoint()?;
+            capture_beginner_candidate_analysis_snapshot_with_control_v1(
+                &project,
+                expectation,
+                &control,
+            )?
         };
-        for plan in plans {
-            primary.push((
-                1000_u16.saturating_sub(deviation + detail_penalty),
-                point,
-                plan,
-            ));
+        control.checkpoint()?;
+        let project = &snapshot.project;
+        let profile = project.editor.beginner_design_profile();
+        if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
+            return Err("missing_target_asset".to_owned());
         }
-        work.enumerated.fetch_add(1, Ordering::Release);
-    }
-    primary.sort_by_key(|(score, point, _)| (std::cmp::Reverse(*score), point.id));
-    primary.retain(|(_, _, plan)| {
-        beginner_contour_placement_witness(&profile.generation_constraints, plan).is_some()
-    });
-    if primary.len() < 3 {
-        work.terminal.store(3, Ordering::Release);
-        return Err("grid_contour_candidate_shortage".to_owned());
-    }
-    primary.truncate(3);
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(750);
-    let reference = live_reference_model_suggestion_v1(&project).ok();
-    let mut candidates = primary
-        .into_iter()
-        .map(|(_primary_score, point, plan)| {
-            if work.cancelled.load(Ordering::Acquire) {
-                work.terminal.store(2, Ordering::Release);
-                return Err("grid_evaluation_cancelled".to_owned());
+        let estimate =
+            ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
+                .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
+        let grid = ori_domain::beginner_parameter_grid_v1();
+        let expected_kind = symmetric_plan_kind(profile);
+        let mut primary = Vec::with_capacity(MAX_BEGINNER_GENERIC_TREE_PRIMARY_WORK_V1);
+        for point in grid.iter().copied() {
+            control.checkpoint()?;
+            let plans = grid_template_plan(
+                project.project_id,
+                project.editor.pattern(),
+                &project.editor.paper().boundary_vertices,
+                profile,
+                point,
+            )
+            .map_err(|_| "grid_template_generation_failed".to_owned())?
+            .into_iter()
+            .filter(|plan| plan.kind == expected_kind)
+            .take(MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1)
+            .collect::<Vec<_>>();
+            if plans.is_empty() {
+                return Err("grid_template_generation_failed".to_owned());
             }
-            let (point, plan, refinement_iterations, strict_improvements, refinement_starts) =
-                refine_beginner_grid_plan_v1(
-                    project.project_id,
-                    project.editor.pattern(),
-                    &project.editor.paper().boundary_vertices,
-                    project.editor.paper(),
-                    profile,
-                    expected_kind,
-                    reference.as_ref(),
-                    &work,
-                    deadline,
-                    point,
-                    plan,
-                )?;
+            let deviation = u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
+                + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5;
             let detail_penalty =
                 if point.detail_level == profile.generation_constraints.detail_level {
                     0
                 } else {
                     10
                 };
-            let primary_score = 1000_u16.saturating_sub(
-                u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
-                    + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5
-                    + detail_penalty,
-            );
-            let assessment = assess_beginner_generated_plan_with_deadline(
-                project.project_id,
-                project.editor.paper(),
-                project.editor.pattern(),
-                &plan,
-                reference.as_ref(),
-                deadline,
-            );
-            let global_proof_scope = assessment.proof_scope;
-            let outcome_reason = assessment.reason;
-            let complexity_score = u8::try_from(
-                plan.crease_pattern.edges.len().saturating_mul(10)
-                    + match point.detail_level {
-                        ori_domain::BeginnerDetailLevelV1::Simple => 10,
-                        ori_domain::BeginnerDetailLevelV1::Standard => 20,
-                        ori_domain::BeginnerDetailLevelV1::Detailed => 30,
-                    },
-            )
-            .unwrap_or(100)
-            .min(100);
-            let contour_witness =
-                beginner_contour_placement_witness(&profile.generation_constraints, &plan)
-                    .ok_or_else(|| "grid_contour_witness_invalid".to_owned())?;
-            let paper_efficiency_score =
-                beginner_plan_paper_efficiency_score_v1(&plan, project.editor.paper());
-            work.global_checked.fetch_add(1, Ordering::Release);
-            Ok(BeginnerGridCandidateResponse {
-                point,
-                primary_score,
-                plan,
-                assessment,
-                local_proof_scope: "necessary",
-                global_proof_scope,
-                complexity_score,
-                paper_efficiency_score,
-                scale_deviation_penalty: u16::from(
-                    point.scale_percent.abs_diff(estimate.scale_percent),
-                ) * 10,
-                spacing_deviation_penalty: u16::from(
-                    point.spacing_percent.abs_diff(estimate.spacing_percent),
-                ) * 5,
-                detail_mismatch_penalty: detail_penalty,
-                outcome_reason,
-                contour_witness,
-                refinement_iterations,
-                strict_improvements,
-                refinement_starts,
+            for plan in plans {
+                primary.push((
+                    1000_u16.saturating_sub(deviation + detail_penalty),
+                    point,
+                    plan,
+                ));
+            }
+            work.enumerated.fetch_add(1, Ordering::Release);
+        }
+        control.checkpoint()?;
+        primary.sort_by_key(|(score, point, _)| (std::cmp::Reverse(*score), point.id));
+        primary.retain(|(_, _, plan)| {
+            beginner_contour_placement_witness(&profile.generation_constraints, plan).is_some()
+        });
+        if primary.len() < 3 {
+            return Err("grid_contour_candidate_shortage".to_owned());
+        }
+        primary.truncate(3);
+
+        control.checkpoint()?;
+        let reference = live_reference_model_suggestion_v1(&project).ok();
+        let mut candidates = primary
+            .into_iter()
+            .map(|(_primary_score, point, plan)| {
+                control.checkpoint()?;
+                let (point, plan, refinement_iterations, strict_improvements, refinement_starts) =
+                    refine_beginner_grid_plan_v1(
+                        project.project_id,
+                        project.editor.pattern(),
+                        &project.editor.paper().boundary_vertices,
+                        project.editor.paper(),
+                        profile,
+                        expected_kind,
+                        reference.as_ref(),
+                        &work,
+                        control.deadline,
+                        point,
+                        plan,
+                    )?;
+                control.checkpoint()?;
+                let detail_penalty =
+                    if point.detail_level == profile.generation_constraints.detail_level {
+                        0
+                    } else {
+                        10
+                    };
+                let primary_score = 1000_u16.saturating_sub(
+                    u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
+                        + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5
+                        + detail_penalty,
+                );
+                let assessment = assess_beginner_generated_plan_with_control_v1(
+                    project.project_id,
+                    project.editor.paper(),
+                    project.editor.pattern(),
+                    &plan,
+                    reference.as_ref(),
+                    control.deadline,
+                    Some(&work.cancelled),
+                );
+                control.checkpoint()?;
+                let global_proof_scope = assessment.proof_scope;
+                let outcome_reason = assessment.reason;
+                let complexity_score = u8::try_from(
+                    plan.crease_pattern.edges.len().saturating_mul(10)
+                        + match point.detail_level {
+                            ori_domain::BeginnerDetailLevelV1::Simple => 10,
+                            ori_domain::BeginnerDetailLevelV1::Standard => 20,
+                            ori_domain::BeginnerDetailLevelV1::Detailed => 30,
+                        },
+                )
+                .unwrap_or(100)
+                .min(100);
+                let contour_witness =
+                    beginner_contour_placement_witness(&profile.generation_constraints, &plan)
+                        .ok_or_else(|| "grid_contour_witness_invalid".to_owned())?;
+                let paper_efficiency_score =
+                    beginner_plan_paper_efficiency_score_v1(&plan, project.editor.paper());
+                work.global_checked.fetch_add(1, Ordering::Release);
+                Ok(BeginnerGridCandidateResponse {
+                    point,
+                    primary_score,
+                    plan,
+                    assessment,
+                    local_proof_scope: "necessary",
+                    global_proof_scope,
+                    complexity_score,
+                    paper_efficiency_score,
+                    scale_deviation_penalty: u16::from(
+                        point.scale_percent.abs_diff(estimate.scale_percent),
+                    ) * 10,
+                    spacing_deviation_penalty: u16::from(
+                        point.spacing_percent.abs_diff(estimate.spacing_percent),
+                    ) * 5,
+                    detail_mismatch_penalty: detail_penalty,
+                    outcome_reason,
+                    contour_witness,
+                    refinement_iterations,
+                    strict_improvements,
+                    refinement_starts,
+                })
             })
+            .collect::<Result<Vec<_>, String>>()?;
+        control.checkpoint()?;
+        candidates
+            .retain(|candidate| candidate.assessment.reason != "folded_pose_simulation_failed");
+        if candidates.is_empty() {
+            return Err("grid_folded_simulation_unavailable".to_owned());
+        }
+        let current = lock_project(&state)?;
+        beginner_candidate_snapshot_is_current_v1(&current, &snapshot)?;
+        control.checkpoint()?;
+        Ok(BeginnerGridEvaluationResponse {
+            request_generation_id,
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision: snapshot.expectation.revision,
+            grid_hash: ori_domain::beginner_parameter_grid_hash_v1(&grid),
+            evaluated_grid_points: ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1 as u8,
+            global_checked_candidates: 3,
+            refinement_iterations: work
+                .refinement_iterations
+                .load(Ordering::Acquire)
+                .min(u64::from(MAX_BEGINNER_REFINEMENT_ITERATIONS_V1) * 3)
+                as u8,
+            candidates,
         })
-        .collect::<Result<Vec<_>, String>>()?;
-    candidates.retain(|candidate| candidate.assessment.reason != "folded_pose_simulation_failed");
-    if candidates.is_empty() {
-        work.terminal.store(3, Ordering::Release);
-        return Err("grid_folded_simulation_unavailable".to_owned());
-    }
-    work.terminal.store(1, Ordering::Release);
-    Ok(BeginnerGridEvaluationResponse {
-        request_generation_id,
-        project_instance_id: project.instance_id,
-        project_id: project.project_id,
-        revision: project.editor.revision(),
-        grid_hash: ori_domain::beginner_parameter_grid_hash_v1(&grid),
-        evaluated_grid_points: ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1 as u8,
-        global_checked_candidates: 3,
-        refinement_iterations: work
-            .refinement_iterations
-            .load(Ordering::Acquire)
-            .min(u64::from(MAX_BEGINNER_REFINEMENT_ITERATIONS_V1) * 3)
-            as u8,
-        candidates,
     })
 }
 
@@ -3022,9 +3626,7 @@ pub(super) struct BeginnerGridProgressResponse {
 pub(super) fn get_beginner_parameter_grid_progress(
     request_generation_id: ProjectId,
 ) -> Result<BeginnerGridProgressResponse, String> {
-    let registry = beginner_grid_work()
-        .lock()
-        .map_err(|_| "grid_work_unavailable")?;
+    let registry = lock_recovering_registry_v1(beginner_grid_work());
     let work = registry
         .get(&request_generation_id)
         .ok_or_else(|| "grid_generation_not_running".to_owned())?;
@@ -3051,16 +3653,17 @@ pub(super) fn get_beginner_parameter_grid_progress(
 pub(super) fn cancel_beginner_parameter_grid(
     request_generation_id: ProjectId,
 ) -> Result<(), String> {
-    let registry = beginner_grid_work()
-        .lock()
-        .map_err(|_| "grid_work_unavailable")?;
+    let registry = lock_recovering_registry_v1(beginner_grid_work());
     let work = registry
         .get(&request_generation_id)
         .ok_or_else(|| "grid_generation_not_running".to_owned())?;
-    work.cancelled.store(true, Ordering::Release);
-    let _ = work
+    match work
         .terminal
-        .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
+        .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+    {
+        Ok(_) | Err(2) => work.cancelled.store(true, Ordering::Release),
+        Err(_) => {}
+    }
     Ok(())
 }
 
@@ -4221,17 +4824,16 @@ pub(super) fn apply_beginner_parameter_grid_candidate(
     if !confirmed {
         return Err("grid_candidate_confirmation_required".to_owned());
     }
-    {
-        let registry = beginner_grid_work()
-            .lock()
-            .map_err(|_| "grid_work_unavailable")?;
+    let completed_grid_work = {
+        let registry = lock_recovering_registry_v1(beginner_grid_work());
         let work = registry
             .get(&request_generation_id)
             .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
         if work.terminal.load(Ordering::Acquire) != 1 {
             return Err("grid_candidate_generation_stale".to_owned());
         }
-    }
+        Arc::clone(work)
+    };
     let grid = ori_domain::beginner_parameter_grid_v1();
     if ori_domain::beginner_parameter_grid_hash_v1(&grid) != expected_grid_hash
         || grid.get(usize::from(selected_point.id)).copied() != Some(selected_point)
@@ -4291,13 +4893,26 @@ pub(super) fn apply_beginner_parameter_grid_candidate(
     {
         return Err("grid_candidate_global_proof_stale".to_owned());
     }
-    apply_grid_plan_document(
+    // Pin the exact completed work through the project mutation. A reused
+    // generation cannot replace the registry entry between authorization and
+    // apply (ABA), and a replacement observed here fails closed.
+    let registry = lock_recovering_registry_v1(beginner_grid_work());
+    if registry
+        .get(&request_generation_id)
+        .is_none_or(|current| !Arc::ptr_eq(current, &completed_grid_work))
+        || completed_grid_work.terminal.load(Ordering::Acquire) != 1
+    {
+        return Err("grid_candidate_generation_stale".to_owned());
+    }
+    let applied = apply_grid_plan_document(
         &mut project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
         plan,
-    )
+    );
+    drop(registry);
+    applied
 }
 
 fn target_asset_reference_is_live(
@@ -5549,38 +6164,140 @@ pub(super) fn reference_model_suggestion_matches_live_v1(
     expected == live
 }
 
+const MAX_REFERENCE_MODEL_SURFACE_TRIANGLES_V1: usize = 40_000;
+const MAX_REFERENCE_MODEL_SURFACE_TOTAL_TRIANGLES_V1: usize =
+    MAX_REFERENCE_MODEL_SURFACE_TRIANGLES_V1 * 8;
+const MAX_REFERENCE_MODEL_SURFACE_CONNECTIVITY_WORK_V1: usize =
+    MAX_REFERENCE_MODEL_SURFACE_TRIANGLES_V1 * 16;
+const REFERENCE_MODEL_SURFACE_CONNECTIVITY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(250);
+
+/// A cooperative, absolute-budget control for reference-surface connectivity.
+/// The caller can share one instance across every edit in an atomic apply so
+/// no individual edit resets either the deadline or the work allowance.
+pub(super) struct ReferenceModelSurfaceConnectivityControlV1<'a> {
+    deadline: std::time::Instant,
+    cancelled: Option<&'a AtomicBool>,
+    remaining_work: usize,
+}
+
+impl<'a> ReferenceModelSurfaceConnectivityControlV1<'a> {
+    pub(super) fn new(
+        deadline: std::time::Instant,
+        cancelled: Option<&'a AtomicBool>,
+        maximum_work: usize,
+    ) -> Self {
+        Self {
+            deadline,
+            cancelled,
+            remaining_work: maximum_work,
+        }
+    }
+
+    fn consume(&mut self, work: usize) -> bool {
+        if self
+            .cancelled
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+            || std::time::Instant::now() >= self.deadline
+        {
+            return false;
+        }
+        let Some(remaining) = self.remaining_work.checked_sub(work) else {
+            return false;
+        };
+        self.remaining_work = remaining;
+        true
+    }
+
+    #[cfg(test)]
+    pub(super) const fn remaining_work(&self) -> usize {
+        self.remaining_work
+    }
+}
+
+#[cfg(test)]
+fn default_reference_model_surface_connectivity_control_v1()
+-> ReferenceModelSurfaceConnectivityControlV1<'static> {
+    let now = std::time::Instant::now();
+    ReferenceModelSurfaceConnectivityControlV1::new(
+        now.checked_add(REFERENCE_MODEL_SURFACE_CONNECTIVITY_TIMEOUT)
+            .unwrap_or(now),
+        None,
+        MAX_REFERENCE_MODEL_SURFACE_CONNECTIVITY_WORK_V1,
+    )
+}
+
+#[cfg(test)]
 pub(super) fn reference_model_surface_selection_matches_live_v1(
     assignments: &[BeginnerReferenceSurfaceAssignmentV1],
     edits: &[BeginnerReferenceSurfaceEditV1],
     live: &BeginnerReferenceModelSuggestionV1,
     geometry: &ori_formats::ReferenceGlbGeometryV1,
 ) -> bool {
+    let mut control = default_reference_model_surface_connectivity_control_v1();
+    reference_model_surface_selection_matches_live_with_control_v1(
+        assignments,
+        edits,
+        live,
+        geometry,
+        &mut control,
+    )
+}
+
+fn reference_model_surface_selection_matches_live_with_control_v1(
+    assignments: &[BeginnerReferenceSurfaceAssignmentV1],
+    edits: &[BeginnerReferenceSurfaceEditV1],
+    live: &BeginnerReferenceModelSuggestionV1,
+    geometry: &ori_formats::ReferenceGlbGeometryV1,
+    control: &mut ReferenceModelSurfaceConnectivityControlV1<'_>,
+) -> bool {
+    if !control.consume(0) {
+        return false;
+    }
     if !(2..=8).contains(&assignments.len()) {
         return false;
     }
-    let selected_ranges = assignments
-        .iter()
-        .map(|assignment| assignment.range_id)
-        .collect::<HashSet<_>>();
-    let selected_protrusions = assignments
-        .iter()
-        .map(|assignment| assignment.protrusion_id)
-        .collect::<HashSet<_>>();
-    let measured_ranges = live
-        .surface_ranges
-        .iter()
-        .map(|range| range.id)
-        .collect::<HashSet<_>>();
-    let measured_protrusions = live
-        .protrusions
-        .iter()
-        .map(|target| target.id)
-        .collect::<HashSet<_>>();
-    let edit_ids = edits
-        .iter()
-        .map(|edit| edit.range_id)
-        .collect::<HashSet<_>>();
+    if edits.len() > 8 {
+        return false;
+    }
+    let Some(total_edit_triangles) = edits.iter().try_fold(0_usize, |total, edit| {
+        total.checked_add(edit.triangle_indices.len())
+    }) else {
+        return false;
+    };
+    if total_edit_triangles > MAX_REFERENCE_MODEL_SURFACE_TOTAL_TRIANGLES_V1 {
+        return false;
+    }
+    let mut selected_ranges = HashSet::new();
+    let mut selected_protrusions = HashSet::new();
+    let mut measured_ranges = HashSet::new();
+    let mut measured_protrusions = HashSet::new();
+    let mut edit_ids = HashSet::new();
+    if selected_ranges.try_reserve(assignments.len()).is_err()
+        || selected_protrusions.try_reserve(assignments.len()).is_err()
+        || measured_ranges
+            .try_reserve(live.surface_ranges.len())
+            .is_err()
+        || measured_protrusions
+            .try_reserve(live.protrusions.len())
+            .is_err()
+        || edit_ids.try_reserve(edits.len()).is_err()
+    {
+        return false;
+    }
+    selected_ranges.extend(assignments.iter().map(|assignment| assignment.range_id));
+    selected_protrusions.extend(
+        assignments
+            .iter()
+            .map(|assignment| assignment.protrusion_id),
+    );
+    measured_ranges.extend(live.surface_ranges.iter().map(|range| range.id));
+    measured_protrusions.extend(live.protrusions.iter().map(|target| target.id));
+    edit_ids.extend(edits.iter().map(|edit| edit.range_id));
     let mut triangles = HashSet::new();
+    if triangles.try_reserve(total_edit_triangles).is_err() {
+        return false;
+    }
     assignments.len() == selected_ranges.len()
         && assignments.len() == selected_protrusions.len()
         && edits.len() == edit_ids.len()
@@ -5601,13 +6318,6 @@ pub(super) fn reference_model_surface_selection_matches_live_v1(
             else {
                 return false;
             };
-            let edited_range = BeginnerReferenceSurfaceRangeV1 {
-                id: edit.range_id,
-                triangle_indices: edit.triangle_indices.clone(),
-                range_min_tenths_mm: live_range.range_min_tenths_mm,
-                range_max_tenths_mm: live_range.range_max_tenths_mm,
-                digest_sha256: live_range.digest_sha256,
-            };
             edit.base_digest_sha256 == live_range.digest_sha256
                 && edit.bulge_direction_milli != [0, 0, 0]
                 && edit
@@ -5616,53 +6326,169 @@ pub(super) fn reference_model_surface_selection_matches_live_v1(
                     .all(|value| value.unsigned_abs() <= 1_000)
                 && (1..=1_000_000).contains(&edit.bulge_amount_tenths_mm)
                 && !edit.triangle_indices.is_empty()
-                && edit.triangle_indices.len() <= 40_000
+                && edit.triangle_indices.len() <= MAX_REFERENCE_MODEL_SURFACE_TRIANGLES_V1
+                && reference_model_surface_edit_is_within_live_range_v1(
+                    &edit.triangle_indices,
+                    &live_range.triangle_indices,
+                    control,
+                )
+                && reference_model_surface_triangle_indices_are_connected_with_control_v1(
+                    &edit.triangle_indices,
+                    geometry,
+                    control,
+                )
                 && edit
                     .triangle_indices
                     .iter()
-                    .any(|triangle| live_range.triangle_indices.contains(triangle))
-                && reference_model_surface_range_is_connected_v1(&edited_range, geometry)
-                && edit
-                    .triangle_indices
-                    .iter()
-                    .all(|triangle| triangles.insert(*triangle))
+                    .all(|triangle| control.consume(1) && triangles.insert(*triangle))
         })
 }
 
+fn reference_model_surface_edit_is_within_live_range_v1(
+    edited_triangles: &[u32],
+    live_triangles: &[u32],
+    control: &mut ReferenceModelSurfaceConnectivityControlV1<'_>,
+) -> bool {
+    if !control.consume(0) {
+        return false;
+    }
+    if edited_triangles.len() > live_triangles.len()
+        || live_triangles.len() > MAX_REFERENCE_MODEL_SURFACE_TRIANGLES_V1
+    {
+        return false;
+    }
+    let mut live = HashSet::new();
+    if live.try_reserve(live_triangles.len()).is_err() {
+        return false;
+    }
+    for triangle in live_triangles {
+        if !control.consume(1) || !live.insert(*triangle) {
+            return false;
+        }
+    }
+    edited_triangles
+        .iter()
+        .all(|triangle| control.consume(1) && live.contains(triangle))
+}
+
+#[cfg(test)]
 pub(super) fn reference_model_surface_range_is_connected_v1(
     range: &BeginnerReferenceSurfaceRangeV1,
     geometry: &ori_formats::ReferenceGlbGeometryV1,
 ) -> bool {
-    let Some(first) = range.triangle_indices.first().copied() else {
+    let mut control = default_reference_model_surface_connectivity_control_v1();
+    reference_model_surface_range_is_connected_with_control_v1(range, geometry, &mut control)
+}
+
+pub(super) fn reference_model_surface_range_is_connected_with_control_v1(
+    range: &BeginnerReferenceSurfaceRangeV1,
+    geometry: &ori_formats::ReferenceGlbGeometryV1,
+    control: &mut ReferenceModelSurfaceConnectivityControlV1<'_>,
+) -> bool {
+    reference_model_surface_triangle_indices_are_connected_with_control_v1(
+        &range.triangle_indices,
+        geometry,
+        control,
+    )
+}
+
+fn reference_model_surface_triangle_indices_are_connected_with_control_v1(
+    triangle_indices: &[u32],
+    geometry: &ori_formats::ReferenceGlbGeometryV1,
+    control: &mut ReferenceModelSurfaceConnectivityControlV1<'_>,
+) -> bool {
+    if !control.consume(0) {
+        return false;
+    }
+    let Some(first) = triangle_indices.first().copied() else {
         return false;
     };
-    if range.triangle_indices.iter().any(|index| {
-        usize::try_from(*index).map_or(true, |index| index >= geometry.triangle_indices.len())
-    }) {
+    if triangle_indices.len() > MAX_REFERENCE_MODEL_SURFACE_TRIANGLES_V1 {
         return false;
     }
-    let mut reached = HashSet::from([first]);
-    loop {
-        let before = reached.len();
-        for candidate in &range.triangle_indices {
-            if reached.contains(candidate) {
-                continue;
-            }
-            let candidate_triangle = geometry.triangle_indices[*candidate as usize];
-            if reached.iter().any(|known| {
-                let known_triangle = geometry.triangle_indices[*known as usize];
-                candidate_triangle
-                    .iter()
-                    .any(|vertex| known_triangle.contains(vertex))
-            }) {
-                reached.insert(*candidate);
-            }
+
+    let Some(vertex_index_capacity) = triangle_indices.len().checked_mul(3) else {
+        return false;
+    };
+    let mut selected = HashSet::new();
+    if selected.try_reserve(triangle_indices.len()).is_err() {
+        return false;
+    }
+    let mut vertex_anchor = HashMap::<u32, usize>::new();
+    if vertex_anchor.try_reserve(vertex_index_capacity).is_err() {
+        return false;
+    }
+    let mut adjacency = Vec::<Vec<usize>>::new();
+    if adjacency.try_reserve_exact(triangle_indices.len()).is_err() {
+        return false;
+    }
+    adjacency.resize_with(triangle_indices.len(), Vec::new);
+
+    for (triangle_position, triangle_index) in triangle_indices.iter().copied().enumerate() {
+        if !control.consume(1)
+            || !selected.insert(triangle_index)
+            || usize::try_from(triangle_index)
+                .ok()
+                .is_none_or(|index| index >= geometry.triangle_indices.len())
+        {
+            return false;
         }
-        if reached.len() == before {
-            break;
+        let triangle = geometry.triangle_indices[triangle_index as usize];
+        for vertex in triangle {
+            if !control.consume(1) {
+                return false;
+            }
+            match vertex_anchor.entry(vertex) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let anchor = *entry.get();
+                    if anchor != triangle_position {
+                        if adjacency[triangle_position].try_reserve(1).is_err()
+                            || adjacency[anchor].try_reserve(1).is_err()
+                        {
+                            return false;
+                        }
+                        adjacency[triangle_position].push(anchor);
+                        adjacency[anchor].push(triangle_position);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(triangle_position);
+                }
+            }
         }
     }
-    reached.len() == range.triangle_indices.len()
+
+    let mut visited = Vec::new();
+    if visited.try_reserve_exact(triangle_indices.len()).is_err() {
+        return false;
+    }
+    visited.resize(triangle_indices.len(), false);
+    let mut pending = Vec::new();
+    if pending.try_reserve_exact(triangle_indices.len()).is_err() {
+        return false;
+    }
+    visited[0] = true;
+    pending.push(0);
+    let mut visited_count = 0_usize;
+    while let Some(current) = pending.pop() {
+        if !control.consume(1) {
+            return false;
+        }
+        visited_count = match visited_count.checked_add(1) {
+            Some(value) => value,
+            None => return false,
+        };
+        for neighbor in &adjacency[current] {
+            if !control.consume(1) {
+                return false;
+            }
+            if !visited[*neighbor] {
+                visited[*neighbor] = true;
+                pending.push(*neighbor);
+            }
+        }
+    }
+    visited_count == triangle_indices.len() && selected.contains(&first)
 }
 
 #[tauri::command]
@@ -5797,21 +6623,33 @@ pub(super) fn apply_beginner_reference_model_features(
     if !reference_model_suggestion_matches_live_v1(&expected_suggestion, &live) {
         return Err("reference_model_suggestion_stale".to_owned());
     }
-    if live
-        .surface_ranges
-        .iter()
-        .any(|range| !reference_model_surface_range_is_connected_v1(range, &geometry))
-    {
+    let now = std::time::Instant::now();
+    let deadline = now
+        .checked_add(REFERENCE_MODEL_SURFACE_CONNECTIVITY_TIMEOUT)
+        .ok_or_else(|| "reference_model_surface_selection_tampered".to_owned())?;
+    let mut connectivity = ReferenceModelSurfaceConnectivityControlV1::new(
+        deadline,
+        None,
+        MAX_REFERENCE_MODEL_SURFACE_CONNECTIVITY_WORK_V1,
+    );
+    if live.surface_ranges.iter().any(|range| {
+        !reference_model_surface_range_is_connected_with_control_v1(
+            range,
+            &geometry,
+            &mut connectivity,
+        )
+    }) {
         return Err("reference_model_surface_selection_tampered".to_owned());
     }
     if surface_assignments.len() < 2 {
         return Err("reference_model_surface_selection_confirmation_required".to_owned());
     }
-    if !reference_model_surface_selection_matches_live_v1(
+    if !reference_model_surface_selection_matches_live_with_control_v1(
         &surface_assignments,
         &surface_edits,
         &live,
         &geometry,
+        &mut connectivity,
     ) {
         return Err("reference_model_surface_selection_tampered".to_owned());
     }

@@ -3741,6 +3741,26 @@ pub(super) fn configure_symmetric_profile(
             .target_parts
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
+    let standalone_six_leg_insect = insect
+        && estimate.protrusion_count == 6
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .filter(|part| {
+                !matches!(
+                    part.kind,
+                    ori_domain::BeginnerTargetPartKindV1::Head
+                        | ori_domain::BeginnerTargetPartKindV1::Torso
+                )
+            })
+            .count()
+            == 1
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
     let skeleton = |id, start_x, start_y, end_x, end_y| ori_domain::BeginnerSkeletonSegmentV1 {
         id,
         start: ori_domain::BeginnerSkeletonPointV1 {
@@ -3792,6 +3812,23 @@ pub(super) fn configure_symmetric_profile(
         side: ori_domain::BeginnerProtrusionSideV1::Either,
         priority: 50,
     }];
+    if standalone_six_leg_insect {
+        let prototype = profile.generation_constraints.protrusions[0].clone();
+        profile.generation_constraints.protrusions = [-250, 0, 250]
+            .into_iter()
+            .enumerate()
+            .map(|(index, center_y)| {
+                let mut pair = prototype.clone();
+                pair.id = index as u16 + 1;
+                pair.count = 2;
+                pair.position_tenths_mm[1] = center_y;
+                pair.direction_milli = [1000, 0, 0];
+                pair.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+                pair.priority = 80;
+                pair
+            })
+            .collect();
+    }
     if tail_ear || horn_ear || horn_tail {
         profile.generation_constraints.protrusions[0].count = 1;
         profile.generation_constraints.protrusions[0].symmetry =

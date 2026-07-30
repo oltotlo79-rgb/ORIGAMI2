@@ -239,6 +239,258 @@ fn complete_winged_animal_grid_apply_and_archive_round_trip() {
 }
 
 #[test]
+fn standalone_six_leg_estimate_configures_three_strict_pairs() {
+    let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+    profile.generation_constraints.target_category =
+        Some(ori_domain::BeginnerTargetCategoryV1::Insect);
+    profile.generation_constraints.target_parts = [
+        (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Leg, 6),
+    ]
+    .into_iter()
+    .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+    .collect();
+    let estimate =
+        ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints).unwrap();
+    assert_eq!(estimate.protrusion_count, 6);
+
+    configure_symmetric_profile(
+        &mut profile,
+        estimate,
+        estimate.scale_percent,
+        estimate.spacing_percent,
+    );
+    let configured = profile.clone();
+    configure_symmetric_profile(
+        &mut profile,
+        estimate,
+        estimate.scale_percent,
+        estimate.spacing_percent,
+    );
+    assert_eq!(profile, configured);
+    assert_eq!(
+        ori_domain::insect_three_pair_bindings_v1(&profile.generation_constraints)
+            .unwrap()
+            .map(|binding| (
+                binding.pair_index,
+                binding.protrusion_id,
+                binding.center_y_tenths_mm,
+            )),
+        [(0, 1, -250), (1, 2, 0), (2, 3, 250)]
+    );
+    assert!(
+        profile
+            .generation_constraints
+            .protrusions
+            .iter()
+            .all(|target| target.count == 2
+                && target.symmetry == ori_domain::BeginnerProtrusionSymmetryV1::Bilateral
+                && target.direction_milli == [1000, 0, 0])
+    );
+    assert_eq!(
+        ori_domain::beginner_target_approximation_score_v1(&profile.generation_constraints),
+        92
+    );
+
+    let project = initial_project_state();
+    let plans = ori_domain::generate_beginner_plans_v1(
+        project.project_id,
+        project.editor.pattern(),
+        &project.editor.paper().boundary_vertices,
+        &profile.generation_constraints,
+    )
+    .unwrap();
+    assert_eq!(
+        plans[0].kind,
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase
+    );
+    assert_eq!(plans[0].crease_pattern.vertices.len(), 13);
+    assert_eq!(plans[0].crease_pattern.edges.len(), 12);
+}
+
+#[test]
+fn six_leg_configuration_preserves_existing_four_eight_and_complete_insect_layouts() {
+    let records = |parts: &[(ori_domain::BeginnerTargetPartKindV1, u8)]| {
+        parts
+            .iter()
+            .copied()
+            .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+            .collect()
+    };
+    let signature = |profile: &ori_domain::BeginnerDesignProfileV1| {
+        profile
+            .generation_constraints
+            .protrusions
+            .iter()
+            .map(|target| {
+                (
+                    target.id,
+                    target.count,
+                    target.position_tenths_mm,
+                    target.direction_milli,
+                    target.symmetry,
+                    target.priority,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut four = ori_domain::BeginnerDesignProfileV1::default();
+    four.generation_constraints.target_category =
+        Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+    four.generation_constraints.target_parts = records(&[
+        (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Leg, 4),
+    ]);
+    let four_estimate =
+        ori_domain::estimate_symmetric_parameters_v1(&four.generation_constraints).unwrap();
+    configure_symmetric_profile(
+        &mut four,
+        four_estimate,
+        four_estimate.scale_percent,
+        four_estimate.spacing_percent,
+    );
+    assert_eq!(
+        signature(&four),
+        vec![(
+            1,
+            4,
+            [0, 0, 0],
+            [0, 1000, 0],
+            ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+            50,
+        )]
+    );
+
+    let mut complete_animal = ori_domain::BeginnerDesignProfileV1::default();
+    complete_animal.generation_constraints.target_category =
+        Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+    complete_animal.generation_constraints.target_parts = records(&[
+        (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Horn, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Ear, 2),
+        (ori_domain::BeginnerTargetPartKindV1::Leg, 4),
+    ]);
+    let complete_animal_estimate =
+        ori_domain::estimate_symmetric_parameters_v1(&complete_animal.generation_constraints)
+            .unwrap();
+    assert_eq!(complete_animal_estimate.protrusion_count, 8);
+    configure_symmetric_profile(
+        &mut complete_animal,
+        complete_animal_estimate,
+        complete_animal_estimate.scale_percent,
+        complete_animal_estimate.spacing_percent,
+    );
+    assert_eq!(
+        signature(&complete_animal),
+        vec![
+            (
+                1,
+                1,
+                [0, 0, 0],
+                [0, -1000, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                50,
+            ),
+            (
+                2,
+                1,
+                [0, 0, 0],
+                [1000, 0, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::None,
+                50,
+            ),
+            (
+                3,
+                2,
+                [0, 0, 0],
+                [1000, 0, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                50,
+            ),
+            (
+                4,
+                4,
+                [0, 0, 0],
+                [0, 1000, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                50,
+            ),
+        ]
+    );
+
+    let mut complete_insect = ori_domain::BeginnerDesignProfileV1::default();
+    complete_insect.generation_constraints.target_category =
+        Some(ori_domain::BeginnerTargetCategoryV1::Insect);
+    complete_insect.generation_constraints.target_parts = records(&[
+        (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+        (ori_domain::BeginnerTargetPartKindV1::Wing, 2),
+        (ori_domain::BeginnerTargetPartKindV1::Antenna, 2),
+        (ori_domain::BeginnerTargetPartKindV1::Leg, 6),
+    ]);
+    let complete_insect_estimate =
+        ori_domain::estimate_symmetric_parameters_v1(&complete_insect.generation_constraints)
+            .unwrap();
+    assert_eq!(complete_insect_estimate.protrusion_count, 10);
+    configure_symmetric_profile(
+        &mut complete_insect,
+        complete_insect_estimate,
+        complete_insect_estimate.scale_percent,
+        complete_insect_estimate.spacing_percent,
+    );
+    assert_eq!(
+        signature(&complete_insect),
+        vec![
+            (
+                1,
+                2,
+                [0, 0, 0],
+                [1000, 0, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                60,
+            ),
+            (
+                2,
+                2,
+                [0, 0, 0],
+                [0, -1000, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                60,
+            ),
+            (
+                3,
+                2,
+                [0, -250, 0],
+                [1000, 0, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                50,
+            ),
+            (
+                4,
+                2,
+                [0, 0, 0],
+                [1000, 0, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                50,
+            ),
+            (
+                5,
+                2,
+                [0, 250, 0],
+                [1000, 0, 0],
+                ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                50,
+            ),
+        ]
+    );
+}
+
+#[test]
 fn symmetry_transforms_are_exact_at_cardinal_angles() {
     assert_eq!(
         mirror_point_left_right(Point2::new(3.0, 4.0), 1.0),

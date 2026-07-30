@@ -133,10 +133,14 @@ pub use block_composition::{
     issue_multi_block_positive_layer_authority_v1, multi_block_count_supported_v1,
 };
 pub use cell_order_transport::{
-    CURRENT_POSE_CELL_ORDER_MODEL_ID_V1, CellOrderTransportErrorV1, CellOrderTransportLimitsV1,
-    CellOrderTransportResourceV1, CurrentPoseCellKeyV1, CurrentPoseLayerCellV1,
-    NATIVE_CELL_ORDER_TRANSPORT_PROOF_V1, NativeCellOrderTransportProofV1,
-    prove_single_face_cell_order_transport_v1, revalidate_single_face_cell_order_transport_v1,
+    CURRENT_POSE_CELL_ORDER_MODEL_ID_V1, CURRENT_POSE_TWO_FACE_NON_FLAT_CELL_ORDER_MODEL_ID_V1,
+    CellOrderTransportErrorV1, CellOrderTransportLimitsV1, CellOrderTransportResourceV1,
+    CurrentPoseCellKeyV1, CurrentPoseLayerCellV1, NATIVE_CELL_ORDER_TRANSPORT_PROOF_V1,
+    NATIVE_TWO_FACE_NON_FLAT_CELL_ORDER_TRANSPORT_PROOF_V1, NativeCellOrderTransportProofV1,
+    NativeTwoFaceNonFlatCellOrderTransportProofV1, prove_single_face_cell_order_transport_v1,
+    prove_two_face_non_flat_cell_order_transport_v1,
+    revalidate_single_face_cell_order_transport_v1,
+    revalidate_two_face_non_flat_cell_order_transport_v1,
 };
 pub use certified_path_graph::issue_private_three_segment_path_v1;
 pub use certified_path_graph::{

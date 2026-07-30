@@ -727,7 +727,7 @@ impl StagedDiagnosticsFile {
 
 impl Drop for StagedDiagnosticsFile {
     fn drop(&mut self) {
-        self.file.take();
+        drop(self.file.take());
         if !self.committed {
             let _ = fs::remove_file(&self.path);
         }

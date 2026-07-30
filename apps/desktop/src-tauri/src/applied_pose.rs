@@ -2054,10 +2054,10 @@ pub(super) mod tests {
         );
         drop(replacement_guard);
 
-        let early_return = (|| -> Result<(), ()> {
+        let early_return: Result<(), ()> = {
             let _rollback_failure_guard = fail_next_transaction_rollback_for_test_v1();
             Err(())
-        })();
+        };
         assert_eq!(early_return, Err(()));
         assert!(!take_transaction_rollback_failure_for_test_v1());
 

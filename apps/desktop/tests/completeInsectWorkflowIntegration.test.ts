@@ -9,6 +9,7 @@ const app = [
   readFileSync(new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url), 'utf8'),
 ].join('\n')
 const component = readFileSync(new URL('../src/components/CompleteInsectBindingList.tsx', import.meta.url), 'utf8')
+const bindings = readFileSync(new URL('../src/lib/completeInsectBindings.ts', import.meta.url), 'utf8')
 const componentText = readFileSync(new URL('../src/lib/completeInsectBindingListText.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
 const nativeTests = readDesktopRustUnitTestSources()
@@ -17,8 +18,10 @@ const recognition = readFileSync(new URL('../src-tauri/src/beginner_recognition.
 test('complete insect recognition and candidate UI share five canonical pair bindings', () => {
   assert.match(recognition, /fn complete_insect_image_pairs_require_both_equal_mirrored_sides/)
   assert.match(native, /insect_complete_bindings_v1/)
-  assert.match(component, /protrusions\.length === 5/)
-  assert.match(component, /target\.id === index \+ 1/)
+  assert.match(component, /resolveCompleteInsectBindings\(protrusions\)/)
+  assert.match(bindings, /protrusions\.length !== 5/)
+  assert.match(bindings, /target\.priority === 60/)
+  assert.match(bindings, /target\.priority === 50/)
   assert.match(component, /COMPLETE_INSECT_BINDING_LIST_TEXT as TEXT/)
   assert.match(component, /formatLocalizedText\(locale, TEXT\.bindingRow/)
   assert.match(componentText, /Wing pair/)

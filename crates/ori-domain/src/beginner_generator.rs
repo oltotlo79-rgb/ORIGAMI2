@@ -769,6 +769,15 @@ pub fn estimate_symmetric_parameters_v1(
             if count(BeginnerTargetPartKindV1::Leg) == 4
                 && count(BeginnerTargetPartKindV1::Horn) == 1
                 && count(BeginnerTargetPartKindV1::Tail) == 1
+                && count(BeginnerTargetPartKindV1::Ear) == 2
+                && count(BeginnerTargetPartKindV1::Wing) == 2 =>
+        {
+            10
+        }
+        BeginnerTargetCategoryV1::Animal
+            if count(BeginnerTargetPartKindV1::Leg) == 4
+                && count(BeginnerTargetPartKindV1::Horn) == 1
+                && count(BeginnerTargetPartKindV1::Tail) == 1
                 && count(BeginnerTargetPartKindV1::Ear) == 2 =>
         {
             8
@@ -5825,6 +5834,39 @@ mod tests {
         assert_eq!(candidates[0].approximation_score, 100);
         assert!(candidates[1].approximation_score < candidates[0].approximation_score);
         assert!(candidates[2].complexity_score > candidates[0].complexity_score);
+    }
+
+    #[test]
+    fn complete_winged_animal_estimate_includes_the_wing_pair() {
+        let mut constraints = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::Animal),
+            target_parts: [
+                (BeginnerTargetPartKindV1::Head, 1),
+                (BeginnerTargetPartKindV1::Torso, 1),
+                (BeginnerTargetPartKindV1::Horn, 1),
+                (BeginnerTargetPartKindV1::Tail, 1),
+                (BeginnerTargetPartKindV1::Ear, 2),
+                (BeginnerTargetPartKindV1::Leg, 4),
+            ]
+            .into_iter()
+            .map(|(kind, count)| BeginnerTargetPartRecordV1 { kind, count })
+            .collect(),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        let complete = estimate_symmetric_parameters_v1(&constraints).unwrap();
+        assert_eq!(complete.protrusion_count, 8);
+
+        constraints.target_parts.push(BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Wing,
+            count: 2,
+        });
+        let winged = estimate_symmetric_parameters_v1(&constraints).unwrap();
+        assert_eq!(winged.protrusion_count, 10);
+        assert!(
+            symmetric_parameter_candidates_v1(winged)
+                .iter()
+                .all(|candidate| candidate.required_protrusion_count == 10)
+        );
     }
 
     fn square_source(namespace: ProjectId) -> ([VertexId; 4], CreasePattern) {

@@ -147,15 +147,14 @@ fn complete_winged_animal_grid_apply_and_archive_round_trip() {
     .into_iter()
     .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
     .collect();
+    let estimate =
+        ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints).unwrap();
+    assert_eq!(estimate.protrusion_count, 10);
     configure_symmetric_profile(
         &mut profile,
-        ori_domain::BeginnerSymmetricParameterEstimateV1 {
-            protrusion_count: 10,
-            scale_percent: 25,
-            spacing_percent: 50,
-        },
-        25,
-        50,
+        estimate,
+        estimate.scale_percent,
+        estimate.spacing_percent,
     );
     let binding = ori_domain::animal_complete_winged_bindings_v1(&profile.generation_constraints)
         .expect("strict five-binding winged animal");

@@ -2251,9 +2251,6 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
             None => None,
         }
     };
-    if target.is_none() && !constraints.protrusions.is_empty() {
-        return 0;
-    }
     let base = target.map_or_else(
         || {
             if constraints.protrusions.is_empty() {
@@ -2266,6 +2263,9 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
         },
         |target| 60 + target.priority.min(100) * 2 / 5,
     );
+    if base == 0 {
+        return 0;
+    }
     let body_detail = constraints
         .generic_body_outline_tenths_mm
         .as_ref()
@@ -3909,6 +3909,24 @@ mod tests {
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &animal),
             Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+    }
+
+    #[test]
+    fn detail_bonuses_do_not_revive_an_unsupported_zero_base_score() {
+        let namespace = ProjectId::schema_namespace([0x6b; 16]);
+        let (ids, source) = square_source(namespace);
+        let constraints = BeginnerGenerationConstraintsV1 {
+            generic_body_outline_tenths_mm: Some(vec![[-2, -1], [-1, 2], [1, 2], [2, -1], [0, -2]]),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &constraints
+        ));
+        assert_eq!(beginner_target_approximation_score_v1(&constraints), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
+            Err(BeginnerGeneratorErrorV1::MissingTargetCategory)
         );
     }
 

@@ -3,6 +3,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use num_bigint::BigUint;
 use ori_numeric::{
     ExpressionError, ExpressionLimits, HARD_MAX_OPERATIONS, HARD_MAX_SOURCE_BYTES,
     MAX_PRECISION_BITS, MIN_PRECISION_BITS, ScalarExpression,
@@ -357,6 +358,58 @@ fn evaluate_finite_millimetre_expression(
     })
 }
 
+/// Returns one exact, canonical expression for a finite binary64 value.
+///
+/// A shortest decimal is only guaranteed to round to the source value under
+/// nearest rounding. The expression worker instead exposes an outward
+/// interval and deliberately adopts its lower endpoint, so that decimal may
+/// replay one ULP low. Every finite binary64 value is a dyadic rational
+/// `significand * 2^exponent`; spelling that rational with integer literals
+/// makes both certified interval endpoints equal the source binary64 value.
+///
+/// Signed zero follows the existing coordinate-adoption contract and is
+/// canonicalized to `0`.
+pub(super) fn canonical_binary64_expression_literal_v1(value: f64) -> Option<String> {
+    if !value.is_finite() {
+        return None;
+    }
+    let value = normalize_zero(value);
+    if value == 0.0 {
+        return Some("0".to_owned());
+    }
+
+    let bits = value.to_bits();
+    let negative = bits >> 63 != 0;
+    let biased_exponent = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    let (mut significand, mut binary_exponent) = if biased_exponent == 0 {
+        (fraction, -1074)
+    } else {
+        ((1_u64 << 52) | fraction, biased_exponent - 1023 - 52)
+    };
+
+    while significand & 1 == 0 {
+        significand >>= 1;
+        binary_exponent += 1;
+    }
+
+    let magnitude = if binary_exponent >= 0 {
+        let shift = usize::try_from(binary_exponent).ok()?;
+        (BigUint::from(significand) << shift).to_string()
+    } else {
+        let shift = usize::try_from(binary_exponent.unsigned_abs()).ok()?;
+        let denominator = BigUint::from(1_u8) << shift;
+        format!("{significand} / {denominator}")
+    };
+    let source = if negative {
+        format!("-{magnitude}")
+    } else {
+        magnitude
+    };
+    debug_assert!(source.len() <= HARD_MAX_SOURCE_BYTES);
+    Some(source)
+}
+
 fn adopt_finite_adjacent_interval(lower: f64, upper: f64) -> Option<f64> {
     if !lower.is_finite() || !upper.is_finite() || lower > upper {
         return None;
@@ -529,6 +582,71 @@ mod tests {
             evaluate_finite_millimetre_pair("-0".to_owned(), "0".to_owned()).unwrap(),
             (0.0, 0.0)
         );
+    }
+
+    #[test]
+    fn canonical_binary64_literals_replay_every_boundary_class_exactly() {
+        let polar_regression = f64::from_bits(4_618_831_910_042_805_394);
+        for value in [
+            0.0,
+            -0.0,
+            f64::from_bits(1),
+            -f64::from_bits(1),
+            f64::from_bits((1_u64 << 52) - 1),
+            -f64::from_bits((1_u64 << 52) - 1),
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            f64::from_bits(1.0_f64.to_bits() - 1),
+            1.0,
+            f64::from_bits(1.0_f64.to_bits() + 1),
+            0.1,
+            -0.1,
+            polar_regression,
+            -polar_regression,
+            f64::MAX,
+            -f64::MAX,
+        ] {
+            let source =
+                canonical_binary64_expression_literal_v1(value).expect("finite binary64 literal");
+            assert!(source.len() <= HARD_MAX_SOURCE_BYTES);
+
+            let response = evaluate_request(request(&source, USER_INPUT_PRECISION_BITS))
+                .expect("exact source");
+            let expected = normalize_zero(value);
+            assert!(response.exact, "source={source}");
+            assert_eq!(
+                response.lower_bound.to_bits(),
+                expected.to_bits(),
+                "lower source={source}"
+            );
+            assert_eq!(
+                response.upper_bound.to_bits(),
+                expected.to_bits(),
+                "upper source={source}"
+            );
+
+            let (round_trip, zero) =
+                evaluate_finite_millimetre_pair(source.clone(), "0".to_owned())
+                    .expect("current expression worker");
+            assert_eq!(
+                round_trip.to_bits(),
+                expected.to_bits(),
+                "adopted source={source}"
+            );
+            assert_eq!(zero.to_bits(), 0.0_f64.to_bits());
+        }
+
+        assert_eq!(
+            canonical_binary64_expression_literal_v1(1.5).as_deref(),
+            Some("3 / 2")
+        );
+        assert_eq!(
+            canonical_binary64_expression_literal_v1(-8.0).as_deref(),
+            Some("-8")
+        );
+        assert!(canonical_binary64_expression_literal_v1(f64::INFINITY).is_none());
+        assert!(canonical_binary64_expression_literal_v1(f64::NEG_INFINITY).is_none());
+        assert!(canonical_binary64_expression_literal_v1(f64::NAN).is_none());
     }
 
     #[test]

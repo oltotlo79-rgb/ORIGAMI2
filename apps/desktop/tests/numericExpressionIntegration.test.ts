@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { readDesktopRustUnitTestSources } from './testRustSource.ts'
+
 function source(relativePath: string): string {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }
@@ -11,7 +13,7 @@ const patternEditNative = source('../src-tauri/src/pattern_edit_commands.rs')
 const projectLifecycleNative = source(
   '../src-tauri/src/project_lifecycle_commands.rs',
 )
-const nativeTests = source('../src-tauri/src/tests.rs')
+const nativeTests = readDesktopRustUnitTestSources()
 const nativeModule = source('../src-tauri/src/numeric_expression.rs')
 const nativeCargo = source('../src-tauri/Cargo.toml')
 const frontend = source('../src/lib/numericExpressionNative.ts')
@@ -251,7 +253,11 @@ test('vertex and polar construction expressions retain source, ID, and native au
   )
   assert.match(
     patternEditNative,
-    /rotate_edge_about_point[\s\S]*?symmetry_sin_cos[\s\S]*?adopted\.x\.to_string\(\)[\s\S]*?adopted\.y\.to_string\(\)/u,
+    /rotate_edge_about_point[\s\S]*?symmetry_sin_cos[\s\S]*?transform_edge_points/u,
+  )
+  assert.match(
+    patternEditNative,
+    /fn transform_edge_points[\s\S]*?canonical_generated_coordinate_point_v1[\s\S]*?canonical_coordinate_expression_literal_v1\(adopted\.x\)[\s\S]*?canonical_coordinate_expression_literal_v1\(adopted\.y\)/u,
   )
   assert.doesNotMatch(
     patternEditNative,
@@ -270,9 +276,9 @@ test('whole-line translation is one native edit with expression-backed endpoint 
   )
   assert.match(
     patternEditNative,
-    /fn move_edge\([\s\S]*?Command::MoveEdge[\s\S]*?for \(vertex, previous, adopted\)[\s\S]*?adopt_vertex_coordinate_expression/u,
+    /fn move_edge\([\s\S]*?canonical_generated_coordinate_point_v1[\s\S]*?canonical_coordinate_expression_literal_v1\(adopted\.x\)[\s\S]*?canonical_coordinate_expression_literal_v1\(adopted\.y\)[\s\S]*?Command::MoveEdge[\s\S]*?for binding in bindings[\s\S]*?adopt_vertex_coordinate_expression/u,
   )
-  assert.match(
+  assert.doesNotMatch(
     patternEditNative,
     /format!\("\(\{\}\)\+\(\{delta_x_expression\}\)"/u,
   )

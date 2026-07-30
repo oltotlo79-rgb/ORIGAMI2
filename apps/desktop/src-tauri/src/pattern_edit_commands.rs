@@ -112,6 +112,88 @@ fn benchmark_edge_id(index: usize) -> String {
     format!("benchmark-e-{index}")
 }
 
+fn canonical_coordinate_expression_literal_v1(value: f64) -> Result<String, String> {
+    let source = super::numeric_expression::canonical_binary64_expression_literal_v1(value)
+        .ok_or_else(|| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
+    bounded_generated_coordinate_source_v1(source)
+}
+
+fn canonical_generated_coordinate_point_v1(point: Point2) -> Result<Point2, String> {
+    if !point.x.is_finite() || !point.y.is_finite() {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    Ok(Point2::new(
+        canonical_generated_coordinate_zero_v1(point.x),
+        canonical_generated_coordinate_zero_v1(point.y),
+    ))
+}
+
+const fn canonical_generated_coordinate_zero_v1(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value }
+}
+
+fn bounded_generated_coordinate_source_v1(source: String) -> Result<String, String> {
+    if source.trim().is_empty()
+        || source.len() > ori_numeric::HARD_MAX_SOURCE_BYTES
+        || source.len() > ori_formats::MAX_PROJECT_NUMERIC_EXPRESSION_SOURCE_BYTES
+        || source.chars().any(char::is_control)
+    {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    Ok(source)
+}
+
+#[cfg(test)]
+mod canonical_coordinate_tests {
+    use super::*;
+
+    #[test]
+    fn native_coordinate_sources_follow_the_final_binary64_bits() {
+        let delta = 3.0 / 18_014_398_509_481_984.0;
+        let point =
+            canonical_generated_coordinate_point_v1(Point2::new(1.0 + delta, -0.0)).unwrap();
+        assert_eq!(point.x.to_bits(), 1.0_f64.to_bits() + 1);
+        assert_eq!(point.y.to_bits(), 0.0_f64.to_bits());
+
+        let x_source = canonical_coordinate_expression_literal_v1(point.x).unwrap();
+        let y_source = canonical_coordinate_expression_literal_v1(point.y).unwrap();
+        let (round_trip_x, round_trip_y) =
+            crate::numeric_expression::evaluate_finite_millimetre_pair(x_source, y_source)
+                .expect("generated exact coordinate sources");
+        assert_eq!(round_trip_x.to_bits(), point.x.to_bits());
+        assert_eq!(round_trip_y.to_bits(), point.y.to_bits());
+
+        let mirrored = canonical_generated_coordinate_point_v1(mirror_point_left_right(
+            Point2::new(-delta, -0.0),
+            0.5,
+        ))
+        .unwrap();
+        assert_eq!(mirrored.x.to_bits(), 1.0_f64.to_bits() + 1);
+        assert_eq!(mirrored.y.to_bits(), 0.0_f64.to_bits());
+        let mirrored_x_source = canonical_coordinate_expression_literal_v1(mirrored.x).unwrap();
+        let mirrored_y_source = canonical_coordinate_expression_literal_v1(mirrored.y).unwrap();
+        let (round_trip_x, round_trip_y) =
+            crate::numeric_expression::evaluate_finite_millimetre_pair(
+                mirrored_x_source,
+                mirrored_y_source,
+            )
+            .expect("generated exact mirrored coordinate sources");
+        assert_eq!(round_trip_x.to_bits(), mirrored.x.to_bits());
+        assert_eq!(round_trip_y.to_bits(), mirrored.y.to_bits());
+    }
+
+    #[test]
+    fn native_coordinate_source_preparation_rejects_nonfinite_points() {
+        for point in [
+            Point2::new(f64::INFINITY, 0.0),
+            Point2::new(0.0, f64::NEG_INFINITY),
+            Point2::new(f64::NAN, 0.0),
+        ] {
+            assert!(canonical_generated_coordinate_point_v1(point).is_err());
+        }
+    }
+}
+
 #[tauri::command]
 pub(super) fn add_vertex(
     state: State<'_, AppState>,
@@ -225,15 +307,24 @@ pub(super) fn move_edge(
     };
     let start = position(edge.start)?;
     let end = position(edge.end)?;
-    let start_position = Point2::new(start.x + delta_x_mm, start.y + delta_y_mm);
-    let end_position = Point2::new(end.x + delta_x_mm, end.y + delta_y_mm);
-    if !start_position.x.is_finite()
-        || !start_position.y.is_finite()
-        || !end_position.x.is_finite()
-        || !end_position.y.is_finite()
-    {
-        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
-    }
+    let start_position = canonical_generated_coordinate_point_v1(Point2::new(
+        start.x + delta_x_mm,
+        start.y + delta_y_mm,
+    ))?;
+    let end_position = canonical_generated_coordinate_point_v1(Point2::new(
+        end.x + delta_x_mm,
+        end.y + delta_y_mm,
+    ))?;
+    let bindings = [(edge.start, start_position), (edge.end, end_position)]
+        .into_iter()
+        .map(|(vertex, adopted)| {
+            let x_source = canonical_coordinate_expression_literal_v1(adopted.x)?;
+            let y_source = canonical_coordinate_expression_literal_v1(adopted.y)?;
+            Ok(VertexCoordinateExpressions::new(
+                vertex, x_source, y_source, adopted.x, adopted.y,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     execute_expected_command(
         &mut project,
         ProjectExpectation::new(
@@ -247,17 +338,8 @@ pub(super) fn move_edge(
             end_position,
         },
     )?;
-    for (vertex, previous, adopted) in [
-        (edge.start, start, start_position),
-        (edge.end, end, end_position),
-    ] {
-        project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
-            vertex,
-            format!("({})+({delta_x_expression})", previous.x),
-            format!("({})+({delta_y_expression})", previous.y),
-            adopted.x,
-            adopted.y,
-        ));
+    for binding in bindings {
+        project.adopt_vertex_coordinate_expression(binding);
     }
     Ok(snapshot(&project))
 }
@@ -284,12 +366,6 @@ pub(super) fn mirror_edge_left_right(
         expected_revision,
         id,
         |point| mirror_point_left_right(point, axis_x_mm),
-        |point, _adopted| {
-            (
-                format!("2*({axis_x_expression})-({})", point.x),
-                point.y.to_string(),
-            )
-        },
     )
 }
 
@@ -820,13 +896,6 @@ pub(super) fn rotate_edge_about_point(
         expected_revision,
         id,
         |point| rotate_point_about(point, Point2::new(center_x_mm, center_y_mm), sin, cos),
-        |_point, adopted| {
-            // The certified scalar-expression grammar intentionally excludes
-            // transcendental functions. Persist the native deterministic
-            // endpoint as round-trippable literals instead of writing
-            // unevaluable `sin`/`cos` expressions into the project.
-            (adopted.x.to_string(), adopted.y.to_string())
-        },
     )
 }
 
@@ -851,7 +920,6 @@ fn transform_edge_points(
     expected_revision: u64,
     id: EdgeId,
     transform: impl Fn(Point2) -> Point2,
-    expression: impl Fn(Point2, Point2) -> (String, String),
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     let edge = project
@@ -874,15 +942,18 @@ fn transform_edge_points(
     };
     let start = position(edge.start)?;
     let end = position(edge.end)?;
-    let start_position = transform(start);
-    let end_position = transform(end);
-    if !start_position.x.is_finite()
-        || !start_position.y.is_finite()
-        || !end_position.x.is_finite()
-        || !end_position.y.is_finite()
-    {
-        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
-    }
+    let start_position = canonical_generated_coordinate_point_v1(transform(start))?;
+    let end_position = canonical_generated_coordinate_point_v1(transform(end))?;
+    let bindings = [(edge.start, start_position), (edge.end, end_position)]
+        .into_iter()
+        .map(|(vertex, adopted)| {
+            let x_source = canonical_coordinate_expression_literal_v1(adopted.x)?;
+            let y_source = canonical_coordinate_expression_literal_v1(adopted.y)?;
+            Ok(VertexCoordinateExpressions::new(
+                vertex, x_source, y_source, adopted.x, adopted.y,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     execute_expected_command(
         &mut project,
         ProjectExpectation::new(
@@ -896,14 +967,8 @@ fn transform_edge_points(
             end_position,
         },
     )?;
-    for (vertex, previous, adopted) in [
-        (edge.start, start, start_position),
-        (edge.end, end, end_position),
-    ] {
-        let (x_source, y_source) = expression(previous, adopted);
-        project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
-            vertex, x_source, y_source, adopted.x, adopted.y,
-        ));
+    for binding in bindings {
+        project.adopt_vertex_coordinate_expression(binding);
     }
     Ok(snapshot(&project))
 }
@@ -944,11 +1009,13 @@ pub(super) fn move_vertices(
             .find(|candidate| candidate.id == vertex)
             .map(|candidate| candidate.position)
             .ok_or_else(|| "vertex not found".to_owned())?;
-        let position = Point2::new(previous.x + delta_x_mm, previous.y + delta_y_mm);
-        if !position.x.is_finite() || !position.y.is_finite() {
-            return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
-        }
-        planned.push((vertex, previous, position));
+        let position = canonical_generated_coordinate_point_v1(Point2::new(
+            previous.x + delta_x_mm,
+            previous.y + delta_y_mm,
+        ))?;
+        let x_source = canonical_coordinate_expression_literal_v1(position.x)?;
+        let y_source = canonical_coordinate_expression_literal_v1(position.y)?;
+        planned.push((vertex, position, x_source, y_source));
     }
     execute_expected_command(
         &mut project,
@@ -960,20 +1027,16 @@ pub(super) fn move_vertices(
         Command::MoveVertices {
             updates: planned
                 .iter()
-                .map(|(vertex, _, position)| VertexPositionUpdate {
+                .map(|(vertex, position, _, _)| VertexPositionUpdate {
                     vertex: *vertex,
                     position: *position,
                 })
                 .collect(),
         },
     )?;
-    for (vertex, previous, adopted) in planned {
+    for (vertex, adopted, x_source, y_source) in planned {
         project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
-            vertex,
-            format!("({})+({delta_x_expression})", previous.x),
-            format!("({})+({delta_y_expression})", previous.y),
-            adopted.x,
-            adopted.y,
+            vertex, x_source, y_source, adopted.x, adopted.y,
         ));
     }
     Ok(snapshot(&project))
@@ -1080,14 +1143,17 @@ pub(super) fn add_connected_vertex(
         .find(|vertex| vertex.id == start)
         .map(|vertex| vertex.position)
         .ok_or_else(|| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
-    let endpoint = deterministic_polar_endpoint_with_model_support(
-        start_position,
-        length_mm,
-        angle_degrees,
-        ori_numeric::deterministic_transcendental_model_supported_v1(),
-    )?;
+    let endpoint =
+        canonical_generated_coordinate_point_v1(deterministic_polar_endpoint_with_model_support(
+            start_position,
+            length_mm,
+            angle_degrees,
+            ori_numeric::deterministic_transcendental_model_supported_v1(),
+        )?)?;
     let x = endpoint.x;
     let y = endpoint.y;
+    let x_source = canonical_coordinate_expression_literal_v1(x)?;
+    let y_source = canonical_coordinate_expression_literal_v1(y)?;
     let vertex_id = VertexId::new();
     execute_expected_command(
         &mut project,
@@ -1104,8 +1170,7 @@ pub(super) fn add_connected_vertex(
             kind,
         },
     )?;
-    let mut binding =
-        VertexCoordinateExpressions::new(vertex_id, x.to_string(), y.to_string(), x, y);
+    let mut binding = VertexCoordinateExpressions::new(vertex_id, x_source, y_source, x, y);
     binding.schema_version =
         ori_formats::VERTEX_COORDINATE_EXPRESSIONS_SCHEMA_VERSION_DETERMINISTIC_V2;
     binding.transcendental_model_id =

@@ -8,7 +8,6 @@
 //! commits exactly one existing editor command.
 
 use super::*;
-use num_bigint::BigUint;
 
 const CONSTRUCTED_VERTEX_SCHEMA_VERSION_V1: u32 = 1;
 const CONSTRUCTED_VERTEX_MODEL_ID_V1: &str = "ori_canvas_constructed_vertex_binary64_native_v1";
@@ -680,47 +679,8 @@ fn prepare_native_vertex_expression_v1(
 }
 
 fn exact_binary64_coordinate_source_v1(value: f64) -> Result<String, String> {
-    if !value.is_finite() {
-        return Err(CONSTRUCTED_VERTEX_INVALID_MESSAGE.to_owned());
-    }
-    let value = canonical_zero(value);
-    if value == 0.0 {
-        return Ok("0".to_owned());
-    }
-
-    let bits = value.to_bits();
-    let negative = bits >> 63 != 0;
-    let biased_exponent = ((bits >> 52) & 0x7ff) as i32;
-    let fraction = bits & ((1_u64 << 52) - 1);
-    let (mut significand, mut binary_exponent) = if biased_exponent == 0 {
-        (fraction, -1074)
-    } else {
-        ((1_u64 << 52) | fraction, biased_exponent - 1023 - 52)
-    };
-    if significand == 0 {
-        return Err(CONSTRUCTED_VERTEX_INVALID_MESSAGE.to_owned());
-    }
-    while significand & 1 == 0 {
-        significand >>= 1;
-        binary_exponent += 1;
-    }
-
-    let magnitude = if binary_exponent >= 0 {
-        (BigUint::from(significand)
-            << usize::try_from(binary_exponent)
-                .map_err(|_| CONSTRUCTED_VERTEX_INVALID_MESSAGE.to_owned())?)
-        .to_string()
-    } else {
-        let denominator = BigUint::from(1_u8)
-            << usize::try_from(-binary_exponent)
-                .map_err(|_| CONSTRUCTED_VERTEX_INVALID_MESSAGE.to_owned())?;
-        format!("{significand} / {denominator}")
-    };
-    Ok(if negative {
-        format!("-{magnitude}")
-    } else {
-        magnitude
-    })
+    super::numeric_expression::canonical_binary64_expression_literal_v1(value)
+        .ok_or_else(|| CONSTRUCTED_VERTEX_INVALID_MESSAGE.to_owned())
 }
 
 fn project_onto_anchored_direction_v1(

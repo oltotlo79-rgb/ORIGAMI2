@@ -131,10 +131,20 @@ fn polar_binding(
     endpoint: Point2,
     deterministic_v2: bool,
 ) -> VertexCoordinateExpressions {
+    let (x_source, y_source) = if deterministic_v2 {
+        (
+            super::numeric_expression::canonical_binary64_expression_literal_v1(endpoint.x)
+                .expect("finite deterministic polar x"),
+            super::numeric_expression::canonical_binary64_expression_literal_v1(endpoint.y)
+                .expect("finite deterministic polar y"),
+        )
+    } else {
+        (endpoint.x.to_string(), endpoint.y.to_string())
+    };
     let mut binding = VertexCoordinateExpressions::new(
         fixture.target,
-        endpoint.x.to_string(),
-        endpoint.y.to_string(),
+        x_source,
+        y_source,
         endpoint.x,
         endpoint.y,
     );

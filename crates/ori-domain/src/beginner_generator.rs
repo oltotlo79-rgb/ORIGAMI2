@@ -1062,7 +1062,7 @@ pub fn generate_beginner_plans_v1(
                 || feature_records == 4 && horn && tail && ears && legs
                 || feature_records == 5 && horn && tail && ears && legs && wings;
             if asymmetric_landmark_fish {
-                if !protrusion_local_outlines_within_skeleton_bounds_v1(constraints) {
+                if !exact_ordered_asymmetric_landmarks_v1(constraints, 3, 0) {
                     return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                 }
                 symmetric_template(
@@ -1396,19 +1396,11 @@ pub fn generate_beginner_plans_v1(
                         | BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
                 );
                 let endpoints = if asymmetric {
-                    if constraints.skeleton_segments.len() < if vertical { 3 } else { 2 }
-                        || constraints.protrusions.len() != usize::from(required_count)
-                        || constraints
-                            .protrusions
-                            .windows(2)
-                            .any(|pair| pair[0].id >= pair[1].id)
-                        || constraints.protrusions.iter().any(|target| {
-                            target.count != 1
-                                || target.symmetry != BeginnerProtrusionSymmetryV1::None
-                                || target.direction_milli == [0, 0, 0]
-                        })
-                        || !protrusion_local_outlines_within_skeleton_bounds_v1(constraints)
-                    {
+                    if !exact_ordered_asymmetric_landmarks_v1(
+                        constraints,
+                        usize::from(required_count),
+                        if vertical { 3 } else { 2 },
+                    ) {
                         return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                     }
                     vec![(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)]
@@ -1466,7 +1458,7 @@ pub fn generate_beginner_plans_v1(
                     && wing_antenna
                     && part_count(BeginnerTargetPartKindV1::Leg) == 6;
             if asymmetric_landmark_insect {
-                if !protrusion_local_outlines_within_skeleton_bounds_v1(constraints) {
+                if !exact_ordered_asymmetric_landmarks_v1(constraints, 7, 0) {
                     return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
                 }
                 let endpoints = [(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)];
@@ -1818,6 +1810,25 @@ fn protrusion_local_outlines_within_skeleton_bounds_v1(
         .all(|target| protrusion_local_outline_within_bounds_v1(target, bounds))
 }
 
+fn exact_ordered_asymmetric_landmarks_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+    required_count: usize,
+    minimum_skeleton_segments: usize,
+) -> bool {
+    constraints.skeleton_segments.len() >= minimum_skeleton_segments
+        && constraints.protrusions.len() == required_count
+        && constraints
+            .protrusions
+            .windows(2)
+            .all(|pair| pair[0].id < pair[1].id)
+        && constraints.protrusions.iter().all(|target| {
+            target.count == 1
+                && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                && target.direction_milli != [0, 0, 0]
+        })
+        && protrusion_local_outlines_within_skeleton_bounds_v1(constraints)
+}
+
 fn parameterized_center_axis_endpoint(
     constraints: &BeginnerGenerationConstraintsV1,
     vertical: bool,
@@ -2062,7 +2073,7 @@ fn animal_target_approximation_score_target_v1(
             None
         };
     if asymmetric_landmark_fish {
-        return protrusion_local_outlines_within_skeleton_bounds_v1(constraints)
+        return exact_ordered_asymmetric_landmarks_v1(constraints, 3, 0)
             .then(|| highest_priority_target_v1(constraints))
             .flatten();
     }
@@ -2162,18 +2173,11 @@ fn animal_target_approximation_score_target_v1(
             .map(|(target, _)| target);
     }
     if let Some((required_count, minimum_skeleton_segments)) = asymmetric_count {
-        return (constraints.skeleton_segments.len() >= minimum_skeleton_segments
-            && constraints.protrusions.len() == usize::from(required_count)
-            && !constraints
-                .protrusions
-                .windows(2)
-                .any(|pair| pair[0].id >= pair[1].id)
-            && constraints.protrusions.iter().all(|target| {
-                target.count == 1
-                    && target.symmetry == BeginnerProtrusionSymmetryV1::None
-                    && target.direction_milli != [0, 0, 0]
-            })
-            && protrusion_local_outlines_within_skeleton_bounds_v1(constraints))
+        return exact_ordered_asymmetric_landmarks_v1(
+            constraints,
+            usize::from(required_count),
+            minimum_skeleton_segments,
+        )
         .then(|| highest_priority_target_v1(constraints))
         .flatten();
     }
@@ -2280,7 +2284,7 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                 let declared_wing_antenna = part_count(BeginnerTargetPartKindV1::Wing) == 2
                     && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
                 if asymmetric_landmark_insect {
-                    protrusion_local_outlines_within_skeleton_bounds_v1(constraints)
+                    exact_ordered_asymmetric_landmarks_v1(constraints, 7, 0)
                         .then(|| {
                             constraints.protrusions.iter().max_by_key(|target| {
                                 (target.priority, std::cmp::Reverse(target.id))
@@ -5187,21 +5191,32 @@ mod tests {
                 generate_beginner_plans_v1(namespace, &source, &ids, &outside_outline),
                 Err(expected_error)
             );
+            let mut reordered = constraints.clone();
+            reordered.protrusions.reverse();
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &reordered
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&reordered), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &reordered),
+                Err(expected_error)
+            );
+            let mut oversized = constraints.clone();
+            let next_id = oversized
+                .protrusions
+                .last()
+                .and_then(|target| target.id.checked_add(1))
+                .expect("bounded landmark fixture");
+            oversized.protrusions.push(bilateral_protrusion(next_id, 2));
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &oversized
+            ));
+            assert_eq!(beginner_target_approximation_score_v1(&oversized), 0);
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &oversized),
+                Err(expected_error)
+            );
         }
-
-        let mut reordered_four_leg = four_leg;
-        reordered_four_leg.protrusions.reverse();
-        assert!(crate::validate_beginner_generation_constraints_v1(
-            &reordered_four_leg
-        ));
-        assert_eq!(
-            beginner_target_approximation_score_v1(&reordered_four_leg),
-            0
-        );
-        assert_eq!(
-            generate_beginner_plans_v1(namespace, &source, &ids, &reordered_four_leg),
-            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
-        );
     }
 
     #[test]

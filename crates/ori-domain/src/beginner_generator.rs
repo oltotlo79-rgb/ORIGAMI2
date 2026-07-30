@@ -980,7 +980,9 @@ pub fn generate_beginner_plans_v1(
     {
         return Err(BeginnerGeneratorErrorV1::MissingRequiredParts);
     }
-    if !crate::validate_beginner_generation_constraints_v1(constraints) {
+    if !crate::validate_beginner_generation_constraints_v1(constraints)
+        || !generic_body_outline_within_skeleton_bounds_v1(constraints)
+    {
         return Err(match target_category {
             BeginnerTargetCategoryV1::Insect => BeginnerGeneratorErrorV1::UnsupportedInsectTemplate,
             BeginnerTargetCategoryV1::Animal | BeginnerTargetCategoryV1::CustomObject => {
@@ -1791,6 +1793,33 @@ fn protrusion_local_outline_within_bounds_v1(
         })
 }
 
+fn generic_body_outline_within_bounds_v1(
+    outline: &[[i32; 2]],
+    bounds: (i32, i32, i32, i32),
+) -> bool {
+    let (minimum_x, maximum_x, minimum_y, maximum_y) = bounds;
+    maximum_x
+        .checked_sub(minimum_x)
+        .is_some_and(|span| span > 0)
+        && maximum_y
+            .checked_sub(minimum_y)
+            .is_some_and(|span| span > 0)
+        && outline.iter().all(|point| {
+            (minimum_x..=maximum_x).contains(&point[0])
+                && (minimum_y..=maximum_y).contains(&point[1])
+        })
+}
+
+fn generic_body_outline_within_skeleton_bounds_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> bool {
+    let Some(outline) = constraints.generic_body_outline_tenths_mm.as_deref() else {
+        return true;
+    };
+    skeleton_bounds(&constraints.skeleton_segments)
+        .is_some_and(|bounds| generic_body_outline_within_bounds_v1(outline, bounds))
+}
+
 fn protrusion_local_outlines_within_skeleton_bounds_v1(
     constraints: &BeginnerGenerationConstraintsV1,
 ) -> bool {
@@ -2235,6 +2264,9 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
     {
         return 0;
     }
+    if !generic_body_outline_within_skeleton_bounds_v1(constraints) {
+        return 0;
+    }
     let uses_generic_target = uses_bounded_generic_target_base_v1(constraints);
     let generic_target = if uses_generic_target {
         bounded_generic_composite_endpoints(constraints)
@@ -2525,10 +2557,10 @@ fn bounded_generic_composite_endpoints(
         u32::try_from(maximum_y.checked_sub(minimum_y)?).ok()?,
     ];
     let available_body = if let Some(outline) = &constraints.generic_body_outline_tenths_mm {
-        if outline.iter().any(|point| {
-            !(minimum_x..=maximum_x).contains(&point[0])
-                || !(minimum_y..=maximum_y).contains(&point[1])
-        }) {
+        if !generic_body_outline_within_bounds_v1(
+            outline,
+            (minimum_x, maximum_x, minimum_y, maximum_y),
+        ) {
             return None;
         }
         let outline_min_x = outline.iter().map(|point| point[0]).min()?;
@@ -4323,6 +4355,36 @@ mod tests {
                 generate_beginner_plans_v1(namespace, &source, &ids, &outside_outline),
                 Err(expected_error)
             );
+            let mut contained_body_outline = constraints.clone();
+            contained_body_outline.generic_body_outline_tenths_mm =
+                Some(vec![[-5, -5], [-5, 5], [5, 5], [5, -5]]);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &contained_body_outline
+            ));
+            assert_eq!(
+                beginner_target_approximation_score_v1(&contained_body_outline),
+                92
+            );
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &contained_body_outline)
+                    .unwrap()[0]
+                    .kind,
+                expected_kind
+            );
+            let mut outside_body_outline = constraints.clone();
+            outside_body_outline.generic_body_outline_tenths_mm =
+                Some(vec![[-20, -20], [-20, 20], [20, 20], [20, -20]]);
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &outside_body_outline
+            ));
+            assert_eq!(
+                beginner_target_approximation_score_v1(&outside_body_outline),
+                0
+            );
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &outside_body_outline),
+                Err(expected_error)
+            );
 
             let mut extra = target;
             extra.id = 2;
@@ -5146,7 +5208,7 @@ mod tests {
                 BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
             ),
             (
-                fish,
+                fish.clone(),
                 BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
                 BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate,
             ),
@@ -5217,6 +5279,27 @@ mod tests {
                 Err(expected_error)
             );
         }
+        let mut zero_span_fish = fish;
+        zero_span_fish.skeleton_segments = vec![skeleton(1, 0, -10, 0, 10)];
+        zero_span_fish.generic_body_outline_tenths_mm =
+            Some(vec![[-2, -1], [-1, 2], [1, 2], [2, -1], [0, -2]]);
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &zero_span_fish
+        ));
+        assert_eq!(beginner_target_approximation_score_v1(&zero_span_fish), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &zero_span_fish),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+        zero_span_fish.skeleton_segments.clear();
+        assert!(crate::validate_beginner_generation_constraints_v1(
+            &zero_span_fish
+        ));
+        assert_eq!(beginner_target_approximation_score_v1(&zero_span_fish), 0);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &zero_span_fish),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
     }
 
     #[test]

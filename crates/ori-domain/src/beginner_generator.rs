@@ -945,13 +945,23 @@ pub fn generate_beginner_plans_v1(
     {
         return Err(BeginnerGeneratorErrorV1::UnsupportedPaper);
     }
+    if constraints.allowed_techniques.len() > crate::MAX_BEGINNER_ALLOWED_TECHNIQUES_V1 {
+        return Err(BeginnerGeneratorErrorV1::UnsupportedTechniques);
+    }
     let allows_valley = constraints
         .allowed_techniques
         .contains(&BeginnerFoldTechniqueV1::ValleyFold);
     let allows_mountain = constraints
         .allowed_techniques
         .contains(&BeginnerFoldTechniqueV1::MountainFold);
-    if !allows_valley && !allows_mountain {
+    let mut unique_techniques =
+        std::collections::HashSet::with_capacity(constraints.allowed_techniques.len());
+    if !constraints
+        .allowed_techniques
+        .iter()
+        .all(|technique| unique_techniques.insert(*technique))
+        || (!allows_valley && !allows_mountain)
+    {
         return Err(BeginnerGeneratorErrorV1::UnsupportedTechniques);
     }
     let target_category = constraints
@@ -969,6 +979,14 @@ pub fn generate_beginner_plans_v1(
             || part_count(BeginnerTargetPartKindV1::Torso) != 1)
     {
         return Err(BeginnerGeneratorErrorV1::MissingRequiredParts);
+    }
+    if !crate::validate_beginner_generation_constraints_v1(constraints) {
+        return Err(match target_category {
+            BeginnerTargetCategoryV1::Insect => BeginnerGeneratorErrorV1::UnsupportedInsectTemplate,
+            BeginnerTargetCategoryV1::Animal | BeginnerTargetCategoryV1::CustomObject => {
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate
+            }
+        });
     }
     let kind = if allows_valley {
         EdgeKind::Valley
@@ -4291,6 +4309,65 @@ mod tests {
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &unsupported_techniques),
             Err(BeginnerGeneratorErrorV1::UnsupportedTechniques)
+        );
+        let mut duplicate_techniques = constraints.clone();
+        duplicate_techniques
+            .allowed_techniques
+            .push(BeginnerFoldTechniqueV1::ValleyFold);
+        assert!(!crate::validate_beginner_generation_constraints_v1(
+            &duplicate_techniques
+        ));
+        assert_eq!(
+            beginner_target_approximation_score_v1(&duplicate_techniques),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &duplicate_techniques),
+            Err(BeginnerGeneratorErrorV1::UnsupportedTechniques)
+        );
+
+        let mut invalid_constraints = constraints.clone();
+        invalid_constraints.skeleton_segments[1].id = invalid_constraints.skeleton_segments[0].id;
+        assert!(!crate::validate_beginner_generation_constraints_v1(
+            &invalid_constraints
+        ));
+        assert_eq!(
+            beginner_target_approximation_score_v1(&invalid_constraints),
+            0
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_constraints),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+        let mut invalid_insect = invalid_constraints.clone();
+        invalid_insect.target_category = Some(BeginnerTargetCategoryV1::Insect);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_insect),
+            Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+        );
+        let mut invalid_custom = invalid_constraints.clone();
+        invalid_custom.target_category = Some(BeginnerTargetCategoryV1::CustomObject);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_custom),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+        let mut invalid_without_category = invalid_constraints.clone();
+        invalid_without_category.target_category = None;
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_without_category),
+            Err(BeginnerGeneratorErrorV1::MissingTargetCategory)
+        );
+        let mut invalid_without_head = invalid_constraints.clone();
+        invalid_without_head
+            .target_parts
+            .retain(|part| part.kind != BeginnerTargetPartKindV1::Head);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &invalid_without_head),
+            Err(BeginnerGeneratorErrorV1::MissingRequiredParts)
+        );
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids[..3], &invalid_constraints),
+            Err(BeginnerGeneratorErrorV1::UnsupportedPaper)
         );
         let mut short_leg_skeleton = constraints.clone();
         short_leg_skeleton.skeleton_segments.truncate(2);

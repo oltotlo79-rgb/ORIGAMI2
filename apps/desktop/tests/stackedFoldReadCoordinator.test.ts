@@ -15,6 +15,7 @@ import {
 
 const INSTANCE = '018f47a2-4b7a-7cc1-8abc-112233445566'
 const PROJECT = '018f47a2-4b7a-7cc1-8abc-665544332211'
+const ORPHANED_TOKEN = '018f47a2-4b7a-7cc1-8abc-778899aabbcc'
 
 const request = (revision = 3): StackedFoldReadRequest => ({
   expectedProjectInstanceId: INSTANCE,
@@ -141,6 +142,26 @@ const response = (revision = 3): StackedFoldReadResponse =>
     },
   }) as StackedFoldReadResponse
 
+const tokenizedResponse = (revision = 3): StackedFoldReadResponse => {
+  const value = response(revision)
+  return {
+    ...value,
+    flatEndpointLayerOrder: {
+      applicable: true,
+      certified: true,
+      materialFaceCount: 2,
+      overlapCellCount: 0,
+    },
+    transactionProposal: {
+      ...value.transactionProposal,
+      applyMode: 'speculative_unproven',
+      transactionToken: ORPHANED_TOKEN,
+      speculativeUnprovenAvailable: true,
+      failureClasses: ['continuous_path_uncertified'],
+    },
+  }
+}
+
 const deferred = <T>() => {
   let resolve!: (value: T) => void
   let reject!: (reason?: unknown) => void
@@ -159,20 +180,42 @@ test('publishes a detached ready result only while authority remains current', a
   }
   const gate = deferred<StackedFoldReadResponse>()
   const states: StackedFoldReadCoordinatorState[] = []
+  const transported: StackedFoldReadRequest[] = []
   const coordinator = createStackedFoldReadCoordinator({
-    transport: () => gate.promise,
+    transport: (value) => {
+      transported.push(value)
+      return gate.promise
+    },
     getAuthority: () => authority,
     onState: (state) => states.push(state),
   })
-  const mutable = request()
+  const mutable = {
+    ...request(),
+    first: [0, 0, 0] as [number, number, number],
+    second: [1, 0, 0] as [number, number, number],
+    linearCandidateV1: {
+      version: 1 as const,
+      entries: [{
+        edge: PROJECT,
+        initialAngleDegrees: 20,
+        requestedAngleDegrees: 40,
+      }],
+    },
+  }
   const result = coordinator.read(mutable)
-  ;(mutable.first as number[])[0] = 99
+  mutable.first[0] = 99
+  mutable.linearCandidateV1.entries[0]!.requestedAngleDegrees = 80
+  assert.equal(
+    transported[0]?.linearCandidateV1?.entries[0]?.requestedAngleDegrees,
+    40,
+  )
+  assert.equal(Object.isFrozen(transported[0]), true)
+  assert.equal(Object.isFrozen(transported[0]?.linearCandidateV1?.entries[0]), true)
   gate.resolve(response())
   assert.deepEqual(await result, { status: 'ready', response: response() })
-  assert.equal(states[0]?.status, 'idle')
-  assert.equal(states[1]?.status, 'reading')
+  assert.equal(states[0]?.status, 'reading')
   assert.deepEqual(
-    states[1]?.status === 'reading' ? states[1].request.first : null,
+    states[0]?.status === 'reading' ? states[0].request.first : null,
     [0, 0, 0],
   )
   assert.equal(coordinator.getState().status, 'ready')
@@ -201,6 +244,124 @@ test('replacement and invalidation settle old reads without publishing stale com
   assert.deepEqual(await second, { status: 'cancelled', reason: 'invalidated' })
   gates[1].resolve(response())
   await Promise.resolve()
+  assert.equal(coordinator.getState().status, 'idle')
+})
+
+test('reports a strictly normalized late ready response once after invalidation', async () => {
+  const gate = deferred<unknown>()
+  const orphaned: StackedFoldReadResponse[] = []
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gate.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+    onOrphanedReadyResponse: (value) => orphaned.push(value),
+  })
+  const result = coordinator.read(request())
+  coordinator.invalidate()
+  coordinator.invalidate()
+  assert.deepEqual(await result, {
+    status: 'cancelled',
+    reason: 'invalidated',
+  })
+
+  gate.resolve(tokenizedResponse())
+  await Promise.resolve()
+  assert.deepEqual(orphaned, [tokenizedResponse()])
+  assert.equal(orphaned[0]?.transactionProposal.transactionToken, ORPHANED_TOKEN)
+})
+
+test('reports a late ready response after disposal without reviving authority', async () => {
+  const gate = deferred<unknown>()
+  const orphaned: StackedFoldReadResponse[] = []
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gate.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+    onOrphanedReadyResponse: (value) => orphaned.push(value),
+  })
+  const result = coordinator.read(request())
+  coordinator.dispose()
+  assert.deepEqual(await result, { status: 'cancelled', reason: 'disposed' })
+
+  gate.resolve(tokenizedResponse())
+  await Promise.resolve()
+  assert.deepEqual(orphaned, [tokenizedResponse()])
+  assert.equal(coordinator.getState().status, 'idle')
+  assert.deepEqual(await coordinator.read(request()), {
+    status: 'cancelled',
+    reason: 'disposed',
+  })
+})
+
+test('reports only the superseded late ready response and not the active ready response', async () => {
+  const gates = [deferred<unknown>(), deferred<unknown>()]
+  const orphaned: StackedFoldReadResponse[] = []
+  let index = 0
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gates[index++]!.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+    onOrphanedReadyResponse: (value) => orphaned.push(value),
+  })
+  const superseded = coordinator.read(request())
+  const active = coordinator.read(request())
+  assert.deepEqual(await superseded, {
+    status: 'cancelled',
+    reason: 'superseded',
+  })
+
+  gates[0]!.resolve(tokenizedResponse())
+  await Promise.resolve()
+  assert.deepEqual(orphaned, [tokenizedResponse()])
+  gates[1]!.resolve(tokenizedResponse())
+  assert.deepEqual(await active, {
+    status: 'ready',
+    response: tokenizedResponse(),
+  })
+  assert.equal(orphaned.length, 1)
+})
+
+test('ignores invalid late responses and isolates orphan callback failures', async () => {
+  const gates = [deferred<unknown>(), deferred<unknown>()]
+  let index = 0
+  let callbackCalls = 0
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gates[index++]!.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+    onOrphanedReadyResponse: () => {
+      callbackCalls += 1
+      throw new Error('cleanup failed')
+    },
+  })
+  const invalidated = coordinator.read(request())
+  coordinator.invalidate()
+  assert.deepEqual(await invalidated, {
+    status: 'cancelled',
+    reason: 'invalidated',
+  })
+  gates[0]!.resolve({ ...tokenizedResponse(), unexpected: true })
+  await Promise.resolve()
+  assert.equal(callbackCalls, 0)
+
+  const disposed = coordinator.read(request())
+  coordinator.dispose()
+  assert.deepEqual(await disposed, { status: 'cancelled', reason: 'disposed' })
+  gates[1]!.resolve(tokenizedResponse())
+  await Promise.resolve()
+  assert.equal(callbackCalls, 1)
   assert.equal(coordinator.getState().status, 'idle')
 })
 
@@ -295,6 +456,170 @@ test('transport failures are sanitized and stale requests never invoke transport
     reason: 'native_failure',
   })
   assert.equal(calls, 1)
+})
+
+test('a hostile authority callback cannot start transport or escape the coordinator', async () => {
+  let calls = 0
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: async () => {
+      calls += 1
+      return response()
+    },
+    getAuthority: () => {
+      throw new Error('hostile authority callback')
+    },
+  })
+  assert.deepEqual(await coordinator.read(request()), {
+    status: 'cancelled',
+    reason: 'stale_authority',
+  })
+  assert.equal(calls, 0)
+})
+
+test('authority and request accessors are rejected without invoking getters', async () => {
+  let transportCalls = 0
+  let requestGetterCalls = 0
+  const requestWithAccessor = Object.defineProperty(
+    { ...request() },
+    'first',
+    {
+      enumerable: true,
+      get() {
+        requestGetterCalls += 1
+        return [0, 0, 0]
+      },
+    },
+  ) as StackedFoldReadRequest
+  const requestCoordinator = createStackedFoldReadCoordinator({
+    transport: async () => {
+      transportCalls += 1
+      return response()
+    },
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+  })
+  assert.deepEqual(await requestCoordinator.read(requestWithAccessor), {
+    status: 'failed',
+    reason: 'invalid_response',
+  })
+  assert.equal(requestGetterCalls, 0)
+  assert.equal(transportCalls, 0)
+
+  let authorityGetterCalls = 0
+  const authorityCoordinator = createStackedFoldReadCoordinator({
+    transport: async () => {
+      transportCalls += 1
+      return response()
+    },
+    getAuthority: () => Object.defineProperty({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+    }, 'revision', {
+      enumerable: true,
+      get() {
+        authorityGetterCalls += 1
+        return 3
+      },
+    }) as StackedFoldReadAuthority,
+  })
+  assert.deepEqual(await authorityCoordinator.read(request()), {
+    status: 'cancelled',
+    reason: 'stale_authority',
+  })
+  assert.equal(authorityGetterCalls, 0)
+  assert.equal(transportCalls, 0)
+})
+
+test('replacement never exposes a reentrant transient idle ownership gap', async () => {
+  const gates = [
+    deferred<StackedFoldReadResponse>(),
+    deferred<StackedFoldReadResponse>(),
+  ]
+  let transportCalls = 0
+  let idleCalls = 0
+  let nested: Promise<unknown> | null = null
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gates[transportCalls++]!.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+    onState(state) {
+      if (state.status === 'idle') {
+        idleCalls += 1
+        nested = coordinator.read(request())
+      }
+    },
+  })
+  const first = coordinator.read(request())
+  const second = coordinator.read(request())
+  assert.deepEqual(await first, {
+    status: 'cancelled',
+    reason: 'superseded',
+  })
+  assert.equal(idleCalls, 0)
+  assert.equal(nested, null)
+  assert.equal(transportCalls, 2)
+  gates[1]!.resolve(response())
+  assert.deepEqual(await second, { status: 'ready', response: response() })
+  gates[0]!.resolve(response())
+})
+
+test('authority drift sanitizes native rejection instead of publishing stale failure', async () => {
+  let revision = 3
+  const gate = deferred<unknown>()
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => gate.promise,
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision,
+    }),
+  })
+  const result = coordinator.read(request())
+  revision = 4
+  gate.reject({ reason: 'cycle_path_collision' })
+  assert.deepEqual(await result, {
+    status: 'cancelled',
+    reason: 'stale_authority',
+  })
+  assert.equal(coordinator.getState().status, 'idle')
+})
+
+test('dispose is terminal before observers can reenter', async () => {
+  const gate = deferred<StackedFoldReadResponse>()
+  let transportCalls = 0
+  let idleCalls = 0
+  const coordinator = createStackedFoldReadCoordinator({
+    transport: () => {
+      transportCalls += 1
+      return gate.promise
+    },
+    getAuthority: () => ({
+      projectInstanceId: INSTANCE,
+      projectId: PROJECT,
+      revision: 3,
+    }),
+    onState(state) {
+      if (state.status === 'idle') {
+        idleCalls += 1
+        void coordinator.read(request())
+      }
+    },
+  })
+  const result = coordinator.read(request())
+  coordinator.dispose()
+  assert.deepEqual(await result, { status: 'cancelled', reason: 'disposed' })
+  assert.equal(idleCalls, 0)
+  assert.equal(transportCalls, 1)
+  assert.deepEqual(await coordinator.read(request()), {
+    status: 'cancelled',
+    reason: 'disposed',
+  })
 })
 
 test('closed failure vocabulary preserves bounded cycle failure reasons', async () => {

@@ -5,6 +5,7 @@ import {
   STACKED_FOLD_READ_GUARD_MODEL_ID_V1,
   STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
   isStackedFoldReadRequest,
+  normalizeStackedFoldReadRequest,
   normalizeStackedFoldReadResponse,
   normalizeLiveHingeRegistryV1,
 } from '../src/lib/stackedFoldRead.ts'
@@ -45,7 +46,11 @@ describe('stacked-fold read boundary', () => {
       entries: [{ edge: faceId, initialAngleDegrees: 20 }],
       authorizesProjectMutation: false,
     } as const
-    assert.deepEqual(normalizeLiveHingeRegistryV1(registry, expected), registry)
+    const normalized = normalizeLiveHingeRegistryV1(registry, expected)
+    assert.deepEqual(normalized, registry)
+    assert.notEqual(normalized, registry)
+    assert.equal(Object.isFrozen(normalized), true)
+    assert.equal(Object.isFrozen(normalized?.entries), true)
     assert.equal(normalizeLiveHingeRegistryV1({ ...registry, revision: 4 }, expected), null)
     assert.equal(normalizeLiveHingeRegistryV1({
       ...registry,
@@ -59,10 +64,32 @@ describe('stacked-fold read boundary', () => {
       ...registry,
       authorizesProjectMutation: true,
     }, expected), null)
+    let getterCalls = 0
+    const accessor = Object.defineProperty({ ...registry }, 'entries', {
+      enumerable: true,
+      get() {
+        getterCalls += 1
+        return registry.entries
+      },
+    })
+    assert.equal(normalizeLiveHingeRegistryV1(accessor, expected), null)
+    assert.equal(getterCalls, 0)
   })
 
   it('admits only finite, non-degenerate, closed-enum requests', () => {
     assert.equal(isStackedFoldReadRequest(request), true)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      progressRequestId: 'stacked-fold:018f47a2-4b7a-7cc1-8abc-aabbccddeeff',
+    }), true)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      progressRequestId: 'stacked fold contains spaces',
+    }), false)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      progressRequestId: 'x'.repeat(129),
+    }), false)
     assert.equal(isStackedFoldReadRequest({ ...request, second: [0, 0, 0] }), false)
     assert.equal(isStackedFoldReadRequest({ ...request, requestedAngleDegrees: Number.NaN }), false)
     assert.equal(isStackedFoldReadRequest({ ...request, fixedSide: 'center' }), false)
@@ -156,6 +183,54 @@ describe('stacked-fold read boundary', () => {
         }],
       },
     }), false)
+  })
+
+  it('deeply detaches canonical requests and rejects accessor-backed input', () => {
+    const mutable = {
+      ...request,
+      first: [...request.first],
+      second: [...request.second],
+      linearCandidateV1: {
+        version: 1,
+        entries: [{
+          edge: faceId,
+          initialAngleDegrees: 20,
+          requestedAngleDegrees: 40,
+        }],
+      },
+    }
+    const detached = normalizeStackedFoldReadRequest(mutable)
+    assert.ok(detached)
+    mutable.first[0] = 99
+    mutable.linearCandidateV1.entries[0]!.requestedAngleDegrees = 80
+    assert.deepEqual(detached.first, [0, 0, 0])
+    assert.equal(
+      detached.linearCandidateV1?.entries[0]?.requestedAngleDegrees,
+      40,
+    )
+    assert.equal(Object.isFrozen(detached), true)
+    assert.equal(Object.isFrozen(detached.first), true)
+    assert.equal(Object.isFrozen(detached.linearCandidateV1?.entries), true)
+    assert.equal(Object.isFrozen(detached.linearCandidateV1?.entries[0]), true)
+
+    let getterCalls = 0
+    const accessor = Object.defineProperty({ ...request }, 'first', {
+      enumerable: true,
+      get() {
+        getterCalls += 1
+        return [0, 0, 0]
+      },
+    })
+    assert.equal(normalizeStackedFoldReadRequest(accessor), null)
+    assert.equal(getterCalls, 0)
+    assert.equal(
+      normalizeStackedFoldReadRequest(new Proxy({ ...request }, {
+        ownKeys() {
+          throw new Error('hostile request proxy')
+        },
+      })),
+      null,
+    )
   })
 
   it('accepts a read-only response bound to the requested project revision', () => {
@@ -526,6 +601,47 @@ describe('stacked-fold read boundary', () => {
         request,
       ),
       null,
+    )
+    const repeatedCells = Array.from({ length: 2_049 }, (_, index) => ({
+      ...response.crossedCells[0],
+      cellKeySha256: index.toString(16).padStart(64, '0'),
+    }))
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          crossedCells: repeatedCells,
+          work: { ...response.work, retainedCells: repeatedCells.length },
+        },
+        request,
+      ),
+      null,
+      'the renderer must not accept an IPC-valid but unbounded cell list',
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          targetFaces: [faceId, faceId],
+          materialSegments: [response.materialSegments[0], response.materialSegments[0]],
+          work: { ...response.work, retainedTargetFaces: 2 },
+        },
+        request,
+      ),
+      null,
+      'duplicate target faces would produce ambiguous viewer and list keys',
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          crossedCells: [response.crossedCells[0], response.crossedCells[0]],
+          work: { ...response.work, retainedCells: 2 },
+        },
+        request,
+      ),
+      null,
+      'duplicate cell keys would make React reuse a hostile cell tab',
     )
     assert.equal(
       normalizeStackedFoldReadResponse(

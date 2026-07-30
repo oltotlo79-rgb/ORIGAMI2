@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StackedFoldPanel } from '../src/components/StackedFoldPanel'
 import type { ProjectSnapshot } from '../src/lib/coreClient'
@@ -18,6 +18,10 @@ const transport = vi.hoisted(() => ({
   layerApply: vi.fn(),
   cancel: vi.fn(),
   cancelRead: vi.fn(),
+  dyadicRead: vi.fn(),
+  dyadicMint: vi.fn(),
+  dyadicApply: vi.fn(),
+  dyadicCancel: vi.fn(),
   registry: vi.fn(),
   progress: null as null | ((value: any) => void),
   cycleProgress: null as null | ((value: any) => void),
@@ -35,7 +39,11 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   applyNamedSinkFoldTransaction: transport.sinkApply,
   applyNamedLayerSelectiveTransaction: transport.layerApply,
   cancelStackedFoldTransactionPreview: transport.cancel,
-  cancelCurrentStackedFoldReadV1: transport.cancelRead,
+  cancelCurrentStackedFoldReadRequestV1: transport.cancelRead,
+  readBoundedDyadicPoseGraphV1: transport.dyadicRead,
+  mintDyadicPosePathPreviewV1: transport.dyadicMint,
+  applyDyadicPosePathPreviewV1: transport.dyadicApply,
+  cancelDyadicPosePathPreviewV1: transport.dyadicCancel,
   readLiveHingeRegistryV1: transport.registry,
   listenStackedFoldReadProgressV1: vi.fn(async (callback) => {
     transport.progress = callback
@@ -54,6 +62,16 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
 const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
 const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
 const token = '018f47a2-4b7a-7cc1-8abc-778899aabbcc'
+const staleDyadicToken = '018f47a2-4b7a-7cc1-8abc-778899aabbcd'
+const latestDyadicToken = '018f47a2-4b7a-7cc1-8abc-778899aabbce'
+const noCycleLayerTransport = {
+  continuousLayerTransportModelId: null,
+  continuousLayerTransitionCount: 0,
+  continuousLayerPairOrderCount: 0,
+  continuousLayerTargetOrderSha256: null,
+  sourceLayerOrder: [],
+  targetLayerOrder: [],
+} as const
 const basicTimelinePreview = {
   schemaVersion: 1 as const,
   transactionToken: token,
@@ -205,6 +223,89 @@ const ready = {
   authorizesApplyStackedFold: false,
 }
 
+const authoredCycleSchedule = {
+  version: 1 as const,
+  entries: [{
+    edge: token,
+    uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }] as const,
+    numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+    denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+    requestedAngleDegrees: 90,
+  }],
+}
+
+const readyDyadicGraph = {
+  version: 1 as const,
+  projectInstanceId: instance,
+  projectId: project,
+  revision: 3,
+  status: 'certified' as const,
+  reason: 'proof_complete' as const,
+  stateCount: 3,
+  transitionCount: 2,
+  exploredStateCount: 3,
+  evaluatedTransitionCount: 2,
+  certifiedTransitionCount: 2,
+  certificateBindingSha256: 'c'.repeat(64),
+  positiveThicknessTransitionCount: 2,
+  positiveThicknessCertified: true,
+  positiveThicknessBindingSha256: 'd'.repeat(64),
+  layerTransportTransitionCount: 2,
+  layerTransportCertified: true,
+  layerTransportBindingSha256: 'e'.repeat(64),
+  mutationCandidateReady: true,
+  authorizesProjectMutation: false as const,
+}
+
+function dyadicPreview(previewToken: string) {
+  return {
+    version: 1 as const,
+    previewToken,
+    projectInstanceId: instance,
+    projectId: project,
+    revision: 3,
+    targetBindingSha256: 'f'.repeat(64),
+    pathBindingSha256: readyDyadicGraph.certificateBindingSha256,
+    positiveThicknessBindingSha256: readyDyadicGraph.positiveThicknessBindingSha256,
+    layerTransportBindingSha256: readyDyadicGraph.layerTransportBindingSha256,
+    authorizesProjectMutation: false as const,
+  }
+}
+
+function renderDefaultPanel(projectSnapshot: ProjectSnapshot = snapshot) {
+  return render(
+    <StackedFoldPanel
+      locale="en"
+      snapshot={projectSnapshot}
+      selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+      disabled={false}
+      refreshSnapshot={vi.fn()}
+      onApplied={vi.fn()}
+    />,
+  )
+}
+
+async function authorScheduleAndReadDyadicGraph() {
+  fireEvent.change(
+    screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'),
+    { target: { value: JSON.stringify(authoredCycleSchedule) } },
+  )
+  fireEvent.click(await screen.findByRole('button', {
+    name: 'Search bounded dyadic paths',
+  }))
+  await screen.findByTestId('dyadic-pose-graph-status')
+}
+
+async function renderReadyDyadicPreview() {
+  transport.dyadicRead.mockResolvedValue(readyDyadicGraph)
+  transport.dyadicMint.mockResolvedValue(dyadicPreview(latestDyadicToken))
+  const rendered = renderDefaultPanel()
+  await authorScheduleAndReadDyadicGraph()
+  fireEvent.click(screen.getByTestId('dyadic-path-preview'))
+  await screen.findByTestId('dyadic-path-preview-status')
+  return rendered
+}
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
@@ -217,6 +318,10 @@ beforeEach(() => {
   transport.progress = null
   transport.cycleProgress = null
   transport.cancelRead.mockResolvedValue(undefined)
+  transport.dyadicRead.mockRejectedValue(new Error('dyadic read unavailable'))
+  transport.dyadicMint.mockRejectedValue(new Error('dyadic preview unavailable'))
+  transport.dyadicApply.mockRejectedValue(new Error('dyadic apply unavailable'))
+  transport.dyadicCancel.mockResolvedValue(undefined)
   transport.registry.mockResolvedValue({
     version: 1,
     projectInstanceId: instance,
@@ -354,7 +459,9 @@ describe('StackedFoldPanel', () => {
   })
 
   it('offers cooperative cancellation while a bounded path read is pending', async () => {
-    transport.preview.mockReturnValue(new Promise(() => undefined))
+    transport.preview
+      .mockReturnValueOnce(new Promise(() => undefined))
+      .mockResolvedValueOnce(ready)
     render(
       <StackedFoldPanel
         locale="en"
@@ -368,6 +475,9 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     await waitFor(() => expect(transport.progress).not.toBeNull())
     const request = transport.preview.mock.calls[0]?.[0]
+    expect(request.progressRequestId).toMatch(
+      /^stacked-fold:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
     transport.progress?.({
       version: 1,
       requestId: request.progressRequestId,
@@ -383,11 +493,189 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(await screen.findByRole('button', {
       name: 'Cancel path analysis',
     }))
-    expect(transport.cancelRead).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(transport.cancelRead).toHaveBeenCalledWith(
+      request.progressRequestId,
+    ))
     expect(screen.queryByText(
       'Explored states 2/32; transitions 3/64',
     )).toBeNull()
     expect(screen.queryByRole('button', { name: 'Apply stacked fold' })).toBeNull()
+    const retry = screen.getByRole('button', { name: 'Verify safety' }) as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    fireEvent.click(retry)
+    expect(await screen.findByText('Target faces')).toBeTruthy()
+    expect(transport.preview).toHaveBeenCalledTimes(2)
+  })
+
+  it('binds a dyadic cancellation to the exact unique read scope', async () => {
+    transport.dyadicRead.mockReturnValue(new Promise(() => undefined))
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.change(
+      screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'),
+      {
+        target: {
+          value: JSON.stringify({
+            version: 1,
+            entries: [{
+              edge: token,
+              uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+              numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+              denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+              requestedAngleDegrees: 90,
+            }],
+          }),
+        },
+      },
+    )
+
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'Search bounded dyadic paths',
+    }))
+    await waitFor(() => expect(transport.dyadicRead).toHaveBeenCalledTimes(1))
+    const requestId = transport.dyadicRead.mock.calls[0]?.[0].progressRequestId
+    expect(requestId).toMatch(
+      /^dyadic-graph:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel search' }))
+    await waitFor(() => expect(transport.cancelRead).toHaveBeenCalledWith(requestId))
+  })
+
+  it('sends a visible-ASCII unique scope for dyadic preview minting', async () => {
+    transport.dyadicRead.mockResolvedValue(readyDyadicGraph)
+    transport.dyadicMint.mockResolvedValue(dyadicPreview(latestDyadicToken))
+    renderDefaultPanel()
+    await authorScheduleAndReadDyadicGraph()
+    const graphRequestId = transport.dyadicRead.mock.calls[0]?.[0].progressRequestId
+
+    fireEvent.click(screen.getByTestId('dyadic-path-preview'))
+    await waitFor(() => expect(transport.dyadicMint).toHaveBeenCalledTimes(1))
+    const mintRequestId = transport.dyadicMint.mock.calls[0]?.[0].progressRequestId
+    expect(mintRequestId).toMatch(
+      /^dyadic-graph:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+    expect([...mintRequestId].every((character) => {
+      const code = character.charCodeAt(0)
+      return code >= 0x21 && code <= 0x7e
+    })).toBe(true)
+    expect(mintRequestId).not.toBe(graphRequestId)
+    expect(await screen.findByTestId('dyadic-path-preview-status')).toHaveProperty(
+      'textContent',
+      expect.stringContaining(latestDyadicToken),
+    )
+  })
+
+  it('publishes only the latest owner after rapid dyadic cancel and remint', async () => {
+    let resolveStale!: (value: ReturnType<typeof dyadicPreview>) => void
+    transport.dyadicRead.mockResolvedValue(readyDyadicGraph)
+    transport.dyadicMint
+      .mockReturnValueOnce(new Promise((resolve) => { resolveStale = resolve }))
+      .mockResolvedValueOnce(dyadicPreview(latestDyadicToken))
+    renderDefaultPanel()
+    await authorScheduleAndReadDyadicGraph()
+
+    fireEvent.click(screen.getByTestId('dyadic-path-preview'))
+    await waitFor(() => expect(transport.dyadicMint).toHaveBeenCalledTimes(1))
+    const staleRequestId = transport.dyadicMint.mock.calls[0]?.[0].progressRequestId
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel search' }))
+    await waitFor(() => expect(transport.cancelRead).toHaveBeenCalledWith(staleRequestId))
+    const mint = screen.getByTestId('dyadic-path-preview') as HTMLButtonElement
+    await waitFor(() => expect(mint.disabled).toBe(false))
+    fireEvent.click(mint)
+    expect(await screen.findByTestId('dyadic-path-preview-status')).toHaveProperty(
+      'textContent',
+      expect.stringContaining(latestDyadicToken),
+    )
+    const latestRequestId = transport.dyadicMint.mock.calls[1]?.[0].progressRequestId
+    expect(latestRequestId).toMatch(/^dyadic-graph:/)
+    expect(latestRequestId).not.toBe(staleRequestId)
+
+    resolveStale(dyadicPreview(staleDyadicToken))
+    await waitFor(() => expect(transport.dyadicCancel).toHaveBeenCalledWith(staleDyadicToken))
+    expect(screen.getByTestId('dyadic-path-preview-status')).toHaveProperty(
+      'textContent',
+      expect.stringContaining(latestDyadicToken),
+    )
+    expect(document.body.textContent).not.toContain(staleDyadicToken)
+  })
+
+  it('disables apply and competing read starts while a dyadic mint is pending', async () => {
+    transport.preview.mockResolvedValue(ready)
+    transport.dyadicRead.mockResolvedValue(readyDyadicGraph)
+    transport.dyadicMint.mockReturnValue(new Promise(() => undefined))
+    renderDefaultPanel()
+    fireEvent.change(
+      screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'),
+      { target: { value: JSON.stringify(authoredCycleSchedule) } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    const apply = await screen.findByRole('button', { name: 'Apply stacked fold' })
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(apply).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByTestId('dyadic-pose-graph-read'))
+    await screen.findByTestId('dyadic-pose-graph-status')
+
+    fireEvent.click(screen.getByTestId('dyadic-path-preview'))
+    await waitFor(() => expect(transport.dyadicMint).toHaveBeenCalledTimes(1))
+    expect(apply).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Verify safety' }))
+      .toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Prove from current pose' }))
+      .toHaveProperty('disabled', true)
+    expect(screen.getByTestId('dyadic-pose-graph-read'))
+      .toHaveProperty('disabled', true)
+    expect(screen.getByTestId('dyadic-path-preview'))
+      .toHaveProperty('disabled', true)
+  })
+
+  it('cancels an issued dyadic preview when project authority changes', async () => {
+    const rendered = await renderReadyDyadicPreview()
+    transport.dyadicCancel.mockClear()
+
+    rendered.rerender(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={{ ...snapshot, revision: 4 } as ProjectSnapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(transport.dyadicCancel)
+      .toHaveBeenCalledWith(latestDyadicToken))
+    expect(screen.queryByTestId('dyadic-path-preview-status')).toBeNull()
+  })
+
+  it('cancels an issued dyadic preview on unmount', async () => {
+    const rendered = await renderReadyDyadicPreview()
+    transport.dyadicCancel.mockClear()
+
+    rendered.unmount()
+
+    await waitFor(() => expect(transport.dyadicCancel)
+      .toHaveBeenCalledWith(latestDyadicToken))
+  })
+
+  it('cancels an issued dyadic preview before restarting its graph read', async () => {
+    await renderReadyDyadicPreview()
+    transport.dyadicCancel.mockClear()
+
+    fireEvent.click(screen.getByTestId('dyadic-pose-graph-read'))
+
+    await waitFor(() => expect(transport.dyadicCancel)
+      .toHaveBeenCalledWith(latestDyadicToken))
+    expect(screen.queryByTestId('dyadic-path-preview-status')).toBeNull()
   })
 
   it('bootstraps canonical linear candidate entries from the read-only live registry', async () => {
@@ -462,6 +750,32 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(apply)
     await waitFor(() => expect(transport.apply).toHaveBeenCalledWith(token))
     await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
+  })
+
+  it('does not publish a foreign or ABA refresh after an otherwise successful apply', async () => {
+    transport.preview.mockResolvedValue(ready)
+    transport.apply.mockResolvedValue(4)
+    const onApplied = vi.fn()
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn().mockResolvedValue({
+          ...snapshot,
+          project_instance_id: '018f47a2-4b7a-7cc1-8abc-112233445567',
+          revision: 4,
+        })}
+        onApplied={onApplied}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    const apply = await screen.findByRole('button', { name: 'Apply stacked fold' })
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(apply)
+    await waitFor(() => expect(transport.apply).toHaveBeenCalledWith(token))
+    await waitFor(() => expect(onApplied).not.toHaveBeenCalled())
   })
 
   it('rejects an unbounded or malformed half-angle draft before native transport', async () => {
@@ -994,7 +1308,11 @@ describe('StackedFoldPanel', () => {
       sourceRevision: 3,
       targetRevision: 4,
       closureLeafCount: 1,
+      closureMaxDepth: 0,
+      checkedHingeCount: 1,
+      totalHingeCount: 1,
       continuousPathCertified: true,
+      ...noCycleLayerTransport,
       authorizesProjectMutation: false,
     })
     transport.apply.mockResolvedValue(4)
@@ -1055,6 +1373,7 @@ describe('StackedFoldPanel', () => {
       checkedHingeCount: 6,
       totalHingeCount: 6,
       continuousPathCertified: true,
+      ...noCycleLayerTransport,
       authorizesProjectMutation: false,
     })
     transport.apply.mockResolvedValue(4)
@@ -1095,12 +1414,11 @@ describe('StackedFoldPanel', () => {
     expect(transport.cyclePreview.mock.calls.at(-1)?.[0].cycleScheduleV1.entries).toHaveLength(6)
   })
 
-  it('does not publish a late cycle preview after rapid replacement', async () => {
-    let resolveFirst!: (value: any) => void
-    let resolveSecond!: (value: any) => void
-    transport.cyclePreview
-      .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve }))
-      .mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve }))
+  it('starts only the latest cycle proof when two starts are queued together', async () => {
+    let resolvePreview!: (value: any) => void
+    transport.cyclePreview.mockReturnValue(
+      new Promise((resolve) => { resolvePreview = resolve }),
+    )
     transport.cancel.mockResolvedValue(undefined)
     render(
       <StackedFoldPanel
@@ -1127,7 +1445,15 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
     fireEvent.change(textarea, { target: { value: JSON.stringify(schedule(80)) } })
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
-    resolveSecond({
+    await waitFor(() => expect(transport.cyclePreview).toHaveBeenCalledTimes(1))
+    expect(transport.cyclePreview.mock.calls[0]?.[0].progressRequestId).toMatch(
+      /^current-cycle:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+    expect(
+      transport.cyclePreview.mock.calls[0]?.[0]
+        .cycleScheduleV1.entries[0].requestedAngleDegrees,
+    ).toBe(80)
+    resolvePreview({
       version: 1, transactionToken: project, sourceRevision: 3, targetRevision: 4,
       closureLeafCount: 4, closureMaxDepth: 2, checkedHingeCount: 16, totalHingeCount: 16,
       continuousPathCertified: true, authorizesProjectMutation: false,
@@ -1146,22 +1472,19 @@ describe('StackedFoldPanel', () => {
     expect(screen.getByTestId('cycle-layer-order-viewer').textContent).toContain('Target: 1')
     expect(screen.getByText('Layer-order proof hash').nextElementSibling?.textContent)
       .toBe('ab'.repeat(32))
-    resolveFirst({
-      version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
-      closureLeafCount: 99, closureMaxDepth: 7, checkedHingeCount: 4, totalHingeCount: 4,
-      continuousPathCertified: true, authorizesProjectMutation: false,
-    })
-    await waitFor(() => expect(transport.cancel).toHaveBeenCalledWith(token))
-    expect(screen.queryByText('99')).toBeNull()
     expect(screen.getByRole('region', { name: 'Current-pose cycle preview' }).textContent)
       .toContain('Closure intervals4')
   })
 
   it('announces cycle cancellation and allows an immediate retry', async () => {
+    let resolveCancellation!: () => void
+    transport.cancelRead.mockReturnValueOnce(
+      new Promise<void>((resolve) => { resolveCancellation = resolve }),
+    )
     transport.cyclePreview.mockReturnValueOnce(new Promise(() => undefined)).mockResolvedValueOnce({
       version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
       closureLeafCount: 3, closureMaxDepth: 2, checkedHingeCount: 12, totalHingeCount: 12,
-      continuousPathCertified: true, authorizesProjectMutation: false,
+      continuousPathCertified: true, ...noCycleLayerTransport, authorizesProjectMutation: false,
     })
     render(
       <StackedFoldPanel
@@ -1187,11 +1510,63 @@ describe('StackedFoldPanel', () => {
       target: { value: JSON.stringify(schedule) },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    await waitFor(() => expect(transport.cyclePreview).toHaveBeenCalledTimes(1))
+    const firstRequestId = transport.cyclePreview.mock.calls[0]?.[0].progressRequestId
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel cycle proof' }))
     expect(await screen.findByText('Cycle proof cancelled. You can retry.')).toBeTruthy()
+    expect(transport.cancelRead).toHaveBeenCalledWith(firstRequestId)
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    await Promise.resolve()
+    expect(transport.cyclePreview).toHaveBeenCalledTimes(1)
+    resolveCancellation()
     expect(await screen.findByText('Closure intervals')).toBeTruthy()
-    expect(transport.cancelRead).toHaveBeenCalled()
+    const secondRequestId = transport.cyclePreview.mock.calls[1]?.[0].progressRequestId
+    expect(secondRequestId).toMatch(/^current-cycle:/)
+    expect(secondRequestId).not.toBe(firstRequestId)
+  })
+
+  it('keeps terminal cycle progress latched against late same-scope regression', async () => {
+    transport.cyclePreview.mockReturnValue(new Promise(() => undefined))
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
+      target: { value: JSON.stringify(authoredCycleSchedule) },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    await waitFor(() => expect(transport.cyclePreview).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(transport.cycleProgress).not.toBeNull())
+    const requestId = transport.cyclePreview.mock.calls[0]?.[0].progressRequestId
+    await act(async () => {
+      transport.cycleProgress?.({
+        version: 1,
+        requestId,
+        status: 'cancelled',
+        completedWork: 2,
+        totalWork: 2,
+        authorizesProjectMutation: false,
+      })
+    })
+    expect(screen.getByText('Cycle proof cancelled. You can retry.')).toBeTruthy()
+
+    await act(async () => {
+      transport.cycleProgress?.({
+        version: 1,
+        requestId,
+        status: 'running',
+        completedWork: 1,
+        totalWork: 2,
+        authorizesProjectMutation: false,
+      })
+    })
+    expect(screen.getByText('Cycle proof cancelled. You can retry.')).toBeTruthy()
   })
 
   it('restores a persisted applied layer-order proof from project history', () => {
@@ -1294,7 +1669,7 @@ describe('StackedFoldPanel', () => {
     transport.cyclePreview.mockResolvedValue({
       version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
       closureLeafCount: 4, closureMaxDepth: 2, checkedHingeCount: 16, totalHingeCount: 16,
-      continuousPathCertified: true, authorizesProjectMutation: false,
+      continuousPathCertified: true, ...noCycleLayerTransport, authorizesProjectMutation: false,
     })
     transport.apply.mockReturnValue(new Promise((resolve) => { resolveApply = resolve }))
     const rendered = render(

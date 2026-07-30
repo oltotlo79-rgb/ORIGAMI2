@@ -11,7 +11,7 @@ import {
   applyNamedBookFoldTransaction,
   applyNamedReverseFoldTransaction,
   applyNamedLayerSelectiveTransaction,
-  cancelCurrentStackedFoldReadV1,
+  cancelCurrentStackedFoldReadRequestV1,
   cancelStackedFoldTransactionPreview,
   listenStackedFoldReadProgressV1,
   listenCurrentCyclePoseProgressV1,
@@ -23,6 +23,7 @@ import {
   mintDyadicPosePathPreviewV1,
   previewNamedBasicFoldTimeline,
   applyDyadicPosePathPreviewV1,
+  cancelDyadicPosePathPreviewV1,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
   type CurrentCyclePosePreviewResponseV1,
@@ -107,6 +108,13 @@ const MAX_CYCLE_SCHEDULE_JSON_BYTES = 65_536
 const MAX_PERSISTED_LAYER_ORDER_PAIRS = 50_000
 const MAX_RENDERED_PERSISTED_LAYER_ORDER_PAIRS = 200
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+type StackedFoldReadScopeKind = 'stacked-fold' | 'current-cycle' | 'dyadic-graph'
+type StackedFoldReadScopeRef = { current: string | null }
+
+function createStackedFoldReadScopeIdV1(kind: StackedFoldReadScopeKind): string {
+  return `${kind}:${crypto.randomUUID()}`
+}
 
 type View =
   | Readonly<{ kind: 'idle' }>
@@ -261,8 +269,11 @@ export function StackedFoldPanel({
   const [selectedFace, setSelectedFace] = useState<string | null>(null)
   const [hoveredFace, setHoveredFace] = useState<string | null>(null)
   const tokenRef = useRef<string | null>(null)
-  const progressRequestRef = useRef<string | null>(null)
-  const progressSequenceRef = useRef(0)
+  const stackedFoldReadScopeRef = useRef<string | null>(null)
+  const currentCycleReadScopeRef = useRef<string | null>(null)
+  const dyadicGraphReadScopeRef = useRef<string | null>(null)
+  const dyadicPathPreviewTokenRef = useRef<string | null>(null)
+  const readCancellationTailRef = useRef<Promise<void>>(Promise.resolve())
   const cyclePoseSequenceRef = useRef(0)
   const cyclePoseActiveRef = useRef(false)
   const cyclePoseProofRef = useRef<HTMLDivElement | null>(null)
@@ -280,6 +291,57 @@ export function StackedFoldPanel({
   const [cyclePoseError, setCyclePoseError] = useState(false)
   const [cyclePoseProgress, setCyclePoseProgress] =
     useState<CurrentCyclePoseProgressV1 | null>(null)
+
+  const enqueueReadCancellation = (requestId: string): Promise<void> => {
+    const cancellation = readCancellationTailRef.current
+      .catch(() => undefined)
+      .then(() => cancelCurrentStackedFoldReadRequestV1(requestId))
+      .catch(() => undefined)
+    readCancellationTailRef.current = cancellation
+    return cancellation
+  }
+
+  const cancelReadScope = (scopeRef: StackedFoldReadScopeRef): Promise<void> => {
+    const requestId = scopeRef.current
+    scopeRef.current = null
+    return requestId === null
+      ? readCancellationTailRef.current
+      : enqueueReadCancellation(requestId)
+  }
+
+  const cancelAllReadScopes = (): Promise<void> => {
+    const requestIds = new Set([
+      stackedFoldReadScopeRef.current,
+      currentCycleReadScopeRef.current,
+      dyadicGraphReadScopeRef.current,
+    ].filter((value): value is string => value !== null))
+    stackedFoldReadScopeRef.current = null
+    currentCycleReadScopeRef.current = null
+    dyadicGraphReadScopeRef.current = null
+    for (const requestId of requestIds) enqueueReadCancellation(requestId)
+    return readCancellationTailRef.current
+  }
+
+  const claimReadScope = async (
+    scopeRef: StackedFoldReadScopeRef,
+    kind: StackedFoldReadScopeKind,
+  ): Promise<string | null> => {
+    const requestIds = new Set([
+      stackedFoldReadScopeRef.current,
+      currentCycleReadScopeRef.current,
+      dyadicGraphReadScopeRef.current,
+    ].filter((value): value is string => value !== null))
+    const requestId = createStackedFoldReadScopeIdV1(kind)
+    stackedFoldReadScopeRef.current = null
+    currentCycleReadScopeRef.current = null
+    dyadicGraphReadScopeRef.current = null
+    scopeRef.current = requestId
+    for (const previousRequestId of requestIds) {
+      enqueueReadCancellation(previousRequestId)
+    }
+    await readCancellationTailRef.current
+    return scopeRef.current === requestId ? requestId : null
+  }
   const persistedCycleLayerProof = useMemo(() => {
     for (const step of [...(snapshot.instruction_timeline?.steps ?? [])].reverse()) {
       const proof = step.visual.cycle_layer_order_proof_v1
@@ -306,6 +368,9 @@ export function StackedFoldPanel({
   const persistedLayerPairs = persistedCycleLayerProof?.pairs.slice(
     0, MAX_RENDERED_PERSISTED_LAYER_ORDER_PAIRS,
   ) ?? []
+  const currentCycleLayerPairs = cyclePosePreview?.targetLayerOrder.slice(
+    0, MAX_RENDERED_PERSISTED_LAYER_ORDER_PAIRS,
+  ) ?? []
   const basicFoldTimelineStep = basicFoldTimelinePreview
     ?.timeline.steps[basicFoldTimelineStepIndex] ?? null
   const savedCompilerProvenance = useMemo(() => {
@@ -329,13 +394,30 @@ export function StackedFoldPanel({
           revision: current.revision,
         }
       },
+      onOrphanedReadyResponse: (response) => {
+        const token = response.transactionProposal.transactionToken
+        if (!token) return
+        return cancelStackedFoldTransactionPreview(token)
+          .catch(() => undefined)
+      },
     }), [])
 
   const cancelToken = (token: string | null) => {
     if (!token) return
-    setBasicFoldTimelinePreview(null)
-    setBasicFoldTimelinePreviewError(false)
+    // A late result may only clear presentation state that still belongs to
+    // its token; it must not erase a newer preview.
+    if (tokenRef.current === token) {
+      setBasicFoldTimelinePreview(null)
+      setBasicFoldTimelinePreviewError(false)
+    }
     void cancelStackedFoldTransactionPreview(token).catch(() => undefined)
+  }
+
+  const clearDyadicPathPreview = () => {
+    const token = dyadicPathPreviewTokenRef.current
+    dyadicPathPreviewTokenRef.current = null
+    setDyadicPathPreview(null)
+    if (token) void cancelDyadicPosePathPreviewV1(token).catch(() => undefined)
   }
 
   useEffect(() => {
@@ -364,17 +446,14 @@ export function StackedFoldPanel({
 
   useEffect(() => {
     coordinator.invalidate()
+    void cancelAllReadScopes()
     cyclePoseSequenceRef.current += 1
-    if (cyclePoseActiveRef.current) {
-      cyclePoseActiveRef.current = false
-      void cancelCurrentStackedFoldReadV1().catch(() => undefined)
-    }
-    progressRequestRef.current = null
+    cyclePoseActiveRef.current = false
     setPathProgress(null)
     setCyclePosePreview(null)
     dyadicGraphSequenceRef.current += 1
     setDyadicGraphRead(null)
-    setDyadicPathPreview(null)
+    clearDyadicPathPreview()
     setDyadicGraphReading(false)
     setCyclePoseReading(false)
     setCyclePoseError(false)
@@ -409,11 +488,10 @@ export function StackedFoldPanel({
     basicFoldTimelineActiveRef.current = false
     coordinator.dispose()
     cyclePoseSequenceRef.current += 1
-    if (cyclePoseActiveRef.current) {
-      cyclePoseActiveRef.current = false
-      void cancelCurrentStackedFoldReadV1().catch(() => undefined)
-    }
+    cyclePoseActiveRef.current = false
+    void cancelAllReadScopes()
     cancelToken(tokenRef.current)
+    clearDyadicPathPreview()
   }, [coordinator])
 
   useEffect(() => {
@@ -424,7 +502,10 @@ export function StackedFoldPanel({
     let disposed = false
     let unlisten: (() => void) | null = null
     void listenStackedFoldReadProgressV1((progress) => {
-      if (progress.requestId !== progressRequestRef.current) return
+      if (
+        disposed
+        || progress.requestId !== stackedFoldReadScopeRef.current
+      ) return
       setPathProgress((previous) => {
         if (
           previous &&
@@ -439,7 +520,11 @@ export function StackedFoldPanel({
     }).catch(() => undefined)
     return () => {
       disposed = true
-      unlisten?.()
+      try {
+        unlisten?.()
+      } catch {
+        // Listener teardown cannot revive an unmounted consumer.
+      }
     }
   }, [])
 
@@ -447,20 +532,41 @@ export function StackedFoldPanel({
     let disposed = false
     let unlisten: (() => void) | null = null
     void listenCurrentCyclePoseProgressV1((progress) => {
-      if (progress.requestId !== progressRequestRef.current) return
-      setCyclePoseProgress(progress)
+      if (
+        disposed
+        || progress.requestId !== currentCycleReadScopeRef.current
+      ) return
+      setCyclePoseProgress((previous) => {
+        if (
+          previous?.requestId === progress.requestId
+          && (
+            previous.status !== 'running'
+            || progress.completedWork < previous.completedWork
+          )
+        ) return previous
+        return progress
+      })
     }).then((value) => {
       if (disposed) value()
       else unlisten = value
     }).catch(() => undefined)
     return () => {
       disposed = true
-      unlisten?.()
+      try {
+        unlisten?.()
+      } catch {
+        // Listener teardown cannot revive an unmounted consumer.
+      }
     }
   }, [])
 
   useEffect(() => {
     let current = true
+    const authority = {
+      expectedProjectInstanceId: snapshot.project_instance_id,
+      expectedProjectId: snapshot.project_id,
+      expectedRevision: snapshot.revision,
+    }
     if (!selectedLine) {
       setLiveHinges([])
       setRequestedHingeAngles({})
@@ -480,13 +586,13 @@ export function StackedFoldPanel({
       rotationDirection,
       requestedAngleDegrees: Number(angle),
     }).then((registry) => {
-      if (!current) return
+      if (!current || !matchesProjectOccGuard(authority, authorityRef.current)) return
       setLiveHinges(registry.entries)
       setRequestedHingeAngles(Object.fromEntries(
         registry.entries.map((entry) => [entry.edge, entry.initialAngleDegrees]),
       ))
     }).catch(() => {
-      if (current) {
+      if (current && matchesProjectOccGuard(authority, authorityRef.current)) {
         setLiveHinges([])
         setRequestedHingeAngles({})
       }
@@ -497,12 +603,12 @@ export function StackedFoldPanel({
       expectedRevision: snapshot.revision,
       maxPairTests: 120,
     }).then((automatic) => {
-      if (!current) return
+      if (!current || !matchesProjectOccGuard(authority, authorityRef.current)) return
       setEvenCycleCandidates(automatic.candidates)
       setKawasakiEndpoints(automatic.kawasakiEndpoints)
       setEvenCycleStatus(automatic.status)
     }).catch(() => {
-      if (current) {
+      if (current && matchesProjectOccGuard(authority, authorityRef.current)) {
         setEvenCycleCandidates([])
         setKawasakiEndpoints([])
         setEvenCycleStatus('unsupported')
@@ -523,7 +629,7 @@ export function StackedFoldPanel({
 
   async function preview(event: FormEvent) {
     event.preventDefault()
-    if (!selectedLine || disabled || applying) return
+    if (!selectedLine || disabled || applying || dyadicGraphReading) return
     const requestedAngleDegrees = Number(angle)
     let cycleScheduleV1: CycleScheduleRequestV1 | undefined
     let linearCandidateV1: LinearCandidateRequestV1 | undefined
@@ -574,9 +680,11 @@ export function StackedFoldPanel({
     }
     setConfirmed(false)
     setSpeculativeConfirmed(false)
-    const progressRequestId =
-      `${snapshot.project_instance_id}:${snapshot.revision}:${++progressSequenceRef.current}`
-    progressRequestRef.current = progressRequestId
+    const progressRequestId = await claimReadScope(
+      stackedFoldReadScopeRef,
+      'stacked-fold',
+    )
+    if (progressRequestId === null) return
     setPathProgress(null)
     setView({ kind: 'reading' })
     const result = await coordinator.read({
@@ -593,7 +701,14 @@ export function StackedFoldPanel({
       ...(linearCandidateV1 ? { linearCandidateV1 } : {}),
       ...(certifiedPathGraphV1 ? { certifiedPathGraphV1 } : {}),
     })
-    progressRequestRef.current = null
+    const ownsReadScope = stackedFoldReadScopeRef.current === progressRequestId
+    if (!ownsReadScope) {
+      if (result.status === 'ready') {
+        cancelToken(result.response.transactionProposal.transactionToken)
+      }
+      return
+    }
+    stackedFoldReadScopeRef.current = null
     if (result.status === 'ready') {
       tokenRef.current = result.response.transactionProposal.transactionToken
       setView({ kind: 'ready', response: result.response, applyFailed: false })
@@ -716,11 +831,23 @@ export function StackedFoldPanel({
           ? !view.response.transactionProposal.readyForAtomicApply || !confirmed
           : !speculativeReady || !speculativeConfirmed || namedBookFold !== null
       ) ||
-      applying || applyInFlightRef.current || unsupportedNamedPhysicalFold || (namedBasicFold
+      applying || dyadicGraphReading || applyInFlightRef.current
+      || unsupportedNamedPhysicalFold || (namedBasicFold
         && basicFoldTimelinePreview?.transactionToken !== view.response.transactionProposal.transactionToken)
     ) return
     const token = view.response.transactionProposal.transactionToken
     if (!token || token !== tokenRef.current) return
+    const sourceAuthority = {
+      expectedProjectInstanceId: snapshot.project_instance_id,
+      expectedProjectId: snapshot.project_id,
+      expectedRevision: snapshot.revision,
+    }
+    if (!matchesProjectOccGuard(sourceAuthority, authorityRef.current)) return
+    const targetAuthority = {
+      expectedProjectInstanceId: sourceAuthority.expectedProjectInstanceId,
+      expectedProjectId: sourceAuthority.expectedProjectId,
+      expectedRevision: view.response.transactionProposal.targetRevision,
+    }
     const speculative =
       view.response.transactionProposal.applyMode === 'speculative_unproven'
     const speculativeAuthority = speculative
@@ -792,6 +919,9 @@ export function StackedFoldPanel({
       }
       committed = true
       const next = await refreshSnapshot()
+      if (!matchesProjectOccGuard(targetAuthority, next)) {
+        throw new Error('stale stacked-fold apply refresh')
+      }
       publishApplied(next)
     } catch {
       setView(
@@ -899,12 +1029,18 @@ export function StackedFoldPanel({
   async function readDyadicPoseGraph() {
     if (disabled || applying || dyadicGraphReading || liveHinges.length === 0) return
     const sequence = ++dyadicGraphSequenceRef.current
+    const progressRequestId = await claimReadScope(
+      dyadicGraphReadScopeRef,
+      'dyadic-graph',
+    )
+    if (progressRequestId === null || sequence !== dyadicGraphSequenceRef.current) return
     const authority = authorityRef.current
     setDyadicGraphReading(true)
     setDyadicGraphRead(null)
-    setDyadicPathPreview(null)
+    clearDyadicPathPreview()
     try {
       const response = await readBoundedDyadicPoseGraphV1({
+        progressRequestId,
         expectedProjectInstanceId: authority.project_instance_id,
         expectedProjectId: authority.project_id,
         expectedRevision: authority.revision,
@@ -918,7 +1054,8 @@ export function StackedFoldPanel({
         ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
       })
       const current = authorityRef.current
-      if (sequence !== dyadicGraphSequenceRef.current
+      if (dyadicGraphReadScopeRef.current !== progressRequestId
+        || sequence !== dyadicGraphSequenceRef.current
         || !matchesProjectOccGuard({
           expectedProjectInstanceId: authority.project_instance_id,
           expectedProjectId: authority.project_id,
@@ -926,8 +1063,12 @@ export function StackedFoldPanel({
         }, current)) return
       setDyadicGraphRead(response)
     } catch {
-      if (sequence === dyadicGraphSequenceRef.current) setDyadicGraphRead(null)
+      if (dyadicGraphReadScopeRef.current === progressRequestId
+        && sequence === dyadicGraphSequenceRef.current) setDyadicGraphRead(null)
     } finally {
+      if (dyadicGraphReadScopeRef.current === progressRequestId) {
+        dyadicGraphReadScopeRef.current = null
+      }
       if (sequence === dyadicGraphSequenceRef.current) setDyadicGraphReading(false)
     }
   }
@@ -936,10 +1077,20 @@ export function StackedFoldPanel({
     const graph = dyadicGraphRead
     if (!graph?.mutationCandidateReady || !graph.certificateBindingSha256
       || !graph.positiveThicknessBindingSha256 || !graph.layerTransportBindingSha256
-      || disabled || applying || dyadicGraphReading) return
+      || disabled || applying || dyadicGraphReading || view.kind === 'reading'
+      || cyclePoseReading) return
+    const sequence = ++dyadicGraphSequenceRef.current
+    const progressRequestId = await claimReadScope(
+      dyadicGraphReadScopeRef,
+      'dyadic-graph',
+    )
+    if (progressRequestId === null || sequence !== dyadicGraphSequenceRef.current) return
     const authority = authorityRef.current
+    clearDyadicPathPreview()
+    setDyadicGraphReading(true)
     try {
       const response = await mintDyadicPosePathPreviewV1({
+        progressRequestId,
         expectedProjectInstanceId: authority.project_instance_id,
         expectedProjectId: authority.project_id,
         expectedRevision: authority.revision,
@@ -956,19 +1107,39 @@ export function StackedFoldPanel({
         expectedLayerTransportBindingSha256: graph.layerTransportBindingSha256,
       })
       const current = authorityRef.current
-      if (matchesProjectOccGuard({
+      if (dyadicGraphReadScopeRef.current === progressRequestId
+        && sequence === dyadicGraphSequenceRef.current
+        && matchesProjectOccGuard({
         expectedProjectInstanceId: authority.project_instance_id,
         expectedProjectId: authority.project_id,
         expectedRevision: authority.revision,
-      }, current)) setDyadicPathPreview(response)
+      }, current)) {
+        dyadicPathPreviewTokenRef.current = response.previewToken
+        setDyadicPathPreview(response)
+      } else {
+        void cancelDyadicPosePathPreviewV1(response.previewToken).catch(() => undefined)
+      }
     } catch {
-      setDyadicPathPreview(null)
+      if (dyadicGraphReadScopeRef.current === progressRequestId
+        && sequence === dyadicGraphSequenceRef.current) clearDyadicPathPreview()
+    } finally {
+      if (dyadicGraphReadScopeRef.current === progressRequestId) {
+        dyadicGraphReadScopeRef.current = null
+      }
+      if (sequence === dyadicGraphSequenceRef.current) setDyadicGraphReading(false)
     }
   }
 
   async function applyDyadicPathPreview() {
     const preview = dyadicPathPreview
-    if (!preview || disabled || applying) return
+    const sourceAuthority = preview && {
+      expectedProjectInstanceId: preview.projectInstanceId,
+      expectedProjectId: preview.projectId,
+      expectedRevision: preview.revision,
+    }
+    if (!preview || !sourceAuthority || disabled || applying || dyadicGraphReading
+      || preview.previewToken !== dyadicPathPreviewTokenRef.current
+      || !matchesProjectOccGuard(sourceAuthority, authorityRef.current)) return
     setApplying(true)
     try {
       await applyDyadicPosePathPreviewV1({
@@ -981,29 +1152,40 @@ export function StackedFoldPanel({
         expectedPositiveThicknessBindingSha256: preview.positiveThicknessBindingSha256,
         expectedLayerTransportBindingSha256: preview.layerTransportBindingSha256,
       })
+      dyadicPathPreviewTokenRef.current = null
       setDyadicPathPreview(null)
       setDyadicGraphRead(null)
-      onApplied(await refreshSnapshot())
+      const next = await refreshSnapshot()
+      if (!matchesProjectOccGuard({
+        ...sourceAuthority,
+        expectedRevision: sourceAuthority.expectedRevision + 1,
+      }, next)) {
+        throw new Error('stale dyadic pose apply refresh')
+      }
+      authorityRef.current = next
+      onApplied(next)
     } catch {
-      setDyadicPathPreview(null)
+      clearDyadicPathPreview()
     } finally {
       setApplying(false)
     }
   }
 
   async function previewCurrentCyclePose(automaticKawasaki = false) {
-    if ((!automaticKawasaki && !authoredCycleSchedule) || disabled || applying || cyclePoseReading) return
+    if ((!automaticKawasaki && !authoredCycleSchedule) || disabled || applying
+      || cyclePoseReading || dyadicGraphReading) return
     const sequence = ++cyclePoseSequenceRef.current
-    void cancelCurrentStackedFoldReadV1().catch(() => undefined)
+    const progressRequestId = await claimReadScope(
+      currentCycleReadScopeRef,
+      'current-cycle',
+    )
+    if (progressRequestId === null || sequence !== cyclePoseSequenceRef.current) return
     cancelToken(tokenRef.current)
     tokenRef.current = null
     setCyclePoseReading(true)
     cyclePoseActiveRef.current = true
     setCyclePoseError(false)
     setCyclePoseProgress(null)
-    const progressRequestId =
-      `current-cycle:${snapshot.project_instance_id}:${snapshot.revision}:${sequence}`
-    progressRequestRef.current = progressRequestId
     setPathProgress(null)
     try {
       const response = await proposeCurrentCyclePoseV1({
@@ -1017,6 +1199,7 @@ export function StackedFoldPanel({
       })
       const current = authorityRef.current
       if (
+        currentCycleReadScopeRef.current !== progressRequestId ||
         sequence !== cyclePoseSequenceRef.current ||
         !matchesProjectOccGuard({
           expectedProjectInstanceId: snapshot.project_instance_id,
@@ -1030,12 +1213,19 @@ export function StackedFoldPanel({
       tokenRef.current = response.transactionToken
       setCyclePosePreview(response)
     } catch {
-      setCyclePosePreview(null)
-      setCyclePoseError(true)
+      if (
+        currentCycleReadScopeRef.current === progressRequestId &&
+        sequence === cyclePoseSequenceRef.current
+      ) {
+        setCyclePosePreview(null)
+        setCyclePoseError(true)
+      }
     } finally {
       if (sequence === cyclePoseSequenceRef.current) {
         cyclePoseActiveRef.current = false
-        progressRequestRef.current = null
+        if (currentCycleReadScopeRef.current === progressRequestId) {
+          currentCycleReadScopeRef.current = null
+        }
         setCyclePoseReading(false)
       }
     }
@@ -1043,9 +1233,17 @@ export function StackedFoldPanel({
 
   async function applyCurrentCyclePose() {
     const token = cyclePosePreview?.transactionToken
+    const sourceAuthority = {
+      expectedProjectInstanceId: snapshot.project_instance_id,
+      expectedProjectId: snapshot.project_id,
+      expectedRevision: snapshot.revision,
+    }
     if (
       !token || token !== tokenRef.current || disabled || applying ||
-      cyclePoseApplyInFlightRef.current
+      dyadicGraphReading ||
+      cyclePoseApplyInFlightRef.current ||
+      cyclePosePreview?.sourceRevision !== sourceAuthority.expectedRevision ||
+      !matchesProjectOccGuard(sourceAuthority, authorityRef.current)
     ) return
     cyclePoseApplyInFlightRef.current = true
     setApplying(true)
@@ -1054,6 +1252,13 @@ export function StackedFoldPanel({
       tokenRef.current = null
       setCyclePosePreview(null)
       const next = await refreshSnapshot()
+      if (!matchesProjectOccGuard({
+        ...sourceAuthority,
+        expectedRevision: sourceAuthority.expectedRevision + 1,
+      }, next)) {
+        throw new Error('stale current-cycle apply refresh')
+      }
+      authorityRef.current = next
       onApplied(next)
     } catch {
       setCyclePoseError(true)
@@ -1107,6 +1312,21 @@ export function StackedFoldPanel({
       snapshot,
       tokenRef.current,
     )
+  const dyadicPathApplyAllowed = dyadicPathPreview !== null
+    && dyadicPathPreview.previewToken === dyadicPathPreviewTokenRef.current
+    && matchesProjectOccGuard({
+      expectedProjectInstanceId: dyadicPathPreview.projectInstanceId,
+      expectedProjectId: dyadicPathPreview.projectId,
+      expectedRevision: dyadicPathPreview.revision,
+    }, authorityRef.current)
+  const currentCycleApplyAllowed = cyclePosePreview !== null
+    && cyclePosePreview.transactionToken === tokenRef.current
+    && cyclePosePreview.sourceRevision === snapshot.revision
+    && matchesProjectOccGuard({
+      expectedProjectInstanceId: snapshot.project_instance_id,
+      expectedProjectId: snapshot.project_id,
+      expectedRevision: snapshot.revision,
+    }, authorityRef.current)
   const proofProgressModel = useMemo(
     () => createStackedFoldProofProgressModel(view, snapshot, postApplyProof),
     [view, snapshot, postApplyProof],
@@ -1270,7 +1490,8 @@ export function StackedFoldPanel({
           <span>{text(TEXT.angleDegrees)}</span>
           <input value={angle} onChange={(event) => setAngle(event.target.value)} type="number" min="0.000001" max="180" step="any" required disabled={disabled || applying} />
         </label>
-        <button type="submit" disabled={!selectedLine || disabled || applying || view.kind === 'reading'}>
+        <button type="submit" disabled={!selectedLine || disabled || applying
+          || dyadicGraphReading || view.kind === 'reading'}>
           {view.kind === 'reading' ? text(TEXT.proving) : text(TEXT.verifySafety)}
         </button>
       </form>
@@ -1280,7 +1501,8 @@ export function StackedFoldPanel({
           <button
             ref={cyclePosePreviewButtonRef}
             type="button"
-            disabled={!authoredCycleSchedule || disabled || applying || cyclePoseReading}
+            disabled={!authoredCycleSchedule || disabled || applying
+              || cyclePoseReading || dyadicGraphReading}
             onClick={() => void previewCurrentCyclePose(false)}
           >
             {cyclePoseReading
@@ -1291,7 +1513,7 @@ export function StackedFoldPanel({
             <button
               type="button"
               data-testid="automatic-kawasaki-proof"
-              disabled={disabled || applying || cyclePoseReading}
+              disabled={disabled || applying || cyclePoseReading || dyadicGraphReading}
               onClick={() => void previewCurrentCyclePose(true)}
             >
               {text(TEXT.generateAndProveKawasakiLinkage)}
@@ -1338,7 +1560,7 @@ export function StackedFoldPanel({
               <button type="button" onClick={() => {
                 dyadicGraphSequenceRef.current += 1
                 setDyadicGraphReading(false)
-                void cancelCurrentStackedFoldReadV1().catch(() => undefined)
+                void cancelReadScope(dyadicGraphReadScopeRef)
               }}>{text(TEXT.cancelSearch)}</button>
             )}
             {dyadicGraphRead && (
@@ -1348,7 +1570,13 @@ export function StackedFoldPanel({
               </p>
             )}
             {dyadicGraphRead?.mutationCandidateReady && (
-              <button type="button" data-testid="dyadic-path-preview" onClick={() => void mintDyadicPathPreview()}>
+              <button
+                type="button"
+                data-testid="dyadic-path-preview"
+                disabled={disabled || applying || dyadicGraphReading
+                  || view.kind === 'reading' || cyclePoseReading}
+                onClick={() => void mintDyadicPathPreview()}
+              >
                 {text(TEXT.issueReadOnlyPreview)}
               </button>
             )}
@@ -1357,7 +1585,12 @@ export function StackedFoldPanel({
                 <p data-testid="dyadic-path-preview-status" role="status">
                   preview {dyadicPathPreview.previewToken}; target {dyadicPathPreview.targetBindingSha256}; authenticated one-shot
                 </p>
-                <button type="button" data-testid="dyadic-path-apply" disabled={disabled || applying} onClick={() => void applyDyadicPathPreview()}>
+              <button
+                type="button"
+                data-testid="dyadic-path-apply"
+                  disabled={disabled || applying || dyadicGraphReading || !dyadicPathApplyAllowed}
+                  onClick={() => void applyDyadicPathPreview()}
+                >
                   {text(TEXT.applyAuthenticatedPath)}
                 </button>
               </>
@@ -1376,10 +1609,11 @@ export function StackedFoldPanel({
             <button
               type="button"
               onClick={() => {
-                const cancelledRequestId = progressRequestRef.current ?? 'current-cycle-cancelled'
+                const cancelledRequestId =
+                  currentCycleReadScopeRef.current ?? 'current-cycle-cancelled'
                 cyclePoseSequenceRef.current += 1
                 cyclePoseActiveRef.current = false
-                progressRequestRef.current = null
+                void cancelReadScope(currentCycleReadScopeRef)
                 setPathProgress(null)
                 setCyclePoseReading(false)
                 setCyclePoseProgress({
@@ -1390,7 +1624,6 @@ export function StackedFoldPanel({
                   totalWork: 2,
                   authorizesProjectMutation: false,
                 })
-                void cancelCurrentStackedFoldReadV1().catch(() => undefined)
               }}
             >
               {text(TEXT.cancelCycleProof)}
@@ -1453,7 +1686,7 @@ export function StackedFoldPanel({
                   <p>Source: {cyclePosePreview.sourceLayerOrder.length}</p>
                   <p>Target: {cyclePosePreview.targetLayerOrder.length}</p>
                   <ol>
-                    {cyclePosePreview.targetLayerOrder.map((pair) => (
+                    {currentCycleLayerPairs.map((pair) => (
                       <li key={`${pair.lowerFace}:${pair.upperFace}`}>
                         {pair.lowerFace} → {pair.upperFace}
                       </li>
@@ -1466,7 +1699,7 @@ export function StackedFoldPanel({
               </p>
               <button
                 type="button"
-                disabled={disabled || applying}
+                disabled={disabled || applying || dyadicGraphReading || !currentCycleApplyAllowed}
                 onClick={() => void applyCurrentCyclePose()}
               >
                 {text(TEXT.applyCertifiedCycleFold)}
@@ -1562,9 +1795,9 @@ export function StackedFoldPanel({
         <button
           type="button"
           onClick={() => {
-            progressRequestRef.current = null
+            void cancelReadScope(stackedFoldReadScopeRef)
             setPathProgress(null)
-            void cancelCurrentStackedFoldReadV1().catch(() => undefined)
+            setView({ kind: 'idle' })
           }}
         >
           {text(TEXT.cancelPathAnalysis)}
@@ -1778,7 +2011,10 @@ export function StackedFoldPanel({
                 <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)} />
                 {text(TEXT.iReviewedTheCertifiedChanges)}
               </label>
-              <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)}>
+              <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed
+                || applying || dyadicGraphReading || unsupportedNamedPhysicalFold
+                || (namedBasicFold
+                  && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)}>
                 {applying
                   ? text(TEXT.applying)
                   : namedBookFold

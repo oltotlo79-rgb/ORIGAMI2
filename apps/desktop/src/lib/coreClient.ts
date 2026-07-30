@@ -50,9 +50,9 @@ import {
   type ProjectLayerDocumentV1,
 } from './projectLayers.ts'
 import {
-  isStackedFoldReadRequest,
   isCycleScheduleRequestV1,
   normalizeLiveHingeRegistryV1,
+  normalizeStackedFoldReadRequest,
   normalizeStackedFoldReadResponse,
   type LiveHingeRegistryRequestV1,
   type LiveHingeRegistryResponseV1,
@@ -64,6 +64,7 @@ import {
   normalizeGeometricConstraintSolvePreview,
   type GeometricConstraintSolvePreview,
 } from './geometricConstraintSolvePreview.ts'
+import { snapshotStackedFoldReadWireValue } from './stackedFoldReadWireSnapshot.ts'
 import {
   DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
 } from './deterministicTranscendentalModel.ts'
@@ -105,7 +106,10 @@ export type CurrentCyclePosePreviewResponseV1 = Readonly<{
   checkedHingeCount: number
   totalHingeCount: number
   continuousPathCertified: true
-  continuousLayerTransportModelId: 'general_multi_face_positive_thickness_cell_transport_v1' | null
+  continuousLayerTransportModelId:
+    | 'general_multi_face_positive_thickness_cell_transport_v1'
+    | 'blockwise_positive_layer_authority_v1'
+    | null
   continuousLayerTransitionCount: number
   continuousLayerPairOrderCount: number
   continuousLayerTargetOrderSha256: string | null
@@ -3003,6 +3007,13 @@ export async function evaluateBeginnerParameterGrid(
           && Number((exactCoreDataRecord(admitted[index - 1].point, ['id', 'scale_percent', 'spacing_percent', 'detail_level'] as const))?.id) >= Number(point.id))))) {
       throw new Error('invalid beginner parameter grid response')
     }
+    const admittedBindings = bindings as ReadonlyArray<NonNullable<(typeof bindings)[number]>>
+    const admittedFeatureBindings = featureBindings as ReadonlyArray<
+      NonNullable<(typeof featureBindings)[number]>
+    >
+    const admittedBranchBindings = branchBindings as ReadonlyArray<
+      NonNullable<(typeof branchBindings)[number]>
+    >
     return Object.freeze({ point: Object.freeze(point) as BeginnerParameterGridPointV1,
       primary_score: Number(candidate.primary_score), plan: normalizedPlans.generated_plans[index],
       assessment: normalizedPlans.plan_assessments[index], local_proof_scope: 'necessary' as const,
@@ -3018,28 +3029,28 @@ export async function evaluateBeginnerParameterGrid(
       refinement_starts: Number(candidate.refinement_starts),
       contour_witness: Object.freeze({
         body_contour_points: Number(witness.body_contour_points),
-        local_bindings: Object.freeze(bindings.map((binding) => Object.freeze({
-          protrusion_id: Number(binding?.protrusion_id), contour_points: Number(binding?.contour_points),
-          generated_face_id: Number(binding?.generated_face_id),
-          vertex_start: Number(binding?.vertex_start), crease_start: Number(binding?.crease_start),
+        local_bindings: Object.freeze(admittedBindings.map((binding) => Object.freeze({
+          protrusion_id: Number(binding.protrusion_id), contour_points: Number(binding.contour_points),
+          generated_face_id: Number(binding.generated_face_id),
+          vertex_start: Number(binding.vertex_start), crease_start: Number(binding.crease_start),
         }))),
-        generic_feature_bindings: Object.freeze(featureBindings.map((binding) => Object.freeze({
-          protrusion_id: Number(binding?.protrusion_id),
-          generated_feature_id: Number(binding?.generated_feature_id),
+        generic_feature_bindings: Object.freeze(admittedFeatureBindings.map((binding) => Object.freeze({
+          protrusion_id: Number(binding.protrusion_id),
+          generated_feature_id: Number(binding.generated_feature_id),
           crease_authority_sha256: Object.freeze(
-            (binding?.crease_authority_sha256 as number[]).slice()),
-          endpoint_count: Number(binding?.endpoint_count) as 1 | 2 | 4,
-          crease_start: Number(binding?.crease_start),
-          skeleton_segment_id: Number(binding?.skeleton_segment_id),
-          skeleton_endpoint: String(binding?.skeleton_endpoint) as 'start' | 'end',
-          mount_distance_squared_tenths_mm: Number(binding?.mount_distance_squared_tenths_mm),
+            (binding.crease_authority_sha256 as number[]).slice()),
+          endpoint_count: Number(binding.endpoint_count) as 1 | 2 | 4,
+          crease_start: Number(binding.crease_start),
+          skeleton_segment_id: Number(binding.skeleton_segment_id),
+          skeleton_endpoint: String(binding.skeleton_endpoint) as 'start' | 'end',
+          mount_distance_squared_tenths_mm: Number(binding.mount_distance_squared_tenths_mm),
         }))),
-        skeleton_branch_bindings: Object.freeze(branchBindings.map((branch) => Object.freeze({
-          segment_id: Number(branch?.segment_id),
-          parent_segment_id: branch?.parent_segment_id === null ? null : Number(branch?.parent_segment_id),
-          parent_endpoint: branch?.parent_endpoint as 'start' | 'end' | null,
-          child_endpoint: branch?.child_endpoint as 'start' | 'end' | null,
-          generated_feature_ids: Object.freeze((branch?.generated_feature_ids as number[]).slice()),
+        skeleton_branch_bindings: Object.freeze(admittedBranchBindings.map((branch) => Object.freeze({
+          segment_id: Number(branch.segment_id),
+          parent_segment_id: branch.parent_segment_id === null ? null : Number(branch.parent_segment_id),
+          parent_endpoint: branch.parent_endpoint as 'start' | 'end' | null,
+          child_endpoint: branch.child_endpoint as 'start' | 'end' | null,
+          generated_feature_ids: Object.freeze((branch.generated_feature_ids as number[]).slice()),
         }))),
         skeleton_tree_authority_sha256: Object.freeze(
           witness.skeleton_tree_authority_sha256.slice()) as ReadonlyArray<number>,
@@ -3843,11 +3854,14 @@ export function inspectEffectiveCutReadOnlyV1(
 export function proposeCurrentStackedFoldRead(
   request: StackedFoldReadRequest,
 ): Promise<StackedFoldReadResponse> {
-  if (!isStackedFoldReadRequest(request)) {
+  const snapshot = normalizeStackedFoldReadRequest(request)
+  if (!snapshot) {
     return Promise.reject(new Error('invalid stacked-fold request'))
   }
-  return invoke<unknown>('propose_current_stacked_fold_read', { request }).then((value) => {
-    const response = normalizeStackedFoldReadResponse(value, request)
+  return invoke<unknown>('propose_current_stacked_fold_read', {
+    request: snapshot,
+  }).then((value) => {
+    const response = normalizeStackedFoldReadResponse(value, snapshot)
     if (!response) throw new Error('invalid stacked-fold response')
     return response
   }, (error: unknown) => {
@@ -3911,7 +3925,8 @@ export function readEvenCycleCandidatesV1(
   if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(request.expectedProjectId)
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
-    || !Number.isSafeInteger(request.maxPairTests) || request.maxPairTests < 0) {
+    || !Number.isSafeInteger(request.maxPairTests) || request.maxPairTests < 0
+    || request.maxPairTests > 120) {
     return Promise.reject(new Error('invalid even-cycle candidate request'))
   }
   return invoke<unknown>('read_even_cycle_candidates_v1', { request }).then((value) => {
@@ -3979,6 +3994,7 @@ export type DyadicPoseGraphReadResponseV1 = Readonly<{
 }>
 
 export function readBoundedDyadicPoseGraphV1(request: Readonly<{
+  progressRequestId?: string
   expectedProjectInstanceId: string
   expectedProjectId: string
   expectedRevision: number
@@ -3988,15 +4004,19 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
   levelCount: 3 | 5 | 9
   cycleScheduleV1?: CycleScheduleRequestV1
 }>): Promise<DyadicPoseGraphReadResponseV1> {
-  if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
+  if ((request.progressRequestId !== undefined
+      && (!/^[\x21-\x7e]{1,128}$/.test(request.progressRequestId)))
+    || !isCanonicalNonNilUuid(request.expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(request.expectedProjectId)
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
     || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 2187
     || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 20412
     || ![3, 5, 9].includes(request.levelCount)
     || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
-    || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge)
-      || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)) {
+    || request.targetAngles.some((entry, index, entries) =>
+      !isCanonicalNonNilUuid(entry.edge)
+      || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180
+      || (index > 0 && entries[index - 1]!.edge >= entry.edge))) {
     return Promise.reject(new Error('invalid dyadic pose graph request'))
   }
   return invoke<unknown>('read_bounded_dyadic_pose_graph_v1', { request }).then((value) => {
@@ -4012,6 +4032,11 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
       || (value.reason === 'unsupported_geometry') !== (value.status === 'unsupported')
       || ![value.stateCount, value.transitionCount, value.exploredStateCount, value.evaluatedTransitionCount, value.certifiedTransitionCount, value.positiveThicknessTransitionCount, value.layerTransportTransitionCount]
         .every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
+      || Number(value.stateCount) > request.maxStates
+      || Number(value.exploredStateCount) > request.maxStates
+      || Number(value.transitionCount) > request.maxTransitions
+      || Number(value.evaluatedTransitionCount) > request.maxTransitions
+      || Number(value.certifiedTransitionCount) > Number(value.evaluatedTransitionCount)
       || (value.status === 'certified') !== (typeof value.certificateBindingSha256 === 'string' && /^[0-9a-f]{64}$/.test(value.certificateBindingSha256))
       || Number(value.positiveThicknessTransitionCount) > Number(value.certifiedTransitionCount)
       || Number(value.layerTransportTransitionCount) > Number(value.certifiedTransitionCount)
@@ -4039,6 +4064,7 @@ export type DyadicPathPreviewResponseV1 = Readonly<{
 }>
 
 export function mintDyadicPosePathPreviewV1(request: Readonly<{
+  progressRequestId: string
   expectedProjectInstanceId: string
   expectedProjectId: string
   expectedRevision: number
@@ -4052,14 +4078,18 @@ export function mintDyadicPosePathPreviewV1(request: Readonly<{
   expectedLayerTransportBindingSha256: string
 }>): Promise<DyadicPathPreviewResponseV1> {
   const hash = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
-  if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
+  if (!/^[\x21-\x7e]{1,128}$/.test(request.progressRequestId)
+    || !isCanonicalNonNilUuid(request.expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(request.expectedProjectId)
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
     || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 2187
     || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 20412
     || ![3, 5, 9].includes(request.levelCount)
     || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
-    || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge) || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)
+    || request.targetAngles.some((entry, index, entries) =>
+      !isCanonicalNonNilUuid(entry.edge)
+      || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180
+      || (index > 0 && entries[index - 1]!.edge >= entry.edge))
     || !hash(request.expectedPathBindingSha256)
     || !hash(request.expectedPositiveThicknessBindingSha256)
     || !hash(request.expectedLayerTransportBindingSha256)) return Promise.reject(new Error('invalid dyadic preview request'))
@@ -4107,39 +4137,86 @@ export function applyDyadicPosePathPreviewV1(request: Readonly<{
   })
 }
 
+export function cancelDyadicPosePathPreviewV1(previewToken: string): Promise<void> {
+  if (!isCanonicalNonNilUuid(previewToken)) {
+    return Promise.reject(new Error('invalid dyadic preview token'))
+  }
+  return invoke<void>('cancel_dyadic_pose_path_preview_v1', {
+    request: { previewToken },
+  })
+}
+
 export function proposeCurrentCyclePoseV1(
   request: CurrentCyclePosePreviewRequestV1,
 ): Promise<CurrentCyclePosePreviewResponseV1> {
-  const keys = Object.keys(request).sort().join(',')
+  const wire = snapshotStackedFoldReadWireValue(request)
+  if (
+    !wire
+    || typeof wire.value !== 'object'
+    || wire.value === null
+    || Array.isArray(wire.value)
+  ) return Promise.reject(new Error('invalid current-cycle preview request'))
+  const snapshot = wire.value as CurrentCyclePosePreviewRequestV1
+  const keys = Object.keys(snapshot).sort().join(',')
   if (
     keys !== 'cycleScheduleV1,expectedProjectId,expectedProjectInstanceId,expectedRevision' &&
     keys !== 'cycleScheduleV1,expectedProjectId,expectedProjectInstanceId,expectedRevision,progressRequestId'
   ) return Promise.reject(new Error('invalid current-cycle preview request'))
+  const schedule: unknown = snapshot.cycleScheduleV1
+  const scheduleRecord =
+    typeof schedule === 'object' && schedule !== null && !Array.isArray(schedule)
+      ? schedule as Record<string, unknown>
+      : null
+  const scheduleKeys = scheduleRecord
+    ? Object.keys(scheduleRecord).sort().join(',')
+    : ''
+  const validSchedule = isCycleScheduleRequestV1(schedule)
+    || (
+      scheduleRecord !== null
+      && scheduleRecord.version === 2
+      && Array.isArray(scheduleRecord.entries)
+      && scheduleRecord.entries.length === 0
+      && (
+        scheduleKeys === 'entries,version'
+        || (
+          scheduleKeys === 'endpointDenominator,entries,version'
+          && typeof scheduleRecord.endpointDenominator === 'number'
+          && [1, 2, 4, 8, 16].includes(scheduleRecord.endpointDenominator)
+        )
+      )
+    )
   if (
-    !isCanonicalNonNilUuid(request.expectedProjectInstanceId) ||
-    !isCanonicalNonNilUuid(request.expectedProjectId) ||
-    !Number.isSafeInteger(request.expectedRevision) ||
-    request.expectedRevision < 0 ||
-    !(isCycleScheduleRequestV1(request.cycleScheduleV1)
-      || (request.cycleScheduleV1.version === 2
-        && request.cycleScheduleV1.entries.length === 0
-        && (!('endpointDenominator' in request.cycleScheduleV1)
-          || [1, 2, 4, 8, 16].includes(Number(request.cycleScheduleV1.endpointDenominator))))) ||
-    (request.progressRequestId !== undefined &&
-      (!/^[\x20-\x7e]+$/.test(request.progressRequestId) || request.progressRequestId.length > 128))
+    !isCanonicalNonNilUuid(snapshot.expectedProjectInstanceId) ||
+    !isCanonicalNonNilUuid(snapshot.expectedProjectId) ||
+    !Number.isSafeInteger(snapshot.expectedRevision) ||
+    Object.is(snapshot.expectedRevision, -0) ||
+    snapshot.expectedRevision < 0 ||
+    !validSchedule ||
+    (snapshot.progressRequestId !== undefined &&
+      !/^[\x21-\x7e]{1,128}$/.test(snapshot.progressRequestId))
   ) return Promise.reject(new Error('invalid current-cycle preview request'))
-  return invoke<unknown>('propose_current_cycle_pose_v1', { request }).then((payload) =>
-    normalizeCurrentCyclePosePreviewResponseV1(payload, request.expectedRevision))
+  return invoke<unknown>('propose_current_cycle_pose_v1', {
+    request: snapshot,
+  }).then((payload) =>
+    normalizeCurrentCyclePosePreviewResponseV1(payload, snapshot.expectedRevision))
 }
+
+const MAX_CURRENT_CYCLE_LAYER_ORDER_PAIRS_V1 = 50_000
 
 export function normalizeCurrentCyclePosePreviewResponseV1(
   payload: unknown,
   expectedRevision: number,
 ): CurrentCyclePosePreviewResponseV1 {
-    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    const wire = snapshotStackedFoldReadWireValue(payload)
+    if (
+      !wire
+      || typeof wire.value !== 'object'
+      || wire.value === null
+      || Array.isArray(wire.value)
+    ) {
       throw new Error('invalid current-cycle preview response')
     }
-    const value = payload as Record<string, unknown>
+    const value = wire.value as Record<string, unknown>
     const continuousLayerTransitionCount =
       value.continuousLayerTransitionCount
     const sourceLayerOrder = value.sourceLayerOrder
@@ -4164,7 +4241,8 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
       Number(value.totalHingeCount) > 128 ||
       value.continuousPathCertified !== true ||
       (value.continuousLayerTransportModelId !== null &&
-        value.continuousLayerTransportModelId !== 'general_multi_face_positive_thickness_cell_transport_v1') ||
+        value.continuousLayerTransportModelId !== 'general_multi_face_positive_thickness_cell_transport_v1' &&
+        value.continuousLayerTransportModelId !== 'blockwise_positive_layer_authority_v1') ||
       typeof continuousLayerTransitionCount !== 'number' ||
       !Number.isSafeInteger(continuousLayerTransitionCount) ||
       continuousLayerTransitionCount < 0 ||
@@ -4175,13 +4253,17 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
           !/^[0-9a-f]{64}$/.test(value.continuousLayerTargetOrderSha256))) ||
       !Array.isArray(sourceLayerOrder) ||
       !Array.isArray(targetLayerOrder) ||
+      sourceLayerOrder.length > MAX_CURRENT_CYCLE_LAYER_ORDER_PAIRS_V1 ||
+      targetLayerOrder.length > MAX_CURRENT_CYCLE_LAYER_ORDER_PAIRS_V1 ||
       !isLayerOrderPairsV1(sourceLayerOrder) ||
       !isLayerOrderPairsV1(targetLayerOrder) ||
       JSON.stringify(sourceLayerOrder) !== JSON.stringify(targetLayerOrder) ||
       (value.continuousLayerTransportModelId === null
         ? continuousLayerTransitionCount !== 0 ||
           value.continuousLayerPairOrderCount !== 0 ||
-          value.continuousLayerTargetOrderSha256 !== null
+          value.continuousLayerTargetOrderSha256 !== null ||
+          sourceLayerOrder.length !== 0 ||
+          targetLayerOrder.length !== 0
         : continuousLayerTransitionCount <= 0 ||
           value.continuousLayerPairOrderCount !== sourceLayerOrder.length ||
           value.continuousLayerTargetOrderSha256 === null) ||
@@ -4210,20 +4292,37 @@ export function listenCurrentCyclePoseProgressV1(
   onProgress: (progress: CurrentCyclePoseProgressV1) => void,
 ): Promise<UnlistenFn> {
   return listen<unknown>('current-cycle-pose-progress-v1', ({ payload }) => {
-    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return
-    const value = payload as Record<string, unknown>
+    const value = exactCoreDataRecord(payload, [
+      'version',
+      'requestId',
+      'status',
+      'completedWork',
+      'totalWork',
+      'authorizesProjectMutation',
+    ] as const)
     if (
-      Object.keys(value).sort().join(',') !==
-        'authorizesProjectMutation,completedWork,requestId,status,totalWork,version' ||
+      !value ||
       value.version !== 1 ||
       typeof value.requestId !== 'string' ||
-      value.requestId.length === 0 || value.requestId.length > 128 ||
+      !/^[\x21-\x7e]{1,128}$/.test(value.requestId) ||
       !['running', 'certified', 'cancelled', 'failed'].includes(String(value.status)) ||
-      !Number.isSafeInteger(value.completedWork) || Number(value.completedWork) < 0 ||
+      !Number.isSafeInteger(value.completedWork) ||
+      Object.is(value.completedWork, -0) ||
+      Number(value.completedWork) < 0 ||
       Number(value.completedWork) > 2 || value.totalWork !== 2 ||
+      (value.status === 'running'
+        ? Number(value.completedWork) >= 2
+        : Number(value.completedWork) !== 2) ||
       value.authorizesProjectMutation !== false
     ) return
-    onProgress(value as CurrentCyclePoseProgressV1)
+    onProgress(Object.freeze({
+      version: 1,
+      requestId: value.requestId,
+      status: value.status as CurrentCyclePoseProgressV1['status'],
+      completedWork: Number(value.completedWork),
+      totalWork: 2,
+      authorizesProjectMutation: false,
+    }))
   })
 }
 
@@ -4241,29 +4340,41 @@ export function listenStackedFoldReadProgressV1(
   onProgress: (progress: StackedFoldReadProgressV1) => void,
 ): Promise<UnlistenFn> {
   return listen<unknown>('stacked-fold-read-progress-v1', ({ payload }) => {
+    const value = exactCoreDataRecord(payload, [
+      'version',
+      'requestId',
+      'exploredStateCount',
+      'evaluatedTransitionCount',
+      'stateLimit',
+      'transitionLimit',
+      'authorizesProjectMutation',
+    ] as const)
     if (
-      typeof payload !== 'object' ||
-      payload === null ||
-      Array.isArray(payload)
-    ) return
-    const value = payload as Record<string, unknown>
-    if (
-      Object.keys(value).length !== 7 ||
+      !value ||
       value.version !== 1 ||
       typeof value.requestId !== 'string' ||
-      value.requestId.length === 0 ||
-      value.requestId.length > 128 ||
+      !/^[\x21-\x7e]{1,128}$/.test(value.requestId) ||
       !Number.isSafeInteger(value.exploredStateCount) ||
+      Object.is(value.exploredStateCount, -0) ||
       Number(value.exploredStateCount) < 0 ||
       Number(value.exploredStateCount) > 32 ||
       !Number.isSafeInteger(value.evaluatedTransitionCount) ||
+      Object.is(value.evaluatedTransitionCount, -0) ||
       Number(value.evaluatedTransitionCount) < 0 ||
       Number(value.evaluatedTransitionCount) > 64 ||
       value.stateLimit !== 32 ||
       value.transitionLimit !== 64 ||
       value.authorizesProjectMutation !== false
     ) return
-    onProgress(value as StackedFoldReadProgressV1)
+    onProgress(Object.freeze({
+      version: 1,
+      requestId: value.requestId,
+      exploredStateCount: Number(value.exploredStateCount),
+      evaluatedTransitionCount: Number(value.evaluatedTransitionCount),
+      stateLimit: 32,
+      transitionLimit: 64,
+      authorizesProjectMutation: false,
+    }))
   })
 }
 
@@ -4372,6 +4483,13 @@ export function cancelStackedFoldTransactionPreview(token: string): Promise<void
 
 export function cancelCurrentStackedFoldReadV1(): Promise<void> {
   return invoke('cancel_current_stacked_fold_read_v1')
+}
+
+export function cancelCurrentStackedFoldReadRequestV1(requestId: string): Promise<void> {
+  if (!/^[\x21-\x7e]{1,128}$/.test(requestId)) {
+    return Promise.reject(new Error('invalid stacked-fold read request ID'))
+  }
+  return invoke('cancel_current_stacked_fold_read_request_v1', { requestId })
 }
 
 export function applyStackedFoldTransaction(token: string): Promise<number> {

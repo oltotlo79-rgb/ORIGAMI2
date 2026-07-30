@@ -28,7 +28,19 @@ const valid = {
 }
 
 test('current-cycle proof summary accepts the bounded complete DTO', () => {
-  assert.deepEqual(normalizeCurrentCyclePosePreviewResponseV1(valid, 3), valid)
+  const normalized = normalizeCurrentCyclePosePreviewResponseV1(valid, 3)
+  assert.deepEqual(normalized, valid)
+  assert.notEqual(normalized, valid)
+  assert.equal(Object.isFrozen(normalized), true)
+  assert.equal(Object.isFrozen(normalized.sourceLayerOrder), true)
+})
+
+test('current-cycle proof summary accepts the production blockwise layer authority', () => {
+  const blockwise = {
+    ...valid,
+    continuousLayerTransportModelId: 'blockwise_positive_layer_authority_v1',
+  }
+  assert.deepEqual(normalizeCurrentCyclePosePreviewResponseV1(blockwise, 3), blockwise)
 })
 
 test('current-cycle proof summary rejects tampering, bounds, and partial coverage', () => {
@@ -44,6 +56,7 @@ test('current-cycle proof summary rejects tampering, bounds, and partial coverag
     { ...valid, sourceLayerOrder: [{ ...valid.sourceLayerOrder[0], lowerFace: valid.sourceLayerOrder[0].upperFace }] },
     { ...valid, targetLayerOrder: [{ lowerFace: 'stale', upperFace: valid.targetLayerOrder[0].upperFace }] },
     { ...valid, continuousLayerTransportModelId: null },
+    { ...valid, continuousLayerTransportModelId: 'blockwise_positive_layer_authority_v2' },
     { ...valid, targetRevision: 5 },
   ]
   for (const value of invalid) {
@@ -52,4 +65,18 @@ test('current-cycle proof summary rejects tampering, bounds, and partial coverag
       /invalid current-cycle preview response/,
     )
   }
+
+  let getterCalls = 0
+  const accessor = Object.defineProperty({ ...valid }, 'sourceRevision', {
+    enumerable: true,
+    get() {
+      getterCalls += 1
+      return 3
+    },
+  })
+  assert.throws(
+    () => normalizeCurrentCyclePosePreviewResponseV1(accessor, 3),
+    /invalid current-cycle preview response/,
+  )
+  assert.equal(getterCalls, 0)
 })

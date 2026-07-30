@@ -107,6 +107,9 @@ export function normalizeLiveHingeRegistryV1(
   value: unknown,
   expected: LiveHingeRegistryRequestV1,
 ): LiveHingeRegistryResponseV1 | null {
+  const wire = snapshotStackedFoldReadWireValue(value)
+  if (!wire) return null
+  value = wire.value
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
@@ -303,6 +306,15 @@ const isFinitePoint2 = (value: unknown): value is [number, number] =>
   value.length === 2 &&
   value.every((coordinate) => typeof coordinate === 'number' && Number.isFinite(coordinate))
 
+// These are presentation limits, deliberately much smaller than the generic
+// IPC wire snapshot caps.  The panel renders every admitted item, so accepting
+// a merely syntactically-valid million-cell response would make the read-only
+// viewer a denial-of-service surface.
+const MAX_STACKED_FOLD_RENDERED_CELLS_V1 = 2_048
+const MAX_STACKED_FOLD_RENDERED_FACES_V1 = 2_048
+const MAX_STACKED_FOLD_RENDERED_CELL_LAYERS_V1 = 2_048
+const MAX_STACKED_FOLD_RENDERED_BOUNDARY_POINTS_V1 = 4_096
+
 const allCounts = (value: Record<string, unknown>, fields: readonly string[]): boolean =>
   fields.every((field) => isCount(value[field]))
 
@@ -467,6 +479,20 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
     graphValid &&
     pathVariantCount <= 1
   )
+}
+
+/**
+ * Detaches a request at the IPC boundary before any semantic validation reads
+ * its fields. The returned value is recursively frozen, so caller mutation
+ * cannot change either the native request or the response binding while a read
+ * is in flight.
+ */
+export function normalizeStackedFoldReadRequest(
+  value: unknown,
+): StackedFoldReadRequest | null {
+  const wire = snapshotStackedFoldReadWireValue(value)
+  if (!wire || !isStackedFoldReadRequest(wire.value)) return null
+  return wire.value as StackedFoldReadRequest
 }
 
 export function normalizeStackedFoldReadResponse(
@@ -679,6 +705,7 @@ export function normalizeStackedFoldReadResponse(
     (value.support !== 'no_hinge_single_face' &&
       value.support !== 'bit_exact_flat_endpoint_tree') ||
     !Array.isArray(value.crossedCells) ||
+    value.crossedCells.length > MAX_STACKED_FOLD_RENDERED_CELLS_V1 ||
     !value.crossedCells.every(
       (cell) =>
         isRecord(cell) &&
@@ -686,14 +713,16 @@ export function normalizeStackedFoldReadResponse(
         isLowerSha256(cell.cellKeySha256) &&
         Array.isArray(cell.bottomToTopFaces) &&
         cell.bottomToTopFaces.length > 0 &&
+        cell.bottomToTopFaces.length <= MAX_STACKED_FOLD_RENDERED_CELL_LAYERS_V1 &&
         cell.bottomToTopFaces.every(isCanonicalNonNilUuid) &&
         Array.isArray(cell.boundaryWorld) &&
         cell.boundaryWorld.length >= 3 &&
-        cell.boundaryWorld.length <= 4096 &&
+        cell.boundaryWorld.length <= MAX_STACKED_FOLD_RENDERED_BOUNDARY_POINTS_V1 &&
         cell.boundaryWorld.every(isFinitePoint),
     ) ||
     !Array.isArray(value.targetFaces) ||
     value.targetFaces.length === 0 ||
+    value.targetFaces.length > MAX_STACKED_FOLD_RENDERED_FACES_V1 ||
     !value.targetFaces.every(isCanonicalNonNilUuid) ||
     liveGraphHingeAngles === null ||
     liveGraphHingeAngles.length > 64 ||
@@ -710,6 +739,7 @@ export function normalizeStackedFoldReadResponse(
         (index === 0 || String(entries[index - 1]?.edge) < entry.edge),
     ) ||
     !Array.isArray(value.materialSegments) ||
+    value.materialSegments.length > MAX_STACKED_FOLD_RENDERED_FACES_V1 ||
     value.materialSegments.length !== value.targetFaces.length ||
     !value.materialSegments.every(
       (segment) =>
@@ -852,5 +882,10 @@ export function normalizeStackedFoldReadResponse(
         !liveGraphHingeAngles.some((live) =>
           isRecord(live) && live.edge === hinge)))
   )) return null
+  const checkedCells = value.crossedCells as readonly Record<string, unknown>[]
+  const checkedTargetFaces = value.targetFaces as readonly string[]
+  const cellKeys = checkedCells.map((cell) => cell.cellKeySha256)
+  if (new Set(cellKeys).size !== cellKeys.length ||
+    new Set(checkedTargetFaces).size !== checkedTargetFaces.length) return null
   return value as StackedFoldReadResponse
 }

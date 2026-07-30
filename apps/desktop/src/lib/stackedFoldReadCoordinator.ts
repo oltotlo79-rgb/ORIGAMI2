@@ -1,5 +1,5 @@
 import {
-  isStackedFoldReadRequest,
+  normalizeStackedFoldReadRequest,
   normalizeStackedFoldReadResponse,
   type StackedFoldReadRequest,
   type StackedFoldReadResponse,
@@ -50,6 +50,9 @@ export type StackedFoldReadCoordinatorOptions = Readonly<{
   transport(request: StackedFoldReadRequest): Promise<unknown>
   getAuthority(): StackedFoldReadAuthority | null
   onState?(state: StackedFoldReadCoordinatorState): void
+  onOrphanedReadyResponse?(
+    response: StackedFoldReadResponse,
+  ): void | Promise<void>
 }>
 
 type StackedFoldReadFailureReason = Extract<
@@ -60,15 +63,69 @@ type StackedFoldReadFailureReason = Extract<
 type ActiveRead = {
   generation: number
   settled: boolean
+  orphanedReadyReported: boolean
   resolve(result: StackedFoldReadCoordinatorResult): void
 }
 
-const detachRequest = (request: StackedFoldReadRequest): StackedFoldReadRequest =>
-  Object.freeze({
-    ...request,
-    first: Object.freeze([...request.first]) as unknown as readonly [number, number, number],
-    second: Object.freeze([...request.second]) as unknown as readonly [number, number, number],
-  })
+const snapshotRequest = (request: StackedFoldReadRequest): StackedFoldReadRequest | null => {
+  try {
+    return normalizeStackedFoldReadRequest(request)
+  } catch {
+    return null
+  }
+}
+
+const readAuthority = (
+  getAuthority: () => StackedFoldReadAuthority | null,
+): StackedFoldReadAuthority | null => {
+  try {
+    const value: unknown = getAuthority()
+    if (
+      value === null
+      || typeof value !== 'object'
+      || Array.isArray(value)
+    ) return null
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) return null
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    const keys = Reflect.ownKeys(descriptors)
+    const expectedKeys = [
+      'projectInstanceId',
+      'projectId',
+      'revision',
+    ] as const
+    if (
+      keys.length !== expectedKeys.length
+      || keys.some((key) =>
+        typeof key !== 'string'
+        || !expectedKeys.includes(key as typeof expectedKeys[number]))
+    ) return null
+    const fields = Object.create(null) as Record<string, unknown>
+    for (const key of expectedKeys) {
+      const descriptor = descriptors[key]
+      if (
+        !descriptor
+        || !descriptor.enumerable
+        || !('value' in descriptor)
+      ) return null
+      fields[key] = descriptor.value
+    }
+    if (
+      typeof fields.projectInstanceId !== 'string'
+      || typeof fields.projectId !== 'string'
+      || !Number.isSafeInteger(fields.revision)
+      || Number(fields.revision) < 0
+      || Object.is(fields.revision, -0)
+    ) return null
+    return Object.freeze({
+      projectInstanceId: fields.projectInstanceId,
+      projectId: fields.projectId,
+      revision: Number(fields.revision),
+    })
+  } catch {
+    return null
+  }
+}
 
 function authorityMatches(
   authority: StackedFoldReadAuthority | null,
@@ -118,15 +175,26 @@ export function createStackedFoldReadCoordinator(
     generation,
   })
 
-  const publish = (next: StackedFoldReadCoordinatorState, owner: number) => {
-    if (disposed || generation !== owner) return false
+  const publish = (
+    next: StackedFoldReadCoordinatorState,
+    owner: ActiveRead,
+  ) => {
+    if (
+      disposed
+      || active !== owner
+      || generation !== owner.generation
+    ) return false
     state = Object.freeze(next)
     try {
       options.onState?.(state)
     } catch {
       // Presentation callbacks are not part of native-read authority.
     }
-    return !disposed && generation === owner
+    return (
+      !disposed
+      && active === owner
+      && generation === owner.generation
+    )
   }
 
   const settle = (
@@ -139,14 +207,43 @@ export function createStackedFoldReadCoordinator(
     owner.resolve(result)
   }
 
+  const normalizeResponse = (
+    value: unknown,
+    request: StackedFoldReadRequest,
+  ): StackedFoldReadResponse | null => {
+    try {
+      return normalizeStackedFoldReadResponse(value, request)
+    } catch {
+      return null
+    }
+  }
+
+  const reportOrphanedReadyResponse = (
+    owner: ActiveRead,
+    response: StackedFoldReadResponse | null,
+  ) => {
+    if (!response || owner.orphanedReadyReported) return
+    owner.orphanedReadyReported = true
+    try {
+      void Promise.resolve(
+        options.onOrphanedReadyResponse?.(response),
+      ).catch(() => {
+        // Cleanup callbacks cannot affect read authority or settlement.
+      })
+    } catch {
+      // Cleanup callbacks cannot affect read authority or settlement.
+    }
+  }
+
   const revoke = (
     reason: Extract<StackedFoldReadCoordinatorResult, { status: 'cancelled' }>['reason'],
+    publishIdle = true,
   ) => {
-    generation += 1
+    if (generation < Number.MAX_SAFE_INTEGER) generation += 1
     const previous = active
     active = null
     if (previous) settle(previous, { status: 'cancelled', reason })
-    if (!disposed) {
+    if (!disposed && publishIdle) {
       state = Object.freeze({ status: 'idle', generation })
       try {
         options.onState?.(state)
@@ -161,33 +258,53 @@ export function createStackedFoldReadCoordinator(
       if (disposed) {
         return Promise.resolve({ status: 'cancelled', reason: 'disposed' })
       }
-      if (!isStackedFoldReadRequest(request)) {
+      const entryGeneration = generation
+      const entryActive = active
+      const snapshot = snapshotRequest(request)
+      if (!snapshot) {
         return Promise.resolve({ status: 'failed', reason: 'invalid_response' })
       }
-      const snapshot = detachRequest(request)
-      if (!authorityMatches(options.getAuthority(), snapshot)) {
+      if (disposed) {
+        return Promise.resolve({ status: 'cancelled', reason: 'disposed' })
+      }
+      if (generation !== entryGeneration || active !== entryActive) {
+        return Promise.resolve({ status: 'cancelled', reason: 'superseded' })
+      }
+      const authority = readAuthority(options.getAuthority)
+      if (disposed) {
+        return Promise.resolve({ status: 'cancelled', reason: 'disposed' })
+      }
+      if (generation !== entryGeneration || active !== entryActive) {
+        return Promise.resolve({ status: 'cancelled', reason: 'superseded' })
+      }
+      if (!authorityMatches(authority, snapshot)) {
         return Promise.resolve({ status: 'cancelled', reason: 'stale_authority' })
       }
 
-      revoke('superseded')
+      // Replacement never publishes a transient idle state: an observer could
+      // otherwise start a nested read that this outer call would overwrite.
+      revoke('superseded', false)
       const ownerGeneration = generation
       return new Promise<StackedFoldReadCoordinatorResult>((resolve) => {
         const owner: ActiveRead = {
           generation: ownerGeneration,
           settled: false,
+          orphanedReadyReported: false,
           resolve,
         }
         active = owner
         if (
           !publish(
             { status: 'reading', generation: ownerGeneration, request: snapshot },
-            ownerGeneration,
+            owner,
           )
         ) {
-          settle(owner, {
-            status: 'cancelled',
-            reason: disposed ? 'disposed' : 'superseded',
-          })
+          if (!owner.settled) {
+            settle(owner, {
+              status: 'cancelled',
+              reason: disposed ? 'disposed' : 'superseded',
+            })
+          }
           return
         }
 
@@ -199,33 +316,79 @@ export function createStackedFoldReadCoordinator(
         }
         void pending.then(
           (value) => {
-            if (owner.settled) return
             if (
+              owner.settled ||
               active !== owner ||
               disposed ||
               generation !== owner.generation
             ) {
-              settle(owner, {
-                status: 'cancelled',
-                reason: disposed ? 'disposed' : 'superseded',
-              })
+              if (!owner.settled) {
+                settle(owner, {
+                  status: 'cancelled',
+                  reason: disposed ? 'disposed' : 'superseded',
+                })
+              }
+              reportOrphanedReadyResponse(
+                owner,
+                normalizeResponse(value, snapshot),
+              )
               return
             }
-            if (!authorityMatches(options.getAuthority(), snapshot)) {
+            const response = normalizeResponse(value, snapshot)
+            if (
+              owner.settled ||
+              active !== owner ||
+              disposed ||
+              generation !== owner.generation
+            ) {
+              if (!owner.settled) {
+                settle(owner, {
+                  status: 'cancelled',
+                  reason: disposed ? 'disposed' : 'superseded',
+                })
+              }
+              reportOrphanedReadyResponse(owner, response)
+              return
+            }
+            const authority = readAuthority(options.getAuthority)
+            if (
+              owner.settled ||
+              active !== owner ||
+              disposed ||
+              generation !== owner.generation
+            ) {
+              if (!owner.settled) {
+                settle(owner, {
+                  status: 'cancelled',
+                  reason: disposed ? 'disposed' : 'superseded',
+                })
+              }
+              reportOrphanedReadyResponse(owner, response)
+              return
+            }
+            if (!authorityMatches(authority, snapshot)) {
               revoke('stale_authority')
+              reportOrphanedReadyResponse(owner, response)
               return
             }
-            const response = normalizeStackedFoldReadResponse(value, snapshot)
             if (!response) {
-              publish(
+              if (!publish(
                 {
                   status: 'failed',
                   generation: ownerGeneration,
                   request: snapshot,
                   reason: 'invalid_response',
                 },
-                ownerGeneration,
-              )
+                owner,
+              )) {
+                if (!owner.settled) {
+                  settle(owner, {
+                    status: 'cancelled',
+                    reason: disposed ? 'disposed' : 'superseded',
+                  })
+                }
+                return
+              }
               settle(owner, { status: 'failed', reason: 'invalid_response' })
               return
             }
@@ -237,13 +400,14 @@ export function createStackedFoldReadCoordinator(
                   request: snapshot,
                   response,
                 },
-                ownerGeneration,
+                owner,
               )
             ) {
               settle(owner, {
                 status: 'cancelled',
                 reason: disposed ? 'disposed' : 'superseded',
               })
+              reportOrphanedReadyResponse(owner, response)
               return
             }
             settle(owner, { status: 'ready', response })
@@ -257,16 +421,37 @@ export function createStackedFoldReadCoordinator(
               })
               return
             }
+            const authority = readAuthority(options.getAuthority)
+            if (owner.settled) return
+            if (active !== owner || disposed || generation !== owner.generation) {
+              settle(owner, {
+                status: 'cancelled',
+                reason: disposed ? 'disposed' : 'superseded',
+              })
+              return
+            }
+            if (!authorityMatches(authority, snapshot)) {
+              revoke('stale_authority')
+              return
+            }
             const reason = nativeFailureReason(error)
-            publish(
+            if (!publish(
               {
                 status: 'failed',
                 generation: ownerGeneration,
                 request: snapshot,
                 reason,
               },
-              ownerGeneration,
-            )
+              owner,
+            )) {
+              if (!owner.settled) {
+                settle(owner, {
+                  status: 'cancelled',
+                  reason: disposed ? 'disposed' : 'superseded',
+                })
+              }
+              return
+            }
             settle(owner, { status: 'failed', reason })
           },
         )
@@ -277,8 +462,8 @@ export function createStackedFoldReadCoordinator(
     },
     dispose() {
       if (disposed) return
-      revoke('disposed')
       disposed = true
+      revoke('disposed')
       state = Object.freeze({ status: 'idle', generation })
     },
     getState() {

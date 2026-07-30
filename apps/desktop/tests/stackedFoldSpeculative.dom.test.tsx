@@ -39,7 +39,7 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   applyStackedFoldTransaction: transport.certifiedApply,
   applySpeculativeStackedFoldTransaction: transport.speculativeApply,
   cancelStackedFoldTransactionPreview: transport.cancel,
-  cancelCurrentStackedFoldReadV1: transport.cancelRead,
+  cancelCurrentStackedFoldReadRequestV1: transport.cancelRead,
   readLiveHingeRegistryV1: transport.registry,
   readEvenCycleCandidatesV1: transport.evenCandidates,
   listenStackedFoldReadProgressV1: vi.fn(async () => () => undefined),

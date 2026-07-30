@@ -83,9 +83,13 @@ test('canonical corpus pins version constants limits and mutation authority in b
 test('frontend admission rejects unknown fields and version drift from the Rust corpus', () => {
   const cycleListener = functionBody('listenCurrentCyclePoseProgressV1')
   const stackedListener = functionBody('listenStackedFoldReadProgressV1')
-  assert.match(cycleListener, /Object\.keys\(value\)\.sort\(\)\.join\(','\) !==/u)
+  assert.match(cycleListener, /exactCoreDataRecord\(payload,/u)
+  assert.match(cycleListener, /'completedWork'/u)
+  assert.match(cycleListener, /'totalWork'/u)
   assert.match(cycleListener, /value\.version !== 1/u)
-  assert.match(stackedListener, /Object\.keys\(value\)\.length !== 7/u)
+  assert.match(stackedListener, /exactCoreDataRecord\(payload,/u)
+  assert.match(stackedListener, /'exploredStateCount'/u)
+  assert.match(stackedListener, /'evaluatedTransitionCount'/u)
   assert.match(stackedListener, /value\.version !== 1/u)
   for (const [event, value] of Object.entries(corpus)) {
     const drifted = { ...value, version: 2, unknownField: true }

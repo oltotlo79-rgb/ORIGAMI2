@@ -285,6 +285,9 @@ const PHASE_COMPLETED: u8 = 8;
 
 const PROOF_MODEL_AUTHORITY_ID: &str = "convex_faces_facewise_v1";
 const LAYER_MODEL_AUTHORITY_ID: &str = "facewise_layer_order_v1";
+// The generation crosses Tauri's JSON boundary as a number. Stop before two
+// distinct u64 values can alias in JavaScript's IEEE-754 integer domain.
+const MAX_CURRENT_LAYER_ORDER_GENERATION_V1: u64 = (1_u64 << 53) - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(transparent)]
@@ -504,6 +507,7 @@ const MAX_CURRENT_LAYER_ORDER_VIEW_FACES: usize = 2_048;
 const MAX_CURRENT_LAYER_ORDER_VIEW_CELLS: usize = 4_096;
 const MAX_CURRENT_LAYER_ORDER_VIEW_PAIRS: usize = 32_768;
 const MAX_CURRENT_LAYER_ORDER_VIEW_PAIR_SUPPORTS: usize = 131_072;
+const MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL: usize = 4_096;
 const MAX_CURRENT_LAYER_ORDER_VIEW_TOTAL_VERTICES: usize = 16_384;
 const MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES: usize = 64 * 1024;
 const MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES: usize = 4 * 1024 * 1024;
@@ -606,7 +610,11 @@ fn preflight_current_layer_order_view(
     let mut exact_magnitude_bytes = 0_usize;
     let mut estimated_serialized_bytes = CURRENT_LAYER_ORDER_VIEW_RESPONSE_BASE_BYTES;
     for cell in &snapshot.overlap_cells {
-        if cell.bottom_to_top_faces.len() > MAX_CURRENT_LAYER_ORDER_VIEW_FACES {
+        if cell.bottom_to_top_faces.is_empty()
+            || cell.bottom_to_top_faces.len() > MAX_CURRENT_LAYER_ORDER_VIEW_FACES
+            || !(3..=MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL)
+                .contains(&cell.exact_boundary.len())
+        {
             return Err(());
         }
         checked_add_current_layer_order_view(
@@ -933,7 +941,7 @@ impl CurrentLayerOrderCommitGuard<'_> {
         snapshot: &LayerOrderSnapshot,
     ) -> bool {
         let provenance = snapshot.provenance.source;
-        self.slot.layer_order_generation.checked_add(1).is_some()
+        next_current_layer_order_generation_v1(self.slot.layer_order_generation).is_some()
             && provenance.identity_namespace == Some(expected_project_id)
             && provenance.source_revision == expected_revision
             && provenance
@@ -1404,9 +1412,27 @@ fn validate_fold_model_fingerprint(
 fn lock_foldability_state(
     state: &GlobalFlatFoldabilityState,
 ) -> Result<MutexGuard<'_, GlobalFlatFoldabilitySlot>, GlobalFlatFoldabilityCommandError> {
-    state.0.lock().map_err(|_| {
-        GlobalFlatFoldabilityCommandError::new(GlobalFlatFoldabilityErrorCategory::InternalFailure)
-    })
+    match state.0.lock() {
+        Ok(slot) => Ok(slot),
+        Err(poisoned) => {
+            let mut slot = poisoned.into_inner();
+            // A panic can escape a guarded native observation/commit closure.
+            // The partially observed slot must never remain authoritative or
+            // permanently brick every later cancellation and re-analysis.
+            // Preserve the monotonic generation (including exhaustion), but
+            // revoke all authority and cooperatively stop any detached worker.
+            let recovered_active_id = slot.active.take().map(|active| {
+                active.runtime.cancellation.store(true, Ordering::SeqCst);
+                active.job_id
+            });
+            slot.terminal = None;
+            slot.current_layer_order = None;
+            slot.last_cancelled_id = recovered_active_id;
+            slot.last_replaced_id = None;
+            state.0.clear_poison();
+            Ok(slot)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2430,7 +2456,8 @@ fn mint_current_layer_order_certificate(
     binding: Arc<GlobalFlatFoldabilityBinding>,
     snapshot: LayerOrderSnapshot,
 ) -> Result<Arc<CurrentLayerOrderCertificate>, ()> {
-    let generation = slot.layer_order_generation.checked_add(1).ok_or(())?;
+    let generation =
+        next_current_layer_order_generation_v1(slot.layer_order_generation).ok_or(())?;
     let snapshot = Arc::new(snapshot);
     let material_registry: Arc<[LayerFace]> =
         Arc::from(snapshot.material_faces.clone().into_boxed_slice());
@@ -2459,6 +2486,12 @@ fn mint_current_layer_order_certificate(
     Ok(certificate)
 }
 
+fn next_current_layer_order_generation_v1(current: u64) -> Option<u64> {
+    current
+        .checked_add(1)
+        .filter(|generation| *generation <= MAX_CURRENT_LAYER_ORDER_GENERATION_V1)
+}
+
 fn current_layer_order_certificate_is_internally_consistent(
     certificate: &CurrentLayerOrderCertificate,
 ) -> bool {
@@ -2468,6 +2501,7 @@ fn current_layer_order_certificate_is_internally_consistent(
     let source = snapshot.provenance.source;
 
     claims.generation != 0
+        && claims.generation <= MAX_CURRENT_LAYER_ORDER_GENERATION_V1
         && claims.project_instance_id == binding.project_instance_id
         && claims.project_id == binding.project_id
         && claims.revision == binding.revision
@@ -2872,7 +2906,7 @@ pub(super) mod tests {
 
         snapshot.material_faces.truncate(1);
         snapshot.overlap_cells = (0..MAX_CURRENT_LAYER_ORDER_VIEW_CELLS)
-            .map(|_| view_test_cell(face, 0))
+            .map(|_| view_test_cell(face, 3))
             .collect();
         let preflight = preflight_current_layer_order_view(&snapshot)
             .expect("the exact cell limit remains displayable");
@@ -2883,7 +2917,7 @@ pub(super) mod tests {
                 .len(),
             MAX_CURRENT_LAYER_ORDER_VIEW_CELLS
         );
-        snapshot.overlap_cells.push(view_test_cell(face, 0));
+        snapshot.overlap_cells.push(view_test_cell(face, 3));
         assert!(
             preflight_current_layer_order_view(&snapshot).is_err(),
             "one cell over is rejected before DTO allocation"
@@ -2922,8 +2956,8 @@ pub(super) mod tests {
         snapshot.face_pair_orders.clear();
         snapshot.overlap_cells = (0..16)
             .map(|index| {
-                let face_count = if index < 15 { 2_048 } else { 2_022 };
-                let mut cell = view_test_cell(face, 0);
+                let face_count = if index < 15 { 2_048 } else { 1_974 };
+                let mut cell = view_test_cell(face, 3);
                 cell.bottom_to_top_faces = vec![face; face_count];
                 cell
             })
@@ -2942,7 +2976,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn layer_order_view_preflight_enforces_vertex_and_exact_magnitude_budgets() {
+    fn layer_order_view_preflight_enforces_cell_shape_vertex_and_exact_magnitude_budgets() {
         let mut snapshot = current_layer_order_view_test_snapshot();
         let face = snapshot
             .material_faces
@@ -2950,9 +2984,23 @@ pub(super) mod tests {
             .expect("fixture has a material face")
             .face_id;
         snapshot.face_pair_orders.clear();
+
+        snapshot.overlap_cells = vec![view_test_cell(face, 2)];
+        assert!(
+            preflight_current_layer_order_view(&snapshot).is_err(),
+            "the wire view rejects a non-polygon boundary"
+        );
+        snapshot.overlap_cells = vec![view_test_cell(face, 3)];
+        assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.overlap_cells[0].bottom_to_top_faces.clear();
+        assert!(
+            preflight_current_layer_order_view(&snapshot).is_err(),
+            "the wire view rejects a cell without a layer"
+        );
+
         snapshot.overlap_cells = vec![view_test_cell(
             face,
-            MAX_CURRENT_LAYER_ORDER_VIEW_TOTAL_VERTICES,
+            MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL,
         )];
         assert!(preflight_current_layer_order_view(&snapshot).is_ok());
         snapshot.overlap_cells[0]
@@ -2961,15 +3009,50 @@ pub(super) mod tests {
                 x: view_test_rational(1),
                 y: view_test_rational(1),
             });
-        assert!(preflight_current_layer_order_view(&snapshot).is_err());
+        assert!(
+            preflight_current_layer_order_view(&snapshot).is_err(),
+            "one vertex over the per-cell wire limit is rejected"
+        );
 
-        let bytes_per_rational = MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES / 4;
+        snapshot.overlap_cells = (0..4)
+            .map(|_| view_test_cell(face, MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL))
+            .collect();
+        assert_eq!(
+            snapshot
+                .overlap_cells
+                .iter()
+                .map(|cell| cell.exact_boundary.len())
+                .sum::<usize>(),
+            MAX_CURRENT_LAYER_ORDER_VIEW_TOTAL_VERTICES
+        );
+        assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.overlap_cells.push(view_test_cell(face, 3));
+        assert!(
+            preflight_current_layer_order_view(&snapshot).is_err(),
+            "one polygon over the aggregate vertex budget is rejected"
+        );
+
+        let bytes_per_large_rational = (MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES - 8) / 4;
+        assert_eq!(
+            bytes_per_large_rational * 4 + 8,
+            MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES
+        );
         snapshot.overlap_cells = vec![OverlapCellSnapshot {
             cell_key: OverlapCellKey([0; 32]),
-            exact_boundary: vec![ExactPointValue {
-                x: view_test_rational(bytes_per_rational),
-                y: view_test_rational(bytes_per_rational),
-            }],
+            exact_boundary: vec![
+                ExactPointValue {
+                    x: view_test_rational(bytes_per_large_rational),
+                    y: view_test_rational(bytes_per_large_rational),
+                },
+                ExactPointValue {
+                    x: view_test_rational(1),
+                    y: view_test_rational(1),
+                },
+                ExactPointValue {
+                    x: view_test_rational(1),
+                    y: view_test_rational(1),
+                },
+            ],
             covering_faces: Vec::new(),
             bottom_to_top_faces: vec![face],
         }];
@@ -2980,7 +3063,7 @@ pub(super) mod tests {
             .push(1);
         assert!(preflight_current_layer_order_view(&snapshot).is_err());
 
-        snapshot.overlap_cells = vec![view_test_cell(face, 1)];
+        snapshot.overlap_cells = vec![view_test_cell(face, 3)];
         snapshot.overlap_cells[0].exact_boundary[0]
             .x
             .denominator_be
@@ -3034,7 +3117,7 @@ pub(super) mod tests {
             project_instance_id: ProjectId::new(),
             project_id: ProjectId::new(),
             revision: 7,
-            layer_order_generation: 11,
+            layer_order_generation: MAX_CURRENT_LAYER_ORDER_GENERATION_V1,
             cells,
             read_only: true,
         };
@@ -5325,12 +5408,125 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn layer_order_generation_exhaustion_fails_closed_without_wrapping() {
+    fn poisoned_commit_guard_revokes_authority_without_rewinding_generation() {
         let project = initial_project_state();
         let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        let stale_capability = capture_current_layer_order_capability(&state, &project)
+            .expect("capture authority before poison")
+            .expect("installed layer authority");
+        let original_generation = stale_capability.generation();
+        let guard =
+            lock_revalidated_current_layer_order_for_commit(&state, &project, &stale_capability)
+                .expect("lock current capability")
+                .expect("current commit guard");
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("simulate panic at the guarded native commit boundary");
+        }));
+        assert!(unwind.is_err());
+        assert!(state.0.is_poisoned());
+
+        {
+            let slot = lock_foldability_state(&state).expect("recover poisoned authority slot");
+            assert!(!state.0.is_poisoned());
+            assert_eq!(slot.layer_order_generation, original_generation);
+            assert!(slot.active.is_none());
+            assert!(slot.terminal.is_none());
+            assert!(slot.current_layer_order.is_none());
+            assert!(slot.last_cancelled_id.is_none());
+            assert!(slot.last_replaced_id.is_none());
+        }
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &stale_capability)
+                .expect("revalidate stale capability")
+                .is_none()
+        );
+
+        install_possible_layer_order(&state, &project);
+        let recovered_capability = capture_current_layer_order_capability(&state, &project)
+            .expect("capture reanalyzed authority")
+            .expect("reanalyzed layer authority");
+        assert_eq!(
+            recovered_capability.generation(),
+            original_generation + 1,
+            "poison recovery must not rewind the generation"
+        );
+    }
+
+    #[test]
+    fn poisoned_active_layer_slot_cancels_detached_work_and_ignores_late_completion() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        let active_source = source_for(&project, GlobalFlatFoldabilityJobId::new());
+        let active_job_id = active_source.job_id;
+        {
+            let mut slot = lock_foldability_state(&state).expect("install active poison fixture");
+            install_active_job(&mut slot, &active_source);
+        }
+        assert!(
+            !active_source.runtime.cancellation.load(Ordering::SeqCst),
+            "fixture starts with live uncancelled work"
+        );
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _slot = state.0.lock().expect("slot starts unpoisoned");
+            panic!("simulate panic while active work is registered");
+        }));
+        assert!(unwind.is_err());
+        assert!(state.0.is_poisoned());
+
+        {
+            let mut slot =
+                lock_foldability_state(&state).expect("recover poisoned active-work slot");
+            assert!(!state.0.is_poisoned());
+            assert_eq!(slot.layer_order_generation, 0);
+            assert!(slot.active.is_none());
+            assert!(slot.terminal.is_none());
+            assert!(slot.current_layer_order.is_none());
+            assert_eq!(slot.last_cancelled_id, Some(active_job_id));
+            assert!(slot.last_replaced_id.is_none());
+            assert!(
+                cancel_job(&mut slot, active_job_id).is_ok(),
+                "recovered cancellation remains idempotent"
+            );
+            finish_completion(
+                &mut slot,
+                &project,
+                GlobalFlatFoldabilityCompletion {
+                    context: completion_context(&active_source),
+                    outcome: WorkerOutcome::Cancelled,
+                },
+            );
+            assert!(slot.active.is_none());
+            assert!(slot.terminal.is_none());
+            assert!(slot.current_layer_order.is_none());
+        }
+        assert!(
+            active_source.runtime.cancellation.load(Ordering::SeqCst),
+            "recovery cooperatively stops detached work"
+        );
+    }
+
+    #[test]
+    fn layer_order_wire_generation_accepts_exact_safe_limit_then_fails_closed() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        assert_eq!(
+            next_current_layer_order_generation_v1(
+                MAX_CURRENT_LAYER_ORDER_GENERATION_V1.saturating_sub(1)
+            ),
+            Some(MAX_CURRENT_LAYER_ORDER_GENERATION_V1)
+        );
+        assert_eq!(
+            next_current_layer_order_generation_v1(MAX_CURRENT_LAYER_ORDER_GENERATION_V1),
+            None
+        );
+        assert_eq!(next_current_layer_order_generation_v1(u64::MAX), None);
+
         {
             let mut slot = lock_foldability_state(&state).expect("lock authority slot");
-            slot.layer_order_generation = u64::MAX;
+            slot.layer_order_generation = MAX_CURRENT_LAYER_ORDER_GENERATION_V1 - 1;
         }
         let source = source_for(&project, GlobalFlatFoldabilityJobId::new());
         {
@@ -5339,9 +5535,36 @@ pub(super) mod tests {
         }
         let completion = guarded_run_worker(source);
         {
-            let mut slot = lock_foldability_state(&state).expect("finish exhausted generation");
+            let mut slot = lock_foldability_state(&state).expect("finish exact-limit generation");
             finish_completion(&mut slot, &project, completion);
-            assert_eq!(slot.layer_order_generation, u64::MAX);
+            assert_eq!(
+                slot.layer_order_generation,
+                MAX_CURRENT_LAYER_ORDER_GENERATION_V1
+            );
+            assert_eq!(
+                slot.current_layer_order
+                    .as_ref()
+                    .expect("the exact wire-safe generation is mintable")
+                    .claims
+                    .generation,
+                MAX_CURRENT_LAYER_ORDER_GENERATION_V1
+            );
+        }
+
+        let exhausted_source = source_for(&project, GlobalFlatFoldabilityJobId::new());
+        {
+            let mut slot = lock_foldability_state(&state).expect("install exhausted job");
+            install_active_job(&mut slot, &exhausted_source);
+        }
+        let exhausted_completion = guarded_run_worker(exhausted_source);
+        {
+            let mut slot =
+                lock_foldability_state(&state).expect("finish exhausted wire generation");
+            finish_completion(&mut slot, &project, exhausted_completion);
+            assert_eq!(
+                slot.layer_order_generation,
+                MAX_CURRENT_LAYER_ORDER_GENERATION_V1
+            );
             assert!(slot.current_layer_order.is_none());
             assert!(matches!(
                 slot.terminal.as_ref().map(|terminal| &terminal.dto),

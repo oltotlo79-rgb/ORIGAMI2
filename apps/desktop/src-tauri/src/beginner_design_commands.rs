@@ -67,6 +67,18 @@ fn lock_recovering_registry_v1<T>(registry: &Mutex<T>) -> std::sync::MutexGuard<
     }
 }
 
+fn request_work_cancellation_v1(cancelled: &AtomicBool, terminal: &AtomicU64) {
+    // Publish the cooperative stop before the cancellation terminal. An
+    // Acquire observer that sees terminal=2 must never still see false here.
+    // finish_* takes the same registry mutex as the caller, so a completed or
+    // failed terminal can safely win and roll this speculative flag back.
+    cancelled.store(true, Ordering::Release);
+    match terminal.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) | Err(2) => {}
+        Err(_) => cancelled.store(false, Ordering::Release),
+    }
+}
+
 #[must_use = "dropping the registration releases only its exact consensus work"]
 pub(super) struct ReferenceConsensusWorkRegistration {
     request_generation_id: ProjectId,
@@ -2102,13 +2114,7 @@ pub(super) fn cancel_reference_consensus(request_generation_id: ProjectId) -> Re
     let work = registry
         .get(&request_generation_id)
         .ok_or_else(|| "reference_consensus_generation_not_running".to_owned())?;
-    match work
-        .terminal
-        .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
-    {
-        Ok(_) | Err(2) => work.cancelled.store(true, Ordering::Release),
-        Err(_) => {}
-    }
+    request_work_cancellation_v1(&work.cancelled, &work.terminal);
     Ok(())
 }
 
@@ -3657,13 +3663,7 @@ pub(super) fn cancel_beginner_parameter_grid(
     let work = registry
         .get(&request_generation_id)
         .ok_or_else(|| "grid_generation_not_running".to_owned())?;
-    match work
-        .terminal
-        .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
-    {
-        Ok(_) | Err(2) => work.cancelled.store(true, Ordering::Release),
-        Err(_) => {}
-    }
+    request_work_cancellation_v1(&work.cancelled, &work.terminal);
     Ok(())
 }
 

@@ -637,6 +637,105 @@ fn reference_consensus_terminal_transition_makes_cancel_win_publication_races() 
 }
 
 #[test]
+fn reference_consensus_cancel_flag_precedes_terminal_and_finish_race_rolls_back_losers() {
+    let _serial = serial_beginner_grid_test();
+
+    let forced_generation = ProjectId::new();
+    let forced_work = Arc::new(ReferenceConsensusWorkV1::default());
+    let forced_registration = beginner_design_commands::register_reference_consensus_work_v1(
+        forced_generation,
+        &forced_work,
+    )
+    .expect("register forced consensus cancellation");
+    let observed_work = Arc::clone(&forced_work);
+    let observer = thread::spawn(move || {
+        while observed_work.terminal.load(Ordering::Acquire) == 0 {
+            std::hint::spin_loop();
+        }
+        (
+            observed_work.terminal.load(Ordering::Acquire),
+            observed_work.cancelled.load(Ordering::Acquire),
+        )
+    });
+    cancel_reference_consensus(forced_generation).expect("publish forced consensus cancellation");
+    assert_eq!(
+        observer.join().expect("join consensus terminal observer"),
+        (2, true),
+        "an Acquire observer of terminal=2 must also observe the prior stop flag"
+    );
+    drop(forced_registration);
+
+    for _ in 0..8 {
+        let generation = ProjectId::new();
+        let work = Arc::new(ReferenceConsensusWorkV1::default());
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let worker_start = Arc::clone(&start);
+        let worker_work = Arc::clone(&work);
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            beginner_design_commands::run_registered_reference_consensus_work_v1(
+                generation,
+                &worker_work,
+                || {
+                    entered_sender.send(()).unwrap();
+                    worker_start.wait();
+                    Ok(41_u8)
+                },
+            )
+        });
+        entered_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("consensus worker registered before finish/cancel race");
+
+        let observer_work = Arc::clone(&work);
+        let observer = thread::spawn(move || {
+            let terminal = loop {
+                let terminal = observer_work.terminal.load(Ordering::Acquire);
+                if terminal != 0 {
+                    break terminal;
+                }
+                std::hint::spin_loop();
+            };
+            (terminal, observer_work.cancelled.load(Ordering::Acquire))
+        });
+        let cancel_start = Arc::clone(&start);
+        let canceller = thread::spawn(move || {
+            cancel_start.wait();
+            cancel_reference_consensus(generation)
+        });
+
+        let worker_result = worker.join().expect("join consensus publication racer");
+        let cancel_result = canceller.join().expect("join consensus cancellation racer");
+        let observed = observer.join().expect("join consensus race observer");
+        let terminal = work.terminal.load(Ordering::Acquire);
+        let cancelled = work.cancelled.load(Ordering::Acquire);
+        match terminal {
+            1 => {
+                assert_eq!(worker_result, Ok(41));
+                assert!(!cancelled);
+                assert!(
+                    cancel_result.is_ok()
+                        || matches!(
+                            &cancel_result,
+                            Err(error) if error == "reference_consensus_generation_not_running"
+                        )
+                );
+            }
+            2 => {
+                assert_eq!(
+                    worker_result,
+                    Err("reference_consensus_cancelled".to_owned())
+                );
+                assert_eq!(cancel_result, Ok(()));
+                assert!(cancelled);
+                assert_eq!(observed, (2, true));
+            }
+            other => panic!("unexpected consensus race terminal {other}"),
+        }
+    }
+}
+
+#[test]
 fn reference_consensus_command_claims_generation_before_project_lock_wait() {
     let _serial = serial_beginner_grid_test();
     let generation = ProjectId::new();
@@ -869,6 +968,93 @@ fn beginner_grid_terminal_transitions_linearize_cancel_complete_failure_and_drop
         3
     );
     assert!(!failure_before_cancel_work.cancelled.load(Ordering::Acquire));
+}
+
+#[test]
+fn beginner_grid_cancel_flag_precedes_terminal_and_finish_race_rolls_back_losers() {
+    let _serial = serial_beginner_grid_test();
+
+    let forced_generation = ProjectId::new();
+    let forced_work = Arc::new(BeginnerGridWork::default());
+    let forced_registration =
+        beginner_design_commands::register_beginner_grid_work_v1(forced_generation, &forced_work)
+            .expect("register forced grid cancellation");
+    let observed_work = Arc::clone(&forced_work);
+    let observer = thread::spawn(move || {
+        while observed_work.terminal.load(Ordering::Acquire) == 0 {
+            std::hint::spin_loop();
+        }
+        (
+            observed_work.terminal.load(Ordering::Acquire),
+            observed_work.cancelled.load(Ordering::Acquire),
+        )
+    });
+    cancel_beginner_parameter_grid(forced_generation).expect("publish forced grid cancellation");
+    assert_eq!(
+        observer.join().expect("join grid terminal observer"),
+        (2, true),
+        "an Acquire observer of terminal=2 must also observe the prior stop flag"
+    );
+    drop(forced_registration);
+
+    for _ in 0..8 {
+        let generation = ProjectId::new();
+        let work = Arc::new(BeginnerGridWork::default());
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let worker_start = Arc::clone(&start);
+        let worker_work = Arc::clone(&work);
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            beginner_design_commands::run_registered_beginner_grid_work_v1(
+                generation,
+                &worker_work,
+                || {
+                    entered_sender.send(()).unwrap();
+                    worker_start.wait();
+                    Ok(43_u8)
+                },
+            )
+        });
+        entered_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("grid worker registered before finish/cancel race");
+
+        let observer_work = Arc::clone(&work);
+        let observer = thread::spawn(move || {
+            let terminal = loop {
+                let terminal = observer_work.terminal.load(Ordering::Acquire);
+                if terminal != 0 {
+                    break terminal;
+                }
+                std::hint::spin_loop();
+            };
+            (terminal, observer_work.cancelled.load(Ordering::Acquire))
+        });
+        let cancel_start = Arc::clone(&start);
+        let canceller = thread::spawn(move || {
+            cancel_start.wait();
+            cancel_beginner_parameter_grid(generation)
+        });
+
+        let worker_result = worker.join().expect("join grid publication racer");
+        let cancel_result = canceller.join().expect("join grid cancellation racer");
+        let observed = observer.join().expect("join grid race observer");
+        let terminal = work.terminal.load(Ordering::Acquire);
+        let cancelled = work.cancelled.load(Ordering::Acquire);
+        assert_eq!(cancel_result, Ok(()));
+        match terminal {
+            1 => {
+                assert_eq!(worker_result, Ok(43));
+                assert!(!cancelled);
+            }
+            2 => {
+                assert_eq!(worker_result, Err("grid_evaluation_cancelled".to_owned()));
+                assert!(cancelled);
+                assert_eq!(observed, (2, true));
+            }
+            other => panic!("unexpected grid race terminal {other}"),
+        }
+    }
 }
 
 #[test]

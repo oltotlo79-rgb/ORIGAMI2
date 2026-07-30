@@ -48,6 +48,16 @@ function completeInsectEstimate() {
   }
 }
 
+function completeAnimalEstimate() {
+  const response = completeInsectEstimate()
+  response.estimate.protrusion_count = 8
+  response.candidates.forEach((candidate, index) => {
+    candidate.required_protrusion_count = 8
+    candidate.complexity_score = [105, 104, 106][index]!
+  })
+  return response
+}
+
 async function readEstimate() {
   return getBeginnerSymmetricParameterEstimate(
     PROJECT_ID,
@@ -83,6 +93,54 @@ describe('beginner symmetric estimate strict client', () => {
         expectedRevision: REVISION,
       },
     )
+  })
+
+  it('accepts all three complete-animal count-eight candidates', async () => {
+    nativeInvoke.mockResolvedValue(completeAnimalEstimate())
+
+    const response = await readEstimate()
+
+    expect(response.estimate.protrusion_count).toBe(8)
+    expect(response.candidates.map(
+      (candidate) => candidate.required_protrusion_count,
+    )).toEqual([8, 8, 8])
+    expect(response.candidates.map(
+      (candidate) => candidate.complexity_score,
+    )).toEqual([105, 104, 106])
+  })
+
+  it('rejects an estimate and candidate count mismatch in either direction', async () => {
+    const candidateTamper = completeAnimalEstimate()
+    candidateTamper.candidates[1]!.required_protrusion_count = 10
+    nativeInvoke.mockResolvedValueOnce(candidateTamper)
+    await expect(readEstimate()).rejects.toThrow(
+      'invalid symmetric parameter candidates',
+    )
+
+    const estimateTamper = completeAnimalEstimate()
+    estimateTamper.estimate.protrusion_count = 10
+    nativeInvoke.mockResolvedValueOnce(estimateTamper)
+    await expect(readEstimate()).rejects.toThrow(
+      'invalid symmetric parameter candidates',
+    )
+  })
+
+  it('keeps neighboring undeclared protrusion counts closed', async () => {
+    for (const invalid of [5, 7, 9]) {
+      const invalidEstimate = completeAnimalEstimate()
+      invalidEstimate.estimate.protrusion_count = invalid
+      nativeInvoke.mockResolvedValueOnce(invalidEstimate)
+      await expect(readEstimate()).rejects.toThrow(
+        'invalid symmetric parameter estimate',
+      )
+
+      const invalidCandidate = completeAnimalEstimate()
+      invalidCandidate.candidates[1]!.required_protrusion_count = invalid
+      nativeInvoke.mockResolvedValueOnce(invalidCandidate)
+      await expect(readEstimate()).rejects.toThrow(
+        'invalid symmetric parameter candidates',
+      )
+    }
   })
 
   it('accepts the inclusive u8 maximum and rejects non-u8 complexity', async () => {

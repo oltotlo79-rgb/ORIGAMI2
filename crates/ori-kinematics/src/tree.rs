@@ -163,6 +163,22 @@ impl CanonicalHingeAngles {
     pub fn as_slice(&self) -> &[HingeAngle] {
         &self.angles
     }
+
+    /// Fallibly retains the canonical angle vector at a proof boundary.
+    pub fn try_clone_v1(&self) -> Result<Self, KinematicsError> {
+        let mut angles = Vec::new();
+        angles
+            .try_reserve_exact(self.angles.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        angles.extend_from_slice(&self.angles);
+        Ok(Self { angles })
+    }
+
+    #[must_use]
+    pub fn checked_retained_bytes_v1(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(std::mem::size_of::<HingeAngle>().checked_mul(self.angles.capacity())?)
+    }
 }
 
 /// One canonical material hinge. Geometry and fields are read-only.
@@ -435,10 +451,13 @@ pub struct MaterialHingeGraphGeometry {
     face_boundaries: Vec<PreparedFaceBoundary>,
 }
 
-/// Crate-private identity anchor for proofs that must remain tied to one
-/// prepared material-graph instance rather than merely equal geometry.
+/// Opaque identity anchor for proofs that must remain tied to one prepared
+/// material-graph instance rather than merely equal geometry.
+///
+/// Cloning this handle only increments the existing issuer `Arc`; it does not
+/// clone the geometry's retained face, hinge, vertex, or boundary storage.
 #[derive(Debug, Clone)]
-pub(crate) struct MaterialHingeGraphInstanceV1 {
+pub struct MaterialHingeGraphInstanceV1 {
     issuer: Arc<()>,
 }
 
@@ -451,7 +470,8 @@ impl PartialEq for MaterialHingeGraphInstanceV1 {
 impl Eq for MaterialHingeGraphInstanceV1 {}
 
 impl MaterialHingeGraphInstanceV1 {
-    pub(crate) fn matches(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+    #[must_use]
+    pub fn matches(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
         Arc::ptr_eq(&self.issuer, &geometry.issuer)
     }
 }
@@ -818,7 +838,9 @@ pub fn prepare_effective_cut_kinematics_diagnostic_v1(
 }
 
 impl MaterialHingeGraphGeometry {
-    pub(crate) fn instance_anchor_v1(&self) -> MaterialHingeGraphInstanceV1 {
+    /// Captures this exact prepared issuer without cloning its deep geometry.
+    #[must_use]
+    pub fn instance_anchor_v1(&self) -> MaterialHingeGraphInstanceV1 {
         MaterialHingeGraphInstanceV1 {
             issuer: Arc::clone(&self.issuer),
         }
@@ -1294,8 +1316,10 @@ impl MaterialTreeKinematicsModel {
             source: Arc::clone(&self.tree),
             source_pose: Arc::clone(&source_pose.pose),
             fixed_face: source_pose.fixed_face,
-            source_angles: source_pose.angles.as_ref().clone(),
-            target_angles: target_angles.clone(),
+            source_angles: try_clone_canonical_angles(source_pose.angles.as_ref())
+                .map_err(|_| MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?,
+            target_angles: try_clone_canonical_angles(target_angles)
+                .map_err(|_| MaterialTreeDyadicIntervalErrorV1::ResourceLimit)?,
             depth,
             index,
             faces,
@@ -1834,12 +1858,7 @@ fn prepare_tree(
 fn try_clone_canonical_angles(
     angles: &CanonicalHingeAngles,
 ) -> Result<CanonicalHingeAngles, KinematicsError> {
-    let mut snapshot = Vec::new();
-    snapshot
-        .try_reserve_exact(angles.angles.len())
-        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
-    snapshot.extend_from_slice(&angles.angles);
-    Ok(CanonicalHingeAngles { angles: snapshot })
+    angles.try_clone_v1()
 }
 
 fn validate_paper_scalar_fields(paper: &Paper) -> Result<(), KinematicsError> {

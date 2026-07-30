@@ -10,13 +10,33 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    CanonicalHingeAngles, HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
-    OutwardIntervalV1,
+    CanonicalHingeAngles, HingeAngle, KinematicsError, MaterialHingeGraphAudit,
+    MaterialHingeGraphGeometry, OutwardIntervalV1,
 };
 
 const MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1: u64 = 64;
 pub const CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2: &str =
     "canonical_cycle_schedule_deterministic_transcendental_v2";
+
+fn try_schedule_vec_with_capacity_v1<T>(
+    capacity: usize,
+) -> Result<Vec<T>, CycleSchedulePrepareErrorV1> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
+    Ok(values)
+}
+
+fn try_multi_hinge_vec_with_capacity_v1<T>(
+    capacity: usize,
+) -> Result<Vec<T>, MultiHingePathCandidateErrorV1> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|_| MultiHingePathCandidateErrorV1::ResourceLimit)?;
+    Ok(values)
+}
 
 /// Evaluates `2 * atan2(numerator, denominator)` under the frozen
 /// deterministic transcendental model used by canonical half-angle schedules.
@@ -114,6 +134,38 @@ pub struct PoleFreeBernsteinCertificateV1 {
     coefficients: Vec<BigRational>,
 }
 
+fn checked_big_int_heap_bytes_upper_bound_v1(value: &BigInt) -> Option<usize> {
+    let digit_bits = u64::from(usize::BITS);
+    let digits =
+        usize::try_from(value.bits().checked_add(digit_bits.checked_sub(1)?)? / digit_bits).ok()?;
+    if digits == 0 {
+        return Some(0);
+    }
+    // `num_bigint` can store one digit inline, but a normalized arithmetic
+    // result may also retain a two-slot heap buffer for one live digit.
+    // Charging twice the live digit count covers that growth slack without
+    // relying on its private `Vec` capacity.
+    digits
+        .checked_mul(2)?
+        .checked_mul(std::mem::size_of::<usize>())
+}
+
+fn checked_big_rational_heap_bytes_upper_bound_v1(value: &BigRational) -> Option<usize> {
+    checked_big_int_heap_bytes_upper_bound_v1(value.numer())?
+        .checked_add(checked_big_int_heap_bytes_upper_bound_v1(value.denom())?)
+}
+
+fn checked_big_rational_vec_allocation_bytes_v1(
+    values: &[BigRational],
+    capacity: usize,
+) -> Option<usize> {
+    let mut total = std::mem::size_of::<BigRational>().checked_mul(capacity)?;
+    for value in values {
+        total = total.checked_add(checked_big_rational_heap_bytes_upper_bound_v1(value)?)?;
+    }
+    Some(total)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExactBernsteinRangeV1 {
     coefficients: Vec<BigRational>,
@@ -151,15 +203,14 @@ impl ExactBernsteinRangeV1 {
             return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
         }
         if degree == 0 {
-            return Ok(Self {
-                coefficients: vec![BigRational::zero()],
-            });
+            let mut coefficients = try_schedule_vec_with_capacity_v1(1)?;
+            coefficients.push(BigRational::zero());
+            return Ok(Self { coefficients });
         }
-        let coefficients = self
-            .coefficients
-            .windows(2)
-            .map(|window| (&window[1] - &window[0]) * BigInt::from(degree))
-            .collect::<Vec<_>>();
+        let mut coefficients = try_schedule_vec_with_capacity_v1(degree)?;
+        for window in self.coefficients.windows(2) {
+            coefficients.push((&window[1] - &window[0]) * BigInt::from(degree));
+        }
         validate_exact_bits(&coefficients, max_coefficient_bits)?;
         Ok(Self { coefficients })
     }
@@ -176,12 +227,10 @@ impl ExactBernsteinRangeV1 {
         if self.coefficients.len() > max_work {
             return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
         }
-        let coefficients = self
-            .coefficients
-            .iter()
-            .zip(&rhs.coefficients)
-            .map(|(left, right)| left - right)
-            .collect::<Vec<_>>();
+        let mut coefficients = try_schedule_vec_with_capacity_v1(self.coefficients.len())?;
+        for (left, right) in self.coefficients.iter().zip(&rhs.coefficients) {
+            coefficients.push(left - right);
+        }
         validate_exact_bits(&coefficients, max_coefficient_bits)?;
         Ok(Self { coefficients })
     }
@@ -198,12 +247,10 @@ impl ExactBernsteinRangeV1 {
         if self.coefficients.len() > max_work {
             return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
         }
-        let coefficients = self
-            .coefficients
-            .iter()
-            .zip(&rhs.coefficients)
-            .map(|(left, right)| left + right)
-            .collect::<Vec<_>>();
+        let mut coefficients = try_schedule_vec_with_capacity_v1(self.coefficients.len())?;
+        for (left, right) in self.coefficients.iter().zip(&rhs.coefficients) {
+            coefficients.push(left + right);
+        }
         validate_exact_bits(&coefficients, max_coefficient_bits)?;
         Ok(Self { coefficients })
     }
@@ -222,19 +269,35 @@ impl ExactBernsteinRangeV1 {
         if work > max_work {
             return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
         }
-        let n = self.coefficients.len() - 1;
-        let m = rhs.coefficients.len() - 1;
-        let mut coefficients = Vec::with_capacity(n + m + 1);
-        for k in 0..=n + m {
+        let n = self
+            .coefficients
+            .len()
+            .checked_sub(1)
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let m = rhs
+            .coefficients
+            .len()
+            .checked_sub(1)
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let coefficient_count = n
+            .checked_add(m)
+            .and_then(|degree| degree.checked_add(1))
+            .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+        let mut coefficients = try_schedule_vec_with_capacity_v1(coefficient_count)?;
+        for k in 0..coefficient_count {
             let mut value = BigRational::zero();
             for i in k.saturating_sub(m)..=k.min(n) {
                 let j = k - i;
-                let weight = binomial(n, i)
-                    .checked_mul(binomial(m, j))
+                let weight = checked_binomial_v1(n, i)
+                    .and_then(|left| {
+                        checked_binomial_v1(m, j).and_then(|right| left.checked_mul(right))
+                    })
+                    .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+                let denominator = checked_binomial_v1(n + m, k)
                     .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
                 value += &self.coefficients[i]
                     * &rhs.coefficients[j]
-                    * BigRational::new(BigInt::from(weight), BigInt::from(binomial(n + m, k)));
+                    * BigRational::new(BigInt::from(weight), BigInt::from(denominator));
             }
             coefficients.push(value);
         }
@@ -248,31 +311,42 @@ impl ExactBernsteinRangeV1 {
         max_coefficient_bits: u32,
         max_work: usize,
     ) -> Result<Self, CycleSchedulePrepareErrorV1> {
-        let degree = self.coefficients.len() - 1;
+        let degree = self
+            .coefficients
+            .len()
+            .checked_sub(1)
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
         if target_degree < degree {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
         let raise = target_degree - degree;
+        let raise_terms = raise
+            .checked_add(1)
+            .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
         let work = self
             .coefficients
             .len()
-            .checked_mul(raise + 1)
+            .checked_mul(raise_terms)
             .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
         if work > max_work {
             return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
         }
-        let mut coefficients = Vec::with_capacity(target_degree + 1);
-        for i in 0..=target_degree {
+        let coefficient_count = target_degree
+            .checked_add(1)
+            .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+        let mut coefficients = try_schedule_vec_with_capacity_v1(coefficient_count)?;
+        for i in 0..coefficient_count {
             let mut value = BigRational::zero();
             for j in i.saturating_sub(raise)..=i.min(degree) {
-                let weight = binomial(degree, j)
-                    .checked_mul(binomial(raise, i - j))
+                let weight = checked_binomial_v1(degree, j)
+                    .and_then(|left| {
+                        checked_binomial_v1(raise, i - j).and_then(|right| left.checked_mul(right))
+                    })
+                    .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+                let denominator = checked_binomial_v1(target_degree, i)
                     .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
                 value += &self.coefficients[j]
-                    * BigRational::new(
-                        BigInt::from(weight),
-                        BigInt::from(binomial(target_degree, i)),
-                    );
+                    * BigRational::new(BigInt::from(weight), BigInt::from(denominator));
             }
             coefficients.push(value);
         }
@@ -286,7 +360,12 @@ impl ExactBernsteinRangeV1 {
         max_coefficient_bits: u32,
         max_work: usize,
     ) -> Result<Self, CycleSchedulePrepareErrorV1> {
-        let target = self.coefficients.len().max(rhs.coefficients.len()) - 1;
+        let target = self
+            .coefficients
+            .len()
+            .max(rhs.coefficients.len())
+            .checked_sub(1)
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
         self.elevate(target, max_coefficient_bits, max_work)?
             .sub_same_degree(
                 &rhs.elevate(target, max_coefficient_bits, max_work)?,
@@ -310,6 +389,13 @@ fn validate_exact_bits(
 }
 
 impl PoleFreeBernsteinCertificateV1 {
+    fn checked_nested_retained_bytes_v1(&self) -> Option<usize> {
+        checked_big_rational_vec_allocation_bytes_v1(
+            &self.coefficients,
+            self.coefficients.capacity(),
+        )
+    }
+
     fn range_interval(&self) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
         let lower = self
             .coefficients
@@ -409,7 +495,8 @@ fn evaluate_exact_bernstein_point(
         return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
     }
     let one_minus = BigRational::from_integer(1.into()) - parameter;
-    let mut level = coefficients.to_vec();
+    let mut level = try_schedule_vec_with_capacity_v1(coefficients.len())?;
+    level.extend_from_slice(coefficients);
     for remaining in (1..level.len()).rev() {
         for index in 0..remaining {
             level[index] = &level[index] * &one_minus + &level[index + 1] * parameter;
@@ -486,9 +573,13 @@ pub fn evaluate_half_angle_rational_degrees_interval_v1(
     {
         return Err(CycleSchedulePrepareErrorV1::AngleRange);
     }
-    enclosure
+    let enclosure = enclosure
         .intersect_bounds(0.0, 180.0)
-        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+    if enclosure.work() > max_work {
+        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+    }
+    Ok(enclosure)
 }
 
 pub fn evaluate_half_angle_rational_derivative_interval_v1(
@@ -497,11 +588,15 @@ pub fn evaluate_half_angle_rational_derivative_interval_v1(
     max_coefficient_bits: u32,
     max_work: usize,
 ) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+    let mut p_coefficients = try_schedule_vec_with_capacity_v1(numerator.coefficients.len())?;
+    p_coefficients.extend_from_slice(&numerator.coefficients);
+    let mut q_coefficients = try_schedule_vec_with_capacity_v1(denominator.coefficients.len())?;
+    q_coefficients.extend_from_slice(&denominator.coefficients);
     let p = ExactBernsteinRangeV1 {
-        coefficients: numerator.coefficients.clone(),
+        coefficients: p_coefficients,
     };
     let q = ExactBernsteinRangeV1 {
-        coefficients: denominator.coefficients.clone(),
+        coefficients: q_coefficients,
     };
     let p_derivative = p.derivative(max_coefficient_bits, max_work)?;
     let q_derivative = q.derivative(max_coefficient_bits, max_work)?;
@@ -547,27 +642,25 @@ pub fn prepare_pole_free_bernstein_certificate_v1(
         || power_coefficients.len() > max_degree.saturating_add(1)
         || power_coefficients
             .len()
-            .saturating_mul(power_coefficients.len())
-            > max_work
+            .checked_mul(power_coefficients.len())
+            .is_none_or(|work| work > max_work)
     {
         return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
     }
-    let power = power_coefficients
-        .iter()
-        .map(|value| {
-            if value.denominator == 0
-                || value.numerator.unsigned_abs().checked_ilog2().unwrap_or(0) + 1
-                    > max_coefficient_bits
-                || value.denominator.checked_ilog2().unwrap_or(0) + 1 > max_coefficient_bits
-            {
-                return Err(CycleSchedulePrepareErrorV1::InvalidInput);
-            }
-            Ok(BigRational::new(
-                BigInt::from(value.numerator),
-                BigInt::from(value.denominator),
-            ))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut power = try_schedule_vec_with_capacity_v1(power_coefficients.len())?;
+    for value in power_coefficients {
+        if value.denominator == 0
+            || value.numerator.unsigned_abs().checked_ilog2().unwrap_or(0) + 1
+                > max_coefficient_bits
+            || value.denominator.checked_ilog2().unwrap_or(0) + 1 > max_coefficient_bits
+        {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        power.push(BigRational::new(
+            BigInt::from(value.numerator),
+            BigInt::from(value.denominator),
+        ));
+    }
     prepare_exact_pole_free_bernstein_certificate(power, max_degree, max_coefficient_bits, max_work)
 }
 
@@ -595,21 +688,28 @@ fn prepare_exact_signed_bernstein_certificate(
 ) -> Result<PoleFreeBernsteinCertificateV1, CycleSchedulePrepareErrorV1> {
     if power.is_empty()
         || power.len() > max_degree.saturating_add(1)
-        || power.len().saturating_mul(power.len()) > max_work
+        || power
+            .len()
+            .checked_mul(power.len())
+            .is_none_or(|work| work > max_work)
     {
         return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
     }
     validate_exact_bits(&power, max_coefficient_bits)?;
     let degree = power.len() - 1;
-    let mut coefficients = Vec::with_capacity(degree + 1);
+    let coefficient_count = degree
+        .checked_add(1)
+        .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+    let mut coefficients = try_schedule_vec_with_capacity_v1(coefficient_count)?;
     for i in 0..=degree {
         let mut value = BigRational::zero();
         for (k, coefficient) in power.iter().enumerate().take(i + 1) {
-            value += coefficient
-                * BigRational::new(
-                    BigInt::from(binomial(i, k)),
-                    BigInt::from(binomial(degree, k)),
-                );
+            let numerator =
+                checked_binomial_v1(i, k).ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+            let denominator =
+                checked_binomial_v1(degree, k).ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+            value +=
+                coefficient * BigRational::new(BigInt::from(numerator), BigInt::from(denominator));
         }
         coefficients.push(value);
     }
@@ -649,27 +749,45 @@ fn affine_reparameterize_power(
     max_coefficient_bits: u32,
     max_work: usize,
 ) -> Result<Vec<BigRational>, CycleSchedulePrepareErrorV1> {
-    if power.len().saturating_mul(power.len()) > max_work {
+    if power
+        .len()
+        .checked_mul(power.len())
+        .is_none_or(|work| work > max_work)
+    {
         return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
     }
     let a = &domain[0];
     let width = &domain[1] - a;
-    let mut result = vec![BigRational::zero(); power.len()];
+    let mut result = try_schedule_vec_with_capacity_v1(power.len())?;
+    for _ in 0..power.len() {
+        result.push(BigRational::zero());
+    }
     for (degree, coefficient) in power.iter().enumerate() {
         for (k, output) in result.iter_mut().enumerate().take(degree + 1) {
-            *output += coefficient
-                * BigInt::from(binomial(degree, k))
-                * a.pow((degree - k) as i32)
-                * width.pow(k as i32);
+            let weight =
+                checked_binomial_v1(degree, k).ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+            let a_exponent = i32::try_from(degree - k)
+                .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
+            let width_exponent =
+                i32::try_from(k).map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
+            *output +=
+                coefficient * BigInt::from(weight) * a.pow(a_exponent) * width.pow(width_exponent);
         }
     }
     validate_exact_bits(&result, max_coefficient_bits)?;
     Ok(result)
 }
 
-fn binomial(n: usize, k: usize) -> u128 {
+fn checked_binomial_v1(n: usize, k: usize) -> Option<u128> {
+    if k > n {
+        return None;
+    }
     let k = k.min(n - k);
-    (0..k).fold(1_u128, |value, i| value * (n - i) as u128 / (i + 1) as u128)
+    (0..k).try_fold(1_u128, |value, i| {
+        value
+            .checked_mul((n - i) as u128)?
+            .checked_div((i + 1) as u128)
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -699,6 +817,64 @@ pub struct PreparedHalfAngleRationalEntryV1 {
 }
 
 impl PreparedHalfAngleRationalEntryV1 {
+    fn try_clone_with_fallible_outer_allocations_v1(
+        &self,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        let clone_coefficients =
+            |source: &[BigRational]| -> Result<Vec<BigRational>, CycleSchedulePrepareErrorV1> {
+                let mut cloned = try_schedule_vec_with_capacity_v1(source.len())?;
+                cloned.extend_from_slice(source);
+                Ok(cloned)
+            };
+        let clone_certificate = |source: &PoleFreeBernsteinCertificateV1| -> Result<
+            PoleFreeBernsteinCertificateV1,
+            CycleSchedulePrepareErrorV1,
+        > {
+            Ok(PoleFreeBernsteinCertificateV1 {
+                degree: source.degree,
+                positive: source.positive,
+                coefficients: clone_coefficients(&source.coefficients)?,
+            })
+        };
+        Ok(Self {
+            edge: self.edge,
+            u_domain: self.u_domain.clone(),
+            numerator_power_coefficients: clone_coefficients(&self.numerator_power_coefficients)?,
+            denominator_power_coefficients: clone_coefficients(
+                &self.denominator_power_coefficients,
+            )?,
+            numerator_certificate: clone_certificate(&self.numerator_certificate)?,
+            denominator_certificate: clone_certificate(&self.denominator_certificate)?,
+            derivative_bound_degrees_bits: self.derivative_bound_degrees_bits,
+        })
+    }
+
+    fn checked_nested_retained_bytes_v1(&self) -> Option<usize> {
+        let mut total = 0usize;
+        for endpoint in &self.u_domain {
+            total = total.checked_add(checked_big_rational_heap_bytes_upper_bound_v1(endpoint)?)?;
+        }
+        for coefficients in [
+            &self.numerator_power_coefficients,
+            &self.denominator_power_coefficients,
+        ] {
+            total = total.checked_add(checked_big_rational_vec_allocation_bytes_v1(
+                coefficients,
+                coefficients.capacity(),
+            )?)?;
+        }
+        total = total
+            .checked_add(
+                self.numerator_certificate
+                    .checked_nested_retained_bytes_v1()?,
+            )?
+            .checked_add(
+                self.denominator_certificate
+                    .checked_nested_retained_bytes_v1()?,
+            )?;
+        Some(total)
+    }
+
     fn power_profile_is_exact_constant_v1(
         numerator_power_coefficients: &[BigRational],
         denominator_power_coefficients: &[BigRational],
@@ -745,7 +921,9 @@ impl PreparedHalfAngleRationalEntryV1 {
         ] {
             if coefficient_count == 0
                 || coefficient_count > limits.max_degree.saturating_add(1)
-                || coefficient_count.saturating_mul(coefficient_count) > limits.max_work
+                || coefficient_count
+                    .checked_mul(coefficient_count)
+                    .is_none_or(|work| work > limits.max_work)
             {
                 return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
             }
@@ -763,16 +941,16 @@ impl PreparedHalfAngleRationalEntryV1 {
         if u_domain[0] >= u_domain[1] {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
-        let mut numerator_power_coefficients = input
-            .numerator_power_coefficients
-            .into_iter()
-            .map(to_exact)
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut denominator_power_coefficients = input
-            .denominator_power_coefficients
-            .into_iter()
-            .map(to_exact)
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut numerator_power_coefficients =
+            try_schedule_vec_with_capacity_v1(input.numerator_power_coefficients.len())?;
+        for coefficient in input.numerator_power_coefficients {
+            numerator_power_coefficients.push(to_exact(coefficient)?);
+        }
+        let mut denominator_power_coefficients =
+            try_schedule_vec_with_capacity_v1(input.denominator_power_coefficients.len())?;
+        for coefficient in input.denominator_power_coefficients {
+            denominator_power_coefficients.push(to_exact(coefficient)?);
+        }
         while numerator_power_coefficients.len() > 1
             && numerator_power_coefficients
                 .last()
@@ -811,10 +989,12 @@ impl PreparedHalfAngleRationalEntryV1 {
         }
         let exact_zero_numerator = numerator_power_coefficients.iter().all(Zero::is_zero);
         let numerator_certificate = if exact_zero_numerator {
+            let mut coefficients = try_schedule_vec_with_capacity_v1(1)?;
+            coefficients.push(BigRational::zero());
             PoleFreeBernsteinCertificateV1 {
                 degree: 0,
                 positive: true,
-                coefficients: vec![BigRational::zero()],
+                coefficients,
             }
         } else {
             prepare_exact_signed_bernstein_certificate(
@@ -1049,14 +1229,19 @@ impl PreparedHalfAngleRationalEntryV1 {
         if numerator.is_zero() && denominator.is_zero() {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
-        let certificate = |value: BigRational| PoleFreeBernsteinCertificateV1 {
-            degree: 0,
-            positive: !value.is_negative(),
-            coefficients: vec![value],
+        let certificate = |value: BigRational| {
+            let positive = !value.is_negative();
+            let mut coefficients = try_schedule_vec_with_capacity_v1(1)?;
+            coefficients.push(value);
+            Ok(PoleFreeBernsteinCertificateV1 {
+                degree: 0,
+                positive,
+                coefficients,
+            })
         };
         evaluate_half_angle_rational_degrees_interval_v1(
-            &certificate(numerator),
-            &certificate(denominator),
+            &certificate(numerator)?,
+            &certificate(denominator)?,
             max_work,
         )
     }
@@ -1465,24 +1650,22 @@ pub fn admit_canonical_multi_hinge_path_candidate_v1(
     requested: &CanonicalHingeAngles,
 ) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
     let lower = schedule
-        .evaluate(0.0)
-        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+        .try_evaluate_v1(0.0)
+        .map_err(multi_hinge_evaluation_error_v1)?;
     let upper = schedule
-        .evaluate(1.0)
-        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+        .try_evaluate_v1(1.0)
+        .map_err(multi_hinge_evaluation_error_v1)?;
     if lower != *initial || upper != *requested {
         return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
     }
-    let moving_hinges = initial
-        .as_slice()
-        .iter()
-        .zip(requested.as_slice())
-        .filter_map(|(initial, requested)| {
-            (initial.edge() == requested.edge()
-                && initial.angle_degrees().to_bits() != requested.angle_degrees().to_bits())
-            .then_some(initial.edge())
-        })
-        .collect::<Vec<_>>();
+    let mut moving_hinges = try_multi_hinge_vec_with_capacity_v1(initial.as_slice().len())?;
+    for (initial, requested) in initial.as_slice().iter().zip(requested.as_slice()) {
+        if initial.edge() == requested.edge()
+            && initial.angle_degrees().to_bits() != requested.angle_degrees().to_bits()
+        {
+            moving_hinges.push(initial.edge());
+        }
+    }
     if moving_hinges.is_empty() {
         return Err(MultiHingePathCandidateErrorV1::NoMotion);
     }
@@ -1504,7 +1687,11 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
     limits: MultiHingePathCandidateLimitsV1,
 ) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
     let hinges = geometry.hinges();
-    let mut geometry_faces = geometry.face_ids().to_vec();
+    if hinges.len() > limits.max_hinges || limits.max_candidates == 0 {
+        return Err(MultiHingePathCandidateErrorV1::ResourceLimit);
+    }
+    let mut geometry_faces = try_multi_hinge_vec_with_capacity_v1(geometry.face_ids().len())?;
+    geometry_faces.extend_from_slice(geometry.face_ids());
     geometry_faces.sort_unstable_by_key(FaceId::canonical_bytes);
     if geometry_faces != audit.faces()
         || !audit.faces().contains(&fixed_face)
@@ -1513,9 +1700,6 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
     {
         return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
     }
-    if hinges.len() > limits.max_hinges || limits.max_candidates == 0 {
-        return Err(MultiHingePathCandidateErrorV1::ResourceLimit);
-    }
     let work = hinges
         .len()
         .checked_mul(2)
@@ -1523,7 +1707,8 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
     if work > limits.max_work {
         return Err(MultiHingePathCandidateErrorV1::ResourceLimit);
     }
-    let mut expected = hinges.iter().map(|hinge| hinge.edge()).collect::<Vec<_>>();
+    let mut expected = try_multi_hinge_vec_with_capacity_v1(hinges.len())?;
+    expected.extend(hinges.iter().map(|hinge| hinge.edge()));
     expected.sort_unstable_by_key(EdgeId::canonical_bytes);
     if initial
         .as_slice()
@@ -1538,32 +1723,28 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
     {
         return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
     }
-    let mut moving_hinges = Vec::new();
-    let entries = initial
-        .as_slice()
-        .iter()
-        .zip(requested.as_slice())
-        .map(|(start, end)| {
-            let start_value = start.angle_degrees();
-            let end_value = end.angle_degrees();
-            if start_value.to_bits() != end_value.to_bits() {
-                moving_hinges.push(start.edge());
-            }
-            let midpoint = start_value + (end_value - start_value) * 0.5;
-            let half_delta = (end_value - start_value) * 0.5;
-            Ok(CycleScheduleEntryInputV1 {
-                edge: start.edge(),
-                initial_angle_degrees_bits: midpoint.to_bits(),
-                chebyshev_coefficients: vec![
-                    RationalCoefficientV1 {
-                        numerator: 0,
-                        denominator: 1,
-                    },
-                    binary64_to_rational_coefficient_v1(half_delta)?,
-                ],
-            })
-        })
-        .collect::<Result<Vec<_>, MultiHingePathCandidateErrorV1>>()?;
+    let mut moving_hinges = try_multi_hinge_vec_with_capacity_v1(hinges.len())?;
+    let mut entries = try_multi_hinge_vec_with_capacity_v1(hinges.len())?;
+    for (start, end) in initial.as_slice().iter().zip(requested.as_slice()) {
+        let start_value = start.angle_degrees();
+        let end_value = end.angle_degrees();
+        if start_value.to_bits() != end_value.to_bits() {
+            moving_hinges.push(start.edge());
+        }
+        let midpoint = start_value + (end_value - start_value) * 0.5;
+        let half_delta = (end_value - start_value) * 0.5;
+        let mut chebyshev_coefficients = try_multi_hinge_vec_with_capacity_v1(2)?;
+        chebyshev_coefficients.push(RationalCoefficientV1 {
+            numerator: 0,
+            denominator: 1,
+        });
+        chebyshev_coefficients.push(binary64_to_rational_coefficient_v1(half_delta)?);
+        entries.push(CycleScheduleEntryInputV1 {
+            edge: start.edge(),
+            initial_angle_degrees_bits: midpoint.to_bits(),
+            chebyshev_coefficients,
+        });
+    }
     if moving_hinges.is_empty() {
         return Err(MultiHingePathCandidateErrorV1::NoMotion);
     }
@@ -1581,11 +1762,11 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
         entries,
         schedule_limits,
     )
-    .map_err(|_| MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    .map_err(multi_hinge_schedule_prepare_error_v1)?;
     for (parameter, expected) in [(0.0, initial), (1.0, requested)] {
         let evaluated = schedule
-            .evaluate(parameter)
-            .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+            .try_evaluate_v1(parameter)
+            .map_err(multi_hinge_evaluation_error_v1)?;
         if evaluated
             .as_slice()
             .iter()
@@ -1604,6 +1785,24 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
     })
 }
 
+fn multi_hinge_schedule_prepare_error_v1(
+    error: CycleSchedulePrepareErrorV1,
+) -> MultiHingePathCandidateErrorV1 {
+    if error == CycleSchedulePrepareErrorV1::ResourceLimit {
+        MultiHingePathCandidateErrorV1::ResourceLimit
+    } else {
+        MultiHingePathCandidateErrorV1::CandidateRejected
+    }
+}
+
+fn multi_hinge_evaluation_error_v1(error: KinematicsError) -> MultiHingePathCandidateErrorV1 {
+    if error == KinematicsError::ResourceLimitExceeded {
+        MultiHingePathCandidateErrorV1::ResourceLimit
+    } else {
+        MultiHingePathCandidateErrorV1::CandidateRejected
+    }
+}
+
 /// Generates an exact rational half-angle mode for the bounded symmetric
 /// Kawasaki degree-four class. The historic name is retained for API
 /// compatibility; 120/120/60/60 is the ratio 1/2 member of the admitted
@@ -1615,6 +1814,7 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
     limits: CycleScheduleLimitsV1,
 ) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
     generate_kawasaki_path_candidate_at_scale_v1(geometry, audit, fixed_face, 1, limits)
+        .map(|(candidate, _)| candidate)
 }
 
 /// Generates the same exact Kawasaki mode over a shorter dyadic endpoint.
@@ -1631,25 +1831,14 @@ pub fn generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v
     if !matches!(endpoint_denominator, 1 | 2 | 4 | 8 | 16) {
         return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
     }
-    let generated = generate_kawasaki_path_candidate_at_scale_v1(
+    let (generated, scaled_edges) = generate_kawasaki_path_candidate_at_scale_v1(
         geometry,
         audit,
         fixed_face,
         endpoint_denominator,
         limits,
     )?;
-    let (_, scaled, _, _) = generated
-        .schedule()
-        .bounded_symmetric_kawasaki_profile_v1()
-        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
-    let mountains = geometry
-        .hinges()
-        .iter()
-        .filter(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
-        .collect::<Vec<_>>();
-    if mountains.len() != 1 || !scaled.contains(&mountains[0].edge()) {
-        return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
-    }
+    validate_kawasaki_mountain_assignment_v1(geometry, scaled_edges)?;
     Ok(generated)
 }
 
@@ -1659,7 +1848,7 @@ fn generate_kawasaki_path_candidate_at_scale_v1(
     fixed_face: FaceId,
     endpoint_denominator: u64,
     limits: CycleScheduleLimitsV1,
-) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
+) -> Result<(GeneratedMultiHingePathCandidateV1, [EdgeId; 2]), MultiHingePathCandidateErrorV1> {
     if geometry.hinges().len() != 4 || limits.max_hinges < 4 {
         return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
     }
@@ -1672,24 +1861,23 @@ fn generate_kawasaki_path_candidate_at_scale_v1(
                 .all(|hinge| hinge.start() == *point || hinge.end() == *point)
         })
         .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
-    let mut rays = source
-        .iter()
-        .map(|hinge| {
-            let endpoint = if hinge.start() == center {
-                hinge.end()
-            } else {
-                hinge.start()
-            };
-            let x = endpoint.x() - center.x();
-            // Material geometry embeds the source sheet in the native X/Z
-            // plane; Y is the out-of-sheet axis used by folded poses.
-            let y = endpoint.z() - center.z();
-            let length_squared = x.mul_add(x, y * y);
-            (length_squared > 0.0)
-                .then_some((hinge.edge(), x, y, length_squared))
-                .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut rays = try_multi_hinge_vec_with_capacity_v1(source.len())?;
+    for hinge in source {
+        let endpoint = if hinge.start() == center {
+            hinge.end()
+        } else {
+            hinge.start()
+        };
+        let x = endpoint.x() - center.x();
+        // Material geometry embeds the source sheet in the native X/Z
+        // plane; Y is the out-of-sheet axis used by folded poses.
+        let y = endpoint.z() - center.z();
+        let length_squared = x.mul_add(x, y * y);
+        if length_squared <= 0.0 {
+            return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
+        }
+        rays.push((hinge.edge(), x, y, length_squared));
+    }
     rays.sort_by(|first, second| {
         let first_half = first.2 > 0.0 || (first.2 == 0.0 && first.1 >= 0.0);
         let second_half = second.2 > 0.0 || (second.2 == 0.0 && second.1 >= 0.0);
@@ -1704,13 +1892,11 @@ fn generate_kawasaki_path_candidate_at_scale_v1(
             }
         })
     });
-    let sector_cosines = (0..4)
-        .map(|index| {
-            let first = rays[index];
-            let second = rays[(index + 1) % 4];
-            (first.1 * second.1 + first.2 * second.2) / (first.3.sqrt() * second.3.sqrt())
-        })
-        .collect::<Vec<_>>();
+    let sector_cosines: [f64; 4] = std::array::from_fn(|index| {
+        let first = rays[index];
+        let second = rays[(index + 1) % 4];
+        (first.1 * second.1 + first.2 * second.2) / (first.3.sqrt() * second.3.sqrt())
+    });
     let magnitude = sector_cosines[0].abs();
     let ratio = (1_u64..=MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1)
         .filter_map(|denominator| {
@@ -1752,60 +1938,62 @@ fn generate_kawasaki_path_candidate_at_scale_v1(
         .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
     rays.rotate_left(rotation);
     let unit_edges = [rays[0].0, rays[2].0];
-    let mut hinges = rays.iter().map(|ray| ray.0).collect::<Vec<_>>();
+    let scaled_edges = [rays[1].0, rays[3].0];
+    let mut hinges = try_multi_hinge_vec_with_capacity_v1(rays.len())?;
+    hinges.extend(rays.iter().map(|ray| ray.0));
     hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
-    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
-        geometry,
-        audit,
-        fixed_face,
-        hinges
-            .iter()
-            .map(|edge| HalfAngleRationalEntryInputV1 {
-                edge: *edge,
-                u_domain: [
-                    RationalCoefficientV1 {
-                        numerator: 0,
-                        denominator: 1,
-                    },
-                    RationalCoefficientV1 {
-                        numerator: 1,
-                        denominator: 1,
-                    },
-                ],
-                numerator_power_coefficients: vec![
-                    RationalCoefficientV1 {
-                        numerator: 0,
-                        denominator: 1,
-                    },
-                    RationalCoefficientV1 {
-                        numerator: if unit_edges.contains(edge) {
-                            1
-                        } else {
-                            ratio.0
-                        },
-                        denominator: 1,
-                    },
-                ],
-                denominator_power_coefficients: vec![RationalCoefficientV1 {
-                    numerator: if unit_edges.contains(edge) {
-                        endpoint_denominator as i64
-                    } else {
-                        (ratio.1 * endpoint_denominator) as i64
-                    },
+    let mut entries = try_multi_hinge_vec_with_capacity_v1(hinges.len())?;
+    for edge in &hinges {
+        let mut numerator_power_coefficients = try_multi_hinge_vec_with_capacity_v1(2)?;
+        numerator_power_coefficients.push(RationalCoefficientV1 {
+            numerator: 0,
+            denominator: 1,
+        });
+        numerator_power_coefficients.push(RationalCoefficientV1 {
+            numerator: if unit_edges.contains(edge) {
+                1
+            } else {
+                ratio.0
+            },
+            denominator: 1,
+        });
+        let mut denominator_power_coefficients = try_multi_hinge_vec_with_capacity_v1(1)?;
+        denominator_power_coefficients.push(RationalCoefficientV1 {
+            numerator: if unit_edges.contains(edge) {
+                endpoint_denominator as i64
+            } else {
+                (ratio.1 * endpoint_denominator) as i64
+            },
+            denominator: 1,
+        });
+        entries.push(HalfAngleRationalEntryInputV1 {
+            edge: *edge,
+            u_domain: [
+                RationalCoefficientV1 {
+                    numerator: 0,
                     denominator: 1,
-                }],
-            })
-            .collect(),
-        limits,
+                },
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                },
+            ],
+            numerator_power_coefficients,
+            denominator_power_coefficients,
+        });
+    }
+    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        geometry, audit, fixed_face, entries, limits,
     )
-    .map_err(|_| MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    .map_err(multi_hinge_schedule_prepare_error_v1)?;
     let initial = schedule
-        .evaluate(0.0)
-        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+        .try_evaluate_v1(0.0)
+        .map_err(multi_hinge_evaluation_error_v1)?;
     let requested = schedule
-        .evaluate(1.0)
-        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+        .try_evaluate_v1(1.0)
+        .map_err(multi_hinge_evaluation_error_v1)?;
     admit_canonical_multi_hinge_path_candidate_v1(schedule, &initial, &requested)
+        .map(|candidate| (candidate, scaled_edges))
 }
 
 /// Automatically admits the bounded degree-four Kawasaki spherical-linkage
@@ -1820,21 +2008,27 @@ pub fn generate_bounded_degree_four_kawasaki_path_candidate_v1(
     fixed_face: FaceId,
     limits: CycleScheduleLimitsV1,
 ) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
-    let generated =
-        generate_kawasaki_120_120_60_60_path_candidate_v1(geometry, audit, fixed_face, limits)?;
-    let (_, scaled, _, _) = generated
-        .schedule()
-        .bounded_symmetric_kawasaki_profile_v1()
-        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
-    let mountains = geometry
+    let (generated, scaled_edges) =
+        generate_kawasaki_path_candidate_at_scale_v1(geometry, audit, fixed_face, 1, limits)?;
+    validate_kawasaki_mountain_assignment_v1(geometry, scaled_edges)?;
+    Ok(generated)
+}
+
+fn validate_kawasaki_mountain_assignment_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    scaled_edges: [EdgeId; 2],
+) -> Result<(), MultiHingePathCandidateErrorV1> {
+    let mut mountains = geometry
         .hinges()
         .iter()
-        .filter(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
-        .collect::<Vec<_>>();
-    if mountains.len() != 1 || !scaled.contains(&mountains[0].edge()) {
+        .filter(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain);
+    let Some(mountain) = mountains.next() else {
+        return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
+    };
+    if mountains.next().is_some() || !scaled_edges.contains(&mountain.edge()) {
         return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
     }
-    Ok(generated)
+    Ok(())
 }
 
 fn binary64_to_rational_coefficient_v1(
@@ -1867,6 +2061,19 @@ struct Entry {
     derivative_bound: f64,
 }
 
+impl Entry {
+    fn try_clone_v1(&self) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        let mut coefficients = try_schedule_vec_with_capacity_v1(self.coefficients.len())?;
+        coefficients.extend_from_slice(&self.coefficients);
+        Ok(Self {
+            edge: self.edge,
+            initial: self.initial,
+            coefficients,
+            derivative_bound: self.derivative_bound,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CanonicalCycleScheduleV1 {
     binding_fingerprint: [u8; 32],
@@ -1878,6 +2085,28 @@ pub struct CanonicalCycleScheduleV1 {
 }
 
 impl CanonicalCycleScheduleV1 {
+    /// Returns the schedule shell plus every owned allocation reachable from
+    /// it. Actual vector capacities are charged so allocator spare capacity is
+    /// not hidden at a retained-proof boundary.
+    #[must_use]
+    pub fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>()
+            .checked_add(std::mem::size_of::<Entry>().checked_mul(self.entries.capacity())?)?
+            .checked_add(
+                std::mem::size_of::<PreparedHalfAngleRationalEntryV1>()
+                    .checked_mul(self.half_angle_entries.capacity())?,
+            )?;
+        for entry in &self.entries {
+            total = total.checked_add(
+                std::mem::size_of::<f64>().checked_mul(entry.coefficients.capacity())?,
+            )?;
+        }
+        for entry in &self.half_angle_entries {
+            total = total.checked_add(entry.checked_nested_retained_bytes_v1()?)?;
+        }
+        Some(total)
+    }
+
     /// Rebinds the entries belonging to one canonical edge block to that
     /// block's independent geometry instance. No absent or foreign edge may
     /// enter the restricted schedule.
@@ -1975,26 +2204,39 @@ impl CanonicalCycleScheduleV1 {
                 return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
             }
         }
+        let source_carrier_count = self
+            .entries
+            .len()
+            .checked_add(self.half_angle_entries.len())
+            .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+        if block_geometry.hinges().len() > source_carrier_count {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+        }
         let mut block_edges = std::collections::HashSet::new();
+        block_edges
+            .try_reserve(block_geometry.hinges().len())
+            .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
         for hinge in block_geometry.hinges() {
             cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
-            block_edges.insert(hinge.edge());
+            if !block_edges.insert(hinge.edge()) {
+                return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
+            }
         }
         if block_edges.is_empty() {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput.into());
         }
-        let mut entries = Vec::new();
+        let mut entries = try_schedule_vec_with_capacity_v1(block_edges.len())?;
         for entry in &self.entries {
             cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
             if block_edges.contains(&entry.edge) {
-                entries.push(entry.clone());
+                entries.push(entry.try_clone_v1()?);
             }
         }
-        let mut half_angle_entries = Vec::new();
+        let mut half_angle_entries = try_schedule_vec_with_capacity_v1(block_edges.len())?;
         for entry in &self.half_angle_entries {
             cycle_schedule_restriction_checkpoint_v1(&mut checkpoint)?;
             if block_edges.contains(&entry.edge()) {
-                half_angle_entries.push(entry.clone());
+                half_angle_entries.push(entry.try_clone_with_fallible_outer_allocations_v1()?);
             }
         }
         if entries.len() + half_angle_entries.len() != block_edges.len() {
@@ -2059,19 +2301,20 @@ impl CanonicalCycleScheduleV1 {
         if work > limits.max_work {
             return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
         }
-        let mut expected = geometry
-            .hinges()
-            .iter()
-            .map(|hinge| hinge.edge())
-            .collect::<Vec<_>>();
+        let mut expected = try_schedule_vec_with_capacity_v1(geometry.hinges().len())?;
+        expected.extend(geometry.hinges().iter().map(|hinge| hinge.edge()));
         expected.sort_unstable_by_key(EdgeId::canonical_bytes);
-        if entries.iter().map(|entry| entry.edge).collect::<Vec<_>>() != expected {
+        if entries
+            .iter()
+            .map(|entry| entry.edge)
+            .ne(expected.iter().copied())
+        {
             return Err(CycleSchedulePrepareErrorV1::NonCanonical);
         }
         let width = domain[1] - domain[0];
-        let mut prepared = Vec::with_capacity(entries.len());
+        let mut prepared = try_schedule_vec_with_capacity_v1(entries.len())?;
         for input in entries {
-            if input.chebyshev_coefficients.len() > limits.max_degree + 1 {
+            if input.chebyshev_coefficients.len() > limits.max_degree.saturating_add(1) {
                 return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
             }
             let initial = f64::from_bits(input.initial_angle_degrees_bits);
@@ -2083,7 +2326,8 @@ impl CanonicalCycleScheduleV1 {
                 .iter()
                 .skip(1)
                 .all(|coefficient| coefficient.numerator == 0);
-            let mut coefficients = Vec::with_capacity(input.chebyshev_coefficients.len());
+            let mut coefficients =
+                try_schedule_vec_with_capacity_v1(input.chebyshev_coefficients.len())?;
             for coefficient in input.chebyshev_coefficients {
                 if coefficient.denominator == 0
                     || coefficient
@@ -2157,19 +2401,20 @@ impl CanonicalCycleScheduleV1 {
         {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
-        let mut expected = geometry
-            .hinges()
-            .iter()
-            .map(|hinge| hinge.edge())
-            .collect::<Vec<_>>();
+        let mut expected = try_schedule_vec_with_capacity_v1(geometry.hinges().len())?;
+        expected.extend(geometry.hinges().iter().map(|hinge| hinge.edge()));
         expected.sort_unstable_by_key(EdgeId::canonical_bytes);
-        if entries.iter().map(|entry| entry.edge).collect::<Vec<_>>() != expected {
+        if entries
+            .iter()
+            .map(|entry| entry.edge)
+            .ne(expected.iter().copied())
+        {
             return Err(CycleSchedulePrepareErrorV1::NonCanonical);
         }
-        let prepared = entries
-            .into_iter()
-            .map(|entry| PreparedHalfAngleRationalEntryV1::prepare(entry, limits))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut prepared = try_schedule_vec_with_capacity_v1(entries.len())?;
+        for entry in entries {
+            prepared.push(PreparedHalfAngleRationalEntryV1::prepare(entry, limits)?);
+        }
         let domain = [0.0, 1.0];
         let schedule_fingerprint_v2 = schedule_fingerprint_v2(domain, &[], &prepared);
         Ok(Self {
@@ -2217,7 +2462,11 @@ impl CanonicalCycleScheduleV1 {
             .ok_or(ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
         meter.retain(edge_bytes)?;
         meter.charge_work(edge_count)?;
-        let mut canonical_edges = edges.to_vec();
+        let mut canonical_edges = Vec::new();
+        canonical_edges
+            .try_reserve_exact(edge_count)
+            .map_err(|_| ExactCommonLinearCycleProfileErrorV1::ResourceLimit)?;
+        canonical_edges.extend_from_slice(edges);
         // A fixed bubble network makes comparison work input-order invariant:
         // one comparison for two edges and three comparisons for three.
         for unsorted in (1..edge_count).rev() {
@@ -2339,34 +2588,44 @@ impl CanonicalCycleScheduleV1 {
         })
     }
 
-    pub fn evaluate(&self, parameter: f64) -> Option<CanonicalHingeAngles> {
+    pub fn try_evaluate_v1(&self, parameter: f64) -> Result<CanonicalHingeAngles, KinematicsError> {
         if !self.half_angle_entries.is_empty() {
-            return self
-                .half_angle_entries
-                .iter()
-                .map(|entry| HingeAngle::new(entry.edge(), entry.evaluate_degrees(parameter)?).ok())
-                .collect::<Option<Vec<_>>>()
-                .and_then(|angles| CanonicalHingeAngles::new(angles).ok());
+            let mut angles = Vec::new();
+            angles
+                .try_reserve_exact(self.half_angle_entries.len())
+                .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+            for entry in &self.half_angle_entries {
+                let angle = entry
+                    .evaluate_degrees(parameter)
+                    .ok_or(KinematicsError::UnrepresentableGeometry)?;
+                angles.push(HingeAngle::new(entry.edge(), angle)?);
+            }
+            return CanonicalHingeAngles::new(angles);
         }
         if !parameter.is_finite() || parameter < self.domain[0] || parameter > self.domain[1] {
-            return None;
+            return Err(KinematicsError::UnrepresentableGeometry);
         }
         let x =
             (2.0 * parameter - self.domain[0] - self.domain[1]) / (self.domain[1] - self.domain[0]);
-        self.entries
-            .iter()
-            .map(|entry| {
-                let mut b1 = 0.0;
-                let mut b2 = 0.0;
-                for coefficient in entry.coefficients.iter().rev() {
-                    let b0 = 2.0 * x * b1 - b2 + coefficient;
-                    b2 = b1;
-                    b1 = b0;
-                }
-                HingeAngle::new(entry.edge, entry.initial + b1 - x * b2).ok()
-            })
-            .collect::<Option<Vec<_>>>()
-            .and_then(|angles| CanonicalHingeAngles::new(angles).ok())
+        let mut angles = Vec::new();
+        angles
+            .try_reserve_exact(self.entries.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        for entry in &self.entries {
+            let mut b1 = 0.0;
+            let mut b2 = 0.0;
+            for coefficient in entry.coefficients.iter().rev() {
+                let b0 = 2.0 * x * b1 - b2 + coefficient;
+                b2 = b1;
+                b1 = b0;
+            }
+            angles.push(HingeAngle::new(entry.edge, entry.initial + b1 - x * b2)?);
+        }
+        CanonicalHingeAngles::new(angles)
+    }
+
+    pub fn evaluate(&self, parameter: f64) -> Option<CanonicalHingeAngles> {
+        self.try_evaluate_v1(parameter).ok()
     }
 
     pub fn evaluate_angle_box(
@@ -2376,10 +2635,11 @@ impl CanonicalCycleScheduleV1 {
         if self.half_angle_entries.is_empty() {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
-        self.half_angle_entries
-            .iter()
-            .map(|entry| Ok((entry.edge(), entry.angle_enclosure(max_work)?)))
-            .collect()
+        let mut angles = try_schedule_vec_with_capacity_v1(self.half_angle_entries.len())?;
+        for entry in &self.half_angle_entries {
+            angles.push((entry.edge(), entry.angle_enclosure(max_work)?));
+        }
+        Ok(angles)
     }
 
     /// Evaluates one exact dyadic leaf. Adjacent leaf indices share the exact
@@ -2390,72 +2650,73 @@ impl CanonicalCycleScheduleV1 {
         index: u64,
         limits: CycleScheduleLimitsV1,
     ) -> Result<Vec<(EdgeId, OutwardIntervalV1)>, CycleSchedulePrepareErrorV1> {
-        if depth >= 64 || self.half_angle_entries.len() > limits.max_hinges {
+        if depth >= 64 {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let leaf_count = 1u64 << depth;
+        if index >= leaf_count
+            || self.half_angle_entries.len() > limits.max_hinges
+            || self.entries.len() > limits.max_hinges
+        {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
         if self.half_angle_entries.is_empty() {
-            if self.entries.is_empty() || index >= (1u64 << depth) {
+            if self.entries.is_empty() {
                 return Err(CycleSchedulePrepareErrorV1::InvalidInput);
             }
-            let scale = (1u64 << depth) as f64;
+            let scale = leaf_count as f64;
             let x = OutwardIntervalV1::new(
                 -1.0 + 2.0 * index as f64 / scale,
                 -1.0 + 2.0 * (index + 1) as f64 / scale,
             )
             .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
-            return self
-                .entries
-                .iter()
-                .map(|entry| {
-                    let zero = OutwardIntervalV1::new(0.0, 0.0)
+            let mut angles = try_schedule_vec_with_capacity_v1(self.entries.len())?;
+            for entry in &self.entries {
+                let zero = OutwardIntervalV1::new(0.0, 0.0)
+                    .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+                let two = OutwardIntervalV1::from_rounded(2.0)
+                    .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+                let mut b1 = zero;
+                let mut b2 = zero;
+                for coefficient in entry.coefficients.iter().rev() {
+                    let coefficient = OutwardIntervalV1::from_rounded(*coefficient)
                         .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
-                    let two = OutwardIntervalV1::from_rounded(2.0)
-                        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
-                    let mut b1 = zero;
-                    let mut b2 = zero;
-                    for coefficient in entry.coefficients.iter().rev() {
-                        let coefficient = OutwardIntervalV1::from_rounded(*coefficient)
-                            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
-                        let b0 = two
-                            .mul(x)
-                            .and_then(|value| value.mul(b1))
-                            .and_then(|value| value.sub(b2))
-                            .and_then(|value| value.add(coefficient))
-                            .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
-                        b2 = b1;
-                        b1 = b0;
-                    }
-                    let initial = OutwardIntervalV1::from_rounded(entry.initial)
-                        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
-                    let angle = initial
-                        .add(b1)
-                        .and_then(|value| value.sub(x.mul(b2)?))
+                    let b0 = two
+                        .mul(x)
+                        .and_then(|value| value.mul(b1))
+                        .and_then(|value| value.sub(b2))
+                        .and_then(|value| value.add(coefficient))
                         .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
-                    if angle.work() > limits.max_work
-                        || angle.lower() < 0.0
-                        || angle.upper() > 180.0
-                    {
-                        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
-                    }
-                    Ok((entry.edge, angle))
-                })
-                .collect();
+                    b2 = b1;
+                    b1 = b0;
+                }
+                let initial = OutwardIntervalV1::from_rounded(entry.initial)
+                    .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+                let angle = initial
+                    .add(b1)
+                    .and_then(|value| value.sub(x.mul(b2)?))
+                    .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
+                if angle.work() > limits.max_work || angle.lower() < 0.0 || angle.upper() > 180.0 {
+                    return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+                }
+                angles.push((entry.edge, angle));
+            }
+            return Ok(angles);
         }
-        self.half_angle_entries
-            .iter()
-            .map(|entry| {
-                Ok((
-                    entry.edge(),
-                    entry.angle_enclosure_dyadic(
-                        depth,
-                        index,
-                        limits.max_coefficient_bits,
-                        limits.max_degree,
-                        limits.max_work,
-                    )?,
-                ))
-            })
-            .collect()
+        let mut angles = try_schedule_vec_with_capacity_v1(self.half_angle_entries.len())?;
+        for entry in &self.half_angle_entries {
+            angles.push((
+                entry.edge(),
+                entry.angle_enclosure_dyadic(
+                    depth,
+                    index,
+                    limits.max_coefficient_bits,
+                    limits.max_degree,
+                    limits.max_work,
+                )?,
+            ));
+        }
+        Ok(angles)
     }
 
     /// Evaluates the exact rational schedule endpoint without replacing it by
@@ -2465,22 +2726,21 @@ impl CanonicalCycleScheduleV1 {
         upper: bool,
         limits: CycleScheduleLimitsV1,
     ) -> Result<Vec<(EdgeId, OutwardIntervalV1)>, CycleSchedulePrepareErrorV1> {
-        if self.half_angle_entries.is_empty() {
+        if self.half_angle_entries.is_empty() || self.half_angle_entries.len() > limits.max_hinges {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
-        self.half_angle_entries
-            .iter()
-            .map(|entry| {
-                Ok((
-                    entry.edge(),
-                    entry.endpoint_angle_enclosure(
-                        upper,
-                        limits.max_coefficient_bits,
-                        limits.max_work,
-                    )?,
-                ))
-            })
-            .collect()
+        let mut angles = try_schedule_vec_with_capacity_v1(self.half_angle_entries.len())?;
+        for entry in &self.half_angle_entries {
+            angles.push((
+                entry.edge(),
+                entry.endpoint_angle_enclosure(
+                    upper,
+                    limits.max_coefficient_bits,
+                    limits.max_work,
+                )?,
+            ));
+        }
+        Ok(angles)
     }
 
     #[must_use]
@@ -2526,7 +2786,7 @@ impl CanonicalCycleScheduleV1 {
     #[must_use]
     pub fn collective_profile_edges_v1(&self) -> Option<Vec<EdgeId>> {
         if self.half_angle_entries.is_empty() {
-            let mut moving = Vec::new();
+            let mut moving = try_schedule_vec_with_capacity_v1(self.entries.len()).ok()?;
             let mut profile: Option<&Entry> = None;
             for entry in &self.entries {
                 let constant = entry.coefficients.iter().all(|value| *value == 0.0);
@@ -2546,7 +2806,7 @@ impl CanonicalCycleScheduleV1 {
             }
             return (!moving.is_empty()).then_some(moving);
         }
-        let mut moving = Vec::new();
+        let mut moving = try_schedule_vec_with_capacity_v1(self.half_angle_entries.len()).ok()?;
         let mut profile: Option<&PreparedHalfAngleRationalEntryV1> = None;
         for entry in &self.half_angle_entries {
             if entry.is_exact_constant_profile_v1() {
@@ -2598,8 +2858,8 @@ impl CanonicalCycleScheduleV1 {
         }
         let unit_numerator = [rational(0, 1), rational(1, 1)];
         let scaled_numerator = [rational(0, 1), rational(numerator, 1)];
-        let mut unit = Vec::new();
-        let mut scaled = Vec::new();
+        let mut unit = try_schedule_vec_with_capacity_v1(2).ok()?;
+        let mut scaled = try_schedule_vec_with_capacity_v1(2).ok()?;
         for entry in &self.half_angle_entries {
             if entry.u_domain != unit_domain {
                 return None;
@@ -2627,11 +2887,8 @@ impl CanonicalCycleScheduleV1 {
     pub fn bounded_symmetric_kawasaki_profile_v1(
         &self,
     ) -> Option<(Vec<EdgeId>, Vec<EdgeId>, i64, u64)> {
-        let edges = self
-            .half_angle_entries
-            .iter()
-            .map(|entry| entry.edge)
-            .collect::<Vec<_>>();
+        let mut edges = try_schedule_vec_with_capacity_v1(self.half_angle_entries.len()).ok()?;
+        edges.extend(self.half_angle_entries.iter().map(|entry| entry.edge));
         self.bounded_symmetric_kawasaki_profile_for_edges_v1(&edges)
     }
 
@@ -2644,22 +2901,22 @@ impl CanonicalCycleScheduleV1 {
         if edges.len() != 4 {
             return None;
         }
-        let selected = edges
+        if edges
             .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>();
-        if selected.len() != 4 {
+            .enumerate()
+            .any(|(index, edge)| edges[index + 1..].contains(edge))
+        {
             return None;
         }
         let rational = |numerator: i64, denominator: i64| {
             BigRational::new(numerator.into(), denominator.into())
         };
         let domain = [rational(0, 1), rational(1, 1)];
-        let mut effective_slopes = Vec::new();
+        let mut effective_slopes = try_schedule_vec_with_capacity_v1(4).ok()?;
         for entry in self
             .half_angle_entries
             .iter()
-            .filter(|entry| selected.contains(&entry.edge))
+            .filter(|entry| edges.contains(&entry.edge))
         {
             if entry.u_domain != domain || entry.denominator_power_coefficients.len() != 1 {
                 return None;
@@ -2679,13 +2936,15 @@ impl CanonicalCycleScheduleV1 {
             }
             effective_slopes.push((entry.edge, candidate));
         }
-        let unit_slope = effective_slopes
+        let unit_index = effective_slopes
             .iter()
-            .map(|(_, slope)| slope)
-            .max()?
-            .clone();
-        let mut unit = Vec::new();
-        let mut scaled = Vec::new();
+            .enumerate()
+            .max_by(|(_, (_, left)), (_, (_, right))| left.cmp(right))
+            .map(|(index, _)| index)?;
+        let (unit_edge, unit_slope) = effective_slopes.remove(unit_index);
+        let mut unit = try_schedule_vec_with_capacity_v1(2).ok()?;
+        let mut scaled = try_schedule_vec_with_capacity_v1(2).ok()?;
+        unit.push(unit_edge);
         let mut ratio = None;
         for (edge, slope) in effective_slopes {
             if slope == unit_slope {
@@ -2699,6 +2958,8 @@ impl CanonicalCycleScheduleV1 {
                 scaled.push(edge);
             }
         }
+        unit.sort_unstable_by_key(EdgeId::canonical_bytes);
+        scaled.sort_unstable_by_key(EdgeId::canonical_bytes);
         let ratio = ratio?;
         let numerator = ratio.numer().to_i64()?;
         let denominator = ratio.denom().to_i64()?;
@@ -3046,28 +3307,34 @@ fn update_length_prefixed_bytes_v2(hash: &mut Sha256, value: &[u8]) {
 /// byte representation per mathematical rational. Zero is encoded with the
 /// `NoSign` tag and one `00` numerator-magnitude byte.
 fn update_canonical_big_rational_v2(hash: &mut Sha256, value: &BigRational) {
-    let (numerator_sign, mut numerator) = value.numer().to_bytes_be();
-    if numerator.is_empty() {
-        numerator.push(0);
-    }
-    let (_, denominator) = value.denom().to_bytes_be();
-    hash.update([match numerator_sign {
+    hash.update([match value.numer().sign() {
         num_bigint::Sign::Minus => 0,
         num_bigint::Sign::NoSign => 1,
         num_bigint::Sign::Plus => 2,
     }]);
-    hash.update(
-        u64::try_from(numerator.len())
-            .expect("an in-memory numerator length must fit u64")
-            .to_be_bytes(),
-    );
-    hash.update(numerator);
-    hash.update(
-        u64::try_from(denominator.len())
-            .expect("an in-memory denominator length must fit u64")
-            .to_be_bytes(),
-    );
-    hash.update(denominator);
+    update_canonical_big_int_magnitude_v2(hash, value.numer());
+    update_canonical_big_int_magnitude_v2(hash, value.denom());
+}
+
+/// Streams the existing canonical big-endian unsigned magnitude without
+/// allocating the temporary byte vectors returned by `BigInt::to_bytes_be`.
+fn update_canonical_big_int_magnitude_v2(hash: &mut Sha256, value: &BigInt) {
+    let encoded_byte_len = value.bits().div_ceil(8).max(1);
+    hash.update(encoded_byte_len.to_be_bytes());
+    if value.bits() == 0 {
+        hash.update([0]);
+        return;
+    }
+    let leading_byte_count = usize::try_from((encoded_byte_len - 1) % 4 + 1)
+        .expect("a leading u32 digit contains at most four bytes");
+    for (index, digit) in value.iter_u32_digits().rev().enumerate() {
+        let bytes = digit.to_be_bytes();
+        if index == 0 {
+            hash.update(&bytes[4 - leading_byte_count..]);
+        } else {
+            hash.update(bytes);
+        }
+    }
 }
 
 fn update_canonical_big_rational_with_checkpoint_v1(
@@ -3076,28 +3343,7 @@ fn update_canonical_big_rational_with_checkpoint_v1(
     checkpoint: &mut impl FnMut() -> Result<(), CycleScheduleRestrictionStopV1>,
 ) -> Result<(), CycleScheduleRestrictionErrorV1> {
     cycle_schedule_restriction_checkpoint_v1(checkpoint)?;
-    let (numerator_sign, mut numerator) = value.numer().to_bytes_be();
-    if numerator.is_empty() {
-        numerator.push(0);
-    }
-    let (_, denominator) = value.denom().to_bytes_be();
-    hash.update([match numerator_sign {
-        num_bigint::Sign::Minus => 0,
-        num_bigint::Sign::NoSign => 1,
-        num_bigint::Sign::Plus => 2,
-    }]);
-    hash.update(
-        u64::try_from(numerator.len())
-            .expect("an in-memory numerator length must fit u64")
-            .to_be_bytes(),
-    );
-    hash.update(numerator);
-    hash.update(
-        u64::try_from(denominator.len())
-            .expect("an in-memory denominator length must fit u64")
-            .to_be_bytes(),
-    );
-    hash.update(denominator);
+    update_canonical_big_rational_v2(hash, value);
     Ok(())
 }
 

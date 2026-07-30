@@ -801,6 +801,40 @@ fn schedule_fingerprint_v2_has_cross_runtime_golden_vectors() {
 }
 
 #[test]
+fn streaming_big_rational_framing_matches_the_frozen_byte_encoding() {
+    let values = [
+        BigRational::from_integer(0.into()),
+        BigRational::new((-257).into(), 65_537.into()),
+        BigRational::new(
+            (BigInt::from(1_u8) << 96) + BigInt::from(0x0102_0304_u32),
+            (BigInt::from(1_u8) << 65) + BigInt::from(3_u8),
+        ),
+    ];
+    for value in values {
+        let mut streamed = Sha256::new();
+        update_canonical_big_rational_v2(&mut streamed, &value);
+
+        let mut reference = Sha256::new();
+        let (sign, mut numerator) = value.numer().to_bytes_be();
+        if numerator.is_empty() {
+            numerator.push(0);
+        }
+        let (_, denominator) = value.denom().to_bytes_be();
+        reference.update([match sign {
+            num_bigint::Sign::Minus => 0,
+            num_bigint::Sign::NoSign => 1,
+            num_bigint::Sign::Plus => 2,
+        }]);
+        reference.update((numerator.len() as u64).to_be_bytes());
+        reference.update(numerator);
+        reference.update((denominator.len() as u64).to_be_bytes());
+        reference.update(denominator);
+
+        assert_eq!(streamed.finalize(), reference.finalize());
+    }
+}
+
+#[test]
 fn schedule_fingerprint_v2_is_deterministic_across_reorder_and_restriction() {
     let (geometry, audit, fixed_face, edges) = fixture();
     let schedule_entries = entries(&edges);
@@ -969,6 +1003,20 @@ fn three_block_restriction_rebases_leaf_fixed_faces_exactly() {
         ),
         Err(CycleSchedulePrepareErrorV1::InvalidInput)
     );
+    let duplicate_block = MaterialHingeGraphGeometry::new_for_test(
+        first_block.face_ids().to_vec(),
+        vec![geometry.hinges()[0].clone(), geometry.hinges()[0].clone()],
+    );
+    assert_eq!(
+        schedule.restrict_to_edge_block_with_fixed_face_v1(
+            &geometry,
+            &audit,
+            &duplicate_block,
+            &audit,
+            original_fixed_face,
+        ),
+        Err(CycleSchedulePrepareErrorV1::InvalidInput)
+    );
 }
 
 #[test]
@@ -1059,6 +1107,44 @@ fn kawasaki_degree_four_generator_is_deterministic_and_resource_bounded() {
             .schedule()
             .kawasaki_120_120_60_60_half_angle_pairs_v1()
             .is_some()
+    );
+    let exact_work = (1..=CycleScheduleLimitsV1::default().max_work)
+        .find(|max_work| {
+            generate_kawasaki_120_120_60_60_path_candidate_v1(
+                &geometry,
+                &audit,
+                audit.faces()[0],
+                CycleScheduleLimitsV1 {
+                    max_work: *max_work,
+                    ..CycleScheduleLimitsV1::default()
+                },
+            )
+            .is_ok()
+        })
+        .expect("the bounded Kawasaki generator must have a finite exact work threshold");
+    assert!(
+        generate_kawasaki_120_120_60_60_path_candidate_v1(
+            &geometry,
+            &audit,
+            audit.faces()[0],
+            CycleScheduleLimitsV1 {
+                max_work: exact_work,
+                ..CycleScheduleLimitsV1::default()
+            },
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        generate_kawasaki_120_120_60_60_path_candidate_v1(
+            &geometry,
+            &audit,
+            audit.faces()[0],
+            CycleScheduleLimitsV1 {
+                max_work: exact_work - 1,
+                ..CycleScheduleLimitsV1::default()
+            },
+        ),
+        Err(MultiHingePathCandidateErrorV1::ResourceLimit)
     );
     let automatic = generate_bounded_degree_four_kawasaki_path_candidate_v1(
         &geometry,
@@ -1501,6 +1587,43 @@ fn linear_multi_hinge_candidate_is_bounded_deterministic_and_not_authority() {
         ),
         Err(MultiHingePathCandidateErrorV1::ResourceLimit)
     );
+    let exact_limits = MultiHingePathCandidateLimitsV1 {
+        max_hinges: edges.len(),
+        max_candidates: 1,
+        max_work: edges.len() * 2,
+    };
+    assert!(
+        generate_linear_multi_hinge_path_candidate_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &initial,
+            &requested,
+            exact_limits,
+        )
+        .is_ok()
+    );
+    for one_short in [
+        MultiHingePathCandidateLimitsV1 {
+            max_hinges: exact_limits.max_hinges - 1,
+            ..exact_limits
+        },
+        MultiHingePathCandidateLimitsV1 {
+            max_candidates: 0,
+            ..exact_limits
+        },
+        MultiHingePathCandidateLimitsV1 {
+            max_work: exact_limits.max_work - 1,
+            ..exact_limits
+        },
+    ] {
+        assert_eq!(
+            generate_linear_multi_hinge_path_candidate_v1(
+                &geometry, &audit, fixed, &initial, &requested, one_short,
+            ),
+            Err(MultiHingePathCandidateErrorV1::ResourceLimit)
+        );
+    }
 }
 
 #[test]
@@ -1657,6 +1780,230 @@ fn malformed_order_coefficients_and_limits_fail_closed() {
         ),
         Err(CycleSchedulePrepareErrorV1::ResourceLimit)
     );
+}
+
+#[test]
+fn canonical_schedule_limits_admit_equality_and_reject_each_one_short_dimension() {
+    let (geometry, audit, fixed, edges) = fixture();
+    let exact = CycleScheduleLimitsV1 {
+        max_hinges: edges.len(),
+        max_degree: 1,
+        max_coefficient_bits: 4,
+        max_work: edges.len() * 2,
+    };
+    assert!(
+        CanonicalCycleScheduleV1::prepare(
+            &geometry,
+            &audit,
+            fixed,
+            [0.0, 1.0],
+            entries(&edges),
+            exact,
+        )
+        .is_ok()
+    );
+    for (one_short, expected) in [
+        (
+            CycleScheduleLimitsV1 {
+                max_hinges: exact.max_hinges - 1,
+                ..exact
+            },
+            CycleSchedulePrepareErrorV1::InvalidInput,
+        ),
+        (
+            CycleScheduleLimitsV1 {
+                max_degree: exact.max_degree - 1,
+                ..exact
+            },
+            CycleSchedulePrepareErrorV1::ResourceLimit,
+        ),
+        (
+            CycleScheduleLimitsV1 {
+                max_coefficient_bits: exact.max_coefficient_bits - 1,
+                ..exact
+            },
+            CycleSchedulePrepareErrorV1::InvalidInput,
+        ),
+        (
+            CycleScheduleLimitsV1 {
+                max_work: exact.max_work - 1,
+                ..exact
+            },
+            CycleSchedulePrepareErrorV1::ResourceLimit,
+        ),
+    ] {
+        assert_eq!(
+            CanonicalCycleScheduleV1::prepare(
+                &geometry,
+                &audit,
+                fixed,
+                [0.0, 1.0],
+                entries(&edges),
+                one_short,
+            ),
+            Err(expected)
+        );
+    }
+}
+
+#[test]
+fn half_angle_schedule_and_dyadic_limits_are_exact_at_equality_and_one_short() {
+    let (geometry, audit, fixed, mut edges) = fixture();
+    edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    let inputs = || {
+        edges
+            .iter()
+            .map(|edge| HalfAngleRationalEntryInputV1 {
+                edge: *edge,
+                u_domain: [rational(0, 1), rational(1, 1)],
+                numerator_power_coefficients: vec![rational(1, 1)],
+                denominator_power_coefficients: vec![rational(1, 1)],
+            })
+            .collect::<Vec<_>>()
+    };
+    let exact_prepare = CycleScheduleLimitsV1 {
+        max_hinges: edges.len(),
+        max_degree: 0,
+        max_coefficient_bits: 1,
+        max_work: 1,
+    };
+    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        &geometry,
+        &audit,
+        fixed,
+        inputs(),
+        exact_prepare,
+    )
+    .expect("per-entry half-angle work equality must be admitted");
+    assert_eq!(
+        CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            inputs(),
+            CycleScheduleLimitsV1 {
+                max_work: exact_prepare.max_work - 1,
+                ..exact_prepare
+            },
+        ),
+        Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+    );
+    assert_eq!(
+        CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            inputs(),
+            CycleScheduleLimitsV1 {
+                max_hinges: exact_prepare.max_hinges - 1,
+                ..exact_prepare
+            },
+        ),
+        Err(CycleSchedulePrepareErrorV1::InvalidInput)
+    );
+    assert_eq!(
+        CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            inputs(),
+            CycleScheduleLimitsV1 {
+                max_coefficient_bits: 0,
+                ..exact_prepare
+            },
+        ),
+        Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+    );
+
+    let unbounded_evaluation = CycleScheduleLimitsV1 {
+        max_hinges: edges.len(),
+        max_degree: 0,
+        max_coefficient_bits: 1,
+        max_work: usize::MAX,
+    };
+    let dyadic_work = schedule
+        .evaluate_angle_box_dyadic(0, 0, unbounded_evaluation)
+        .expect("unbounded audit evaluation")
+        .iter()
+        .map(|(_, angle)| angle.work())
+        .max()
+        .expect("nonempty angle boxes");
+    let exact_dyadic = CycleScheduleLimitsV1 {
+        max_work: dyadic_work,
+        ..unbounded_evaluation
+    };
+    assert!(
+        schedule
+            .evaluate_angle_box_dyadic(0, 0, exact_dyadic)
+            .is_ok()
+    );
+    assert_eq!(
+        schedule.evaluate_angle_box_dyadic(
+            0,
+            0,
+            CycleScheduleLimitsV1 {
+                max_work: exact_dyadic.max_work - 1,
+                ..exact_dyadic
+            },
+        ),
+        Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+    );
+    assert_eq!(
+        schedule.evaluate_angle_box_dyadic(
+            0,
+            0,
+            CycleScheduleLimitsV1 {
+                max_hinges: exact_dyadic.max_hinges - 1,
+                ..exact_dyadic
+            },
+        ),
+        Err(CycleSchedulePrepareErrorV1::InvalidInput)
+    );
+    let endpoint_work = schedule
+        .evaluate_endpoint_angle_box(false, unbounded_evaluation)
+        .expect("unbounded endpoint audit evaluation")
+        .iter()
+        .map(|(_, angle)| angle.work())
+        .max()
+        .expect("nonempty endpoint boxes");
+    let exact_endpoint = CycleScheduleLimitsV1 {
+        max_work: endpoint_work,
+        ..unbounded_evaluation
+    };
+    assert!(
+        schedule
+            .evaluate_endpoint_angle_box(false, exact_endpoint)
+            .is_ok()
+    );
+    assert_eq!(
+        schedule.evaluate_endpoint_angle_box(
+            false,
+            CycleScheduleLimitsV1 {
+                max_work: exact_endpoint.max_work - 1,
+                ..exact_endpoint
+            },
+        ),
+        Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+    );
+}
+
+#[test]
+fn fallible_schedule_buffers_reject_capacity_overflow_as_resource_limit() {
+    assert!(matches!(
+        try_schedule_vec_with_capacity_v1::<u8>(usize::MAX),
+        Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+    ));
+    assert!(matches!(
+        try_multi_hinge_vec_with_capacity_v1::<u8>(usize::MAX),
+        Err(MultiHingePathCandidateErrorV1::ResourceLimit)
+    ));
+}
+
+#[test]
+fn bernstein_binomial_overflow_fails_closed() {
+    assert_eq!(checked_binomial_v1(5, 2), Some(10));
+    assert_eq!(checked_binomial_v1(2, 3), None);
+    assert_eq!(checked_binomial_v1(256, 128), None);
 }
 
 #[test]

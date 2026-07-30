@@ -27,7 +27,10 @@ pub fn orthogonal_dense_cycle_pattern(
     assert!((3..=9).contains(&rows));
     let width = columns + 1;
     let height = rows + 1;
-    let namespace = ProjectId::new();
+    let namespace = ProjectId::schema_namespace([
+        0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
+        0x51,
+    ]);
     let vertices = (0..height)
         .flat_map(|y| {
             (0..width).map(move |x| Vertex {

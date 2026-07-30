@@ -5,7 +5,7 @@ use ori_topology::TopologySnapshot;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CanonicalCycleScheduleV1, CanonicalHingeAngles, CycleScheduleLimitsV1,
+    CanonicalCycleScheduleV1, CanonicalHingeAngles, CycleScheduleLimitsV1, HingeAngle,
     IntervalRigidTransformV1, KinematicsError, MaterialHingeGraphGeometry, OutwardIntervalV1,
     Point3, RigidTransform, TreeHinge, TreeKinematicsLimits, tree::MaterialHingeGraphInstanceV1,
 };
@@ -168,7 +168,7 @@ pub struct DyadicIntervalClosureLimitsV1 {
 
 #[derive(Debug, Clone)]
 pub struct DyadicMaterialHingeIntervalClosureCertificateV1 {
-    issuer_geometry: MaterialHingeGraphGeometry,
+    issuer_geometry: MaterialHingeGraphInstanceV1,
     fixed_face: FaceId,
     schedule_binding_fingerprint_v2: [u8; 32],
     graph_binding_fingerprint: [u8; 32],
@@ -244,7 +244,7 @@ impl MaterialFaceTransformIntervalRegistryV1 {
 
 impl PartialEq for DyadicMaterialHingeIntervalClosureCertificateV1 {
     fn eq(&self, other: &Self) -> bool {
-        self.issuer_geometry.same_instance(&other.issuer_geometry)
+        self.issuer_geometry == other.issuer_geometry
             && self.fixed_face == other.fixed_face
             && self.schedule_binding_fingerprint_v2 == other.schedule_binding_fingerprint_v2
             && self.graph_binding_fingerprint == other.graph_binding_fingerprint
@@ -263,6 +263,24 @@ impl DyadicMaterialHingeIntervalClosureCertificateV1 {
     #[must_use]
     pub fn leaves(&self) -> &[(u32, u64, MaterialHingeIntervalClosureCertificateV1)] {
         &self.leaves
+    }
+
+    /// Returns the certificate shell plus every owned vector allocation.
+    ///
+    /// The issuer is an identity-only anchor, so retaining this certificate
+    /// does not duplicate the complete material graph.
+    #[must_use]
+    pub fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>().checked_add(
+            std::mem::size_of::<(u32, u64, MaterialHingeIntervalClosureCertificateV1)>()
+                .checked_mul(self.leaves.capacity())?,
+        )?;
+        for (_, _, leaf) in &self.leaves {
+            total = total.checked_add(
+                std::mem::size_of::<EdgeId>().checked_mul(leaf.checked_hinges.capacity())?,
+            )?;
+        }
+        Some(total)
     }
 
     /// Confirms that the leaves form one canonical, gap-free left-to-right
@@ -294,7 +312,7 @@ impl DyadicMaterialHingeIntervalClosureCertificateV1 {
             .map(TreeHinge::edge)
             .collect::<Vec<_>>();
         hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
-        self.issuer_geometry.same_instance(geometry)
+        self.issuer_geometry.matches(geometry)
             && self.has_canonical_complete_partition_v1()
             && self.leaves.iter().all(|(_, _, leaf)| {
                 leaf.fixed_face == self.fixed_face && leaf.checked_hinges == hinges
@@ -485,6 +503,25 @@ impl ClosedMaterialHingeGraphPose {
     pub const fn closure_certificate(&self) -> &MaterialHingeClosureCertificate {
         &self.closure
     }
+
+    #[must_use]
+    pub fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.angles
+                    .checked_retained_bytes_v1()?
+                    .checked_sub(std::mem::size_of::<CanonicalHingeAngles>())?,
+            )?
+            .checked_add(
+                std::mem::size_of::<CandidateFaceTransform>()
+                    .checked_mul(self.transforms.capacity())?,
+            )?
+            .checked_add(
+                self.closure
+                    .checked_retained_bytes_v1()?
+                    .checked_sub(std::mem::size_of::<MaterialHingeClosureCertificate>())?,
+            )
+    }
 }
 
 impl MaterialHingeGraphGeometry {
@@ -657,7 +694,7 @@ impl MaterialHingeGraphGeometry {
                 }
             }
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
-                issuer_geometry: self.clone(),
+                issuer_geometry: self.instance_anchor_v1(),
                 fixed_face,
                 schedule_binding_fingerprint_v2: schedule.certificate_binding_fingerprint_v2(),
                 graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
@@ -735,7 +772,7 @@ impl MaterialHingeGraphGeometry {
                 .collect::<Vec<_>>();
             checked_hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
-                issuer_geometry: self.clone(),
+                issuer_geometry: self.instance_anchor_v1(),
                 fixed_face,
                 schedule_binding_fingerprint_v2: schedule.certificate_binding_fingerprint_v2(),
                 graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
@@ -814,7 +851,7 @@ impl MaterialHingeGraphGeometry {
             }
         }
         Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
-            issuer_geometry: self.clone(),
+            issuer_geometry: self.instance_anchor_v1(),
             fixed_face,
             schedule_binding_fingerprint_v2: schedule.certificate_binding_fingerprint_v2(),
             graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
@@ -1180,7 +1217,7 @@ impl MaterialHingeGraphGeometry {
             issuer_geometry: self.instance_anchor_v1(),
             instance: std::sync::Arc::new(()),
             fixed_face,
-            angles: angles.clone(),
+            angles: angles.try_clone_v1()?,
             transforms,
             closure,
         })
@@ -1205,11 +1242,13 @@ impl MaterialHingeGraphGeometry {
         {
             return Err(KinematicsError::UnsupportedTopology);
         }
-        let angle_values = angles
-            .as_slice()
-            .iter()
-            .map(|angle| (angle.edge(), angle.angle_degrees()))
-            .collect::<HashMap<_, _>>();
+        let mut angle_values = HashMap::new();
+        angle_values
+            .try_reserve(angles.as_slice().len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        for angle in angles.as_slice() {
+            angle_values.insert(angle.edge(), angle.angle_degrees());
+        }
         if angle_values.len() != self.hinges().len()
             || self
                 .hinges()
@@ -1219,11 +1258,11 @@ impl MaterialHingeGraphGeometry {
             return Err(KinematicsError::UnsupportedTopology);
         }
 
-        let spanning = audit
-            .spanning_hinges()
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>();
+        let mut spanning = HashSet::new();
+        spanning
+            .try_reserve(audit.spanning_hinges().len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        spanning.extend(audit.spanning_hinges().iter().copied());
         let mut adjacency = HashMap::<FaceId, Vec<(FaceId, usize, f64)>>::new();
         adjacency
             .try_reserve(self.face_ids().len())
@@ -1239,14 +1278,20 @@ impl MaterialHingeGraphGeometry {
                 ori_topology::FoldAssignment::Mountain => 1.0,
                 ori_topology::FoldAssignment::Valley => -1.0,
             };
-            adjacency
+            let left_neighbors = adjacency
                 .get_mut(&hinge.left_face())
-                .ok_or(KinematicsError::UnsupportedTopology)?
-                .push((hinge.right_face(), index, assignment_sign));
-            adjacency
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            left_neighbors
+                .try_reserve(1)
+                .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+            left_neighbors.push((hinge.right_face(), index, assignment_sign));
+            let right_neighbors = adjacency
                 .get_mut(&hinge.right_face())
-                .ok_or(KinematicsError::UnsupportedTopology)?
-                .push((hinge.left_face(), index, -assignment_sign));
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            right_neighbors
+                .try_reserve(1)
+                .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+            right_neighbors.push((hinge.left_face(), index, -assignment_sign));
         }
         for neighbors in adjacency.values_mut() {
             neighbors.sort_unstable_by_key(|(_, index, _)| {
@@ -1291,18 +1336,64 @@ impl MaterialHingeGraphGeometry {
         if solved.len() != self.face_ids().len() {
             return Err(KinematicsError::UnsupportedTopology);
         }
-        let transforms = self
-            .face_ids()
-            .iter()
-            .map(|face| {
-                solved
-                    .get(face)
-                    .copied()
-                    .map(|transform| CandidateFaceTransform::new(*face, transform))
-                    .ok_or(KinematicsError::UnsupportedTopology)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut transforms = Vec::new();
+        transforms
+            .try_reserve_exact(self.face_ids().len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        for face in self.face_ids() {
+            let transform = solved
+                .get(face)
+                .copied()
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            transforms.push(CandidateFaceTransform::new(*face, transform));
+        }
         self.observe_closed(audit, fixed_face, angles, &transforms, tolerance)
+    }
+
+    /// Conservative heap peak for one fallible closed-pose solve.
+    ///
+    /// Hash-table slots include control/allocator slack, and every temporary
+    /// vector plus the returned pose is charged together so callers can
+    /// preflight without relying on allocator growth behavior.
+    #[must_use]
+    pub fn checked_solve_closed_peak_bytes_v1(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+    ) -> Option<usize> {
+        if self.face_ids() != audit.faces()
+            || self.hinges().len()
+                != audit
+                    .spanning_hinges()
+                    .len()
+                    .checked_add(audit.closure_hinges().len())?
+        {
+            return None;
+        }
+        let faces = self.face_ids().len();
+        let hinges = self.hinges().len();
+        let spanning = audit.spanning_hinges().len();
+        let mut total = 0usize;
+        checked_add_hash_table_workspace_v1::<(EdgeId, f64)>(&mut total, hinges)?;
+        checked_add_hash_table_workspace_v1::<EdgeId>(&mut total, spanning)?;
+        checked_add_hash_table_workspace_v1::<(FaceId, Vec<(FaceId, usize, f64)>)>(
+            &mut total, faces,
+        )?;
+        total = total.checked_add(
+            std::mem::size_of::<(FaceId, usize, f64)>().checked_mul(spanning.checked_mul(2)?)?,
+        )?;
+        checked_add_hash_table_workspace_v1::<(FaceId, RigidTransform)>(&mut total, faces)?;
+        total = total
+            .checked_add(std::mem::size_of::<FaceId>().checked_mul(faces)?)?
+            .checked_add(
+                std::mem::size_of::<CandidateFaceTransform>()
+                    .checked_mul(faces)?
+                    .checked_mul(4)?,
+            )?
+            .checked_add(std::mem::size_of::<&TreeHinge>().checked_mul(hinges)?)?
+            .checked_add(std::mem::size_of::<EdgeId>().checked_mul(hinges)?)?
+            .checked_add(std::mem::size_of::<HingeAngle>().checked_mul(hinges)?)?
+            .checked_add(std::mem::size_of::<usize>().checked_mul(2)?)?;
+        Some(total)
     }
 }
 
@@ -1440,16 +1531,20 @@ impl MaterialHingeClosureCertificate {
             return Err(KinematicsError::UnsupportedTopology);
         }
         let transforms = canonical_transforms(audit, candidate)?;
-        let mut hinges = hinges.iter().collect::<Vec<_>>();
-        hinges.sort_unstable_by_key(|hinge| hinge.edge().canonical_bytes());
+        let mut hinges_by_id = Vec::new();
+        hinges_by_id
+            .try_reserve_exact(hinges.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        hinges_by_id.extend(hinges.iter());
+        hinges_by_id.sort_unstable_by_key(|hinge| hinge.edge().canonical_bytes());
         let mut checked_hinges = Vec::new();
         checked_hinges
-            .try_reserve_exact(hinges.len())
+            .try_reserve_exact(hinges_by_id.len())
             .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
         let mut maximum_axis_point_error = 0.0_f64;
         let mut maximum_relative_transform_error = 0.0_f64;
 
-        for (hinge, angle) in hinges.into_iter().zip(angles.as_slice()) {
+        for (hinge, angle) in hinges_by_id.into_iter().zip(angles.as_slice()) {
             if hinge.edge() != angle.edge()
                 || !audit.spanning_hinges.contains(&hinge.edge())
                     && !audit.closure_hinges.contains(&hinge.edge())
@@ -1490,6 +1585,12 @@ impl MaterialHingeClosureCertificate {
     }
 
     #[must_use]
+    fn checked_retained_bytes_v1(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(std::mem::size_of::<EdgeId>().checked_mul(self.checked_hinges.capacity())?)
+    }
+
+    #[must_use]
     pub fn checked_hinges(&self) -> &[EdgeId] {
         &self.checked_hinges
     }
@@ -1505,11 +1606,26 @@ impl MaterialHingeClosureCertificate {
     }
 }
 
+fn checked_add_hash_table_workspace_v1<T>(total: &mut usize, entries: usize) -> Option<()> {
+    if entries == 0 {
+        return Some(());
+    }
+    let slots = entries.checked_next_power_of_two()?.checked_mul(2)?.max(4);
+    let payload = std::mem::size_of::<T>().checked_mul(slots)?;
+    let control = std::mem::size_of::<usize>().checked_mul(slots)?;
+    *total = total.checked_add(payload)?.checked_add(control)?;
+    Some(())
+}
+
 fn canonical_transforms(
     audit: &MaterialHingeGraphAudit,
     candidate: &[CandidateFaceTransform],
 ) -> Result<Vec<CandidateFaceTransform>, KinematicsError> {
-    let mut transforms = candidate.to_vec();
+    let mut transforms = Vec::new();
+    transforms
+        .try_reserve_exact(candidate.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    transforms.extend_from_slice(candidate);
     transforms.sort_unstable_by_key(|item| item.face.canonical_bytes());
     if transforms
         .windows(2)
@@ -3783,7 +3899,8 @@ mod tests {
         let fixed_face = FaceId::derive_v5(namespace, b"partition-face");
         let checked_edge = EdgeId::derive_v5(namespace, b"partition-edge");
         let closure = DyadicMaterialHingeIntervalClosureCertificateV1 {
-            issuer_geometry: MaterialHingeGraphGeometry::new_for_test(vec![fixed_face], Vec::new()),
+            issuer_geometry: MaterialHingeGraphGeometry::new_for_test(vec![fixed_face], Vec::new())
+                .instance_anchor_v1(),
             fixed_face,
             schedule_binding_fingerprint_v2: core::array::from_fn(|index| {
                 u8::try_from(index).unwrap()

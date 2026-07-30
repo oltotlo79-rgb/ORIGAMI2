@@ -62,6 +62,34 @@ fn wedge_prism_aabb_encloses_both_complete_rings_and_has_sound_exact_gap() {
 }
 
 #[test]
+fn exact_gap_helpers_keep_bit_exact_zero_and_integer_results() {
+    let first = [[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]];
+    let second = [[3.0, 4.0], [0.0, 1.0], [0.0, 1.0]];
+    assert_eq!(
+        exact_common_axis_gap_lower_v1(&first, &second)
+            .expect("exact integer common-axis gap")
+            .to_bits(),
+        2.0_f64.to_bits()
+    );
+
+    let interval = |value| ori_kinematics::OutwardIntervalV1::new(value, value).unwrap();
+    let origin = [interval(0.0); 3];
+    let three_four_five = [interval(3.0), interval(4.0), interval(0.0)];
+    assert_eq!(
+        interval_point_distance_lower_v1(origin, three_four_five)
+            .expect("exact 3-4-5 distance")
+            .to_bits(),
+        5.0_f64.to_bits()
+    );
+    assert_eq!(
+        interval_point_distance_lower_v1(origin, origin)
+            .expect("coincident interval distance")
+            .to_bits(),
+        0.0_f64.to_bits()
+    );
+}
+
+#[test]
 fn wedge_pair_keys_are_unique_and_canonical() {
     let iv = ori_kinematics::OutwardIntervalV1::new(0.0, 0.0).unwrap();
     let ring = vec![[iv; 3]; 3];
@@ -712,6 +740,91 @@ fn exact_wedge_clip_covers_full_half_plane_and_enforces_one_short_work() {
         ),
         Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
     ));
+    let exact_limit = BigRational::from_integer(
+        num_bigint::BigInt::from(1_u8) << (MAX_SHARED_VERTEX_WEDGE_BITS_V1 - 1),
+    );
+    assert_eq!(
+        wedge_check_point_bits_v1(&[exact_limit.clone(), r(0)]),
+        Ok(())
+    );
+    let one_bit_over = BigRational::from_integer(
+        num_bigint::BigInt::from(1_u8) << MAX_SHARED_VERTEX_WEDGE_BITS_V1,
+    );
+    assert_eq!(
+        wedge_check_point_bits_v1(&[one_bit_over, r(0)]),
+        Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+    );
+}
+
+#[test]
+fn shared_vertex_tree_layer_transport_peak_is_phase_exact_and_checked() {
+    let source_retained_bytes = 101usize;
+    let target_retained_bytes = 37usize;
+    let shell = std::mem::size_of::<SharedVertexTreeLayerTransportProofV1>()
+        - std::mem::size_of::<LayerOrderSnapshot>()
+        - std::mem::size_of::<CanonicalHingeAngles>();
+    let retained = checked_shared_vertex_tree_layer_transport_retained_bytes_v1(
+        source_retained_bytes,
+        target_retained_bytes,
+    )
+    .expect("bounded retained bytes");
+    assert_eq!(
+        retained,
+        shell + source_retained_bytes + target_retained_bytes
+    );
+    assert_eq!(
+        checked_shared_vertex_tree_layer_transport_peak_bytes_v1(
+            source_retained_bytes,
+            target_retained_bytes,
+            target_retained_bytes,
+        ),
+        source_retained_bytes
+            .checked_add(target_retained_bytes)
+            .and_then(|bytes| bytes.checked_add(retained))
+    );
+    assert_eq!(
+        checked_shared_vertex_tree_layer_transport_retained_bytes_v1(
+            usize::MAX,
+            target_retained_bytes,
+        ),
+        None
+    );
+    assert_eq!(
+        checked_shared_vertex_tree_layer_transport_peak_bytes_v1(
+            usize::MAX / 2 + 1,
+            target_retained_bytes,
+            target_retained_bytes,
+        ),
+        None
+    );
+    assert_eq!(
+        checked_shared_vertex_tree_layer_transport_peak_bytes_v1(
+            source_retained_bytes,
+            usize::MAX,
+            target_retained_bytes,
+        ),
+        None
+    );
+    assert_eq!(
+        checked_canonical_hinge_angles_projected_retained_bytes_v1(usize::MAX),
+        None
+    );
+}
+
+#[test]
+fn uniform_cycle_operation_count_accepts_exact_limit_and_rejects_overflow() {
+    assert_eq!(
+        checked_uniform_cycle_operation_count_v1(MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1,),
+        MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1.checked_mul(64)
+    );
+    assert_eq!(
+        checked_uniform_cycle_operation_count_v1(MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1 + 1,),
+        None
+    );
+    assert_eq!(
+        checked_uniform_cycle_operation_count_v1(usize::MAX / 64 + 1),
+        None
+    );
 }
 
 #[test]
@@ -1751,6 +1864,14 @@ fn three_by_three_blocks_issue_canonical_blockwise_closure() {
         &first_closure,
         &substituted_positive,
     );
+    let duplicated_substituted_layer = make_layer(
+        &first_geometry,
+        &first_audit,
+        &first_source,
+        &first_schedule,
+        &first_closure,
+        &substituted_positive,
+    );
     let substitution_parent = crate::issue_blockwise_closure_authority_v1(
         [
             crate::BlockwiseClosureInputV1 {
@@ -1778,7 +1899,7 @@ fn three_by_three_blocks_issue_canonical_blockwise_closure() {
                 crate::BlockwisePositiveLayerInputV1 {
                     source: &first_source,
                     positive: substituted_positive.clone(),
-                    layer: substituted_layer.clone(),
+                    layer: duplicated_substituted_layer,
                 },
                 crate::BlockwisePositiveLayerInputV1 {
                     source: &second_source,
@@ -3006,7 +3127,7 @@ fn strict_convex_four_vertex_wedges_bind_every_input_and_fail_closed() {
         MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
     ));
     let mut foreign_wedges = wedges.clone();
-    foreign_wedges.issuer = foreign_geometry.clone();
+    foreign_wedges.issuer = foreign_geometry.instance_anchor_v1();
     assert!(!separation.is_for(
         &foreign_wedges,
         binding(),
@@ -7645,6 +7766,10 @@ fn miura_rank_four_fixture_keeps_stationary_global_layer_authority() {
             &geometry, &audit, fixed, &schedule, &closure, thickness, 1,
         )
         .unwrap();
+        assert_eq!(
+            certificate.checked_deep_retained_bytes_v1(),
+            Some(std::mem::size_of::<PositiveThicknessContinuousCertificateV1>())
+        );
         assert!(certificate.is_for(&geometry, &audit, fixed, &schedule, &closure, thickness));
     }
     assert!(

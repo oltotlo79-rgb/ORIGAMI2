@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{FromPrimitive, ToPrimitive};
 use ori_domain::{EdgeId, FaceId};
@@ -14,7 +15,8 @@ use ori_foldability::LayerOrderSnapshot;
 use ori_kinematics::{
     CanonicalHingeAngles, DyadicMaterialHingeIntervalClosureCertificateV1,
     GeneratedMultiHingePathCandidateV1, HingeAngle, MaterialHingeGraphAudit,
-    MaterialHingeGraphGeometry, MaterialTreeKinematicsModel, MaterialTreePose,
+    MaterialHingeGraphGeometry, MaterialHingeGraphInstanceV1, MaterialTreeKinematicsModel,
+    MaterialTreePose,
 };
 use thiserror::Error;
 
@@ -215,7 +217,7 @@ impl DyadicFaceTransformIntervalLeafV1 {
 
 #[derive(Debug, Clone)]
 pub struct DyadicFaceTransformIntervalRegistryV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     fixed_face: FaceId,
     schedule_hash: [u8; 32],
     closure_hash: [u8; 32],
@@ -263,7 +265,7 @@ impl DyadicFaceTransformIntervalRegistryV1 {
             schedule_limits,
             max_work_per_leaf,
         } = input;
-        self.issuer.same_instance(geometry)
+        self.issuer.matches(geometry)
             && self.fixed_face == fixed_face
             && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && self.closure_hash == closure.partition_binding_fingerprint_v2()
@@ -344,7 +346,7 @@ impl DyadicSharedVertexIntervalDiagnosticLeafV1 {
 
 #[derive(Debug, Clone)]
 pub struct DyadicSharedVertexIntervalDiagnosticV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     fixed_face: FaceId,
     schedule_hash: [u8; 32],
     closure_hash: [u8; 32],
@@ -391,7 +393,7 @@ impl SharedVertexSectorBoundaryV1 {
 
 #[derive(Debug, Clone)]
 pub struct DyadicSharedVertexSectorBoundaryDiagnosticV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     schedule_hash: [u8; 32],
     closure_hash: [u8; 32],
     thickness_bits: u64,
@@ -440,7 +442,7 @@ impl SharedVertexWedgeCellV1 {
 
 #[derive(Debug, Clone)]
 pub struct DyadicSharedVertexWedgeDiagnosticV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     schedule_hash: [u8; 32],
     closure_hash: [u8; 32],
     thickness_bits: u64,
@@ -450,6 +452,17 @@ pub struct DyadicSharedVertexWedgeDiagnosticV1 {
     leaves: Vec<(u32, u64, Vec<SharedVertexWedgeCellV1>)>,
     content_hash: [u8; 32],
 }
+
+fn radius_binding_matches_records_v1(
+    binding: &[(ori_domain::VertexId, u64)],
+    records: &[crate::VertexReliefPolicyRecordV1],
+) -> bool {
+    binding.len() == records.len()
+        && binding.iter().zip(records).all(|((vertex, bits), record)| {
+            *vertex == record.vertex && *bits == record.cutout_radius_mm.to_bits()
+        })
+}
+
 impl DyadicSharedVertexWedgeDiagnosticV1 {
     #[must_use]
     pub fn leaves(&self) -> &[(u32, u64, Vec<SharedVertexWedgeCellV1>)] {
@@ -475,16 +488,12 @@ impl DyadicSharedVertexWedgeDiagnosticV1 {
         input: DyadicFaceTransformBindingInputV1<'_>,
         max_work_per_cell: usize,
     ) -> bool {
-        self.issuer.same_instance(input.geometry)
+        self.issuer.matches(input.geometry)
             && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
             && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
             && self.max_work_per_cell == max_work_per_cell
-            && self.radius_binding
-                == records
-                    .iter()
-                    .map(|r| (r.vertex, r.cutout_radius_mm.to_bits()))
-                    .collect::<Vec<_>>()
+            && radius_binding_matches_records_v1(&self.radius_binding, records)
             && sector_boundary_content_hash_v1(sectors).is_ok_and(|h| h == self.sector_content_hash)
             && sectors.is_for(
                 transforms,
@@ -553,7 +562,7 @@ impl SharedVertexWedgeSeparationLowerV1 {
 /// common-axis separation is sufficient, but not complete, for disjointness.
 #[derive(Debug, Clone)]
 pub struct DyadicSharedVertexWedgeSeparationDiagnosticV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     schedule_hash: [u8; 32],
     closure_hash: [u8; 32],
     thickness_bits: u64,
@@ -582,11 +591,11 @@ impl DyadicSharedVertexWedgeSeparationDiagnosticV1 {
         input: DyadicFaceTransformBindingInputV1<'_>,
         max_work_per_pair: usize,
     ) -> bool {
-        self.issuer.same_instance(input.geometry)
+        self.issuer.matches(input.geometry)
             && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
             && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
-            && wedges.issuer.same_instance(input.geometry)
+            && wedges.issuer.matches(input.geometry)
             && wedges.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
             && wedges.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && wedges.thickness_bits == input.thickness_mm.to_bits()
@@ -663,7 +672,7 @@ impl SharedVertexBoundaryPointDistanceLowerV1 {
 /// boxes. This does not enclose a cutout arc or offset surface.
 #[derive(Debug, Clone)]
 pub struct DyadicSharedVertexBoundaryPointDistanceDiagnosticV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     schedule_hash: [u8; 32],
     closure_hash: [u8; 32],
     thickness_bits: u64,
@@ -692,14 +701,14 @@ impl DyadicSharedVertexBoundaryPointDistanceDiagnosticV1 {
         input: DyadicFaceTransformBindingInputV1<'_>,
         max_work: usize,
     ) -> bool {
-        self.issuer.same_instance(input.geometry)
+        self.issuer.matches(input.geometry)
             && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
             && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
             && self.max_work == max_work
             && sector_boundary_content_hash_v1(sectors)
                 .is_ok_and(|hash| self.sector_content_hash == hash)
-            && sectors.issuer.same_instance(input.geometry)
+            && sectors.issuer.matches(input.geometry)
             && sectors.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
             && sectors.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && sectors.thickness_bits == input.thickness_mm.to_bits()
@@ -749,16 +758,12 @@ impl DyadicSharedVertexSectorBoundaryDiagnosticV1 {
         input: DyadicFaceTransformBindingInputV1<'_>,
         max_work_per_point: usize,
     ) -> bool {
-        self.issuer.same_instance(input.geometry)
+        self.issuer.matches(input.geometry)
             && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
             && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
             && self.thickness_bits == input.thickness_mm.to_bits()
             && self.max_work_per_point == max_work_per_point
-            && self.radius_binding
-                == records
-                    .iter()
-                    .map(|record| (record.vertex, record.cutout_radius_mm.to_bits()))
-                    .collect::<Vec<_>>()
+            && radius_binding_matches_records_v1(&self.radius_binding, records)
             && crate::revalidate_vertex_relief_prerequisite_v1(
                 prerequisite,
                 input.geometry,
@@ -837,7 +842,7 @@ impl DyadicSharedVertexIntervalDiagnosticV1 {
         input: DyadicFaceTransformBindingInputV1<'_>,
         max_work_per_position: usize,
     ) -> bool {
-        self.issuer.same_instance(input.geometry)
+        self.issuer.matches(input.geometry)
             && self.fixed_face == input.fixed_face
             && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v2()
             && self.closure_hash == input.closure.partition_binding_fingerprint_v2()
@@ -907,7 +912,7 @@ impl ContinuousPairCoverageEntryV1 {
 /// `NeedsCorridor` and `Skipped` entries make current proof gaps explicit.
 #[derive(Debug, Clone)]
 pub struct ContinuousPairCoverageRegistryV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     fixed_face: FaceId,
     schedule_hash: [u8; 32],
     entries: Vec<ContinuousPairCoverageEntryV1>,
@@ -954,7 +959,7 @@ impl SharedHingeContinuousCorridorGapV1 {
 /// Endpoint static capabilities are intentionally not accepted as a substitute.
 #[derive(Debug, Clone)]
 pub struct SharedHingeContinuousCorridorGapReportV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     fixed_face: FaceId,
     schedule_hash: [u8; 32],
     thickness_bits: u64,
@@ -981,7 +986,7 @@ impl SharedVertexContinuousCorridorGapV1 {
 /// must never be promoted to motion or mutation authority.
 #[derive(Debug, Clone)]
 pub struct SharedVertexContinuousCorridorGapReportV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     fixed_face: FaceId,
     schedule_hash: [u8; 32],
     thickness_bits: u64,
@@ -1009,7 +1014,7 @@ impl SharedVertexContinuousCorridorGapReportV1 {
         schedule: &ori_kinematics::CanonicalCycleScheduleV1,
         thickness_mm: f64,
     ) -> bool {
-        self.issuer.same_instance(geometry)
+        self.issuer.matches(geometry)
             && self.fixed_face == fixed_face
             && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && self.thickness_bits == thickness_mm.to_bits()
@@ -1036,7 +1041,7 @@ impl ReliefCoveredSharedHingePairV1 {
 
 #[derive(Debug, Clone)]
 pub struct SharedHingeReliefCoverageReportV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     fixed_face: FaceId,
     schedule_hash: [u8; 32],
     thickness_bits: u64,
@@ -1047,7 +1052,7 @@ pub struct SharedHingeReliefCoverageReportV1 {
 impl SharedHingeReliefCoverageReportV1 {
     #[must_use]
     pub fn is_for_geometry(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
-        self.issuer.same_instance(geometry)
+        self.issuer.matches(geometry)
     }
     #[must_use]
     pub fn is_for(
@@ -1058,7 +1063,7 @@ impl SharedHingeReliefCoverageReportV1 {
         schedule: &ori_kinematics::CanonicalCycleScheduleV1,
         thickness_mm: f64,
     ) -> bool {
-        self.issuer.same_instance(geometry)
+        self.issuer.matches(geometry)
             && self.fixed_face == fixed_face
             && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && self.thickness_bits == thickness_mm.to_bits()
@@ -1116,7 +1121,7 @@ impl SharedHingeContinuousCorridorGapReportV1 {
         schedule: &ori_kinematics::CanonicalCycleScheduleV1,
         paper_thickness_mm: f64,
     ) -> bool {
-        self.issuer.same_instance(geometry)
+        self.issuer.matches(geometry)
             && self.fixed_face == fixed_face
             && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && self.thickness_bits == paper_thickness_mm.to_bits()
@@ -1150,7 +1155,7 @@ impl ContinuousPairCoverageRegistryV1 {
         fixed_face: FaceId,
         schedule: &ori_kinematics::CanonicalCycleScheduleV1,
     ) -> bool {
-        self.issuer.same_instance(geometry)
+        self.issuer.matches(geometry)
             && self.fixed_face == fixed_face
             && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && schedule.matches_binding(geometry, audit, fixed_face)
@@ -1178,6 +1183,11 @@ fn checked_unordered_pair_count_v1(face_count: usize) -> Option<usize> {
     face_count
         .checked_mul(face_count.checked_sub(1)?)
         .map(|n| n / 2)
+}
+
+fn checked_uniform_cycle_operation_count_v1(hinge_count: usize) -> Option<usize> {
+    let operation_count = hinge_count.checked_mul(64)?;
+    (hinge_count <= MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1).then_some(operation_count)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1245,7 +1255,7 @@ pub fn prepare_dyadic_face_transform_interval_registry_v1(
         });
     }
     Ok(DyadicFaceTransformIntervalRegistryV1 {
-        issuer: geometry.clone(),
+        issuer: geometry.instance_anchor_v1(),
         fixed_face,
         schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         closure_hash: closure.partition_binding_fingerprint_v2(),
@@ -1305,13 +1315,12 @@ pub fn diagnose_dyadic_shared_vertex_interval_positions_v1(
                 .geometry
                 .vertex_position(gap.vertex)
                 .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
-            let point = [source.x(), source.y(), source.z()]
+            let [Ok(x), Ok(y), Ok(z)] = [source.x(), source.y(), source.z()]
                 .map(ori_kinematics::OutwardIntervalV1::from_rounded)
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?
-                .try_into()
-                .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?;
+            else {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            };
+            let point = [x, y, z];
             let mut transformed = Vec::new();
             transformed
                 .try_reserve_exact(2)
@@ -1345,7 +1354,7 @@ pub fn diagnose_dyadic_shared_vertex_interval_positions_v1(
         });
     }
     Ok(DyadicSharedVertexIntervalDiagnosticV1 {
-        issuer: input.geometry.clone(),
+        issuer: input.geometry.instance_anchor_v1(),
         fixed_face: input.fixed_face,
         schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
         closure_hash: input.closure.partition_binding_fingerprint_v2(),
@@ -1431,16 +1440,17 @@ pub fn diagnose_dyadic_shared_vertex_sector_boundaries_v1(
                 .geometry
                 .face_boundary_vertices(face)
                 .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
-            let matches = boundary
+            let mut matches = boundary
                 .iter()
                 .enumerate()
                 .filter(|(_, vertex)| **vertex == gap.vertex)
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            if boundary.len() < 3 || matches.len() != 1 {
+                .map(|(index, _)| index);
+            let Some(index) = matches.next() else {
+                return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+            };
+            if boundary.len() < 3 || matches.next().is_some() {
                 return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
             }
-            let index = matches[0];
             let adjacent = [
                 boundary[(index + boundary.len() - 1) % boundary.len()],
                 boundary[(index + 1) % boundary.len()],
@@ -1448,26 +1458,16 @@ pub fn diagnose_dyadic_shared_vertex_sector_boundaries_v1(
             if adjacent[0] == adjacent[1] {
                 return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
             }
-            let points = adjacent
-                .map(|other| {
-                    sector_boundary_local_point(
-                        input.geometry,
-                        gap.vertex,
-                        other,
-                        record.cutout_radius_mm,
-                        input.thickness_mm,
-                    )
-                })
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
-            local.push((
-                gap.pair,
-                gap.vertex,
-                face,
-                points
-                    .try_into()
-                    .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?,
-            ));
+            let [predecessor, successor] = adjacent.map(|other| {
+                sector_boundary_local_point(
+                    input.geometry,
+                    gap.vertex,
+                    other,
+                    record.cutout_radius_mm,
+                    input.thickness_mm,
+                )
+            });
+            local.push((gap.pair, gap.vertex, face, [predecessor?, successor?]));
         }
     }
     let mut leaves = Vec::new();
@@ -1506,16 +1506,22 @@ pub fn diagnose_dyadic_shared_vertex_sector_boundaries_v1(
         }
         leaves.push((leaf.depth, leaf.index, entries));
     }
+    let mut radius_binding = Vec::new();
+    radius_binding
+        .try_reserve_exact(records.len())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    radius_binding.extend(
+        records
+            .iter()
+            .map(|record| (record.vertex, record.cutout_radius_mm.to_bits())),
+    );
     Ok(DyadicSharedVertexSectorBoundaryDiagnosticV1 {
-        issuer: input.geometry.clone(),
+        issuer: input.geometry.instance_anchor_v1(),
         schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
         closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
         max_work_per_point,
-        radius_binding: records
-            .iter()
-            .map(|record| (record.vertex, record.cutout_radius_mm.to_bits()))
-            .collect(),
+        radius_binding,
         leaves,
     })
 }
@@ -1610,7 +1616,7 @@ pub fn diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
             DyadicFaceTransformIntervalErrorV1::ResourceLimit
         });
     }
-    if !sectors.issuer.same_instance(input.geometry)
+    if !sectors.issuer.matches(input.geometry)
         || sectors.schedule_hash != input.schedule.certificate_binding_fingerprint_v2()
         || sectors.closure_hash != input.closure.partition_binding_fingerprint_v2()
         || sectors.thickness_bits != input.thickness_mm.to_bits()
@@ -1668,7 +1674,7 @@ pub fn diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
         leaves.push((*depth, *index, bounds));
     }
     Ok(DyadicSharedVertexBoundaryPointDistanceDiagnosticV1 {
-        issuer: input.geometry.clone(),
+        issuer: input.geometry.instance_anchor_v1(),
         schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
         closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
@@ -1788,23 +1794,26 @@ pub fn diagnose_dyadic_shared_vertex_wedges_v1(
             if boundary.len() < 3 || boundary.len() > MAX_SHARED_VERTEX_WEDGE_VERTICES_V1 {
                 return Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit);
             }
-            let positions = boundary
-                .iter()
-                .map(|id| {
-                    let p = input
-                        .geometry
-                        .vertex_position(*id)
-                        .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
-                    Ok([exact(p.x())?, exact(p.z())?])
-                })
-                .collect::<Result<Vec<_>, DyadicFaceTransformIntervalErrorV1>>()?;
-            let indices = boundary
+            let mut positions = Vec::new();
+            positions
+                .try_reserve_exact(boundary.len())
+                .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+            for id in boundary {
+                let point = input
+                    .geometry
+                    .vertex_position(*id)
+                    .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+                positions.push([exact(point.x())?, exact(point.z())?]);
+            }
+            let mut indices = boundary
                 .iter()
                 .enumerate()
                 .filter(|(_, id)| **id == gap.vertex)
-                .map(|(i, _)| i)
-                .collect::<Vec<_>>();
-            if indices.len() != 1 {
+                .map(|(index, _)| index);
+            let Some(pivot) = indices.next() else {
+                return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+            };
+            if indices.next().is_some() {
                 return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
             }
             let mut meter = WedgeExactMeterV1::new(max_work_per_cell)?;
@@ -1812,7 +1821,6 @@ pub fn diagnose_dyadic_shared_vertex_wedges_v1(
                 meter.charge(WedgeExactMeterV1::bits(&p[0]))?;
                 meter.charge(WedgeExactMeterV1::bits(&p[1]))?;
             }
-            let pivot = indices[0];
             let prev = &positions[(pivot + positions.len() - 1) % positions.len()];
             let next = &positions[(pivot + 1) % positions.len()];
             let dprev = [meter.sub(&prev[0], &o[0])?, meter.sub(&prev[1], &o[1])?];
@@ -2004,10 +2012,15 @@ pub fn diagnose_dyadic_shared_vertex_wedges_v1(
         }
         leaves.push((leaf.depth, leaf.index, cells));
     }
-    let radius_binding = records
-        .iter()
-        .map(|r| (r.vertex, r.cutout_radius_mm.to_bits()))
-        .collect::<Vec<_>>();
+    let mut radius_binding = Vec::new();
+    radius_binding
+        .try_reserve_exact(records.len())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    radius_binding.extend(
+        records
+            .iter()
+            .map(|record| (record.vertex, record.cutout_radius_mm.to_bits())),
+    );
     let sector_content_hash = sector_boundary_content_hash_v1(sectors)?;
     let content_hash = wedge_content_hash_v1(
         &leaves,
@@ -2016,7 +2029,7 @@ pub fn diagnose_dyadic_shared_vertex_wedges_v1(
         sector_content_hash,
     )?;
     Ok(DyadicSharedVertexWedgeDiagnosticV1 {
-        issuer: input.geometry.clone(),
+        issuer: input.geometry.instance_anchor_v1(),
         schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
         closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
@@ -2092,6 +2105,11 @@ struct WedgeExactMeterV1 {
     bit_work: usize,
     max_bit_work: usize,
 }
+
+fn wedge_bigint_bits_v1(value: &BigInt) -> usize {
+    usize::try_from(value.bits()).unwrap_or(usize::MAX).max(1)
+}
+
 impl WedgeExactMeterV1 {
     fn new(limit: usize) -> Result<Self, DyadicFaceTransformIntervalErrorV1> {
         Ok(Self {
@@ -2113,11 +2131,7 @@ impl WedgeExactMeterV1 {
         self.bit_work
     }
     fn bits(v: &BigRational) -> usize {
-        v.numer()
-            .to_signed_bytes_le()
-            .len()
-            .max(v.denom().to_signed_bytes_le().len())
-            .saturating_mul(8)
+        wedge_bigint_bits_v1(v.numer()).max(wedge_bigint_bits_v1(v.denom()))
     }
     fn charge(&mut self, bits: usize) -> Result<(), DyadicFaceTransformIntervalErrorV1> {
         if bits > MAX_SHARED_VERTEX_WEDGE_BITS_V1 {
@@ -2202,9 +2216,8 @@ fn wedge_check_point_bits_v1(
     point: &[BigRational; 2],
 ) -> Result<(), DyadicFaceTransformIntervalErrorV1> {
     if point.iter().any(|v| {
-        v.numer().to_signed_bytes_le().len().saturating_mul(8) > MAX_SHARED_VERTEX_WEDGE_BITS_V1
-            || v.denom().to_signed_bytes_le().len().saturating_mul(8)
-                > MAX_SHARED_VERTEX_WEDGE_BITS_V1
+        wedge_bigint_bits_v1(v.numer()) > MAX_SHARED_VERTEX_WEDGE_BITS_V1
+            || wedge_bigint_bits_v1(v.denom()) > MAX_SHARED_VERTEX_WEDGE_BITS_V1
     }) {
         Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
     } else {
@@ -2279,7 +2292,7 @@ pub fn diagnose_dyadic_shared_vertex_wedge_separation_v1(
 ) -> Result<DyadicSharedVertexWedgeSeparationDiagnosticV1, DyadicFaceTransformIntervalErrorV1> {
     if max_work_per_pair == 0
         || max_work_per_pair > MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1
-        || !wedges.issuer.same_instance(input.geometry)
+        || !wedges.issuer.matches(input.geometry)
         || wedges.schedule_hash != input.schedule.certificate_binding_fingerprint_v2()
         || wedges.closure_hash != input.closure.partition_binding_fingerprint_v2()
         || wedges.thickness_bits != input.thickness_mm.to_bits()
@@ -2345,7 +2358,7 @@ pub fn diagnose_dyadic_shared_vertex_wedge_separation_v1(
     let content_hash =
         wedge_separation_content_hash_v1(&leaves, max_work_per_pair, wedge_content_hash)?;
     Ok(DyadicSharedVertexWedgeSeparationDiagnosticV1 {
-        issuer: input.geometry.clone(),
+        issuer: input.geometry.instance_anchor_v1(),
         schedule_hash: input.schedule.certificate_binding_fingerprint_v2(),
         closure_hash: input.closure.partition_binding_fingerprint_v2(),
         thickness_bits: input.thickness_mm.to_bits(),
@@ -2367,7 +2380,10 @@ fn exact_common_axis_gap_lower_v1(
         let forward = exact(b[axis][0])? - exact(a[axis][1])?;
         let reverse = exact(a[axis][0])? - exact(b[axis][1])?;
         let gap = forward.max(reverse);
-        best = Some(best.map_or(gap.clone(), |current| current.max(gap)));
+        best = Some(match best {
+            Some(current) => current.max(gap),
+            None => gap,
+        });
     }
     let best = best.ok_or(DyadicFaceTransformIntervalErrorV1::Unproven)?;
     let interval = ori_numeric::rational_interval_to_f64_outward(&best, &best)
@@ -2480,12 +2496,14 @@ fn interval_point_distance_lower_v1(
     let exact =
         |value| BigRational::from_f64(value).ok_or(DyadicFaceTransformIntervalErrorV1::Unproven);
     let zero = BigRational::from_integer(0.into());
-    let mut squared = zero.clone();
+    let mut squared = BigRational::from_integer(0.into());
     for axis in 0..3 {
         let first = exact(left[axis].lower())? - exact(right[axis].upper())?;
         let second = exact(right[axis].lower())? - exact(left[axis].upper())?;
-        let separation = std::cmp::max(zero.clone(), std::cmp::max(first, second));
-        squared += &separation * &separation;
+        let separation = std::cmp::max(first, second);
+        if separation > zero {
+            squared += &separation * &separation;
+        }
     }
     let (lower, _) =
         ori_numeric::rational_sqrt_bounds(&squared, ori_numeric::ExpressionLimits::default())
@@ -2805,27 +2823,42 @@ pub fn certify_tree_continuous_path_from_pose_with_control_v1(
     control: &CooperativeOperationControlV1<'_>,
 ) -> Result<Option<StackedFoldTreeContinuousCertificateV1>, StackedFoldPathDiagnosticErrorV1> {
     path_checkpoint_v1(control)?;
-    let source_absolute = source_pose.hinge_angles().to_vec();
-    let target_absolute = target_absolute.as_slice().to_vec();
     let diagnostic = diagnose_collective_hinge_path_from_pose_with_control_v1(
         model,
         source_pose,
-        &source_absolute,
-        &target_absolute,
+        source_pose.hinge_angles(),
+        target_absolute.as_slice(),
         paper_thickness_mm,
         limits,
         control,
     )?;
     path_checkpoint_v1(control)?;
-    Ok((diagnostic.continuous_clearance_certified()
-        && diagnostic.continuous_certificate_model_id().is_some())
-    .then_some(StackedFoldTreeContinuousCertificateV1 {
+    if !diagnostic.continuous_clearance_certified()
+        || diagnostic.continuous_certificate_model_id().is_none()
+    {
+        return Ok(None);
+    }
+    let Some(source_absolute) = try_retain_hinge_angles_v1(source_pose.hinge_angles()) else {
+        return Ok(None);
+    };
+    let Some(target_absolute) = try_retain_hinge_angles_v1(target_absolute.as_slice()) else {
+        return Ok(None);
+    };
+    path_checkpoint_v1(control)?;
+    Ok(Some(StackedFoldTreeContinuousCertificateV1 {
         source_absolute,
         target_absolute,
         paper_thickness_bits: paper_thickness_mm.to_bits(),
         limits,
         diagnostic,
     }))
+}
+
+fn try_retain_hinge_angles_v1(angles: &[HingeAngle]) -> Option<Vec<HingeAngle>> {
+    let mut retained = Vec::new();
+    retained.try_reserve_exact(angles.len()).ok()?;
+    retained.extend_from_slice(angles);
+    Some(retained)
 }
 
 fn exact_hinge_angles_match_v1(left: &[HingeAngle], right: &[HingeAngle]) -> bool {
@@ -2853,10 +2886,9 @@ impl PositiveThicknessTreeContinuousCertificateV1 {
         let mut hash = sha2::Sha256::new();
         use sha2::Digest as _;
         hash.update(b"positive_thickness_tree_continuous_certificate_binding_v2");
-        let model_id = self
-            .diagnostic
-            .continuous_certificate_model_id()
-            .expect("a native positive-thickness certificate always has a model ID");
+        let Some(model_id) = self.diagnostic.continuous_certificate_model_id() else {
+            return [0; 32];
+        };
         hash.update((model_id.len() as u64).to_be_bytes());
         hash.update(model_id.as_bytes());
         hash.update(
@@ -2919,30 +2951,33 @@ pub fn certify_positive_thickness_tree_continuous_path_v1(
     if !paper_thickness_mm.is_finite() || paper_thickness_mm <= 0.0 {
         return None;
     }
-    let source_absolute = CanonicalHingeAngles::new(source_pose.hinge_angles().to_vec()).ok()?;
     let diagnostic = diagnose_collective_hinge_path_from_pose_v1(
         model,
         source_pose,
-        source_absolute.as_slice(),
+        source_pose.hinge_angles(),
         target_absolute.as_slice(),
         paper_thickness_mm,
         StackedFoldPathDiagnosticLimitsV1::default(),
     )
     .ok()?;
-    diagnostic.continuous_clearance_certified().then_some(
-        PositiveThicknessTreeContinuousCertificateV1 {
-            source_absolute,
-            target_absolute: target_absolute.clone(),
-            paper_thickness_bits: paper_thickness_mm.to_bits(),
-            diagnostic,
-        },
-    )
+    if !diagnostic.continuous_clearance_certified() {
+        return None;
+    }
+    let source_absolute =
+        CanonicalHingeAngles::new(try_retain_hinge_angles_v1(source_pose.hinge_angles())?).ok()?;
+    let target_absolute = target_absolute.try_clone_v1().ok()?;
+    Some(PositiveThicknessTreeContinuousCertificateV1 {
+        source_absolute,
+        target_absolute,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        diagnostic,
+    })
 }
 
 /// Read-only proof that a source ply order can be transported to a Tree
 /// endpoint: every broad-phase candidate is authenticated by the endpoint
 /// topology memo as shared-vertex-only contact.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct SharedVertexTreeLayerTransportProofV1 {
     source: LayerOrderSnapshot,
     target_absolute: CanonicalHingeAngles,
@@ -2951,6 +2986,14 @@ pub struct SharedVertexTreeLayerTransportProofV1 {
 }
 
 impl SharedVertexTreeLayerTransportProofV1 {
+    #[must_use]
+    pub fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        checked_shared_vertex_tree_layer_transport_retained_bytes_v1(
+            self.source.checked_deep_retained_bytes_v1()?,
+            self.target_absolute.checked_retained_bytes_v1()?,
+        )
+    }
+
     #[must_use]
     pub fn is_for(
         &self,
@@ -2964,16 +3007,14 @@ impl SharedVertexTreeLayerTransportProofV1 {
         self.source == *source
             && self.target_absolute == *target_absolute
             && self.paper_thickness_bits == paper_thickness_mm.to_bits()
-            && positive.is_for(model, source_pose, target_absolute, paper_thickness_mm)
-            && prepare_shared_vertex_tree_layer_transport_v1(
+            && shared_vertex_tree_layer_transport_enumerated_pairs_v1(
                 model,
                 source_pose,
-                source,
                 target_absolute,
                 paper_thickness_mm,
                 positive,
             )
-            .is_some_and(|actual| actual == *self)
+            .is_some_and(|enumerated_pairs| enumerated_pairs == self.enumerated_pairs)
     }
 
     #[must_use]
@@ -2990,6 +3031,59 @@ pub fn prepare_shared_vertex_tree_layer_transport_v1(
     paper_thickness_mm: f64,
     positive: &PositiveThicknessTreeContinuousCertificateV1,
 ) -> Option<SharedVertexTreeLayerTransportProofV1> {
+    let enumerated_pairs = shared_vertex_tree_layer_transport_enumerated_pairs_v1(
+        model,
+        source_pose,
+        target_absolute,
+        paper_thickness_mm,
+        positive,
+    )?;
+    let source_retained_bytes = source.checked_deep_retained_bytes_v1()?;
+    let input_target_retained_bytes = target_absolute.checked_retained_bytes_v1()?;
+    let projected_target_retained_bytes =
+        checked_canonical_hinge_angles_projected_retained_bytes_v1(
+            target_absolute.as_slice().len(),
+        )?;
+    let projected_peak = checked_shared_vertex_tree_layer_transport_peak_bytes_v1(
+        source_retained_bytes,
+        input_target_retained_bytes,
+        projected_target_retained_bytes,
+    )?;
+    if projected_peak > ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES {
+        return None;
+    }
+    let retained_target = target_absolute.try_clone_v1().ok()?;
+    let actual_target_retained_bytes = retained_target.checked_retained_bytes_v1()?;
+    let actual_clone_peak = checked_shared_vertex_tree_layer_transport_peak_bytes_v1(
+        source_retained_bytes,
+        input_target_retained_bytes,
+        actual_target_retained_bytes,
+    )?;
+    if actual_clone_peak > ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES {
+        return None;
+    }
+    let retained_source = source
+        .try_clone_with_retained_byte_limit_v1(source_retained_bytes)
+        .ok()?;
+    let proof = SharedVertexTreeLayerTransportProofV1 {
+        source: retained_source,
+        target_absolute: retained_target,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        enumerated_pairs,
+    };
+    let actual_peak = source_retained_bytes
+        .checked_add(input_target_retained_bytes)?
+        .checked_add(proof.checked_deep_retained_bytes_v1()?)?;
+    (actual_peak <= ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES).then_some(proof)
+}
+
+fn shared_vertex_tree_layer_transport_enumerated_pairs_v1(
+    model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+    target_absolute: &CanonicalHingeAngles,
+    paper_thickness_mm: f64,
+    positive: &PositiveThicknessTreeContinuousCertificateV1,
+) -> Option<usize> {
     if !positive.is_for(model, source_pose, target_absolute, paper_thickness_mm) {
         return None;
     }
@@ -3017,12 +3111,38 @@ pub fn prepare_shared_vertex_tree_layer_transport_v1(
     {
         return None;
     }
-    Some(SharedVertexTreeLayerTransportProofV1 {
-        source: source.clone(),
-        target_absolute: target_absolute.clone(),
-        paper_thickness_bits: paper_thickness_mm.to_bits(),
-        enumerated_pairs: memo.enumerated_pairs(),
-    })
+    Some(memo.enumerated_pairs())
+}
+
+fn checked_shared_vertex_tree_layer_transport_retained_bytes_v1(
+    source_retained_bytes: usize,
+    target_retained_bytes: usize,
+) -> Option<usize> {
+    std::mem::size_of::<SharedVertexTreeLayerTransportProofV1>()
+        .checked_sub(std::mem::size_of::<LayerOrderSnapshot>())?
+        .checked_sub(std::mem::size_of::<CanonicalHingeAngles>())?
+        .checked_add(source_retained_bytes)?
+        .checked_add(target_retained_bytes)
+}
+
+fn checked_shared_vertex_tree_layer_transport_peak_bytes_v1(
+    source_retained_bytes: usize,
+    input_target_retained_bytes: usize,
+    retained_target_retained_bytes: usize,
+) -> Option<usize> {
+    source_retained_bytes
+        .checked_add(input_target_retained_bytes)?
+        .checked_add(
+            checked_shared_vertex_tree_layer_transport_retained_bytes_v1(
+                source_retained_bytes,
+                retained_target_retained_bytes,
+            )?,
+        )
+}
+
+fn checked_canonical_hinge_angles_projected_retained_bytes_v1(hinge_count: usize) -> Option<usize> {
+    std::mem::size_of::<CanonicalHingeAngles>()
+        .checked_add(std::mem::size_of::<HingeAngle>().checked_mul(hinge_count)?)
 }
 
 fn positive_tree_max_angle_degrees_v1(hinge_count: usize) -> Option<f64> {
@@ -3205,23 +3325,25 @@ fn collective_path_absolute_angles_v1<'a>(
     }) {
         return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
     }
-    let target_absolute = CanonicalHingeAngles::new(
-        source_absolute
-            .iter()
-            .map(|hinge| {
-                HingeAngle::new(
-                    hinge.edge(),
-                    if moving_hinges.contains(&hinge.edge()) {
-                        requested_angle_degrees
-                    } else {
-                        hinge.angle_degrees()
-                    },
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
+    let mut target = Vec::new();
+    target
+        .try_reserve_exact(source_absolute.len())
+        .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?;
+    for hinge in source_absolute {
+        target.push(
+            HingeAngle::new(
+                hinge.edge(),
+                if moving_hinges.contains(&hinge.edge()) {
+                    requested_angle_degrees
+                } else {
+                    hinge.angle_degrees()
+                },
+            )
             .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?,
-    )
-    .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?;
+        );
+    }
+    let target_absolute = CanonicalHingeAngles::new(target)
+        .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?;
     Ok((source_absolute, target_absolute))
 }
 
@@ -3318,33 +3440,35 @@ fn diagnose_collective_hinge_path_from_pose_with_optional_authorities_v1(
     {
         return Err(StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch);
     }
-    let changed = source_absolute
-        .iter()
-        .zip(target_absolute.iter())
-        .filter(|(source, target)| {
-            source.angle_degrees().to_bits() != target.angle_degrees().to_bits()
-        })
-        .collect::<Vec<_>>();
-    let Some((_, first_target)) = changed.first().copied() else {
+    let mut moving_hinges = Vec::new();
+    moving_hinges
+        .try_reserve_exact(source_absolute.len())
+        .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?;
+    let mut first_target_degrees = None;
+    let mut path_excursion_degrees = 0.0_f64;
+    for (source, target) in source_absolute.iter().zip(target_absolute) {
+        if source.angle_degrees().to_bits() == target.angle_degrees().to_bits() {
+            continue;
+        }
+        let target_degrees = target.angle_degrees();
+        if first_target_degrees
+            .is_some_and(|first: f64| first.to_bits() != target_degrees.to_bits())
+        {
+            return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
+        }
+        first_target_degrees.get_or_insert(target_degrees);
+        path_excursion_degrees =
+            path_excursion_degrees.max((target_degrees - source.angle_degrees()).abs());
+        moving_hinges.push(source.edge());
+    }
+    let Some(first_target_degrees) = first_target_degrees else {
         return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
     };
-    if changed.iter().any(|(_, target)| {
-        target.angle_degrees().to_bits() != first_target.angle_degrees().to_bits()
-    }) {
-        return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
-    }
-    let path_excursion_degrees = changed
-        .iter()
-        .map(|(source, target)| (target.angle_degrees() - source.angle_degrees()).abs())
-        .fold(0.0_f64, f64::max);
     diagnose_collective_hinge_path_absolute_inner_v1(
         model,
         initial_pose,
-        &changed
-            .iter()
-            .map(|(source, _)| source.edge())
-            .collect::<Vec<_>>(),
-        first_target.angle_degrees(),
+        &moving_hinges,
+        first_target_degrees,
         path_excursion_degrees,
         paper_thickness_mm,
         limits,
@@ -3383,7 +3507,11 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
     model
         .bind_pose(initial_pose)
         .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
-    let moving = moving_hinges.iter().copied().collect::<HashSet<_>>();
+    let mut moving = HashSet::new();
+    moving
+        .try_reserve(moving_hinges.len())
+        .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidLimits)?;
+    moving.extend(moving_hinges.iter().copied());
     if moving.len() != moving_hinges.len()
         || !moving
             .iter()
@@ -3443,16 +3571,18 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
     let has_sampled_layer_admission = sampled_layer_snapshot_matches.is_some();
     let mut sampled_nonblocking_pose_count = 0;
     let mut first_sampled_blocking_angle_degrees = None;
-    let mut positive_endpoint_memo_pair_entries = 0;
-    let mut positive_endpoint_exact_pair_calls = 0;
+    let mut positive_endpoint_memo_pair_entries = 0usize;
+    let mut positive_endpoint_exact_pair_calls = 0usize;
     for index in 0..=limits.sample_intervals {
         path_checkpoint_v1(control)?;
         let progress = index as f64 / limits.sample_intervals as f64;
         let angle = requested_angle_degrees * progress;
-        let angles = initial_pose
-            .hinge_angles()
-            .iter()
-            .map(|hinge| {
+        let mut angles = Vec::new();
+        angles
+            .try_reserve_exact(initial_pose.hinge_angles().len())
+            .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?;
+        for hinge in initial_pose.hinge_angles() {
+            angles.push(
                 HingeAngle::new(
                     hinge.edge(),
                     if moving.contains(&hinge.edge()) {
@@ -3462,22 +3592,23 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                         hinge.angle_degrees()
                     },
                 )
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?;
+                .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?,
+            );
+        }
         let angles = CanonicalHingeAngles::new(angles)
             .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?;
-        let pose = if index == 0 {
-            // The initial-sample layer admission is bound to this exact pose
-            // instance. Re-solving bit-identical angles would mint a distinct
-            // issuer instance and make the strict source-bound callback reject
-            // every otherwise valid admission at sample zero.
-            initial_pose.clone()
+        let owned_pose = if index == 0 {
+            None
         } else {
-            model
-                .solve(initial_pose.fixed_face(), &angles)
-                .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?
+            Some(
+                model
+                    .solve(initial_pose.fixed_face(), &angles)
+                    .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?,
+            )
         };
+        // The initial-sample layer admission is bound to this exact pose
+        // instance. Borrow it directly instead of deep-cloning its transforms.
+        let pose = owned_pose.as_ref().unwrap_or(initial_pose);
         if positive_thickness && index > 0 && index < limits.sample_intervals {
             // For the strict two-triangle/one-hinge class up to a right angle,
             // radial separation changes monotonically. The requested endpoint
@@ -3488,10 +3619,10 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
         }
         if positive_thickness && index == limits.sample_intervals {
             let bound = model
-                .bind_pose(&pose)
+                .bind_pose(pose)
                 .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
             let endpoint_candidates = positive_two_hinge_topology
-                .then(|| positive_endpoint_candidates_v1(model, &pose, paper_thickness_mm))
+                .then(|| positive_endpoint_candidates_v1(model, pose, paper_thickness_mm))
                 .flatten();
             let endpoint_topology = if endpoint_candidates.as_ref().is_some_and(|candidates| {
                 candidates
@@ -3501,7 +3632,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                 Some(
                     prepare_positive_thickness_tree_endpoint_topology_memo_v1(
                         model,
-                        &pose,
+                        pose,
                         paper_thickness_mm,
                         limits.static_collision,
                     )
@@ -3526,9 +3657,12 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                 if let (Some(endpoint_candidates), true) =
                     (endpoint_candidates.as_ref(), boundary_proven)
                 {
-                    let expected_pairs =
-                        model.face_ids().len() * model.face_ids().len().saturating_sub(1) / 2;
+                    let expected_pairs = checked_unordered_pair_count_v1(model.face_ids().len())
+                        .ok_or(StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable)?;
                     let mut exact_pairs = Vec::new();
+                    exact_pairs.try_reserve_exact(expected_pairs).map_err(|_| {
+                        StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable
+                    })?;
                     for (index, first) in model.face_ids().iter().enumerate() {
                         for second in model.face_ids().iter().skip(index + 1) {
                             path_checkpoint_v1(control)?;
@@ -3540,7 +3674,10 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                             if adjacent || !endpoint_candidates.contains(&(*first, *second)) {
                                 continue;
                             }
-                            positive_endpoint_memo_pair_entries += 1;
+                            positive_endpoint_memo_pair_entries =
+                                positive_endpoint_memo_pair_entries.checked_add(1).ok_or(
+                                    StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable,
+                                )?;
                             if faces_share_material_vertex_v1(model, *first, *second)
                                 || endpoint_topology.as_ref().is_some_and(|memo| {
                                     memo.enumerated_pairs() == expected_pairs
@@ -3647,7 +3784,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
         }
         let snapshot = diagnose_static_collision_geometry_with_control_v1(
             model,
-            &pose,
+            pose,
             paper_thickness_mm,
             limits.static_collision,
             control,
@@ -3671,7 +3808,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
                 }
             });
         let sampled_layer_order_admitted = match sampled_layer_snapshot_matches {
-            Some(matches) if matches(index, &pose, &snapshot) => true,
+            Some(matches) if matches(index, pose, &snapshot) => true,
             Some(_) if index == 0 => {
                 return Err(StackedFoldPathDiagnosticErrorV1::InitialLayerOrderUnavailable);
             }
@@ -3775,10 +3912,19 @@ fn two_hinge_interval_clearance_premises(
         return false;
     };
     let mut depth = HashMap::<FaceId, usize>::new();
+    if depth.try_reserve(face_count).is_err() {
+        return false;
+    }
     depth.insert(root, 0);
-    let mut queue = VecDeque::from([root]);
+    let mut queue = VecDeque::new();
+    if queue.try_reserve(face_count).is_err() {
+        return false;
+    }
+    queue.push_back(root);
     while let Some(face) = queue.pop_front() {
-        let parent_depth = depth[&face];
+        let Some(&parent_depth) = depth.get(&face) else {
+            return false;
+        };
         for hinge in model.hinges() {
             let next = if hinge.left_face() == face {
                 Some(hinge.right_face())
@@ -3807,6 +3953,12 @@ fn two_hinge_interval_clearance_premises(
         let Some(boundary) = model.face_boundary(*face) else {
             return false;
         };
+        if material_points
+            .try_reserve(boundary.vertices().len())
+            .is_err()
+        {
+            return false;
+        }
         for vertex in boundary.vertices() {
             let Some(point) = initial_pose.vertex_position(*vertex) else {
                 return false;
@@ -3814,11 +3966,16 @@ fn two_hinge_interval_clearance_premises(
             material_points.push(point);
         }
     }
-    let hinge_points = model
-        .hinges()
-        .iter()
-        .flat_map(|hinge| [hinge.start(), hinge.end()])
-        .collect::<Vec<_>>();
+    let Some(hinge_point_count) = model.hinges().len().checked_mul(2) else {
+        return false;
+    };
+    let mut hinge_points = Vec::new();
+    if hinge_points.try_reserve_exact(hinge_point_count).is_err() {
+        return false;
+    }
+    for hinge in model.hinges() {
+        hinge_points.extend([hinge.start(), hinge.end()]);
+    }
     let mut maximum_radius = 0.0_f64;
     for point in &material_points {
         for origin in &hinge_points {
@@ -3846,7 +4003,10 @@ fn two_hinge_interval_clearance_premises(
     // depth d moves by at most d*r*theta, so pairs omitted by this rest-order
     // sweep remain strictly x-separated throughout every adaptive leaf.
     let full_width_radians = requested_angle_degrees * std::f64::consts::PI / 180.0;
-    let mut path_bounds = Vec::with_capacity(face_count);
+    let mut path_bounds = Vec::new();
+    if path_bounds.try_reserve_exact(face_count).is_err() {
+        return false;
+    }
     for face in model.face_ids() {
         let expansion =
             *depth.get(face).unwrap_or(&usize::MAX) as f64 * maximum_radius * full_width_radians;
@@ -3879,6 +4039,15 @@ fn two_hinge_interval_clearance_premises(
             .then_with(|| left.0.canonical_bytes().cmp(&right.0.canonical_bytes()))
     });
     let mut canonical_candidates = Vec::new();
+    let Some(candidate_capacity) = checked_unordered_pair_count_v1(face_count) else {
+        return false;
+    };
+    if canonical_candidates
+        .try_reserve_exact(candidate_capacity.min(MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1))
+        .is_err()
+    {
+        return false;
+    }
     for first in 0..path_bounds.len() {
         if path_checkpoint_v1(control).is_err() {
             *metrics = (usize::MAX, 0);
@@ -3909,7 +4078,8 @@ fn two_hinge_interval_clearance_premises(
         let midpoint = (lower + upper) / 2.0;
         let half_width_radians = (upper - lower) * std::f64::consts::PI / 360.0;
         let pose = solve_collective_pose(model, initial_pose, moving, midpoint)?;
-        let mut bounds = Vec::new();
+        let mut bounds = HashMap::new();
+        bounds.try_reserve(face_count).ok()?;
         for face in model.face_ids() {
             let expansion = *depth.get(face)? as f64 * maximum_radius * half_width_radians;
             if !expansion.is_finite() {
@@ -3928,12 +4098,10 @@ fn two_hinge_interval_clearance_premises(
                     maximum[axis] = maximum[axis].max(value + expansion);
                 }
             }
-            bounds.push((*face, minimum, maximum));
+            if bounds.insert(*face, (minimum, maximum)).is_some() {
+                return None;
+            }
         }
-        let bounds = bounds
-            .into_iter()
-            .map(|(face, minimum, maximum)| (face, (minimum, maximum)))
-            .collect::<HashMap<_, _>>();
         let mut strict_margin = f64::INFINITY;
         for (first, second) in &canonical_candidates {
             if path_checkpoint_v1(control).is_err() {
@@ -3953,7 +4121,10 @@ fn two_hinge_interval_clearance_premises(
         }
         Some((strict_margin > 0.0, strict_margin))
     };
-    let mut pending = Vec::with_capacity(interval_count);
+    let mut pending = Vec::new();
+    if pending.try_reserve_exact(interval_count).is_err() {
+        return false;
+    }
     for interval in 0..interval_count {
         if path_checkpoint_v1(control).is_err() {
             *metrics = (usize::MAX, 0);
@@ -4000,6 +4171,9 @@ fn two_hinge_interval_clearance_premises(
             return false;
         }
         leaf_count += 1;
+        if pending.try_reserve_exact(2).is_err() {
+            return false;
+        }
         for (child_lower, child_upper) in [(lower, midpoint), (midpoint, upper)] {
             if path_checkpoint_v1(control).is_err() {
                 *metrics = (usize::MAX, 0);
@@ -4033,10 +4207,12 @@ fn solve_collective_pose(
     moving: &HashSet<EdgeId>,
     angle: f64,
 ) -> Option<MaterialTreePose> {
-    let angles = initial_pose
-        .hinge_angles()
-        .iter()
-        .map(|hinge| {
+    let mut angles = Vec::new();
+    angles
+        .try_reserve_exact(initial_pose.hinge_angles().len())
+        .ok()?;
+    for hinge in initial_pose.hinge_angles() {
+        angles.push(
             HingeAngle::new(
                 hinge.edge(),
                 if moving.contains(&hinge.edge()) {
@@ -4045,10 +4221,10 @@ fn solve_collective_pose(
                     hinge.angle_degrees()
                 },
             )
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .ok()
-        .and_then(|angles| CanonicalHingeAngles::new(angles).ok())?;
+            .ok()?,
+        );
+    }
+    let angles = CanonicalHingeAngles::new(angles).ok()?;
     model.solve(initial_pose.fixed_face(), &angles).ok()
 }
 
@@ -4064,7 +4240,7 @@ pub struct StackedFoldCyclePathDiagnosticV1 {
 /// Opaque authority for one exact positive-thickness continuous schedule.
 #[derive(Debug, Clone)]
 pub struct PositiveThicknessContinuousCertificateV1 {
-    issuer: MaterialHingeGraphGeometry,
+    issuer: MaterialHingeGraphInstanceV1,
     fixed_face: FaceId,
     schedule_hash: [u8; 32],
     closure_hash: [u8; 32],
@@ -4084,7 +4260,7 @@ impl PositiveThicknessContinuousCertificateV1 {
         closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
         thickness: f64,
     ) -> bool {
-        self.issuer.same_instance(geometry)
+        self.issuer.matches(geometry)
             && self.fixed_face == fixed_face
             && self.schedule_hash == schedule.certificate_binding_fingerprint_v2()
             && self.closure_hash == closure.partition_binding_fingerprint_v2()
@@ -4102,6 +4278,14 @@ impl PositiveThicknessContinuousCertificateV1 {
     #[must_use]
     pub const fn thickness_bits(&self) -> u64 {
         self.thickness_bits
+    }
+
+    /// The certificate owns no variable-sized geometry after issuance; its
+    /// identity anchor preserves exact issuer binding without cloning the
+    /// material graph.
+    #[must_use]
+    pub const fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
     }
 }
 
@@ -4152,15 +4336,28 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
         || max_leaves > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
         || audit.closure_hinges().is_empty()
         || moving_edges.is_empty()
+        || checked_uniform_cycle_operation_count_v1(geometry.hinges().len()).is_none()
     {
         return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
     }
-    let moving = moving_edges.iter().copied().collect::<HashSet<_>>();
-    let initial_by_edge = initial_angles
-        .as_slice()
-        .iter()
-        .map(|angle| (angle.edge(), angle.angle_degrees()))
-        .collect::<HashMap<_, _>>();
+    let mut moving = HashSet::new();
+    if moving.try_reserve(moving_edges.len()).is_err() {
+        return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+    }
+    moving.extend(moving_edges.iter().copied());
+    let mut initial_by_edge = HashMap::new();
+    if initial_by_edge
+        .try_reserve(initial_angles.as_slice().len())
+        .is_err()
+    {
+        return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+    }
+    initial_by_edge.extend(
+        initial_angles
+            .as_slice()
+            .iter()
+            .map(|angle| (angle.edge(), angle.angle_degrees())),
+    );
     if moving.len() != moving_edges.len()
         || initial_angles.as_slice().len() != geometry.hinges().len()
         || geometry.hinges().iter().any(|hinge| {
@@ -4174,10 +4371,12 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
         return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
     }
     let residual = |angle: f64| -> Option<f64> {
-        let values = initial_angles
-            .as_slice()
-            .iter()
-            .map(|hinge| {
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(initial_angles.as_slice().len())
+            .ok()?;
+        for hinge in initial_angles.as_slice() {
+            values.push(
                 HingeAngle::new(
                     hinge.edge(),
                     if moving.contains(&hinge.edge()) {
@@ -4186,9 +4385,9 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
                         hinge.angle_degrees()
                     },
                 )
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
+                .ok()?,
+            );
+        }
         let angles = CanonicalHingeAngles::new(values).ok()?;
         geometry
             .measure_spanning_closure(audit, fixed_face, &angles)
@@ -4216,15 +4415,31 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
     // Each spanning composition performs a bounded number of binary64
     // additions and multiplications per hinge. Gamma(n) with 64 operations
     // per hinge bounds their accumulated forward error at material scale.
-    let operation_count = geometry.hinges().len().saturating_mul(64) as f64;
+    let Some(operation_count) = checked_uniform_cycle_operation_count_v1(geometry.hinges().len())
+    else {
+        return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+    };
+    let operation_count = operation_count as f64;
     let roundoff_bound =
         operation_count * f64::EPSILON / (1.0 - operation_count * f64::EPSILON) * scale.max(1.0);
     if requested_residual <= roundoff_bound {
-        return UniformCycleClosureRootsV1::Roots(vec![requested_angle_degrees]);
+        let mut roots = Vec::new();
+        if roots.try_reserve_exact(1).is_err() {
+            return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+        }
+        roots.push(requested_angle_degrees);
+        return UniformCycleClosureRootsV1::Roots(roots);
     }
     let lipschitz = (geometry.hinges().len() as f64 * 2.0 + 1.0) * scale.max(1.0);
-    let mut pending = vec![(0.0, requested_angle_degrees, 0_usize)];
+    let mut pending = Vec::new();
+    if pending.try_reserve_exact(1).is_err() {
+        return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+    }
+    pending.push((0.0, requested_angle_degrees, 0_usize));
     let mut roots = Vec::new();
+    if roots.try_reserve_exact(max_leaves).is_err() {
+        return UniformCycleClosureRootsV1::Indeterminate { examined_leaves: 0 };
+    }
     let mut leaves = 1_usize;
     let mut unresolved = false;
     while let Some((lower, upper, depth)) = pending.pop() {
@@ -4245,6 +4460,11 @@ pub fn enumerate_uniform_cycle_closure_roots_v1(
         if leaves >= max_leaves || depth >= MAX_STACKED_FOLD_INTERVAL_DEPTH_V1 {
             unresolved = true;
             continue;
+        }
+        if pending.try_reserve_exact(2).is_err() {
+            return UniformCycleClosureRootsV1::Indeterminate {
+                examined_leaves: leaves,
+            };
         }
         leaves += 1;
         pending.push((midpoint, upper, depth + 1));
@@ -4327,12 +4547,24 @@ pub fn diagnose_collective_cycle_path_v1(
     {
         return failed(None);
     }
-    let moving = moving_edges.iter().copied().collect::<HashSet<_>>();
-    let initial_by_edge = initial_angles
-        .as_slice()
-        .iter()
-        .map(|angle| (angle.edge(), angle.angle_degrees()))
-        .collect::<HashMap<_, _>>();
+    let mut moving = HashSet::new();
+    if moving.try_reserve(moving_edges.len()).is_err() {
+        return failed(None);
+    }
+    moving.extend(moving_edges.iter().copied());
+    let mut initial_by_edge = HashMap::new();
+    if initial_by_edge
+        .try_reserve(initial_angles.as_slice().len())
+        .is_err()
+    {
+        return failed(None);
+    }
+    initial_by_edge.extend(
+        initial_angles
+            .as_slice()
+            .iter()
+            .map(|angle| (angle.edge(), angle.angle_degrees())),
+    );
     if moving.len() != moving_edges.len()
         || initial_angles.as_slice().len() != geometry.hinges().len()
         || geometry.hinges().iter().any(|hinge| {
@@ -4346,24 +4578,24 @@ pub fn diagnose_collective_cycle_path_v1(
         return failed(None);
     }
     let angles_at = |angle: f64| {
-        CanonicalHingeAngles::new(
-            initial_angles
-                .as_slice()
-                .iter()
-                .map(|hinge| {
-                    HingeAngle::new(
-                        hinge.edge(),
-                        if moving.contains(&hinge.edge()) {
-                            angle
-                        } else {
-                            hinge.angle_degrees()
-                        },
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(initial_angles.as_slice().len())
+            .ok()?;
+        for hinge in initial_angles.as_slice() {
+            values.push(
+                HingeAngle::new(
+                    hinge.edge(),
+                    if moving.contains(&hinge.edge()) {
+                        angle
+                    } else {
+                        hinge.angle_degrees()
+                    },
+                )
                 .ok()?,
-        )
-        .ok()
+            );
+        }
+        CanonicalHingeAngles::new(values).ok()
     };
     let solve = |angle: f64| {
         geometry
@@ -4413,33 +4645,39 @@ pub fn diagnose_collective_cycle_path_v1(
                 || (hinge.left_face() == b && hinge.right_face() == a)
         })
     };
-    let mut pending = (0..interval_count)
-        .map(|index| {
-            (
-                requested_angle_degrees * index as f64 / interval_count as f64,
-                requested_angle_degrees * (index + 1) as f64 / interval_count as f64,
-                0_usize,
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut pending = Vec::new();
+    if pending.try_reserve_exact(interval_count).is_err() {
+        return failed(None);
+    }
+    for index in 0..interval_count {
+        pending.push((
+            requested_angle_degrees * index as f64 / interval_count as f64,
+            requested_angle_degrees * (index + 1) as f64 / interval_count as f64,
+            0_usize,
+        ));
+    }
     let mut leaves = interval_count;
     let mut work = 0_usize;
     while let Some((lower, upper, depth)) = pending.pop() {
         let midpoint = (lower + upper) / 2.0;
-        for angle in [lower, midpoint, upper] {
-            if solve(angle).is_none() {
-                return failed(Some(angle));
-            }
+        if solve(lower).is_none() {
+            return failed(Some(lower));
         }
         let Some(pose) = solve(midpoint) else {
             return failed(Some(midpoint));
         };
+        if solve(upper).is_none() {
+            return failed(Some(upper));
+        }
         let expansion = geometry.hinges().len() as f64
             * maximum_radius
             * (upper - lower)
             * std::f64::consts::PI
             / 360.0;
         let mut bounds = Vec::new();
+        if bounds.try_reserve_exact(geometry.face_ids().len()).is_err() {
+            return failed(None);
+        }
         for face in geometry.face_ids() {
             let Some(transform) = pose.face_transform(*face) else {
                 return failed(Some(midpoint));
@@ -4489,6 +4727,9 @@ pub fn diagnose_collective_cycle_path_v1(
             if depth >= MAX_STACKED_FOLD_INTERVAL_DEPTH_V1
                 || leaves >= MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
             {
+                return failed(None);
+            }
+            if pending.try_reserve_exact(2).is_err() {
                 return failed(None);
             }
             leaves += 1;
@@ -4623,6 +4864,19 @@ pub fn certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1(
     CanonicalPositiveThicknessCyclePathControlErrorV1,
 > {
     canonical_positive_cycle_checkpoint_v1(control)?;
+    if interval_count == 0
+        || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
+        || !(1..=MAX_STACKED_FOLD_INTERVAL_LEAVES_V1).contains(&closure.leaves().len())
+        || !paper_thickness_mm.is_finite()
+        || paper_thickness_mm <= 0.0
+        || closure.fixed_face() != fixed_face
+        || closure.schedule_binding_fingerprint_v2()
+            != schedule.certificate_binding_fingerprint_v2()
+        || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
+        || !schedule.matches_binding(geometry, audit, fixed_face)
+    {
+        return Ok(None);
+    }
     if !closure_every_leaf_covers_graph_with_control_v1(closure, geometry, Some(control))? {
         return Ok(None);
     }
@@ -4649,7 +4903,7 @@ pub fn certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1(
     Ok((diagnostic.continuous_certificate_model_id()
         == Some(STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1))
     .then(|| PositiveThicknessContinuousCertificateV1 {
-        issuer: geometry.clone(),
+        issuer: geometry.instance_anchor_v1(),
         fixed_face,
         schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         closure_hash: closure.partition_binding_fingerprint_v2(),
@@ -4707,6 +4961,13 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
     };
     let operation_is_current =
         || operation_control.is_none_or(|control| control.checkpoint().is_ok());
+    if interval_count == 0
+        || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
+        || !(1..=MAX_STACKED_FOLD_INTERVAL_LEAVES_V1).contains(&closure.leaves().len())
+        || paper_thickness_mm.is_some_and(|value| !value.is_finite() || value <= 0.0)
+    {
+        return failed();
+    }
     let closure_covers_graph =
         match closure_every_leaf_covers_graph_with_control_v1(closure, geometry, operation_control)
         {
@@ -4714,15 +4975,12 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             Err(_) => return failed(),
         };
     if !operation_is_current()
-        || interval_count == 0
-        || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
         || !closure_covers_graph
         || closure.fixed_face() != fixed_face
         || closure.schedule_binding_fingerprint_v2()
             != schedule.certificate_binding_fingerprint_v2()
         || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
         || !schedule.matches_binding(geometry, audit, fixed_face)
-        || paper_thickness_mm.is_some_and(|value| !value.is_finite() || value <= 0.0)
     {
         return failed();
     }
@@ -4860,11 +5118,16 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
                 return failed();
             }
             let face_count = geometry.face_ids().len();
+            let Some(pair_work) = checked_unordered_pair_count_v1(face_count)
+                .filter(|work| *work <= MAX_STACKED_FOLD_INTERVAL_WORK_V1)
+            else {
+                return failed();
+            };
             return StackedFoldCyclePathDiagnosticV1 {
                 certified: true,
                 first_closure_failure_angle_degrees: None,
                 leaf_count: closure.leaves().len(),
-                pair_work: face_count * (face_count - 1) / 2,
+                pair_work,
                 positive_thickness_bits: Some(thickness.to_bits()),
             };
         }
@@ -4884,23 +5147,30 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             geometry, audit, fixed_face, schedule, closure,
         )
     {
+        let Some(pair_work) = checked_unordered_pair_count_v1(geometry.face_ids().len())
+            .filter(|work| *work <= MAX_STACKED_FOLD_INTERVAL_WORK_V1)
+        else {
+            return failed();
+        };
         return StackedFoldCyclePathDiagnosticV1 {
             certified: true,
             first_closure_failure_angle_degrees: None,
             leaf_count: closure.leaves().len(),
-            pair_work: geometry.face_ids().len() * (geometry.face_ids().len() - 1) / 2,
+            pair_work,
             positive_thickness_bits: paper_thickness_mm.map(f64::to_bits),
         };
     }
-    let mut pending = (0..interval_count)
-        .map(|index| {
-            (
-                index as f64 / interval_count as f64,
-                (index + 1) as f64 / interval_count as f64,
-                0usize,
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut pending = Vec::new();
+    if pending.try_reserve_exact(interval_count).is_err() {
+        return failed();
+    }
+    for index in 0..interval_count {
+        pending.push((
+            index as f64 / interval_count as f64,
+            (index + 1) as f64 / interval_count as f64,
+            0usize,
+        ));
+    }
     let mut leaves = interval_count;
     let mut work = 0usize;
     while let Some((lower, upper, depth)) = pending.pop() {
@@ -4946,6 +5216,9 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             / 180.0
             + paper_thickness_mm.unwrap_or(0.0) * 0.5;
         let mut bounds = Vec::new();
+        if bounds.try_reserve_exact(geometry.face_ids().len()).is_err() {
+            return failed();
+        }
         for face in geometry.face_ids() {
             if !operation_is_current() {
                 return failed();
@@ -5009,6 +5282,9 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             {
                 return failed();
             }
+            if pending.try_reserve_exact(2).is_err() {
+                return failed();
+            }
             leaves += 1;
             pending.push((midpoint, upper, depth + 1));
             pending.push((lower, midpoint, depth + 1));
@@ -5044,19 +5320,20 @@ fn equal_endpoint_moving_edges_v1(
 ) -> Option<Vec<EdgeId>> {
     let initial = schedule.evaluate(0.0)?;
     let target = schedule.evaluate(1.0)?;
-    let initial_by_edge = initial
-        .as_slice()
-        .iter()
-        .map(|angle| (angle.edge(), angle.angle_degrees().to_bits()))
-        .collect::<HashMap<_, _>>();
-    let moving = target
-        .as_slice()
-        .iter()
-        .filter(|angle| {
-            initial_by_edge.get(&angle.edge()).copied() != Some(angle.angle_degrees().to_bits())
-        })
-        .map(|angle| angle.edge())
-        .collect::<Vec<_>>();
+    if initial.as_slice().len() != target.as_slice().len() {
+        return None;
+    }
+    let mut moving = Vec::new();
+    moving.try_reserve_exact(target.as_slice().len()).ok()?;
+    for target_angle in target.as_slice() {
+        let initial_angle = initial
+            .as_slice()
+            .iter()
+            .find(|angle| angle.edge() == target_angle.edge())?;
+        if initial_angle.angle_degrees().to_bits() != target_angle.angle_degrees().to_bits() {
+            moving.push(target_angle.edge());
+        }
+    }
     let common = target
         .as_slice()
         .iter()
@@ -5098,15 +5375,14 @@ fn theta_collective_axis_schedule_premises_v1(
     if moving.is_empty() {
         return false;
     }
-    let moving_hinges = geometry
+    let mut moving_hinges = geometry
         .hinges()
         .iter()
-        .filter(|hinge| moving.contains(&hinge.edge()))
-        .collect::<Vec<_>>();
-    let Some(reference) = moving_hinges.first() else {
+        .filter(|hinge| moving.contains(&hinge.edge()));
+    let Some(reference) = moving_hinges.next() else {
         return false;
     };
-    moving_hinges.iter().skip(1).all(|hinge| {
+    moving_hinges.all(|hinge| {
         exact_collinear_line(
             reference.start(),
             reference.axis(),
@@ -5326,6 +5602,9 @@ fn composed_symmetric_rational_local_groups_with_control_v1(
         return Ok(None);
     }
     let mut remaining = HashSet::new();
+    if remaining.try_reserve(geometry.face_ids().len()).is_err() {
+        return Ok(None);
+    }
     for face in geometry.face_ids() {
         controlled_group_checkpoint_v1(control)?;
         if *face != fixed_face {
@@ -5333,13 +5612,23 @@ fn composed_symmetric_rational_local_groups_with_control_v1(
         }
     }
     let mut result = HashMap::new();
+    if result.try_reserve(geometry.face_ids().len()).is_err() {
+        return Ok(None);
+    }
     for group_index in 0..count {
         controlled_group_checkpoint_v1(control)?;
         let Some(seed) = remaining.iter().next().copied() else {
             return Ok(None);
         };
-        let mut stack = vec![seed];
+        let mut stack = Vec::new();
+        if stack.try_reserve_exact(1).is_err() {
+            return Ok(None);
+        }
+        stack.push(seed);
         let mut faces = HashSet::new();
+        if faces.try_reserve(geometry.face_ids().len()).is_err() {
+            return Ok(None);
+        }
         while let Some(face) = stack.pop() {
             controlled_group_checkpoint_v1(control)?;
             if !remaining.remove(&face) {
@@ -5349,8 +5638,14 @@ fn composed_symmetric_rational_local_groups_with_control_v1(
             for hinge in geometry.hinges() {
                 controlled_group_checkpoint_v1(control)?;
                 if hinge.left_face() == face && hinge.right_face() != fixed_face {
+                    if stack.try_reserve(1).is_err() {
+                        return Ok(None);
+                    }
                     stack.push(hinge.right_face());
                 } else if hinge.right_face() == face && hinge.left_face() != fixed_face {
+                    if stack.try_reserve(1).is_err() {
+                        return Ok(None);
+                    }
                     stack.push(hinge.left_face());
                 }
             }
@@ -5359,6 +5654,9 @@ fn composed_symmetric_rational_local_groups_with_control_v1(
             return Ok(None);
         }
         let mut edges = Vec::new();
+        if edges.try_reserve_exact(geometry.hinges().len()).is_err() {
+            return Ok(None);
+        }
         for hinge in geometry.hinges() {
             controlled_group_checkpoint_v1(control)?;
             if faces.contains(&hinge.left_face()) || faces.contains(&hinge.right_face()) {
@@ -5420,6 +5718,9 @@ fn rational_cactus_star_local_groups_with_control_v1(
     {
         controlled_group_checkpoint_v1(control)?;
         let mut remaining = HashSet::new();
+        if remaining.try_reserve(geometry.face_ids().len()).is_err() {
+            return Ok(None);
+        }
         for face in geometry.face_ids() {
             controlled_group_checkpoint_v1(control)?;
             if *face != shared {
@@ -5427,6 +5728,9 @@ fn rational_cactus_star_local_groups_with_control_v1(
             }
         }
         let mut result = HashMap::new();
+        if result.try_reserve(geometry.face_ids().len()).is_err() {
+            return Ok(None);
+        }
         let mut valid = true;
         for group_index in 0..count {
             controlled_group_checkpoint_v1(control)?;
@@ -5434,8 +5738,15 @@ fn rational_cactus_star_local_groups_with_control_v1(
                 valid = false;
                 break;
             };
-            let mut stack = vec![seed];
+            let mut stack = Vec::new();
+            if stack.try_reserve_exact(1).is_err() {
+                return Ok(None);
+            }
+            stack.push(seed);
             let mut faces = HashSet::new();
+            if faces.try_reserve(geometry.face_ids().len()).is_err() {
+                return Ok(None);
+            }
             while let Some(face) = stack.pop() {
                 controlled_group_checkpoint_v1(control)?;
                 if !remaining.remove(&face) {
@@ -5445,13 +5756,22 @@ fn rational_cactus_star_local_groups_with_control_v1(
                 for hinge in geometry.hinges() {
                     controlled_group_checkpoint_v1(control)?;
                     if hinge.left_face() == face && hinge.right_face() != shared {
+                        if stack.try_reserve(1).is_err() {
+                            return Ok(None);
+                        }
                         stack.push(hinge.right_face());
                     } else if hinge.right_face() == face && hinge.left_face() != shared {
+                        if stack.try_reserve(1).is_err() {
+                            return Ok(None);
+                        }
                         stack.push(hinge.left_face());
                     }
                 }
             }
             let mut edges = Vec::new();
+            if edges.try_reserve_exact(geometry.hinges().len()).is_err() {
+                return Ok(None);
+            }
             for hinge in geometry.hinges() {
                 controlled_group_checkpoint_v1(control)?;
                 if faces.contains(&hinge.left_face()) || faces.contains(&hinge.right_face()) {
@@ -5495,14 +5815,17 @@ pub fn diagnose_continuous_pair_coverage_v1(
     if pair_count > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1 {
         return None;
     }
-    let mut faces = geometry.face_ids().to_vec();
+    let mut faces = Vec::new();
+    faces.try_reserve_exact(geometry.face_ids().len()).ok()?;
+    faces.extend_from_slice(geometry.face_ids());
     faces.sort_by_key(FaceId::canonical_bytes);
     if faces.windows(2).any(|pair| pair[0] == pair[1]) {
         return None;
     }
     let groups = composed_symmetric_rational_local_groups_v1(geometry, audit, fixed_face, schedule)
         .or_else(|| rational_cactus_star_local_groups_v1(geometry, audit, fixed_face, schedule));
-    let mut entries = Vec::with_capacity(pair_count);
+    let mut entries = Vec::new();
+    entries.try_reserve_exact(pair_count).ok()?;
     for first in 0..faces.len() {
         for second in first + 1..faces.len() {
             let pair = [faces[first], faces[second]];
@@ -5527,7 +5850,7 @@ pub fn diagnose_continuous_pair_coverage_v1(
         }
     }
     (entries.len() == pair_count).then(|| ContinuousPairCoverageRegistryV1 {
-        issuer: geometry.clone(),
+        issuer: geometry.instance_anchor_v1(),
         fixed_face,
         schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         entries,
@@ -5553,38 +5876,41 @@ pub fn diagnose_shared_hinge_continuous_corridor_gaps_v1(
     }
     let source = schedule.evaluate(0.0)?;
     let target = schedule.evaluate(1.0)?;
-    let source = source
-        .as_slice()
-        .iter()
-        .map(|angle| (angle.edge(), angle.angle_degrees().to_bits()))
-        .collect::<HashMap<_, _>>();
-    let target = target
-        .as_slice()
-        .iter()
-        .map(|angle| (angle.edge(), angle.angle_degrees().to_bits()))
-        .collect::<HashMap<_, _>>();
+    let mut source_by_edge = HashMap::new();
+    source_by_edge.try_reserve(source.as_slice().len()).ok()?;
+    for angle in source.as_slice() {
+        source_by_edge.insert(angle.edge(), angle.angle_degrees().to_bits());
+    }
+    let mut target_by_edge = HashMap::new();
+    target_by_edge.try_reserve(target.as_slice().len()).ok()?;
+    for angle in target.as_slice() {
+        target_by_edge.insert(angle.edge(), angle.angle_degrees().to_bits());
+    }
     let expected = registry
         .entries
         .iter()
         .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
         .count();
-    let mut gaps = Vec::with_capacity(expected);
+    if expected > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1 {
+        return None;
+    }
+    let mut gaps = Vec::new();
+    gaps.try_reserve_exact(expected).ok()?;
     for entry in registry
         .entries
         .iter()
         .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
     {
-        let hinges = geometry
-            .hinges()
-            .iter()
-            .filter(|hinge| {
-                (hinge.left_face() == entry.pair[0] && hinge.right_face() == entry.pair[1])
-                    || (hinge.left_face() == entry.pair[1] && hinge.right_face() == entry.pair[0])
-            })
-            .collect::<Vec<_>>();
-        let [hinge] = hinges.as_slice() else {
+        let mut hinges = geometry.hinges().iter().filter(|hinge| {
+            (hinge.left_face() == entry.pair[0] && hinge.right_face() == entry.pair[1])
+                || (hinge.left_face() == entry.pair[1] && hinge.right_face() == entry.pair[0])
+        });
+        let Some(hinge) = hinges.next() else {
             return None;
         };
+        if hinges.next().is_some() {
+            return None;
+        }
         let triangular_prerequisite = geometry
             .face_boundary_vertices(entry.pair[0])
             .is_some_and(|v| v.len() == 3)
@@ -5598,14 +5924,14 @@ pub fn diagnose_shared_hinge_continuous_corridor_gaps_v1(
         gaps.push(SharedHingeContinuousCorridorGapV1 {
             pair: entry.pair,
             hinge: hinge.edge(),
-            source_angle_bits: *source.get(&hinge.edge())?,
-            target_angle_bits: *target.get(&hinge.edge())?,
+            source_angle_bits: *source_by_edge.get(&hinge.edge())?,
+            target_angle_bits: *target_by_edge.get(&hinge.edge())?,
             derivative_bound_bits: derivative.to_bits(),
             triangular_prerequisite,
         });
     }
     (gaps.len() == expected).then(|| SharedHingeContinuousCorridorGapReportV1 {
-        issuer: geometry.clone(),
+        issuer: geometry.instance_anchor_v1(),
         fixed_face,
         schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         thickness_bits: paper_thickness_mm.to_bits(),
@@ -5651,21 +5977,23 @@ pub fn diagnose_shared_vertex_continuous_corridor_gaps_v1(
         }
         let first = geometry.face_boundary_vertices(entry.pair[0])?;
         let second = geometry.face_boundary_vertices(entry.pair[1])?;
-        let shared = first
+        let mut shared = first
             .iter()
             .copied()
-            .filter(|vertex| second.contains(vertex))
-            .collect::<Vec<_>>();
-        let [vertex] = shared.as_slice() else {
+            .filter(|vertex| second.contains(vertex));
+        let Some(vertex) = shared.next() else {
             return None;
         };
+        if shared.next().is_some() {
+            return None;
+        }
         gaps.push(SharedVertexContinuousCorridorGapV1 {
             pair: entry.pair,
-            vertex: *vertex,
+            vertex,
         });
     }
     (gaps.len() == expected).then(|| SharedVertexContinuousCorridorGapReportV1 {
-        issuer: geometry.clone(),
+        issuer: geometry.instance_anchor_v1(),
         fixed_face,
         schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         thickness_bits: paper_thickness_mm.to_bits(),
@@ -5712,10 +6040,13 @@ pub fn compose_shared_hinge_relief_coverage_v1(
     if gaps.gaps.len() > crate::MAX_HINGE_RELIEF_RECORDS_V1 {
         return Err(SharedHingeReliefCoverageErrorV1::ResourceLimit);
     }
-    let policy_edges = policies
-        .iter()
-        .map(|record| record.edge)
-        .collect::<HashSet<_>>();
+    let mut policy_edges = HashSet::new();
+    policy_edges
+        .try_reserve(policies.len())
+        .map_err(|_| SharedHingeReliefCoverageErrorV1::ResourceLimit)?;
+    for record in policies {
+        policy_edges.insert(record.edge);
+    }
     if policy_edges.len() != policies.len() || policy_edges.len() != gaps.gaps.len() {
         return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
     }
@@ -5737,14 +6068,24 @@ pub fn compose_shared_hinge_relief_coverage_v1(
     if covered.windows(2).any(|pair| pair[0].pair == pair[1].pair) {
         return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
     }
-    let remaining = registry
+    let remaining_count = registry
         .entries
         .iter()
         .filter(|entry| entry.kind != ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
-        .copied()
-        .collect();
+        .count();
+    let mut remaining = Vec::new();
+    remaining
+        .try_reserve_exact(remaining_count)
+        .map_err(|_| SharedHingeReliefCoverageErrorV1::ResourceLimit)?;
+    remaining.extend(
+        registry
+            .entries
+            .iter()
+            .filter(|entry| entry.kind != ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
+            .copied(),
+    );
     Ok(SharedHingeReliefCoverageReportV1 {
-        issuer: geometry.clone(),
+        issuer: geometry.instance_anchor_v1(),
         fixed_face,
         schedule_hash: schedule.certificate_binding_fingerprint_v2(),
         thickness_bits: paper_thickness_mm.to_bits(),
@@ -5766,13 +6107,13 @@ fn match_relief_gap_schedules(
         .try_reserve_exact(gaps.len())
         .map_err(|_| SharedHingeReliefCoverageErrorV1::ResourceLimit)?;
     for gap in gaps {
-        let matching = local_schedules
-            .iter()
-            .filter(|item| item.edge == gap.hinge)
-            .collect::<Vec<_>>();
-        let [local_schedule] = matching.as_slice() else {
+        let mut matching = local_schedules.iter().filter(|item| item.edge == gap.hinge);
+        let Some(local_schedule) = matching.next() else {
             return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
         };
+        if matching.next().is_some() {
+            return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
+        }
         let derivative_bound =
             (local_schedule.target_angle_degrees - local_schedule.source_angle_degrees).abs();
         let exact_constant = derivative_bound == 0.0 && is_exact_constant(gap.hinge);
@@ -5906,7 +6247,6 @@ fn scheduled_kawasaki_120_120_60_60_premises_v1(
     let Some((unit, half)) = schedule.kawasaki_120_120_60_60_half_angle_pairs_v1() else {
         return false;
     };
-    let half = half.into_iter().collect::<HashSet<_>>();
     if unit.len() != 2
         || geometry
             .hinges()

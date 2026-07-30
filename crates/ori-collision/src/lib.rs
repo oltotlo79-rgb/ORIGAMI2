@@ -284,11 +284,15 @@ pub use flat_endpoint_layer_order::{
     revalidate_flat_endpoint_layer_order_anchor_v1,
 };
 pub use general_cell_transport::{
-    ChainedGeneralCellTransportAuthorityV1, GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1,
-    GeneralCellTransportErrorV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
+    ChainedGeneralCellTransportAuthorityV1, GENERAL_CELL_TRANSPORT_CHAIN_LIMIT_V1,
+    GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1, GeneralCellTransportErrorV1,
+    GeneralCellTransportInputV1, GeneralCellTransportLimitsV1, GeneralCellTransportMemoryWorkV1,
     GeneralMultiFaceCellTransportProofV1, REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1,
     RegularQuadPetalChainedAuthorityV1, RegularQuadPetalRatioCandidateV1,
-    certify_general_multi_face_cell_transport_v1, issue_regular_quad_petal_chained_authority_v1,
+    certify_general_multi_face_cell_transport_v1,
+    checked_chained_general_cell_transport_peak_bytes_v1,
+    checked_general_cell_transport_memory_work_v1, checked_general_cell_transport_peak_bytes_v1,
+    issue_regular_quad_petal_chained_authority_v1, preflight_general_cell_transport_peak_bytes_v1,
     preflight_general_cell_transport_work_v1, prepare_regular_quad_petal_schedules_v1,
     regular_quad_petal_ratio_candidates_v1,
 };

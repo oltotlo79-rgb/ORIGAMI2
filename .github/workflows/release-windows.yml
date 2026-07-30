@@ -1,9 +1,6 @@
 name: Windows production release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -26,14 +23,14 @@ on:
 permissions: {}
 
 concurrency:
-  group: windows-production-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: formal-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   validate-test-build:
     name: Validate, test, and build unsigned Windows NSIS
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     permissions:
       contents: read
     outputs:
@@ -46,7 +43,7 @@ jobs:
       - name: Check out the existing release tag
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ format('refs/tags/{0}', inputs.tag) }}
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
@@ -55,9 +52,9 @@ jobs:
         id: release-gate
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          EXPECTED_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_commit || github.sha }}
-          RELEASE_CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.confirmation || 'PUBLISH_UNSIGNED_WINDOWS_RELEASE' }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
         run: >
           ./.github/scripts/validate_windows_release.ps1
           -RepositoryRoot $env:GITHUB_WORKSPACE

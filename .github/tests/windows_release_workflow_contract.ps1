@@ -61,6 +61,7 @@ $repositoryRoot = [System.IO.Path]::GetFullPath(
     (Join-Path $PSScriptRoot '..\..')
 )
 $workflowPath = Join-Path $repositoryRoot '.github\workflows\release-windows.yml'
+$formalWorkflowPath = Join-Path $repositoryRoot '.github\workflows\release.yml'
 $validatorPath = Join-Path $repositoryRoot '.github\scripts\validate_windows_release.ps1'
 $packagerPath = Join-Path $repositoryRoot '.github\scripts\package_windows_release.ps1'
 $assetVerifierPath = Join-Path $repositoryRoot '.github\scripts\verify_windows_release_assets.ps1'
@@ -74,6 +75,7 @@ $releaseNotesContractPath = Join-Path (
 ) '.github\release-notes-windows-contract.json'
 
 $workflow = [System.IO.File]::ReadAllText($workflowPath)
+$formalWorkflow = [System.IO.File]::ReadAllText($formalWorkflowPath)
 $desktopPackage = [System.IO.File]::ReadAllText($packagePath) | ConvertFrom-Json
 $readiness = [System.IO.File]::ReadAllText($readinessPath) | ConvertFrom-Json
 $releaseNotesTemplate = [System.IO.File]::ReadAllText($releaseNotesTemplatePath)
@@ -82,14 +84,46 @@ $releaseNotesContract = [System.IO.File]::ReadAllText(
 ) | ConvertFrom-Json
 
 Assert-Contains $workflow 'workflow_dispatch:' 'Manual release trigger is missing.'
-Assert-Contains $workflow 'tags:' 'Tag release trigger is missing.'
-Assert-Contains $workflow '"v*"' 'Tag trigger must be followed by a strict runtime SemVer gate.'
+Assert-True (
+    -not [regex]::IsMatch($workflow, '(?m)^\s{2}push:\s*$')
+) 'Unsigned Windows fallback must not run automatically for tag pushes.'
+Assert-True (
+    -not [regex]::IsMatch($workflow, '(?m)^\s{4}tags:\s*$')
+) (
+    'Unsigned Windows fallback must remain workflow_dispatch-only.'
+)
 Assert-Contains $workflow 'PUBLISH_UNSIGNED_WINDOWS_RELEASE' (
     'Manual unsigned-release acknowledgement is missing.'
 )
 Assert-Contains $workflow 'expected_commit:' 'Manual full commit confirmation is missing.'
-Assert-Contains $workflow 'inputs.expected_commit || github.sha' (
-    'Tag pushes must bind the expected commit to the triggering github.sha.'
+Assert-Contains $workflow 'ref: ${{ format(''refs/tags/{0}'', inputs.tag) }}' (
+    'Checkout must use only the manually supplied existing tag.'
+)
+Assert-Contains $workflow 'RELEASE_TAG: ${{ inputs.tag }}' (
+    'The manual tag input must be the release tag authority.'
+)
+Assert-Contains $workflow 'EXPECTED_COMMIT: ${{ inputs.expected_commit }}' (
+    'The manual expected commit input must be the commit authority.'
+)
+Assert-Contains $workflow 'RELEASE_CONFIRMATION: ${{ inputs.confirmation }}' (
+    'The manual confirmation input must be the publication authority.'
+)
+Assert-True (
+    -not $workflow.Contains("github.event_name == 'workflow_dispatch'")
+) 'Dead push/manual event branches must not remain.'
+Assert-True (-not $workflow.Contains('github.ref_name')) (
+    'Unsigned Windows fallback must not derive its tag from the event ref.'
+)
+Assert-True (-not $workflow.Contains('github.sha')) (
+    'Unsigned Windows fallback must not derive its commit from the event SHA.'
+)
+Assert-Contains $workflow 'group: formal-release-${{ inputs.tag }}' (
+    'Unsigned Windows fallback must share the formal release tag concurrency key.'
+)
+Assert-Contains $formalWorkflow (
+    'group: formal-release-${{ inputs.tag || github.ref_name || github.sha }}'
+) (
+    'Formal release must retain its canonical manual/tag concurrency expression.'
 )
 Assert-Contains $workflow 'permissions: {}' 'Workflow default permissions must be empty.'
 Assert-True (

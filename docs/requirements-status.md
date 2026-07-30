@@ -368,7 +368,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | OPS-004 | 実装済み | 固定schemaのredacted JSONだけをアプリ専用領域へ端末内保存し、明示操作で選んだ端末内ファイルにも保存できる。通信・自動送信なし |
 | OPS-005 | 実装済み | 固定15 scopeの粗い件数区分だけを保存・表示し、作品名・形状・内容・path・ID・座標・時刻・アプリ版・OS・CPU・GPUを含めない |
 | OPS-006 | 実装済み | Tauri版の診断ダイアログで正確なJSONを読取専用表示し、内容選択と同一bytesの手動保存、GitHub Issuesへ利用者自身で添付する案内を提供 |
-| OPS-007 | 実装済み | `v*` tagまたは既存tagを指定する手動dispatchから、tag・commit・全versionを固定してfrontend/Rust全検証、unsigned Windows NSIS生成、resource・release notes・SHA-256再検証を行う。保護environmentと最小`contents: write`権限のpublish jobは、既存Releaseの上書きを拒否し、同一の検証済みartifactをdraft作成後に正式なlatest GitHub Releaseとして公開する。契約testは署名状態、trigger、権限、tag ABA、asset集合、取消不能publishを回帰する |
+| OPS-007 | 実装済み | 既存tag・完全commit・明示確認を指定する手動dispatchだけから、tag・commit・全versionを固定してfrontend/Rust全検証、unsigned Windows NSIS生成、resource・release notes・SHA-256再検証を行う。正規SemVer tagの自動公開は署名済みcross-platform workflowだけが担当し、両workflowは同一tag concurrency keyで直列化する。保護environmentと最小`contents: write`権限のpublish jobは、既存Releaseの上書きを拒否し、同一の検証済みartifactをdraft作成後に正式なlatest GitHub Releaseとして公開する。契約testは手動専用trigger、署名状態、権限、tag ABA、asset集合、取消不能publishを回帰する |
 | OPS-008 | 実装済み | macOSでRust test・Clippyとfrontend production buildを含む`.app`生成をCI検証。オーナー決定どおり実機E2E・正式配布は初版対象外 |
 
 ## 更新ルール

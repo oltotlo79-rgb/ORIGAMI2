@@ -1,7 +1,8 @@
 # Windows正式版 GitHub Releases 配布契約
 
-状態: 初版実装済み。対象はWindows 10/11 x64のNSISインストーラーだけとし、
-macOSは従来どおり自動ビルド・テスト・`.app`生成のCI検証だけを維持する。
+状態: 初版実装済み。本workflowは、Windows 10/11 x64の未署名NSISインストーラーを
+明示的に選択して公開する手動fallbackである。正規SemVerタグからの自動公開は
+`.github/workflows/release.yml`だけが担当し、本workflowはタグpushでは起動しない。
 
 ## 1. 目的と費用
 
@@ -25,13 +26,23 @@ GitHub Actionsの利用可能時間・保存量はリポジトリの公開範囲
 
 ## 3. 起動条件
 
-### 3.1 タグpush
+### 3.1 自動タグ公開との分離
 
-`v*`タグのpushを入口とするが、workflow内のrelease gateで次をすべて満たさなければ
-失敗へ閉じる。
+`vMAJOR.MINOR.PATCH`タグのpushは、署名済みWindows/macOS成果物を同じReleaseへまとめる
+`.github/workflows/release.yml`だけを起動する。本workflowには`push` triggerを置かず、
+未署名Windows fallbackが同じタグの別Release作成を自動的に競合させない。
+
+### 3.2 手動実行
+
+`workflow_dispatch`では、既に存在するcanonicalタグ、タグが指すべき完全な40桁commit
+SHA、固定文字列`PUBLISH_UNSIGNED_WINDOWS_RELEASE`の3項目を入力する。workflowはタグを
+新規作成しない。既定値`DO_NOT_PUBLISH`のままでは必ず失敗する。入力したタグだけを
+checkoutとrelease gateのタグ権威とし、event refやevent SHAへのfallbackは持たない。
+
+手動release gateで次をすべて満たさなければ失敗へ閉じる。
 
 - タグ名が`vMAJOR.MINOR.PATCH`のcanonicalな安定版SemVerである。
-- checkoutした`HEAD`、タグをcommitへpeeledした値、イベントの完全な40桁SHAが一致する。
+- checkoutした`HEAD`、タグをcommitへpeeledした値、入力した完全な40桁SHAが一致する。
 - `apps/desktop/src-tauri/tauri.conf.json`の`version`がタグと一致する。
 - root `Cargo.toml`の`workspace.package.version`がタグと一致する。
 - `Cargo.lock`内の`origami2-desktop`版がタグと一致する。
@@ -44,16 +55,12 @@ pre-release識別子とbuild metadataは初版の正式版workflowでは受け�
 
 開発中のreadiness flagは`false`に固定する。オーナーがWindows実機E2Eとベンチマークの
 受け入れ結果を提供し、requirements-statusの全MUSTが実装済みになった後、正式公開する
-commitでだけ3 flagを明示的に`true`へ変更する。したがって、開発途中でversionと同名の
-タグを誤ってpushしても正式Releaseは作成されない。
+commitでだけ3 flagを明示的に`true`へ変更する。
 
-### 3.2 手動実行
-
-`workflow_dispatch`では、既に存在するcanonicalタグ、タグが指すべき完全な40桁commit
-SHA、固定文字列`PUBLISH_UNSIGNED_WINDOWS_RELEASE`の3項目を入力する。workflowはタグを
-新規作成しない。既定値`DO_NOT_PUBLISH`のままでは必ず失敗する。
-
-同じタグの実行は`concurrency`で直列化し、進行中の正式配布を後発runでcancelしない。
+本workflowと正式release workflowは同じタグに対して
+`formal-release-vMAJOR.MINOR.PATCH`という同一の`concurrency` keyを使う。同じタグの
+実行はworkflowをまたいで直列化し、`cancel-in-progress: false`により進行中の正式配布を
+後発runでcancelしない。
 公開jobは`windows-production-release` environmentへ所属する。リポジトリ管理者は必要に
 応じて、このenvironmentへrequired reviewerと許可タグ規則を設定できる。environment設定が
 なくても上記の内部gateは省略されない。
@@ -118,7 +125,8 @@ Authenticode状態が`NotSigned`であることを強制し、Release notesで�
 `.github/tests/windows_release_workflow_contract.ps1`を通常CIの`windows-bundle` jobで実行する。
 契約testは少なくとも次を固定する。
 
-- release trigger、完全SHA action pin、最小権限、environment、明示確認。
+- 手動専用trigger、正式releaseと共有するtag concurrency、完全SHA action pin、最小権限、
+  environment、明示確認。
 - pull request起動、secret依存、macOS正式配布、上書きoptionが存在しない。
 - package scriptが`--no-sign --bundles nsis`のままである。
 - fixture Git repositoryで、正しいタグ・commit・versionだけがgateを通る。

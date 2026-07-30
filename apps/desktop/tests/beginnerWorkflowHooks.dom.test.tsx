@@ -23,6 +23,7 @@ import { useBeginnerCandidateWorkflow } from '../src/lib/useBeginnerCandidateWor
 import { useBeginnerEditorState } from '../src/lib/useBeginnerEditorState.ts'
 import { useBeginnerRecognitionWorkflow } from '../src/lib/useBeginnerRecognitionWorkflow.ts'
 import { useBeginnerReferenceWorkflow } from '../src/lib/useBeginnerReferenceWorkflow.ts'
+import { BeginnerProtrusionEditor } from '../src/components/BeginnerProtrusionEditor.tsx'
 
 afterEach(cleanup)
 
@@ -309,7 +310,118 @@ function EditorHarness({
   )
 }
 
+function ManualProtrusionHarness({
+  project,
+}: {
+  project: ProjectSnapshot
+}) {
+  const current = useRef(project)
+  current.current = project
+  const editor = useBeginnerEditorState({
+    snapshot: project,
+    getCurrentSnapshot: () => current.current,
+    getSelectedFaceId: () => null,
+  })
+  return (
+    <>
+      <form>
+        <BeginnerProtrusionEditor
+          locale="en"
+          coreBusy={false}
+          editor={editor}
+        />
+      </form>
+      <output data-testid="manual-protrusions">
+        {JSON.stringify(editor.beginnerProtrusions)}
+      </output>
+    </>
+  )
+}
+
+function snapshotWithProtrusionIds(ids: readonly number[]) {
+  const project = snapshot()
+  project.beginner_design_profile.generation_constraints.protrusions =
+    ids.map((id) => ({
+      id,
+      count: 1,
+      length_tenths_mm: 200,
+      thickness_tenths_mm: 20,
+      position_tenths_mm: [0, 0, 0],
+      direction_milli: [1_000, 0, 0],
+      symmetry: 'none',
+      curvature_degrees: 0,
+      joint: 'fixed',
+      motion_degrees: [0, 0],
+      side: 'either',
+      priority: 50,
+    }))
+  return project
+}
+
 describe('beginner workflow hook race boundaries', () => {
+  it('adds only supported symmetry counts and preserves sparse ascending IDs', async () => {
+    render(<ManualProtrusionHarness project={snapshotWithProtrusionIds([2, 7])} />)
+    await waitFor(() => expect(
+      JSON.parse(screen.getByTestId('manual-protrusions').textContent ?? '[]')
+        .map(({ id }: { id: number }) => id),
+    ).toEqual([2, 7]))
+
+    expect(
+      (screen.getByLabelText('Symmetry', {
+        selector: 'select[name="protrusion_symmetry"]',
+      }) as HTMLSelectElement).value,
+    ).toBe('bilateral')
+    fireEvent.change(screen.getByLabelText('Count', {
+      selector: 'input[name="protrusion_count"]',
+    }), {
+      target: { value: '3' },
+    })
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Add protrusion target',
+    }))
+    expect(
+      JSON.parse(screen.getByTestId('manual-protrusions').textContent ?? '[]')
+        .map(({ id }: { id: number }) => id),
+    ).toEqual([2, 7])
+
+    fireEvent.change(screen.getByLabelText('Symmetry', {
+      selector: 'select[name="protrusion_symmetry"]',
+    }), {
+      target: { value: 'radial' },
+    })
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Add protrusion target',
+    }))
+    await waitFor(() => {
+      const targets = JSON.parse(
+        screen.getByTestId('manual-protrusions').textContent ?? '[]',
+      )
+      expect(targets.map(({ id }: { id: number }) => id)).toEqual([2, 7, 8])
+      expect(targets[2]).toMatchObject({
+        id: 8,
+        count: 3,
+        symmetry: 'radial',
+      })
+    })
+  })
+
+  it('uses a sorted ID gap only when the u16 maximum prevents append', async () => {
+    render(<ManualProtrusionHarness
+      project={snapshotWithProtrusionIds([2, 65_535])}
+    />)
+    await waitFor(() => expect(
+      JSON.parse(screen.getByTestId('manual-protrusions').textContent ?? '[]')
+        .map(({ id }: { id: number }) => id),
+    ).toEqual([2, 65_535]))
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Add protrusion target',
+    }))
+    await waitFor(() => expect(
+      JSON.parse(screen.getByTestId('manual-protrusions').textContent ?? '[]')
+        .map(({ id }: { id: number }) => id),
+    ).toEqual([1, 2, 65_535]))
+  })
+
   it('does not subscribe to native consensus progress in browser mode', () => {
     const subscribe = vi.fn(async () => vi.fn())
     render(

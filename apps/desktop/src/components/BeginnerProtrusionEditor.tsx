@@ -78,7 +78,7 @@ export function BeginnerProtrusionEditor({
         ))}
         <label className="field">
           <span>{text(APP_TEXT.symmetry)}</span>
-          <select name="protrusion_symmetry" defaultValue="none">
+          <select name="protrusion_symmetry" defaultValue="bilateral">
             <option value="none">{text(APP_TEXT.none)}</option>
             <option value="bilateral">{text(APP_TEXT.bilateral)}</option>
             <option value="radial">{text(APP_TEXT.radial)}</option>

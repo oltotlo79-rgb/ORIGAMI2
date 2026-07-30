@@ -231,6 +231,12 @@ export function useBeginnerEditorState(input: Readonly<{
       number('protrusion_motion_max'),
     ]
     const priority = number('protrusion_priority')
+    const symmetry = String(data.get('protrusion_symmetry'))
+    const symmetryCountSupported = symmetry === 'none'
+      ? count === 1
+      : symmetry === 'bilateral'
+        ? [2, 4, 6, 8].includes(count)
+        : symmetry === 'radial' && count >= 2 && count <= 8
     if (
       ![
         count,
@@ -245,6 +251,7 @@ export function useBeginnerEditorState(input: Readonly<{
       || !Number.isInteger(count)
       || count < 1
       || count > 8
+      || !symmetryCountSupported
       || length <= 0
       || length > 100_000
       || thickness <= 0
@@ -264,9 +271,29 @@ export function useBeginnerEditorState(input: Readonly<{
       || priority > 100
     ) return
     const used = new Set(beginnerProtrusions.map((target) => target.id))
-    let id = 1
-    while (used.has(id) && id < 65_535) id += 1
-    setBeginnerProtrusions((targets) => [...targets, {
+    const maximumId = beginnerProtrusions.reduce(
+      (maximum, target) => Math.max(maximum, target.id),
+      0,
+    )
+    const idsStrictlyIncreasing = beginnerProtrusions.every(
+      (target, index) => index === 0
+        || beginnerProtrusions[index - 1]!.id < target.id,
+    )
+    let id: number
+    let insertionIndex = beginnerProtrusions.length
+    if (maximumId < 65_535) {
+      id = maximumId + 1
+    } else {
+      if (!idsStrictlyIncreasing) return
+      id = 1
+      while (used.has(id) && id < 65_535) id += 1
+      if (used.has(id)) return
+      insertionIndex = beginnerProtrusions.findIndex(
+        (target) => target.id > id,
+      )
+      if (insertionIndex < 0) insertionIndex = beginnerProtrusions.length
+    }
+    const nextTarget: Protrusions[number] = {
       id,
       count,
       length_tenths_mm: Math.round(length * 10),
@@ -279,8 +306,7 @@ export function useBeginnerEditorState(input: Readonly<{
         : { tip_width_tenths_mm: Math.round(tipWidth * 10) }),
       position_tenths_mm: position as [number, number, number],
       direction_milli: direction as [number, number, number],
-      symmetry: String(data.get('protrusion_symmetry')) as
-        'none' | 'bilateral' | 'radial',
+      symmetry: symmetry as 'none' | 'bilateral' | 'radial',
       curvature_degrees: Math.round(curvature),
       joint: String(data.get('protrusion_joint')) as
         'fixed' | 'hinge' | 'ball',
@@ -288,11 +314,19 @@ export function useBeginnerEditorState(input: Readonly<{
       side: String(data.get('protrusion_side')) as
         'front' | 'back' | 'either',
       priority,
-    }])
-    setBeginnerProtrusionKinds((kinds) => [
-      ...beginnerProtrusions.map((_, index) => kinds[index] ?? 'tail'),
-      'tail',
+    }
+    setBeginnerProtrusions((targets) => [
+      ...targets.slice(0, insertionIndex),
+      nextTarget,
+      ...targets.slice(insertionIndex),
     ])
+    setBeginnerProtrusionKinds((kinds) => {
+      const nextKinds = beginnerProtrusions.map(
+        (_, index) => kinds[index] ?? 'tail',
+      )
+      nextKinds.splice(insertionIndex, 0, 'tail')
+      return nextKinds
+    })
   }
 
   function createEmptyGenericTarget() {

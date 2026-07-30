@@ -1963,6 +1963,25 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                                 .find(|target| target.id == bindings.wing_pair_protrusion_id)
                         })
                         .flatten()
+                } else if let Some(bindings) = insect_wing_antenna_bindings_v1(constraints) {
+                    let ordered = [
+                        (bindings.wing_pair_protrusion_id, false),
+                        (bindings.antenna_pair_protrusion_id, true),
+                    ];
+                    ordered
+                        .into_iter()
+                        .all(|(id, vertical)| {
+                            let mut isolated = constraints.clone();
+                            isolated.protrusions.retain(|target| target.id == id);
+                            parameterized_symmetric_endpoints(&isolated, 2, vertical).is_some()
+                        })
+                        .then(|| {
+                            constraints
+                                .protrusions
+                                .iter()
+                                .find(|target| target.id == bindings.wing_pair_protrusion_id)
+                        })
+                        .flatten()
                 } else if constraints
                     .target_parts
                     .iter()
@@ -4173,6 +4192,22 @@ mod tests {
                 antenna_pair_protrusion_id: 2,
             })
         );
+        for invalid_target_index in 0..2 {
+            let mut invalid_composite = wing_antenna.clone();
+            invalid_composite.protrusions[invalid_target_index].position_tenths_mm[0] = 1;
+            assert!(crate::validate_beginner_generation_constraints_v1(
+                &invalid_composite
+            ));
+            assert!(insect_wing_antenna_bindings_v1(&invalid_composite).is_some());
+            assert_eq!(
+                beginner_target_approximation_score_v1(&invalid_composite),
+                0
+            );
+            assert_eq!(
+                generate_beginner_plans_v1(namespace, &source, &ids, &invalid_composite),
+                Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
+            );
+        }
         let mut complete = wing_antenna.clone();
         complete.target_parts.push(BeginnerTargetPartRecordV1 {
             kind: BeginnerTargetPartKindV1::Leg,

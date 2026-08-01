@@ -2059,7 +2059,8 @@
       "commits": [
         "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
         "26461c5428d8c98d6d5688ebda695b359cb1ea5a",
-        "6edb66662f4d0033d470660c5a0e3b5d6c8a4be5"
+        "6edb66662f4d0033d470660c5a0e3b5d6c8a4be5",
+        "3470a8debf63f78d28a6f5be5c64d5a1883554a8"
       ],
       "evidence": [
         {
@@ -2086,13 +2087,53 @@
           "kind": "test",
           "path": "crates/ori-collision/src/block_composition.rs",
           "selector": "fn complete_live_three_four_and_eight_block_authorities_are_sealed_and_non_authorizing()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle.rs",
+          "selector": "pub(super) const fn bounded_multi_block_current_cycle_arity_supported_v1("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_read/tests/read_suite_02_generation_fixtures.rs",
+          "selector": "fn four_and_five_block_opposite_bifolds_preview_apply_and_reopen_history()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_read/tests/read_suite_02_generation_fixtures.rs",
+          "selector": "fn six_block_strip_remains_outside_bounded_multi_block_current_cycle_authority()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/certified_path_graph.rs",
+          "selector": "pub fn issue_instruction_bound_path_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src-tauri/src/path_certificate_registry.rs",
+          "selector": "pub(super) struct TrustedPathCertificateRegistryV1"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-formats/src/instruction_export.rs",
+          "selector": "pub struct PathCertificateExportAttestationV1"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/components/LayerOrderViewer.tsx",
+          "selector": "export function LayerOrderViewer({"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/globalFlatFoldabilityPanel.dom.test.tsx",
+          "selector": "labels the XZ schematic honestly and keeps SVG shapes non-interactive"
         }
       ],
       "limitations": [
-        "certified bounded dyadic graph/cycle and positive-thickness tree paths with fail-closed apply only"
+        "Production Apply covers certified bounded current cycles only: common-articulation admission is exactly 3..=5 blocks, with end-to-end 4/5-block radial-bifold coverage. Instruction/export evidence requires exact fixed-face, instruction-model, and source/target-pose binding in a process-local registry; persisted or reopened references alone are not authority. LayerOrderViewer is a read-only XZ schematic for global-flat results and flat targets, not a general non-flat viewer or mutation authority."
       ],
       "missingAcceptance": [
-        "arbitrary-pose positive-thickness multi-hinge continuous paths, general multi-layer transport and closure, and a general non-flat post-apply layer-order viewer"
+        "Arbitrary new straight-line folds through the current 3D pose with automatic per-layer crease insertion; arbitrary-pose and arbitrary-schedule positive-thickness multi-hinge collision/continuous-path/closure proofs including shared-hinge admission; general multi-layer transport; six-or-more-block and arbitrary multi-block configurations; and a general non-flat post-apply layer-order viewer."
       ]
     },
     {

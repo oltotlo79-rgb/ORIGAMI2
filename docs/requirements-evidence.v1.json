@@ -227,7 +227,8 @@
         "77033836b063b9d62dbc06f46dea2babbaf6f50b",
         "daa556fe67f24322681ba6c215cdf28280f0ef49",
         "5c8693a539d3edea6accb13465e0bbf80b5a56ab",
-        "6c91e5d684cb7a269d78070a0648770064283833"
+        "6c91e5d684cb7a269d78070a0648770064283833",
+        "ad8036c5ade9491d4f466c154676436bd67abdbc"
       ],
       "evidence": [
         {
@@ -402,6 +403,11 @@
         },
         {
           "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_exactification/three_record_component_constructive.rs",
+          "selector": "pub(super) fn construct_pair_plus_singleton_leaf_exact_assignment_v1("
+        },
+        {
+          "kind": "production-symbol",
           "path": "crates/ori-core/src/constraint_solver.rs",
           "selector": "pub(crate) fn residual_referenced_vertices_by_record_v1("
         },
@@ -423,12 +429,17 @@
         {
           "kind": "test",
           "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
-          "selector": "fn three_record_connected_component_without_a_sound_component_template_fails_closed()"
+          "selector": "fn unique_pair_plus_singleton_leaf_component_constructs_in_canonical_order()"
         },
         {
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
           "selector": "fn connected_pair_component_and_disjoint_singleton_publish_detached_without_coordinates()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
+          "selector": "fn connected_pair_plus_singleton_leaf_publishes_only_detached_exact_sat()"
         },
         {
           "kind": "test",
@@ -447,15 +458,20 @@
         },
         {
           "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraints.test.ts",
+          "selector": "normalizes a three-record detached construction without accepting coordinates"
+        },
+        {
+          "kind": "test",
           "path": "apps/desktop/tests/geometricConstraintPanel.dom.test.tsx",
           "selector": "labels a detached constructed witness without claiming the current assignment satisfies it"
         }
       ],
       "limitations": [
-        "Semantic MUS v4 covers 24 variants in bounded shapes. Detached SAT handles one record via singleton construction and partitions 2..16 by residual-referenced vertices. A two-record component may use pair templates; a larger one requires bit-compatible singletons. Each component and the document are recertified. Exhaustion is unknown, never UNSAT. At 17+ detached SAT is skipped, but current-assignment and direct-conflict checks remain. Coordinates stay private; mutation is never authorized."
+        "Semantic MUS v4 covers 24 variants. Detached SAT partitions 2..16 records by residual vertices. Two-record components may use pair templates. Exactly three records may use one unique ordinary pair plus a singleton leaf sharing one articulation across four translations; larger components require bit-compatible singletons. Component and document residuals are recertified. Exhaustion is Unknown, never UNSAT. At 17+ detached SAT is skipped. Coordinates stay private; mutation is never authorized."
       ],
       "missingAcceptance": [
-        "Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, incompatible connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies."
+        "Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, unsupported connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies."
       ]
     },
     {

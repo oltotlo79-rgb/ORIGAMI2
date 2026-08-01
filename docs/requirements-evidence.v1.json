@@ -2085,7 +2085,8 @@
         "e6c442d929cf3ea470c5f7070e66f1686653cac8",
         "7ae9c951c2369a8f0451c2a90d27eea962dcd912",
         "a0b65655285e9b66e33cdb1c182cde433afc5034",
-        "45986496df5eb889a88fc32d56273f131e6e12c0"
+        "45986496df5eb889a88fc32d56273f131e6e12c0",
+        "97623508ab1774d8ea7e594a9c71ef15acaafbb7"
       ],
       "evidence": [
         {
@@ -2360,13 +2361,13 @@
         },
         {
           "kind": "production-symbol",
-          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
-          "selector": "pub struct CommonArticulationPoseExtensionLimitsV1"
+          "path": "crates/ori-collision/src/common_articulation_clearance.rs",
+          "selector": "pub fn issue_common_articulation_clearance_extension_prerequisite_v1("
         },
         {
-          "kind": "production-symbol",
-          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
-          "selector": "pub struct CommonArticulationPoseExtensionAuthorityV1"
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/extension_tests.rs",
+          "selector": "fn extension_domain_binds_minimum_configured_cap_and_actual_count_in_order_v1()"
         },
         {
           "kind": "production-symbol",
@@ -2416,6 +2417,7 @@
         "Commit 7ae9c951c2369a8f0451c2a90d27eea962dcd912 raises only the library clearance hard cap to 10 while preserving its Default at 8, fixes exact-ten clearance resource and every one-short boundary, rejects an actual eleven-block decomposition, and carries exact-ten prerequisites through staged/final exact revalidation with tamper/cancel/deadline rejection. The resulting final path remains outside project mutation, Apply, viewer, and desktop transport authority.",
         "Commit a0b65655285e9b66e33cdb1c182cde433afc5034 preserves generic 2..=8/exact-nine/exact-ten binding bytes; non-authorizing 11..=configured (max 32) binds [11, cap, actual] u64LE in closure/positive/complete and rejects invalid cap/count, replay, tamper. Pose/clearance hard caps 10, Defaults 8; Apply 3..=9 (E2E 4..=9).",
         "Commit 45986496df5eb889a88fc32d56273f131e6e12c0 adds only a separately typed, non-authorizing 11..=32 pose authority. Its [11, configured cap, actual] u64LE binding, 2..=10 frozen legacy corpus, resource/foreign-pose/cancel/deadline failures do not raise pose/clearance caps or authorize clearance, staged/final transport, project mutation, Apply, or viewer.",
+        "Commit 97623508ab1774d8ea7e594a9c71ef15acaafbb7 adds only a separately typed, non-authorizing 11..=32 clearance prerequisite. Its [11, configured cap, actual] u64LE binding, old-production 2..=10 clearance goldens, whole-parent prerequisite, resource/live-drift/stop failures do not connect to staged/final transport, project mutation, Apply, or viewer.",
         "PreparedSupportingLine prioritizes globally supporting lines with canonical-ordinal ties and allocation-free unstable sorting; canonical overlap-cell and final ExactStorage signatures remain compatible with the unprioritized and independent classifiers."
       ],
       "missingAcceptance": [

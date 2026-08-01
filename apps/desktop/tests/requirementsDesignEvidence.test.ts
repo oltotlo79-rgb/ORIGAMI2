@@ -19,6 +19,11 @@ const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const nativeTests = readDesktopRustUnitTestSources()
 const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const panel = readFileSync('src/components/InstructionTimelinePanel.tsx', 'utf8')
+const clearance = readFileSync('../../crates/ori-collision/src/common_articulation_clearance.rs', 'utf8')
+const clearanceExtensionTests = readFileSync(
+  '../../crates/ori-collision/src/common_articulation_clearance/extension_tests.rs',
+  'utf8',
+)
 
 const CURRENT_SEMANTIC_MUS_MODEL_ID
   = 'geometric_constraint_deterministic_binary64_semantic_mus_v4'
@@ -31,6 +36,9 @@ const EDT_009_MISSING_ACCEPTANCE
 const SIM_010_POSE_EXTENSION_COMMIT = '45986496df5eb889a88fc32d56273f131e6e12c0'
 const SIM_010_POSE_EXTENSION_LIMITATION
   = 'Commit 45986496df5eb889a88fc32d56273f131e6e12c0 adds only a separately typed, non-authorizing 11..=32 pose authority. Its [11, configured cap, actual] u64LE binding, 2..=10 frozen legacy corpus, resource/foreign-pose/cancel/deadline failures do not raise pose/clearance caps or authorize clearance, staged/final transport, project mutation, Apply, or viewer.'
+const SIM_010_CLEARANCE_EXTENSION_COMMIT = '97623508ab1774d8ea7e594a9c71ef15acaafbb7'
+const SIM_010_CLEARANCE_EXTENSION_LIMITATION
+  = 'Commit 97623508ab1774d8ea7e594a9c71ef15acaafbb7 adds only a separately typed, non-authorizing 11..=32 clearance prerequisite. Its [11, configured cap, actual] u64LE binding, old-production 2..=10 clearance goldens, whole-parent prerequisite, resource/live-drift/stop failures do not connect to staged/final transport, project mutation, Apply, or viewer.'
 
 test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]
@@ -64,21 +72,23 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('SIM-010 keeps pose extension evidence separately typed, bounded, and non-promoting', () => {
+test('SIM-010 keeps pose and clearance extensions separately typed, bounded, and non-promoting', () => {
   const simEvidence = evidenceManifest.requirements.find(
     (entry: { id: string }) => entry.id === 'SIM-010',
   )
   assert.ok(simEvidence)
   assert.equal(simEvidence.status, '部分実装')
   assert.ok(simEvidence.commits.includes(SIM_010_POSE_EXTENSION_COMMIT))
+  assert.ok(simEvidence.commits.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
   assert.equal(simEvidence.evidence.length, 64)
   assert.ok(simEvidence.limitations.includes(SIM_010_POSE_EXTENSION_LIMITATION))
+  assert.ok(simEvidence.limitations.includes(SIM_010_CLEARANCE_EXTENSION_LIMITATION))
 
   const posePath = 'crates/ori-kinematics/src/graph/common_articulation_pose.rs'
   const collisionPath = 'crates/ori-collision/src/block_composition.rs'
+  const clearancePath = 'crates/ori-collision/src/common_articulation_clearance.rs'
+  const clearanceTestsPath = 'crates/ori-collision/src/common_articulation_clearance/extension_tests.rs'
   const expectedEvidence = [
-    ['production-symbol', posePath, 'pub struct CommonArticulationPoseExtensionLimitsV1'],
-    ['production-symbol', posePath, 'pub struct CommonArticulationPoseExtensionAuthorityV1'],
     ['production-symbol', posePath, 'pub fn prove_common_articulation_pose_extension_authority_v1('],
     ['production-symbol', collisionPath, 'pub fn issue_common_articulation_pose_extension_authority_v1('],
     ['test', posePath, 'fn legacy_two_through_ten_binding_and_revalidation_bytes_remain_frozen()'],
@@ -87,6 +97,8 @@ test('SIM-010 keeps pose extension evidence separately typed, bounded, and non-p
     ['test', posePath, 'fn extension_exact_resource_envelope_and_invalid_or_overflow_limits_fail_closed()'],
     ['test', posePath, 'fn extension_hard_thirty_two_boundary_is_inclusive_and_fails_closed_above()'],
     ['test', posePath, 'fn extension_issuance_and_revalidation_honor_cancel_and_deadline()'],
+    ['production-symbol', clearancePath, 'pub fn issue_common_articulation_clearance_extension_prerequisite_v1('],
+    ['test', clearanceTestsPath, 'fn extension_domain_binds_minimum_configured_cap_and_actual_count_in_order_v1()'],
   ]
   for (const [kind, path, selector] of expectedEvidence) {
     assert.ok(simEvidence.evidence.some(
@@ -97,13 +109,25 @@ test('SIM-010 keeps pose extension evidence separately typed, bounded, and non-p
 
   assert.ok(progress.includes('a0b65655285e9b66e33cdb1c182cde433afc5034'))
   assert.ok(progress.includes(SIM_010_POSE_EXTENSION_COMMIT))
+  assert.ok(progress.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
+  assert.ok(progress.includes('59f283910c0ba24a67ef4f9e4cd8f96167a9df38'))
   assert.ok(progress.includes('2..=10のlegacy binding/revalidation golden corpus'))
   assert.ok(status.includes(SIM_010_POSE_EXTENSION_COMMIT))
+  assert.ok(status.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
+  assert.ok(status.includes('legacy clearance 2..=10 binding/revalidation digest golden'))
   assert.ok(status.includes('legacy 2..=10 fixed golden'))
   assert.ok(reassessment.includes(SIM_010_POSE_EXTENSION_COMMIT))
+  assert.ok(reassessment.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
+  assert.ok(reassessment.includes('whole-parent正証明'))
   assert.ok(reassessment.includes('証拠密度の回帰'))
   assert.ok(status.includes('MUST集計85 / 2 / 0'))
   assert.ok(reassessment.includes('全体81.96%（表示82.0%）を増額しない'))
+  assert.ok(clearance.includes(
+    'pub fn issue_common_articulation_clearance_extension_prerequisite_v1(',
+  ))
+  assert.ok(clearanceExtensionTests.includes(
+    'fn extension_domain_binds_minimum_configured_cap_and_actual_count_in_order_v1()',
+  ))
 })
 
 test('EDT-009 retains its wire tags and tracks twenty-four sound proof families', () => {

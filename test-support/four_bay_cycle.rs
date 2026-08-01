@@ -84,6 +84,21 @@ pub fn eight_bay_opposite_bifold_pattern() -> (CreasePattern, Paper, Vec<EdgeId>
     bounded_bay_opposite_bifold_pattern(8)
 }
 
+/// Ten separated radial-bifold bays sharing one convex central material
+/// face. This is deliberately not part of the bounded four-through-nine
+/// selector: the tenth bay has its own exact fixture entry while production
+/// authority and Apply remain capped at their existing arities.
+///
+/// The tenth centre is the west-northwest mirror of the ninth insertion. Its
+/// neighboring fan rays use exact dyadic multiples of the centre-to-centre
+/// vectors, and its moving pair has length `27 * sqrt(2) / 64` mm. Thus every
+/// bay retains three exact opposite pairs, Kawasaki and 4M/2V Maekawa, while
+/// every short moving ray remains in the closed 0.5--0.6 mm corridor.
+#[allow(dead_code)]
+pub fn ten_bay_opposite_bifold_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    opposite_bifold_corner_pattern(10)
+}
+
 #[allow(dead_code)]
 pub fn two_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     rational_cycle_bay_pattern(2)
@@ -209,6 +224,7 @@ fn opposite_bifold_moving_ray_pair_v1(group_count: usize, group: usize) -> [usiz
             | (7, 0..=3 | 6)
             | (8, 0..=3 | 6 | 7)
             | (9, 0..=4 | 6..=8)
+            | (10, 0..=4 | 6..=9)
     ) {
         [1, 4]
     } else {
@@ -217,7 +233,7 @@ fn opposite_bifold_moving_ray_pair_v1(group_count: usize, group: usize) -> [usiz
 }
 
 fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<EdgeId>) {
-    assert!(matches!(group_count, 4..=9));
+    assert!(matches!(group_count, 4..=10));
     let namespace: ProjectId =
         serde_json::from_str("\"00000000-0000-4000-b000-000000000006\"").unwrap();
     let mut vertices = Vec::new();
@@ -296,6 +312,14 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
             (0.625, -0.78125),
             (0.421875, -0.421875),
             (0.9375, -0.78125),
+        ],
+        [
+            (0.9375, 0.78125),
+            (0.421875, 0.421875),
+            (0.625, 0.78125),
+            (-0.9375, -0.78125),
+            (-0.421875, -0.421875),
+            (-0.625, -0.78125),
         ],
     ];
     // A convex pentagonal shared face needs the two west square corners to
@@ -399,6 +423,30 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         (0.328125, -0.5),
         (0.625, -0.78125),
     ];
+    // The tenth west-northwest insertion mirrors the ninth one across the
+    // horizontal axis. At the northwest centre, ray five follows the exact
+    // vector (-12, -10) to the new centre. Its opposite ray remains paired
+    // bit-exactly and the existing short moving pair is unchanged.
+    let ten_fourth_directions = [
+        (1.0, 0.5),
+        (0.4375, 0.328125),
+        (0.9375, 0.78125),
+        (-1.0, -0.5),
+        (-0.4375, -0.328125),
+        (-0.9375, -0.78125),
+    ];
+    // At the west centre, the new ray zero follows (8, 10) to the tenth
+    // centre while ray five continues to follow (8, -10) to the ninth. The
+    // supporting directions have length sqrt(4100)/64 > 1 mm; pair one/four
+    // remains the only short moving pair at this corner.
+    let ten_fifth_directions = [
+        (0.625, 0.78125),
+        (-0.328125, 0.5),
+        (-0.625, 0.78125),
+        (-0.625, -0.78125),
+        (0.328125, -0.5),
+        (0.625, -0.78125),
+    ];
     for (group, ((center_x, center_y), default_directions)) in [
         (-20.0, -20.0),
         (20.0, -20.0),
@@ -409,6 +457,7 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         (0.0, 30.0),
         (0.0, -30.0),
         (-32.0, -10.0),
+        (-32.0, 10.0),
     ]
     .into_iter()
     .zip(directions)
@@ -435,6 +484,11 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
             (9, 2) => seven_third_directions,
             (9, 3) => seven_fourth_directions,
             (9, 4) => nine_fifth_directions,
+            (10, 0) => nine_first_directions,
+            (10, 1) => eight_second_directions,
+            (10, 2) => seven_third_directions,
+            (10, 3) => ten_fourth_directions,
+            (10, 4) => ten_fifth_directions,
             _ => default_directions,
         };
         let center = Vertex {
@@ -495,6 +549,15 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         for group in [0, 7, 1, 5, 2, 6, 3, 4, 8] {
             boundary.extend_from_slice(&original[group * 6..(group + 1) * 6]);
         }
+    } else if group_count == 10 {
+        // Insert the exact west-northwest companion between the unchanged
+        // northwest and west identities. The first nine centre, endpoint,
+        // and hinge identifiers retain their established derivation inputs.
+        let original = boundary;
+        boundary = Vec::with_capacity(original.len());
+        for group in [0, 7, 1, 5, 2, 6, 3, 9, 4, 8] {
+            boundary.extend_from_slice(&original[group * 6..(group + 1) * 6]);
+        }
     }
 
     let mut edges = (0..boundary.len())
@@ -511,7 +574,7 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
     edges.extend((0..group_count * 6).map(|index| {
         let group = index / 6;
         let local = index % 6;
-        let kind = if matches!(group_count, 5..=9) {
+        let kind = if matches!(group_count, 5..=10) {
             let moving_pair = opposite_bifold_moving_ray_pair_v1(group_count, group);
             if moving_pair.contains(&local) {
                 EdgeKind::Valley

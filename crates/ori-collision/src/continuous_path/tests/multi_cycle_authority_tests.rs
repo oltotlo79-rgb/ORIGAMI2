@@ -326,11 +326,14 @@ fn bounded_opposite_bifold_selector_rejects_ten_before_fixture_construction() {
 
 fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
     assert!(
-        matches!(block_count, 5..=9),
-        "unsupported extended opposite-bifold fixture arity: {block_count}; expected 5..=9"
+        matches!(block_count, 5..=10),
+        "unsupported extended opposite-bifold fixture arity: {block_count}; expected 5..=10"
     );
-    let (pattern, paper, moving) =
-        super::super::four_bay_cycle_test_support::bounded_bay_opposite_bifold_pattern(block_count);
+    let (pattern, paper, moving) = if block_count == 10 {
+        super::super::four_bay_cycle_test_support::ten_bay_opposite_bifold_pattern()
+    } else {
+        super::super::four_bay_cycle_test_support::bounded_bay_opposite_bifold_pattern(block_count)
+    };
     let validation = ori_core::validate_paper(&paper, &pattern);
     assert!(
         validation.is_valid(),
@@ -427,6 +430,7 @@ fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
                     | (7, 0..=3 | 6)
                     | (8, 0..=3 | 6 | 7)
                     | (9, 0..=4 | 6..=8)
+                    | (10, 0..=4 | 6..=9)
             );
             if short_corner && moving_set.contains(&hinge.id) {
                 assert!(
@@ -469,6 +473,7 @@ fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
                 7 => "b607",
                 8 => "b608",
                 9 => "b609",
+                10 => "b610",
                 _ => unreachable!(),
             },
             1,
@@ -531,6 +536,11 @@ fn bounded_extended_opposite_bifold_fixtures_are_simple_convex_and_locally_flat_
 #[test]
 fn exact_nine_extended_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable() {
     assert_extended_opposite_bifold_fixture_v1(9);
+}
+
+#[test]
+fn exact_ten_extended_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable() {
+    assert_extended_opposite_bifold_fixture_v1(10);
 }
 
 #[test]

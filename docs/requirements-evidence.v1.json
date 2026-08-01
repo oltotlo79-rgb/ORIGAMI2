@@ -2060,7 +2060,8 @@
         "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
         "26461c5428d8c98d6d5688ebda695b359cb1ea5a",
         "6edb66662f4d0033d470660c5a0e3b5d6c8a4be5",
-        "3470a8debf63f78d28a6f5be5c64d5a1883554a8"
+        "3470a8debf63f78d28a6f5be5c64d5a1883554a8",
+        "c3ed1bddf1dda7e213c0687068c3338f3a3f6c51"
       ],
       "evidence": [
         {
@@ -2096,12 +2097,12 @@
         {
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/stacked_fold_read/tests/read_suite_02_generation_fixtures.rs",
-          "selector": "fn four_and_five_block_opposite_bifolds_preview_apply_and_reopen_history()"
+          "selector": "fn four_five_and_six_block_opposite_bifolds_preview_apply_and_reopen_history()"
         },
         {
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/stacked_fold_read/tests/read_suite_02_generation_fixtures.rs",
-          "selector": "fn six_block_strip_remains_outside_bounded_multi_block_current_cycle_authority()"
+          "selector": "fn six_block_strip_remains_uncertified_inside_bounded_multi_block_arity()"
         },
         {
           "kind": "production-symbol",
@@ -2130,10 +2131,10 @@
         }
       ],
       "limitations": [
-        "Production Apply covers certified bounded current cycles only: common-articulation admission is exactly 3..=5 blocks, with end-to-end 4/5-block radial-bifold coverage. Instruction/export evidence requires exact fixed-face, instruction-model, and source/target-pose binding in a process-local registry; persisted or reopened references alone are not authority. LayerOrderViewer is a read-only XZ schematic for global-flat results and flat targets, not a general non-flat viewer or mutation authority."
+        "Production Apply covers certified bounded current cycles only: common-articulation admission is exactly 3..=6 blocks, with end-to-end 4/5/6-block radial-bifold coverage. Instruction/export evidence requires exact fixed-face, instruction-model, and source/target-pose binding in a local registry; persisted or reopened references alone are not authority. LayerOrderViewer is a read-only XZ schematic for global-flat results and flat targets, not a general non-flat viewer or mutation authority."
       ],
       "missingAcceptance": [
-        "Arbitrary new straight-line folds through the current 3D pose with automatic per-layer crease insertion; arbitrary-pose and arbitrary-schedule positive-thickness multi-hinge collision/continuous-path/closure proofs including shared-hinge admission; general multi-layer transport; six-or-more-block and arbitrary multi-block configurations; and a general non-flat post-apply layer-order viewer."
+        "Arbitrary new straight-line folds through the current 3D pose with automatic per-layer crease insertion; arbitrary-pose and arbitrary-schedule positive-thickness multi-hinge collision/continuous-path/closure proofs including shared-hinge admission; general multi-layer transport; seven-or-more-block and arbitrary multi-block configurations; and a general non-flat post-apply layer-order viewer."
       ]
     },
     {

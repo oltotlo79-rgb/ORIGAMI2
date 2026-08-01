@@ -2081,7 +2081,8 @@
         "f1e8b460fe73be88372851fa86fe5ca656c76463",
         "5132cf7966195a4e8055ea63114fad03948ea47e",
         "a743fa74b7c82a5a683a6b9c9a6054ab619fd56a",
-        "2e24e479421ff7ef4f0958407ead862a8c846013"
+        "2e24e479421ff7ef4f0958407ead862a8c846013",
+        "e6c442d929cf3ea470c5f7070e66f1686653cac8"
       ],
       "evidence": [
         {
@@ -2120,9 +2121,29 @@
           "selector": "pub fn diagnose_exact_nine_block_union_completeness_v1("
         },
         {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "pub fn issue_exact_ten_block_closure_authority_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "pub fn diagnose_exact_ten_block_union_completeness_v1("
+        },
+        {
           "kind": "test",
           "path": "crates/ori-collision/src/block_composition.rs",
           "selector": "fn exact_nine_complete_live_authority_is_explicitly_scoped_and_non_authorizing()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "fn exact_ten_complete_live_authority_is_explicitly_scoped_and_non_authorizing()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "fn exact_ten_submitted_set_companions_are_exact_and_non_authorizing()"
         },
         {
           "kind": "production-symbol",
@@ -2202,6 +2223,21 @@
         {
           "kind": "test",
           "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
+          "selector": "fn exact_ten_separated_opposite_bifolds_issue_canonical_closure()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn exact_ten_block_resource_envelope_passes_and_each_one_short_limit_fails_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/separated_even_single_vertex_opposite_pair_blocks.rs",
+          "selector": "fn exact_eight_through_ten_parent_cardinality_is_bounded_before_decomposition()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
           "selector": "fn bounded_opposite_bifold_selector_rejects_ten_before_fixture_construction()"
         },
         {
@@ -2272,8 +2308,9 @@
       ],
       "limitations": [
         "Certified radial-bifold Apply is only 3..=9 blocks (E2E 4..=9). The 8-block depth/leaves/work 3/8/8 boundary is retained; exact nine binds one whole plus nine restricted proofs/sources (ten each) under fixture closure depth/leaves/work 4/9/9, and every one-short fails closed. Pose and clearance Defaults remain 8; production current-cycle explicitly opts into 9.",
-        "A separate exact ten-bay geometry fixture validates 51 faces, 60 hinges, 20 moving hinges, 60 boundary vertices, and a 30-half-edge convex central face with local opposite-pair/Kawasaki/4M-2V/corridor checks. The bounded selector rejects ten before construction; this fixture is non-authorizing and does not extend production Apply, authority, or the 3..=9 cap.",
-        "Generic bounded 2..=8 canonical-union authority and its fingerprints remain unchanged and non-authorizing. Exact nine uses a separate scoped companion and binding domain; complete-union evidence alone is also non-authorizing.",
+        "The exact ten-bay fixture validates 51 faces, 60 hinges, 20 moving hinges, 60 boundary vertices, and a 30-half-edge convex central face with local opposite-pair/Kawasaki/4M-2V/corridor checks. The bounded selector rejects ten before construction.",
+        "Commit e6c442d929cf3ea470c5f7070e66f1686653cac8 adds a separate exact-ten lower scope: canonical closure depth/leaves/work 4/10/10 and each one-short, plus common-articulation pose hard cap 10 and each face/hinge/work/retained-byte one-short. This is non-authorizing evidence only: it has no clearance, staged/final path, desktop transport, or Apply connection.",
+        "Generic bounded 2..=8 canonical-union authority and its fingerprints remain unchanged and non-authorizing. Exact nine and exact ten use separate scoped companions and binding domains; complete-union evidence alone is also non-authorizing. Pose and clearance Defaults remain 8; clearance hard cap remains 9; production Apply remains 3..=9 blocks (E2E 4..=9).",
         "PreparedSupportingLine prioritizes globally supporting lines with canonical-ordinal ties and allocation-free unstable sorting; canonical overlap-cell and final ExactStorage signatures remain compatible with the unprioritized and independent classifiers."
       ],
       "missingAcceptance": [

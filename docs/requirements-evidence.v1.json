@@ -2086,7 +2086,8 @@
         "7ae9c951c2369a8f0451c2a90d27eea962dcd912",
         "a0b65655285e9b66e33cdb1c182cde433afc5034",
         "45986496df5eb889a88fc32d56273f131e6e12c0",
-        "97623508ab1774d8ea7e594a9c71ef15acaafbb7"
+        "97623508ab1774d8ea7e594a9c71ef15acaafbb7",
+        "cf30d9c901f153c5dde01280218f32fdd32c8856"
       ],
       "evidence": [
         {
@@ -2110,31 +2111,6 @@
           "selector": "pub struct CompleteMultiBlockPositiveLayerAuthorityV1"
         },
         {
-          "kind": "test",
-          "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "fn every_generic_arity_preserves_the_legacy_direct_fingerprint_algorithm()"
-        },
-        {
-          "kind": "production-symbol",
-          "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "pub fn issue_exact_nine_block_closure_authority_v1("
-        },
-        {
-          "kind": "production-symbol",
-          "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "pub fn diagnose_exact_nine_block_union_completeness_v1("
-        },
-        {
-          "kind": "production-symbol",
-          "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "pub fn issue_exact_ten_block_closure_authority_v1("
-        },
-        {
-          "kind": "production-symbol",
-          "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "pub fn diagnose_exact_ten_block_union_completeness_v1("
-        },
-        {
           "kind": "production-symbol",
           "path": "crates/ori-collision/src/block_composition.rs",
           "selector": "pub struct BoundedMultiBlockExtensionLimitsV1"
@@ -2152,22 +2128,7 @@
         {
           "kind": "test",
           "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "fn exact_nine_complete_live_authority_is_explicitly_scoped_and_non_authorizing()"
-        },
-        {
-          "kind": "test",
-          "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "fn exact_ten_complete_live_authority_is_explicitly_scoped_and_non_authorizing()"
-        },
-        {
-          "kind": "test",
-          "path": "crates/ori-collision/src/block_composition.rs",
           "selector": "fn bounded_extension_eleven_and_twelve_complete_live_paths_are_scoped_and_non_authorizing()"
-        },
-        {
-          "kind": "test",
-          "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "fn exact_ten_submitted_set_companions_are_exact_and_non_authorizing()"
         },
         {
           "kind": "production-symbol",
@@ -2408,6 +2369,46 @@
           "kind": "test",
           "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
           "selector": "fn extension_issuance_and_revalidation_honor_cancel_and_deadline()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension.rs",
+          "selector": "pub fn issue_common_articulation_block_composed_path_extension_authority_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_domain_binds_configured_cap_and_actual_count_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_rejects_each_cap_and_actual_source_mismatch_independently_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_hard_thirty_two_is_inclusive_and_other_arities_fail_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_partition_is_order_invariant_and_exact_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_revalidation_rejects_all_live_binding_drift_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_rejects_foreign_and_cross_cap_prerequisites_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_checkpoint_boundaries_and_public_control_map_stops_v1()"
         }
       ],
       "limitations": [
@@ -2418,6 +2419,7 @@
         "Commit a0b65655285e9b66e33cdb1c182cde433afc5034 preserves generic 2..=8/exact-nine/exact-ten binding bytes; non-authorizing 11..=configured (max 32) binds [11, cap, actual] u64LE in closure/positive/complete and rejects invalid cap/count, replay, tamper. Pose/clearance hard caps 10, Defaults 8; Apply 3..=9 (E2E 4..=9).",
         "Commit 45986496df5eb889a88fc32d56273f131e6e12c0 adds only a separately typed, non-authorizing 11..=32 pose authority. Its [11, configured cap, actual] u64LE binding, 2..=10 frozen legacy corpus, resource/foreign-pose/cancel/deadline failures do not raise pose/clearance caps or authorize clearance, staged/final transport, project mutation, Apply, or viewer.",
         "Commit 97623508ab1774d8ea7e594a9c71ef15acaafbb7 adds only a separately typed, non-authorizing 11..=32 clearance prerequisite. Its [11, configured cap, actual] u64LE binding, old-production 2..=10 clearance goldens, whole-parent prerequisite, resource/live-drift/stop failures do not connect to staged/final transport, project mutation, Apply, or viewer.",
+        "Commit cf30d9c901f153c5dde01280218f32fdd32c8856 adds only a separately typed, non-authorizing 11..=32 staged extension authority. It binds [11, configured cap, actual] u64LE with revalidated pose and clearance prerequisites while legacy 2..=10 paths remain unchanged. Invalid/resource/cap/count/partition/live-drift/cancel/deadline failures do not connect it to final or desktop paths, project mutation, Apply, or viewer.",
         "PreparedSupportingLine prioritizes globally supporting lines with canonical-ordinal ties and allocation-free unstable sorting; canonical overlap-cell and final ExactStorage signatures remain compatible with the unprioritized and independent classifiers."
       ],
       "missingAcceptance": [

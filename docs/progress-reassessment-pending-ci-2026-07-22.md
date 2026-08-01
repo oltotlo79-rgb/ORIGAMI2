@@ -74,6 +74,8 @@
 
 - `97623508ab1774d8ea7e594a9c71ef15acaafbb7`は11..=32 clearance下位証跡の別型・別domain、`[11, configured cap, actual]` u64LE、旧commit由来legacy clearance 2..=10 golden、whole-parent正証明、resource/live drift/cancel/deadline fail-closedを追加する証拠密度の回帰である。staged/final path・project mutation・Apply・viewerへ接続も認可もしないため、SIM-010は部分実装、MUST集計85 / 2 / 0、全体81.96%（表示82.0%）を増額しない。
 
+- `cf30d9c901f153c5dde01280218f32fdd32c8856`は11..=32 staged extensionをInput/RevalidationInput/Authorityの別型・別domainとして追加し、`[11, configured cap, actual]` u64LE、canonical partition、schedule/closure、紙厚、pose/clearance prerequisiteをlive再検証する証拠密度の回帰である。legacy 2..=10 pathは不変で、21 doctest・7 staged・7 clearance extension回帰がresource/cap/count/partition/live drift、foreign/cross-cap prerequisite、cancel/deadlineをfail closedにする。final/desktop/Apply/viewerへ未接続かつ非認可で一般N blockの完了ではないため、SIM-010は部分実装、MUST集計85 / 2 / 0、全体81.96%（表示82.0%）を増額しない。
+
 - 5/8ヒンジ実証明は`.ori2`、expanded-folder、recoveryの復元後に独立再計算され、保存certificateと一致する。両保存形式は正規再保存が決定的で、未認証改ざんとhistory binding不一致をfail-closedする（`d9b3da5`、`41017dd`、`df1ba4d`、`3e543c8`、`405b355`、`82dd5e7`、`e8cfc89`）。
 - M/V割当またはface geometryを変更した同型treeは元certificateを再利用できず、pathと3D simulation inputへの結合を負例で確認した（`4252b21`、`f6eb215`）。一般正厚・一般self-contactの証明には数えない。
 - 実証明付きinstruction poseは適用対象fold model fingerprintへ結合され、ApplyおよびUndo→Redo後にpose validationを通る（`63cd9e2`）。

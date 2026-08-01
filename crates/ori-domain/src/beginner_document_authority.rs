@@ -62,22 +62,23 @@ mod tests {
     use crate::BeginnerGenerationProvenanceV1;
 
     fn profile() -> BeginnerDesignProfileV1 {
-        let mut profile = BeginnerDesignProfileV1::default();
-        profile.generation_provenance = Some(BeginnerGenerationProvenanceV1 {
-            schema_version: 1,
-            topology_authority_sha256: [0x11; 32],
-            fold_path_certificate_sha256: Some([0x22; 32]),
-            document_authority_sha256: None,
-            confidence_score: 90,
-            confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
-            explicit_override: false,
-            source_asset_fingerprint: "none".to_owned(),
-            semantic_landmark_provenance: None,
-            generic_tree: None,
-            reference_consensus: None,
-            reference_consensus_summary: None,
-        });
-        profile
+        BeginnerDesignProfileV1 {
+            generation_provenance: Some(BeginnerGenerationProvenanceV1 {
+                schema_version: 1,
+                topology_authority_sha256: [0x11; 32],
+                fold_path_certificate_sha256: Some([0x22; 32]),
+                document_authority_sha256: None,
+                confidence_score: 90,
+                confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+                explicit_override: false,
+                source_asset_fingerprint: "none".to_owned(),
+                semantic_landmark_provenance: None,
+                generic_tree: None,
+                reference_consensus: None,
+                reference_consensus_summary: None,
+            }),
+            ..Default::default()
+        }
     }
 
     #[test]

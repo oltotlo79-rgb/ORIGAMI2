@@ -3904,10 +3904,7 @@ fn symmetric_template(
             } else {
                 0
             };
-        loop {
-            let Some(total_radial_hinges) = edges.len().checked_add(support_edges.len()) else {
-                break;
-            };
+        while let Some(total_radial_hinges) = edges.len().checked_add(support_edges.len()) {
             if total_radial_hinges >= minimum_radial_hinges && total_radial_hinges.is_multiple_of(2)
             {
                 break;
@@ -7360,7 +7357,7 @@ mod tests {
                 plan.crease_pattern.edges.len(),
                 usize::from(count)
                     + constraints.skeleton_segments.len()
-                    + if matches!(count, 2 | 3 | 4 | 5 | 6 | 7 | 8) {
+                    + if matches!(count, 2..=8) {
                         radial_corner_support_added(plan)
                     } else {
                         0

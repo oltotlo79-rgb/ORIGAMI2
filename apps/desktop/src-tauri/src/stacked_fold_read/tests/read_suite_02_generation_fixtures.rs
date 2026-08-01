@@ -72,7 +72,7 @@ fn bounded_multi_block_projective_active_source_angle_v1() -> f64 {
 #[test]
 fn bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history() {
     let _generation_guard = lock_stacked_fold_read_generation_test();
-    for block_count in [4, 5, 6, 7] {
+    for block_count in [4, 5, 6, 7, 8] {
         assert_opposite_bifold_lifecycle_v1(block_count);
     }
 }
@@ -83,6 +83,7 @@ fn assert_opposite_bifold_lifecycle_v1(block_count: usize) {
         5 => super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
         6 => super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
         7 => super::four_bay_cycle_test_support::seven_bay_opposite_bifold_pattern(),
+        8 => super::four_bay_cycle_test_support::eight_bay_opposite_bifold_pattern(),
         _ => unreachable!(),
     };
     assert_eq!(moving.len(), block_count * 2);

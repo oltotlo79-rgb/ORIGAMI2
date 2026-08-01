@@ -26,6 +26,7 @@ mod exact_common_effective_generator_sign;
 mod exact_common_split_pair_effective_generator_sign;
 mod exact_cut_carrier;
 mod exact_generator_word;
+mod separated_even_single_vertex_opposite_pair_blocks;
 
 pub use common_articulation_pose::{
     COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1,
@@ -60,6 +61,7 @@ use coaxial_profile_lattice::coaxial_profile_lattice_cycle_closure_premises_v1;
 use dense_grid::dense_parallel_grid_cycle_closure_premises_v1;
 use exact_cut_carrier::exact_cut_carrier_cycle_closure_premises_v1;
 use exact_generator_word::exact_generator_word_cycle_closure_premises_v1;
+use separated_even_single_vertex_opposite_pair_blocks::separated_even_single_vertex_opposite_pair_blocks_premises_v1;
 
 pub const MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1: u32 = 1;
 
@@ -662,6 +664,11 @@ impl MaterialHingeGraphGeometry {
         })
         .or_else(|| {
             rational_cactus_cycles_premises_v1(self, audit, fixed_face, schedule, tolerance)
+        })
+        .or_else(|| {
+            separated_even_single_vertex_opposite_pair_blocks_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
         }) {
             let required_depth = usize::BITS - (group_count - 1).leading_zeros();
             if limits.max_leaves < group_count
@@ -2192,7 +2199,8 @@ fn even_single_vertex_opposite_pair_cycle_closure_premises_v1(
     let (Some(first_axis), Some(second_axis)) = (outward_axis(first), outward_axis(second)) else {
         return false;
     };
-    if first_axis.x() != -second_axis.x()
+    if first.assignment() != second.assignment()
+        || first_axis.x() != -second_axis.x()
         || first_axis.y() != -second_axis.y()
         || first_axis.z() != -second_axis.z()
     {
@@ -4507,5 +4515,112 @@ mod tests {
             enumerate_even_single_vertex_opposite_pairs_v1(&duplicate, &audit, 6),
             Err(KinematicsError::UnsupportedTopology)
         ));
+    }
+
+    #[test]
+    fn opposite_pair_closure_rejects_mixed_assignment_hidden_at_three_zero_samples() {
+        let (base, audit) = opposite_pair_cycle_fixture(4);
+        let fixed_face = audit.faces()[0];
+        let moving = [base.hinges()[0].edge(), base.hinges()[2].edge()];
+        let hinges = base
+            .hinges()
+            .iter()
+            .map(|hinge| {
+                TreeHinge::new_for_test(
+                    hinge.edge(),
+                    if hinge.edge() == moving[1] {
+                        FoldAssignment::Valley
+                    } else {
+                        hinge.assignment()
+                    },
+                    hinge.left_face(),
+                    hinge.right_face(),
+                    hinge.start(),
+                    hinge.end(),
+                    hinge.axis(),
+                )
+            })
+            .collect();
+        let geometry = MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), hinges);
+        let coefficient = |numerator| RationalCoefficientV1 {
+            numerator,
+            denominator: 1,
+        };
+        let mut entries = geometry
+            .hinges()
+            .iter()
+            .map(|hinge| {
+                let active = moving.contains(&hinge.edge());
+                CycleScheduleEntryInputV1 {
+                    edge: hinge.edge(),
+                    initial_angle_degrees_bits: if active {
+                        1.0_f64.to_bits()
+                    } else {
+                        0.0_f64.to_bits()
+                    },
+                    // 1 - T4(2u - 1) is exactly zero at u=0, 0.5, 1,
+                    // but equals 1.5 degrees at u=0.25.
+                    chebyshev_coefficients: if active {
+                        vec![
+                            coefficient(0),
+                            coefficient(0),
+                            coefficient(0),
+                            coefficient(0),
+                            coefficient(-1),
+                        ]
+                    } else {
+                        vec![coefficient(0)]
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = CanonicalCycleScheduleV1::prepare(
+            &geometry,
+            &audit,
+            fixed_face,
+            [0.0, 1.0],
+            entries,
+            CycleScheduleLimitsV1::default(),
+        )
+        .expect("mixed-assignment schedule remains current and canonical");
+
+        for u in [0.0, 0.5, 1.0] {
+            let angles = schedule.evaluate(u).expect("exact zero sample");
+            assert!(angles.as_slice().iter().all(|angle| {
+                !moving.contains(&angle.edge())
+                    || angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
+            }));
+            geometry
+                .solve_closed(&audit, fixed_face, &angles, 0.0)
+                .expect("the three sampled zero poses close");
+        }
+        let interior = schedule.evaluate(0.25).expect("interior witness");
+        assert!(interior.as_slice().iter().all(|angle| {
+            !moving.contains(&angle.edge()) || angle.angle_degrees().to_bits() == 1.5_f64.to_bits()
+        }));
+        assert!(matches!(
+            geometry.solve_closed(&audit, fixed_face, &interior, 0.0),
+            Err(KinematicsError::UnsupportedTopology)
+        ));
+        assert!(!even_single_vertex_opposite_pair_cycle_closure_premises_v1(
+            &geometry, &audit, fixed_face, &schedule, 0.0,
+        ));
+        let interval_result = geometry.prove_dyadic_schedule_closure_v1(
+            &audit,
+            fixed_face,
+            &schedule,
+            0.0,
+            DyadicIntervalClosureLimitsV1 {
+                max_depth: 0,
+                max_leaves: 1,
+                max_work: 1_000_000,
+                schedule_limits: CycleScheduleLimitsV1::default(),
+            },
+        );
+        assert!(
+            interval_result.is_err(),
+            "mixed assignment cannot issue any depth-zero closure: {interval_result:?}"
+        );
     }
 }

@@ -148,7 +148,7 @@ fn prepare_schedule_with_domain_v1(
         .iter()
         .map(|hinge| HalfAngleRationalEntryInputV1 {
             edge: hinge.edge(),
-            u_domain: u_domain.clone(),
+            u_domain,
             numerator_power_coefficients: numerator_power_coefficients.clone(),
             denominator_power_coefficients: vec![coefficient_v1(64, 1)],
         })

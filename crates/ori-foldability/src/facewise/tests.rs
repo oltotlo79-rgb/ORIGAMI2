@@ -270,6 +270,29 @@ fn build_cells_with_supporting_line_deduplication_mode(
     Ok((cells, runtime.work, runtime.exact_storage))
 }
 
+fn build_cells_with_region_face_bounds_pruning_mode(
+    faces: &[FoldedFace],
+    pairs: &[OverlapPair],
+    prune_strictly_separated_bounds: bool,
+) -> FacewiseResult<(
+    Vec<OverlapCell>,
+    GlobalFlatFoldabilityWorkCounts,
+    ExactStorage,
+)> {
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut runtime = Runtime::new(
+        &mut observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    let cells = if prune_strictly_separated_bounds {
+        build_overlap_cells(faces, pairs, &mut runtime)
+    } else {
+        build_overlap_cells_without_region_face_bounds_pruning(faces, pairs, &mut runtime)
+    }?;
+    Ok((cells, runtime.work, runtime.exact_storage))
+}
+
 fn baseline_overlap_cell_interiors_are_disjoint(cells: &[OverlapCell]) -> bool {
     let mut observer = NoopGlobalFlatFoldabilityObserver;
     let mut runtime = Runtime::new(
@@ -295,6 +318,70 @@ fn baseline_overlap_cell_interiors_are_disjoint(cells: &[OverlapCell]) -> bool {
         }
     }
     true
+}
+
+fn run_single_pass_split(
+    polygon: &[Point],
+    line_first: &Point,
+    line_second: &Point,
+) -> (Vec<Point>, Vec<Point>, GlobalFlatFoldabilityWorkCounts) {
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut runtime = Runtime::new(
+        &mut observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    let (left, right) =
+        split_convex_polygon_by_line(polygon, line_first, line_second, 0, &mut runtime)
+            .expect("single-pass exact split");
+    (left, right, runtime.work)
+}
+
+fn run_dual_clip_split(
+    polygon: &[Point],
+    line_first: &Point,
+    line_second: &Point,
+) -> (Vec<Point>, Vec<Point>, GlobalFlatFoldabilityWorkCounts) {
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut runtime = Runtime::new(
+        &mut observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    let left = clip_polygon_halfplane(polygon, line_first, line_second, true, 0, &mut runtime)
+        .expect("baseline left clip");
+    let left_bytes = exact_storage_bytes_points(&left).expect("baseline left exact bytes");
+    let right = clip_polygon_halfplane(
+        polygon,
+        line_first,
+        line_second,
+        false,
+        left_bytes,
+        &mut runtime,
+    )
+    .expect("baseline right clip");
+    (left, right, runtime.work)
+}
+
+fn assert_single_pass_matches_dual_clip(
+    label: &str,
+    polygon: &[Point],
+    line_first: &Point,
+    line_second: &Point,
+) -> (Vec<Point>, Vec<Point>, GlobalFlatFoldabilityWorkCounts) {
+    let optimized = run_single_pass_split(polygon, line_first, line_second);
+    let baseline = run_dual_clip_split(polygon, line_first, line_second);
+    assert_eq!(optimized.0, baseline.0, "{label}: left boundary");
+    assert_eq!(optimized.1, baseline.1, "{label}: right boundary");
+    assert!(
+        optimized.2.exact_operations < baseline.2.exact_operations,
+        "{label}: the shared side/intersection pass must reduce exact operations"
+    );
+    assert!(
+        optimized.2.exact_values < baseline.2.exact_values,
+        "{label}: the shared side/intersection pass must reduce exact values"
+    );
+    optimized
 }
 
 fn assert_certificate_reverification_failed(result: FacewiseResult<()>) {
@@ -923,6 +1010,704 @@ fn supporting_line_deduplication_preserves_canonical_cells_and_keys() {
 }
 
 #[test]
+fn single_pass_split_matches_dual_clip_for_every_exact_sign_transition() {
+    let line_first = integer_point(-4, 0);
+    let line_second = integer_point(4, 0);
+    for previous_y in [-1_i64, 0, 1] {
+        for current_y in [-1_i64, 0, 1] {
+            // The cyclic first edge is `polygon.last() -> polygon.first()`, so
+            // this two-point fixture directly fixes each of the nine exact
+            // previous/current sign transitions, including zero on either end.
+            let polygon = vec![integer_point(1, current_y), integer_point(-1, previous_y)];
+            assert_single_pass_matches_dual_clip(
+                &format!("sign transition {previous_y}->{current_y}"),
+                &polygon,
+                &line_first,
+                &line_second,
+            );
+        }
+    }
+}
+
+#[test]
+fn single_pass_split_preserves_wrap_contacts_collinearity_and_line_direction() {
+    let line_first = integer_point(-5, 0);
+    let line_second = integer_point(5, 0);
+    let last_zero_wrap = vec![
+        integer_point(0, 3),
+        integer_point(3, -2),
+        integer_point(-3, 0),
+    ];
+    let (_, wrap_right, _) = assert_single_pass_matches_dual_clip(
+        "last-zero wrap",
+        &last_zero_wrap,
+        &line_first,
+        &line_second,
+    );
+    assert_eq!(
+        wrap_right.first(),
+        last_zero_wrap.last(),
+        "a zero previous vertex at the cyclic wrap must keep the baseline vector start"
+    );
+
+    let fixtures = [
+        (
+            "line through two vertices",
+            vec![
+                integer_point(0, -3),
+                integer_point(3, 0),
+                integer_point(0, 3),
+                integer_point(-3, 0),
+            ],
+        ),
+        (
+            "collinear boundary edge",
+            vec![
+                integer_point(-3, 0),
+                integer_point(3, 0),
+                integer_point(3, 2),
+                integer_point(-3, 2),
+            ],
+        ),
+        (
+            "all vertices on the line",
+            vec![
+                integer_point(-3, 0),
+                integer_point(0, 0),
+                integer_point(3, 0),
+            ],
+        ),
+        (
+            "fully on the left",
+            vec![
+                integer_point(-3, 2),
+                integer_point(3, 2),
+                integer_point(3, 4),
+                integer_point(-3, 4),
+            ],
+        ),
+    ];
+    for (label, polygon) in fixtures {
+        assert_single_pass_matches_dual_clip(label, &polygon, &line_first, &line_second);
+    }
+
+    let strict_crossing = rectangle(-4, -3, 5, 3);
+    let (forward_left, forward_right, _) = assert_single_pass_matches_dual_clip(
+        "forward strict crossing",
+        &strict_crossing,
+        &line_first,
+        &line_second,
+    );
+    let (reverse_left, reverse_right, _) = assert_single_pass_matches_dual_clip(
+        "reversed strict crossing",
+        &strict_crossing,
+        &line_second,
+        &line_first,
+    );
+    assert_eq!(forward_left, reverse_right);
+    assert_eq!(forward_right, reverse_left);
+}
+
+#[test]
+fn owned_split_reuses_only_strictly_one_sided_inputs_and_preserves_exact_outputs() {
+    let line_first = integer_point(-5, 0);
+    let line_second = integer_point(5, 0);
+    for (label, polygon, expected_reuse) in [
+        (
+            "strict left",
+            rectangle(-4, 2, 5, 5),
+            ReusedSplitInput::Left,
+        ),
+        (
+            "strict right",
+            rectangle(-4, -5, 5, -2),
+            ReusedSplitInput::Right,
+        ),
+        (
+            "boundary touch",
+            rectangle(-4, 0, 5, 3),
+            ReusedSplitInput::None,
+        ),
+        (
+            "strict crossing",
+            rectangle(-4, -3, 5, 3),
+            ReusedSplitInput::None,
+        ),
+    ] {
+        let (expected_left, expected_right, baseline_work) =
+            run_single_pass_split(&polygon, &line_first, &line_second);
+        let input_pointer = polygon.as_ptr();
+        let input_capacity = polygon.capacity();
+        let input_exact_bytes =
+            exact_storage_bytes_points(&polygon).expect("owned input exact bytes");
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        runtime
+            .set_arrangement_exact_storage(input_exact_bytes)
+            .expect("owned input arrangement fits");
+        let (left, right, reused) =
+            split_owned_convex_polygon_by_line(polygon, &line_first, &line_second, 0, &mut runtime)
+                .expect("owned exact split");
+        assert_eq!(left, expected_left, "{label}: left boundary");
+        assert_eq!(right, expected_right, "{label}: right boundary");
+        assert_eq!(reused, expected_reuse, "{label}: reuse classification");
+        assert_eq!(runtime.exact_storage.arrangement_bytes, input_exact_bytes);
+        if reused != ReusedSplitInput::None {
+            assert!(runtime.work.exact_operations < baseline_work.exact_operations);
+            assert!(runtime.work.exact_values < baseline_work.exact_values);
+            let reused_output = if reused == ReusedSplitInput::Left {
+                &left
+            } else {
+                &right
+            };
+            assert_eq!(reused_output.as_ptr(), input_pointer);
+            assert_eq!(reused_output.capacity(), input_capacity);
+        }
+    }
+}
+
+#[test]
+fn single_pass_split_accounts_for_both_live_outputs_at_the_exact_peak() {
+    let polygon = rectangle(-4, -3, 5, 3);
+    let line_first = integer_point(-5, 0);
+    let line_second = integer_point(5, 0);
+    let (left, right, optimized_work) = assert_single_pass_matches_dual_clip(
+        "strict storage crossing",
+        &polygon,
+        &line_first,
+        &line_second,
+    );
+    let retained_polygon_bytes =
+        exact_storage_bytes_points(&polygon).expect("retained polygon exact bytes");
+    let output_bytes = exact_storage_bytes_points(&left)
+        .expect("left output exact bytes")
+        .saturating_add(exact_storage_bytes_points(&right).expect("right output exact bytes"));
+    let prior_output_bytes = 17_usize;
+    let exact_peak = retained_polygon_bytes
+        .saturating_add(prior_output_bytes)
+        .saturating_add(output_bytes);
+
+    for maximum in [exact_peak, exact_peak - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        runtime
+            .set_arrangement_exact_storage(retained_polygon_bytes)
+            .expect("the retained input polygon fits below the split peak");
+        let result = split_convex_polygon_by_line(
+            &polygon,
+            &line_first,
+            &line_second,
+            prior_output_bytes,
+            &mut runtime,
+        );
+        if maximum == exact_peak {
+            assert_eq!(
+                result.expect("both outputs fit at exact equality"),
+                (left.clone(), right.clone())
+            );
+            assert_eq!(
+                runtime.work.exact_operations,
+                optimized_work.exact_operations
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::CertificateBytes,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == exact_peak
+            ));
+        }
+        assert_eq!(
+            runtime.exact_storage.arrangement_bytes, retained_polygon_bytes,
+            "the split owns only transient output storage"
+        );
+    }
+
+    let exact_operations = optimized_work.exact_operations;
+    for maximum in [exact_operations, exact_operations - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_exact_operations: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        runtime
+            .set_arrangement_exact_storage(retained_polygon_bytes)
+            .expect("the retained input polygon fits");
+        let result = split_convex_polygon_by_line(
+            &polygon,
+            &line_first,
+            &line_second,
+            prior_output_bytes,
+            &mut runtime,
+        );
+        if maximum == exact_operations {
+            assert_eq!(
+                result.expect("single-pass exact work equality is admitted"),
+                (left.clone(), right.clone())
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::ExactOperations,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == exact_operations
+            ));
+        }
+        assert_eq!(
+            runtime.exact_storage.arrangement_bytes,
+            retained_polygon_bytes
+        );
+    }
+}
+
+#[test]
+fn exact_bounds_pair_pruning_preserves_canonical_pairs_and_reduces_exact_work() {
+    let faces = vec![
+        synthetic_face(0, rectangle(0, 0, 4, 4), true),
+        synthetic_face(1, rectangle(1, 1, 3, 3), false),
+        synthetic_face(2, rectangle(4, 1, 6, 3), true),
+        synthetic_face(3, rectangle(4, 4, 6, 6), false),
+        synthetic_face(4, rectangle(20, 20, 24, 24), true),
+        synthetic_face(5, rectangle(-24, -24, -20, -20), false),
+    ];
+    let run = |prune| {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        let pairs = if prune {
+            build_overlap_pairs(&faces, &mut runtime)
+        } else {
+            build_overlap_pairs_without_exact_bounds_pruning(&faces, &mut runtime)
+        }
+        .expect("bounded pair construction");
+        (
+            pairs
+                .into_iter()
+                .map(|pair| (pair.first, pair.second))
+                .collect::<Vec<_>>(),
+            runtime.work,
+            runtime.exact_storage,
+        )
+    };
+    let (optimized, optimized_work, optimized_storage) = run(true);
+    let (baseline, baseline_work, baseline_storage) = run(false);
+
+    assert_eq!(optimized, baseline);
+    assert_eq!(optimized, vec![(0, 1)]);
+    assert_eq!(
+        optimized_work.overlap_face_pairs,
+        baseline_work.overlap_face_pairs
+    );
+    assert_eq!(optimized_storage.total(), baseline_storage.total());
+    assert!(optimized_work.exact_operations < baseline_work.exact_operations);
+    assert!(optimized_work.exact_values < baseline_work.exact_values);
+}
+
+#[test]
+fn region_face_bounds_pruning_preserves_cells_contacts_and_reduces_exact_work() {
+    let faces = vec![
+        synthetic_face(0, rectangle(0, 0, 8, 8), true),
+        synthetic_face(1, rectangle(2, 2, 6, 6), false),
+        // These two faces touch the first face at an edge and a point. Strict
+        // bounds pruning must retain both boundary cases for the exact
+        // representative-point coverage predicate.
+        synthetic_face(2, rectangle(8, 1, 10, 3), true),
+        synthetic_face(3, rectangle(8, 8, 10, 10), false),
+        // Widely separated faces make the saved exact coverage work
+        // observable without changing the canonical arrangement.
+        synthetic_face(4, rectangle(30, 0, 34, 4), true),
+        synthetic_face(5, rectangle(-34, -4, -30, 0), false),
+        synthetic_face(6, rectangle(0, 30, 4, 34), true),
+        synthetic_face(7, rectangle(-4, -34, 0, -30), false),
+    ];
+    let mut pair_observer = NoopGlobalFlatFoldabilityObserver;
+    let mut pair_runtime = Runtime::new(
+        &mut pair_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    let pairs = build_overlap_pairs(&faces, &mut pair_runtime).expect("bounded overlap pairs");
+    assert_eq!(
+        pairs
+            .iter()
+            .map(|pair| (pair.first, pair.second))
+            .collect::<Vec<_>>(),
+        [(0, 1)],
+        "edge and point contact remain zero-area rather than overlap pairs"
+    );
+
+    let (optimized, optimized_work, optimized_storage) =
+        build_cells_with_region_face_bounds_pruning_mode(&faces, &pairs, true)
+            .expect("bounds-pruned canonical cells");
+    let (baseline, baseline_work, baseline_storage) =
+        build_cells_with_region_face_bounds_pruning_mode(&faces, &pairs, false)
+            .expect("unpruned canonical cells");
+
+    assert_eq!(
+        overlap_cell_signatures(&optimized),
+        overlap_cell_signatures(&baseline),
+        "bounds pruning preserves every key, exact boundary, and covering list"
+    );
+    assert!(
+        optimized
+            .iter()
+            .any(|cell| cell.covering_faces.as_slice() == [0, 1])
+    );
+    for contact_or_separated_face in 2..faces.len() {
+        assert!(
+            optimized
+                .iter()
+                .any(|cell| { cell.covering_faces.as_slice() == [contact_or_separated_face] })
+        );
+    }
+    assert!(optimized.iter().all(|cell| {
+        !cell.covering_faces.contains(&2) || cell.covering_faces.as_slice() == [2]
+    }));
+    assert!(optimized.iter().all(|cell| {
+        !cell.covering_faces.contains(&3) || cell.covering_faces.as_slice() == [3]
+    }));
+    assert_eq!(
+        optimized_work.arrangement_segments,
+        baseline_work.arrangement_segments
+    );
+    assert_eq!(optimized_work.overlap_cells, baseline_work.overlap_cells);
+    assert_eq!(optimized_storage.total(), baseline_storage.total());
+    assert!(optimized_work.exact_operations < baseline_work.exact_operations);
+    assert!(optimized_work.exact_values < baseline_work.exact_values);
+}
+
+#[test]
+fn arrangement_face_bounds_scope_accounts_exact_storage_and_restores_control_failures() {
+    let faces = vec![
+        synthetic_face(0, rectangle(-10, -1, -8, 1), true),
+        synthetic_face(1, rectangle(8, -1, 10, 1), false),
+    ];
+    let retained_region_bytes =
+        exact_storage_bytes_points(&rectangle(-1, -1, 1, 1)).expect("retained region bytes");
+
+    let mut measuring_observer = NoopGlobalFlatFoldabilityObserver;
+    let mut measuring_runtime = Runtime::new(
+        &mut measuring_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    measuring_runtime
+        .set_arrangement_exact_storage(retained_region_bytes)
+        .expect("retained region fits");
+    let measured_bounds =
+        build_arrangement_face_bounds(&faces, retained_region_bytes, &mut measuring_runtime)
+            .expect("measure retained face bounds");
+    let retained_bounds_bytes = measuring_runtime
+        .exact_storage
+        .arrangement_bytes
+        .checked_sub(retained_region_bytes)
+        .expect("bounds extend the retained region scope");
+    assert_eq!(
+        retained_bounds_bytes,
+        measured_bounds.capacity() * std::mem::size_of::<ExactAxisAlignedBounds>()
+    );
+    drop(measured_bounds);
+
+    let embedding_bytes = 19_usize;
+    let exact_peak = embedding_bytes
+        .checked_add(retained_region_bytes)
+        .and_then(|total| total.checked_add(retained_bounds_bytes))
+        .expect("small fixture peak");
+    for maximum in [exact_peak, exact_peak - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        runtime
+            .set_embedding_exact_storage(embedding_bytes)
+            .expect("preexisting embedding fits");
+        runtime
+            .set_arrangement_exact_storage(retained_region_bytes)
+            .expect("preexisting region fits");
+        let result = build_arrangement_face_bounds(&faces, retained_region_bytes, &mut runtime);
+        if maximum == exact_peak {
+            let bounds = result.expect("retained bounds fit at exact equality");
+            assert_eq!(bounds.len(), faces.len());
+            assert_eq!(runtime.exact_storage.total(), Some(exact_peak));
+            drop(bounds);
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::CertificateBytes,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == exact_peak
+            ));
+            assert_eq!(
+                runtime.exact_storage.arrangement_bytes, retained_region_bytes,
+                "failed bounds admission restores the entry arrangement scope"
+            );
+        }
+    }
+
+    let mut deadline_observer = DeadlineAfter {
+        continued_checkpoints: 0,
+    };
+    let mut deadline_runtime = Runtime::new(
+        &mut deadline_observer,
+        GlobalFlatFoldabilityLimits {
+            max_certificate_bytes: retained_region_bytes,
+            ..GlobalFlatFoldabilityLimits::default()
+        },
+        zero_work(),
+    );
+    deadline_runtime
+        .set_arrangement_exact_storage(retained_region_bytes)
+        .expect("deadline entry region fits");
+    assert!(matches!(
+        build_arrangement_face_bounds(&faces, retained_region_bytes, &mut deadline_runtime,),
+        Err(FacewiseAbort::Unknown(
+            GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. }
+        ))
+    ));
+    assert_eq!(
+        deadline_runtime.exact_storage.arrangement_bytes,
+        retained_region_bytes
+    );
+
+    let mut cancel_observer = CancelAfter {
+        continued_checkpoints: 1,
+    };
+    let mut cancel_runtime = Runtime::new(
+        &mut cancel_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    cancel_runtime
+        .set_arrangement_exact_storage(retained_region_bytes)
+        .expect("cancel entry region fits");
+    assert!(matches!(
+        build_arrangement_face_bounds(&faces, retained_region_bytes, &mut cancel_runtime),
+        Err(FacewiseAbort::Execution(
+            GlobalFlatFoldabilityExecutionError::Cancelled
+        ))
+    ));
+    assert_eq!(
+        cancel_runtime.exact_storage.arrangement_bytes,
+        retained_region_bytes
+    );
+}
+
+#[test]
+fn exact_bounds_pair_pruning_accounts_retained_storage_at_the_exact_boundary() {
+    let faces = vec![
+        synthetic_face(0, rectangle(0, 0, 2, 2), true),
+        synthetic_face(1, rectangle(3, 0, 5, 2), false),
+    ];
+    let mut capacity_probe = Vec::<ExactAxisAlignedBounds>::new();
+    capacity_probe
+        .try_reserve_exact(faces.len())
+        .expect("small exact-bounds capacity probe");
+    let bounds_bytes = capacity_probe.capacity() * std::mem::size_of::<ExactAxisAlignedBounds>();
+
+    for maximum in [bounds_bytes, bounds_bytes - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        let result = build_overlap_pairs(&faces, &mut runtime);
+        if maximum == bounds_bytes {
+            assert!(
+                result
+                    .expect("exact retained bounds storage is admitted")
+                    .is_empty()
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::CertificateBytes,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == bounds_bytes
+            ));
+        }
+        assert_eq!(runtime.exact_storage.arrangement_bytes, 0);
+    }
+}
+
+#[test]
+fn verifier_face_bounds_scope_accounts_exact_storage_and_restores_control_failures() {
+    let faces = vec![
+        synthetic_face(0, rectangle(-5, -2, -1, 2), true),
+        synthetic_face(1, rectangle(1, -2, 5, 2), false),
+    ];
+    let embedding_bytes = 13_usize;
+    let arrangement_bytes = 17_usize;
+    let verification_base = 23_usize;
+
+    let mut measuring_observer = NoopGlobalFlatFoldabilityObserver;
+    let mut measuring_runtime = Runtime::new(
+        &mut measuring_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    measuring_runtime
+        .add_verification_storage(verification_base)
+        .expect("verification base fits");
+    let measured_bounds = build_verifier_face_bounds(&faces, &mut measuring_runtime)
+        .expect("measure verifier face bounds");
+    let retained_bounds_bytes = measuring_runtime
+        .verification_storage_bytes()
+        .checked_sub(verification_base)
+        .expect("face bounds extend verification storage");
+    assert_eq!(
+        retained_bounds_bytes,
+        measured_bounds.capacity() * std::mem::size_of::<ExactAxisAlignedBounds>()
+    );
+    drop(measured_bounds);
+
+    let exact_peak = embedding_bytes
+        .checked_add(arrangement_bytes)
+        .and_then(|total| total.checked_add(verification_base))
+        .and_then(|total| total.checked_add(retained_bounds_bytes))
+        .expect("small verifier peak");
+    for maximum in [exact_peak, exact_peak - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        runtime
+            .set_embedding_exact_storage(embedding_bytes)
+            .expect("embedding fits");
+        runtime
+            .set_arrangement_exact_storage(arrangement_bytes)
+            .expect("arrangement fits");
+        runtime
+            .add_verification_storage(verification_base)
+            .expect("verification base fits");
+        let result = build_verifier_face_bounds(&faces, &mut runtime);
+        if maximum == exact_peak {
+            let bounds = result.expect("verifier bounds fit at exact equality");
+            assert_eq!(bounds.len(), faces.len());
+            assert_eq!(runtime.exact_storage.total(), Some(exact_peak));
+            drop(bounds);
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::CertificateBytes,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == exact_peak
+            ));
+            assert_eq!(
+                runtime.verification_storage_bytes(),
+                verification_base,
+                "failed verifier bounds admission restores the entry scope"
+            );
+        }
+    }
+
+    let retained_total = embedding_bytes + arrangement_bytes + verification_base;
+    let mut deadline_observer = DeadlineAfter {
+        continued_checkpoints: 0,
+    };
+    let mut deadline_runtime = Runtime::new(
+        &mut deadline_observer,
+        GlobalFlatFoldabilityLimits {
+            max_certificate_bytes: retained_total,
+            ..GlobalFlatFoldabilityLimits::default()
+        },
+        zero_work(),
+    );
+    deadline_runtime
+        .set_embedding_exact_storage(embedding_bytes)
+        .expect("deadline embedding fits");
+    deadline_runtime
+        .set_arrangement_exact_storage(arrangement_bytes)
+        .expect("deadline arrangement fits");
+    deadline_runtime
+        .add_verification_storage(verification_base)
+        .expect("deadline verification base fits");
+    assert!(matches!(
+        build_verifier_face_bounds(&faces, &mut deadline_runtime),
+        Err(FacewiseAbort::Unknown(
+            GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. }
+        ))
+    ));
+    assert_eq!(
+        deadline_runtime.verification_storage_bytes(),
+        verification_base
+    );
+
+    let mut cancel_observer = CancelAfter {
+        continued_checkpoints: 1,
+    };
+    let mut cancel_runtime = Runtime::new(
+        &mut cancel_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    cancel_runtime
+        .add_verification_storage(verification_base)
+        .expect("cancel verification base fits");
+    assert!(matches!(
+        build_verifier_face_bounds(&faces, &mut cancel_runtime),
+        Err(FacewiseAbort::Execution(
+            GlobalFlatFoldabilityExecutionError::Cancelled
+        ))
+    ));
+    assert_eq!(
+        cancel_runtime.verification_storage_bytes(),
+        verification_base
+    );
+}
+
+#[test]
 fn supporting_line_identity_is_exact_undirected_and_unbounded() {
     let huge: num_bigint::BigInt = num_bigint::BigInt::from(1_u8) << 4_096_usize;
     let line_face = |index, first, second| synthetic_face(index, vec![first, second], true);
@@ -1411,7 +2196,11 @@ fn exact_bounds_disjointness_preserves_work_storage_and_control_boundaries() {
         synthetic_cell(1, rectangle(0, 0, 2, 2), vec![0]),
         synthetic_cell(2, rectangle(3, 0, 5, 2), vec![1]),
     ];
-    let bounds_bytes = cells.len() * std::mem::size_of::<ExactAxisAlignedBounds>();
+    let mut capacity_probe = Vec::<ExactAxisAlignedBounds>::new();
+    capacity_probe
+        .try_reserve_exact(cells.len())
+        .expect("exact bounds capacity probe");
+    let bounds_bytes = capacity_probe.capacity() * std::mem::size_of::<ExactAxisAlignedBounds>();
 
     let mut measuring_observer = NoopGlobalFlatFoldabilityObserver;
     let mut measuring_runtime = Runtime::new(

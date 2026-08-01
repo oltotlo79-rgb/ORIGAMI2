@@ -2077,7 +2077,8 @@
         "26461c5428d8c98d6d5688ebda695b359cb1ea5a",
         "6edb66662f4d0033d470660c5a0e3b5d6c8a4be5",
         "3470a8debf63f78d28a6f5be5c64d5a1883554a8",
-        "c3ed1bddf1dda7e213c0687068c3338f3a3f6c51"
+        "c3ed1bddf1dda7e213c0687068c3338f3a3f6c51",
+        "f1e8b460fe73be88372851fa86fe5ca656c76463"
       ],
       "evidence": [
         {
@@ -2113,7 +2114,22 @@
         {
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/stacked_fold_read/tests/read_suite_02_generation_fixtures.rs",
-          "selector": "fn four_five_and_six_block_opposite_bifolds_preview_apply_and_reopen_history()"
+          "selector": "fn bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle_tests.rs",
+          "selector": "fn bounded_multi_block_current_cycle_arity_is_exactly_three_through_seven()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle_tests.rs",
+          "selector": "fn bounded_multi_block_transport_preflight_enforces_eight_proof_aggregate_and_exact_limits()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
+          "selector": "fn separated_four_five_six_and_seven_bifolds_issue_strict_parent_positive_authority()"
         },
         {
           "kind": "test",
@@ -2147,10 +2163,11 @@
         }
       ],
       "limitations": [
-        "Production Apply covers certified bounded current cycles only: common-articulation admission is exactly 3..=6 blocks, with end-to-end 4/5/6-block radial-bifold coverage. Instruction/export evidence requires exact fixed-face, instruction-model, and source/target-pose binding in a local registry; persisted or reopened references alone are not authority. LayerOrderViewer is a read-only XZ schematic for global-flat results and flat targets, not a general non-flat viewer or mutation authority."
+        "Production Apply covers certified bounded current cycles only: common-articulation admission is exactly 3..=7 blocks, with end-to-end 4/5/6/7-block radial-bifold coverage. The seven-block fixture has 36 material faces, 42 hinges, and 14 moving hinges; its path binds one whole-parent proof and seven restricted proofs (eight total) under checked work/storage and layer-peak limits.",
+        "Instruction/export evidence requires exact fixed-face, instruction-model, and source/target-pose binding in a local registry; persisted or reopened references alone are not authority. LayerOrderViewer is a read-only XZ schematic for global-flat results and flat targets, not a general non-flat viewer or mutation authority."
       ],
       "missingAcceptance": [
-        "Arbitrary new straight-line folds through the current 3D pose with automatic per-layer crease insertion; arbitrary-pose and arbitrary-schedule positive-thickness multi-hinge collision/continuous-path/closure proofs including shared-hinge admission; general multi-layer transport; seven-or-more-block and arbitrary multi-block configurations; and a general non-flat post-apply layer-order viewer."
+        "Arbitrary new straight-line folds through the current 3D pose with automatic per-layer crease insertion; arbitrary-pose and arbitrary-schedule positive-thickness multi-hinge collision/continuous-path/closure proofs including shared-hinge admission; general multi-layer transport; production Apply for eight-or-more blocks and arbitrary multi-block configurations; and a general non-flat post-apply layer-order viewer."
       ]
     },
     {

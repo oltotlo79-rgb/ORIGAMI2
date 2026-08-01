@@ -12,9 +12,11 @@ use ori_domain::FaceId;
 use ori_kinematics::{
     CanonicalCycleScheduleV1, CanonicalMaterialEdgeBlockDecompositionV1,
     ClosedMaterialHingeGraphPose, CommonArticulationPoseAuthorityV1, CommonArticulationPoseErrorV1,
-    CommonArticulationPoseInputV1, CommonArticulationPoseLimitsV1, CommonArticulationPoseStopV1,
-    CycleScheduleLimitsV1, DyadicMaterialHingeIntervalClosureCertificateV1,
-    MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+    CommonArticulationPoseExtensionAuthorityV1, CommonArticulationPoseExtensionInputV1,
+    CommonArticulationPoseExtensionLimitsV1, CommonArticulationPoseInputV1,
+    CommonArticulationPoseLimitsV1, CommonArticulationPoseStopV1, CycleScheduleLimitsV1,
+    DyadicMaterialHingeIntervalClosureCertificateV1, MaterialHingeGraphAudit,
+    MaterialHingeGraphGeometry,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -28,7 +30,13 @@ pub const COMMON_ARTICULATION_CLEARANCE_PREREQUISITE_MODEL_ID_V1: &str =
     "common_articulation_cross_block_clearance_prerequisite_v1";
 pub const COMMON_ARTICULATION_CLEARANCE_GAP_MODEL_ID_V1: &str =
     "common_articulation_cross_block_clearance_gap_v1";
+pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_PREREQUISITE_MODEL_ID_V1: &str =
+    "common_articulation_cross_block_clearance_extension_prerequisite_v1";
+pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_GAP_MODEL_ID_V1: &str =
+    "common_articulation_cross_block_clearance_extension_gap_v1";
 pub const COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1: usize = 10;
+pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_MIN_BLOCKS_V1: usize = 11;
+pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_BLOCKS_V1: usize = 32;
 pub const COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1: usize = 256;
 pub const COMMON_ARTICULATION_CLEARANCE_MAX_CROSS_BLOCK_PAIRS_V1: usize =
     COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1 * (COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1 - 1)
@@ -63,6 +71,38 @@ impl Default for CommonArticulationClearanceLimitsV1 {
             max_work: COMMON_ARTICULATION_CLEARANCE_MAX_WORK_V1,
             max_storage_bytes: COMMON_ARTICULATION_CLEARANCE_MAX_STORAGE_BYTES_V1,
         }
+    }
+}
+
+/// Explicit resource envelope for the separately typed 11..=32 clearance
+/// prerequisite extension. There is deliberately no implicit default cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommonArticulationClearanceExtensionLimitsV1 {
+    pub max_blocks: usize,
+    pub max_faces: usize,
+    pub max_cross_block_pairs: usize,
+    pub max_pair_candidates: usize,
+    pub max_work: usize,
+    pub max_storage_bytes: usize,
+}
+
+impl CommonArticulationClearanceExtensionLimitsV1 {
+    /// Creates the fixed V1 resource envelope for one explicit block cap.
+    #[must_use]
+    pub const fn with_max_blocks_v1(max_blocks: usize) -> Option<Self> {
+        if max_blocks < COMMON_ARTICULATION_CLEARANCE_EXTENSION_MIN_BLOCKS_V1
+            || max_blocks > COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_BLOCKS_V1
+        {
+            return None;
+        }
+        Some(Self {
+            max_blocks,
+            max_faces: COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1,
+            max_cross_block_pairs: COMMON_ARTICULATION_CLEARANCE_MAX_CROSS_BLOCK_PAIRS_V1,
+            max_pair_candidates: COMMON_ARTICULATION_CLEARANCE_MAX_PAIR_CANDIDATES_V1,
+            max_work: COMMON_ARTICULATION_CLEARANCE_MAX_WORK_V1,
+            max_storage_bytes: COMMON_ARTICULATION_CLEARANCE_MAX_STORAGE_BYTES_V1,
+        })
     }
 }
 
@@ -173,6 +213,42 @@ pub struct CommonArticulationClearanceRevalidationInputV1<'a> {
     pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
     pub paper_thickness_mm: f64,
     pub limits: CommonArticulationClearanceLimitsV1,
+}
+
+/// Live inputs for the separately typed 11..=32 clearance extension.
+pub struct CommonArticulationClearanceExtensionInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub pose: &'a ClosedMaterialHingeGraphPose,
+    pub decomposition: &'a CanonicalMaterialEdgeBlockDecompositionV1,
+    pub common_pose: &'a CommonArticulationPoseExtensionAuthorityV1,
+    pub common_pose_limits: CommonArticulationPoseExtensionLimitsV1,
+    pub schedule: &'a CanonicalCycleScheduleV1,
+    pub schedule_limits: CycleScheduleLimitsV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub paper_thickness_mm: f64,
+    pub submitted_cross_block_pairs: &'a [CommonArticulationCrossBlockFacePairV1],
+    /// As in the legacy prerequisite, only one certificate for the complete
+    /// parent geometry is accepted. Per-block certificates are not a
+    /// substitute for cross-block open-interval clearance.
+    pub whole_parent_continuous: Option<PositiveThicknessContinuousCertificateV1>,
+    pub limits: CommonArticulationClearanceExtensionLimitsV1,
+}
+
+/// Live inputs required to revalidate an issued clearance extension.
+#[derive(Debug, Clone, Copy)]
+pub struct CommonArticulationClearanceExtensionRevalidationInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub pose: &'a ClosedMaterialHingeGraphPose,
+    pub decomposition: &'a CanonicalMaterialEdgeBlockDecompositionV1,
+    pub common_pose: &'a CommonArticulationPoseExtensionAuthorityV1,
+    pub common_pose_limits: CommonArticulationPoseExtensionLimitsV1,
+    pub schedule: &'a CanonicalCycleScheduleV1,
+    pub schedule_limits: CycleScheduleLimitsV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub paper_thickness_mm: f64,
+    pub limits: CommonArticulationClearanceExtensionLimitsV1,
 }
 
 /// Sealed proof of the cross-block open-interval prerequisite.
@@ -509,6 +585,375 @@ impl CommonArticulationClearanceOutcomeV1 {
     }
 }
 
+/// Sealed clearance prerequisite for 11 through one explicit configured cap.
+///
+/// The extension is deliberately neither cloneable nor serializable. Its
+/// distinct type cannot be supplied to the legacy staged/final, desktop,
+/// Apply, or viewer paths, and it grants no such authority itself.
+///
+/// ```compile_fail
+/// use ori_collision::{
+///     CommonArticulationClearanceExtensionPrerequisiteV1,
+///     CommonArticulationClearancePrerequisiteV1,
+/// };
+///
+/// fn legacy_clearance(_: CommonArticulationClearancePrerequisiteV1) {}
+/// fn cannot_route(extension: CommonArticulationClearanceExtensionPrerequisiteV1) {
+///     legacy_clearance(extension);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use ori_collision::CommonArticulationClearanceExtensionPrerequisiteV1;
+///
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<CommonArticulationClearanceExtensionPrerequisiteV1>();
+/// ```
+#[derive(Debug)]
+pub struct CommonArticulationClearanceExtensionPrerequisiteV1 {
+    issuer_pose: ClosedMaterialHingeGraphPose,
+    whole_parent_continuous: PositiveThicknessContinuousCertificateV1,
+    common_pose_binding: [u8; 32],
+    schedule_binding: [u8; 32],
+    closure_binding: [u8; 32],
+    paper_thickness_bits: u64,
+    common_pose_limits: CommonArticulationPoseExtensionLimitsV1,
+    schedule_limits: CycleScheduleLimitsV1,
+    limits: CommonArticulationClearanceExtensionLimitsV1,
+    actual_block_count: usize,
+    cross_block_pairs: Vec<CommonArticulationCrossBlockFacePairV1>,
+    logical_work: usize,
+    storage_bytes_upper_bound: usize,
+    binding_fingerprint: [u8; 32],
+}
+
+impl CommonArticulationClearanceExtensionPrerequisiteV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        COMMON_ARTICULATION_CLEARANCE_EXTENSION_PREREQUISITE_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub fn is_for_pose_v1(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        pose: &ClosedMaterialHingeGraphPose,
+    ) -> bool {
+        pose.is_for_geometry(geometry) && self.issuer_pose.same_instance(pose)
+    }
+
+    #[must_use]
+    pub const fn configured_max_blocks_v1(&self) -> usize {
+        self.limits.max_blocks
+    }
+
+    #[must_use]
+    pub const fn actual_block_count_v1(&self) -> usize {
+        self.actual_block_count
+    }
+
+    #[must_use]
+    pub fn cross_block_pairs_v1(&self) -> &[CommonArticulationCrossBlockFacePairV1] {
+        &self.cross_block_pairs
+    }
+
+    #[must_use]
+    pub const fn paper_thickness_mm_v1(&self) -> f64 {
+        f64::from_bits(self.paper_thickness_bits)
+    }
+
+    #[must_use]
+    pub const fn logical_work_v1(&self) -> usize {
+        self.logical_work
+    }
+
+    #[must_use]
+    pub const fn storage_bytes_upper_bound_v1(&self) -> usize {
+        self.storage_bytes_upper_bound
+    }
+
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding_fingerprint
+    }
+
+    #[must_use]
+    pub const fn common_pose_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.common_pose_binding
+    }
+
+    #[must_use]
+    pub const fn schedule_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.schedule_binding
+    }
+
+    #[must_use]
+    pub const fn closure_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.closure_binding
+    }
+
+    pub fn revalidate_v1(
+        &self,
+        input: CommonArticulationClearanceExtensionRevalidationInputV1<'_>,
+    ) -> Result<(), CommonArticulationClearanceErrorV1> {
+        self.revalidate_with_control_v1(input, &CooperativeOperationControlV1::unbounded())
+    }
+
+    pub fn revalidate_with_control_v1(
+        &self,
+        input: CommonArticulationClearanceExtensionRevalidationInputV1<'_>,
+        control: &CooperativeOperationControlV1<'_>,
+    ) -> Result<(), CommonArticulationClearanceErrorV1> {
+        let mut checkpoint = || clearance_checkpoint_v1(control);
+        self.revalidate_with_checkpoint_v1(input, &mut checkpoint)
+    }
+
+    fn revalidate_with_checkpoint_v1(
+        &self,
+        input: CommonArticulationClearanceExtensionRevalidationInputV1<'_>,
+        checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationClearanceErrorV1>,
+    ) -> Result<(), CommonArticulationClearanceErrorV1> {
+        checkpoint()?;
+        let validation_input = CommonArticulationClearanceExtensionInputV1 {
+            geometry: input.geometry,
+            audit: input.audit,
+            pose: input.pose,
+            decomposition: input.decomposition,
+            common_pose: input.common_pose,
+            common_pose_limits: input.common_pose_limits,
+            schedule: input.schedule,
+            schedule_limits: input.schedule_limits,
+            closure: input.closure,
+            paper_thickness_mm: input.paper_thickness_mm,
+            submitted_cross_block_pairs: &self.cross_block_pairs,
+            whole_parent_continuous: Some(self.whole_parent_continuous.clone()),
+            limits: input.limits,
+        };
+        let validated = validate_clearance_extension_input_v1(&validation_input, checkpoint)?;
+        checkpoint()?;
+        let common_pose_binding = input.common_pose.binding_fingerprint_v1();
+        let schedule_binding = input.schedule.certificate_binding_fingerprint_v2();
+        let closure_binding = input.closure.partition_binding_fingerprint_v2();
+        let paper_thickness_bits = input.paper_thickness_mm.to_bits();
+        let actual_block_count = input.decomposition.blocks().len();
+        let binding_fingerprint =
+            clearance_extension_binding_fingerprint_v1(&ClearanceExtensionBindingMaterialV1 {
+                common_pose_binding,
+                schedule_binding,
+                closure_binding,
+                paper_thickness_bits,
+                common_pose_limits: input.common_pose_limits,
+                schedule_limits: input.schedule_limits,
+                limits: input.limits,
+                actual_block_count,
+                pairs: &validated.cross_block_pairs,
+            });
+        if validated.unsupported_reason.is_some()
+            || !self.issuer_pose.same_instance(input.pose)
+            || !input.pose.is_for_geometry(input.geometry)
+            || self.common_pose_binding != common_pose_binding
+            || self.schedule_binding != schedule_binding
+            || self.closure_binding != closure_binding
+            || self.paper_thickness_bits != paper_thickness_bits
+            || self.common_pose_limits != input.common_pose_limits
+            || self.schedule_limits != input.schedule_limits
+            || self.limits != input.limits
+            || self.actual_block_count != actual_block_count
+            || self.cross_block_pairs != validated.cross_block_pairs
+            || self.logical_work != validated.logical_work
+            || self.storage_bytes_upper_bound != validated.storage_bytes_upper_bound
+            || self.binding_fingerprint != binding_fingerprint
+            || !self.whole_parent_continuous.is_for(
+                input.geometry,
+                input.audit,
+                input.pose.fixed_face(),
+                input.schedule,
+                input.closure,
+                input.paper_thickness_mm,
+            )
+        {
+            return Err(CommonArticulationClearanceErrorV1::WholeParentContinuousProofMismatch);
+        }
+        checkpoint()
+    }
+
+    #[must_use]
+    pub const fn cross_block_open_interval_clearance_proven_v1(&self) -> bool {
+        true
+    }
+
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_collision_clearance(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_viewer(&self) -> bool {
+        false
+    }
+}
+
+/// Read-only explanation of an unsupported 11..=32 clearance proof.
+#[derive(Debug)]
+pub struct CommonArticulationClearanceExtensionGapDiagnosticV1 {
+    reason: CommonArticulationClearanceUnsupportedReasonV1,
+    common_pose_binding: [u8; 32],
+    schedule_binding: [u8; 32],
+    closure_binding: [u8; 32],
+    paper_thickness_bits: u64,
+    configured_max_blocks: usize,
+    actual_block_count: usize,
+    cross_block_pairs: Vec<CommonArticulationCrossBlockFacePairV1>,
+    logical_work: usize,
+    storage_bytes_upper_bound: usize,
+}
+
+impl CommonArticulationClearanceExtensionGapDiagnosticV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        COMMON_ARTICULATION_CLEARANCE_EXTENSION_GAP_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn reason(&self) -> CommonArticulationClearanceUnsupportedReasonV1 {
+        self.reason
+    }
+
+    #[must_use]
+    pub const fn configured_max_blocks_v1(&self) -> usize {
+        self.configured_max_blocks
+    }
+
+    #[must_use]
+    pub const fn actual_block_count_v1(&self) -> usize {
+        self.actual_block_count
+    }
+
+    #[must_use]
+    pub fn cross_block_pairs_v1(&self) -> &[CommonArticulationCrossBlockFacePairV1] {
+        &self.cross_block_pairs
+    }
+
+    #[must_use]
+    pub const fn logical_work_v1(&self) -> usize {
+        self.logical_work
+    }
+
+    #[must_use]
+    pub const fn storage_bytes_upper_bound_v1(&self) -> usize {
+        self.storage_bytes_upper_bound
+    }
+
+    #[must_use]
+    pub const fn paper_thickness_mm_v1(&self) -> f64 {
+        f64::from_bits(self.paper_thickness_bits)
+    }
+
+    #[must_use]
+    pub const fn common_pose_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.common_pose_binding
+    }
+
+    #[must_use]
+    pub const fn schedule_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.schedule_binding
+    }
+
+    #[must_use]
+    pub const fn closure_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.closure_binding
+    }
+
+    #[must_use]
+    pub const fn endpoint_observations_are_authority_v1(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn sampled_poses_are_authority_v1(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn broad_phase_aabbs_are_authority_v1(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn per_block_certificates_are_cross_block_authority_v1(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_collision_clearance(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_viewer(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug)]
+pub enum CommonArticulationClearanceExtensionOutcomeV1 {
+    Certified(Box<CommonArticulationClearanceExtensionPrerequisiteV1>),
+    Unsupported(CommonArticulationClearanceExtensionGapDiagnosticV1),
+}
+
+impl CommonArticulationClearanceExtensionOutcomeV1 {
+    #[must_use]
+    pub const fn is_certified(&self) -> bool {
+        matches!(self, Self::Certified(_))
+    }
+
+    #[must_use]
+    pub fn as_certified(&self) -> Option<&CommonArticulationClearanceExtensionPrerequisiteV1> {
+        match self {
+            Self::Certified(authority) => Some(authority.as_ref()),
+            Self::Unsupported(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_gap(&self) -> Option<&CommonArticulationClearanceExtensionGapDiagnosticV1> {
+        match self {
+            Self::Certified(_) => None,
+            Self::Unsupported(gap) => Some(gap),
+        }
+    }
+}
+
 struct ValidatedClearanceInputV1 {
     cross_block_pairs: Vec<CommonArticulationCrossBlockFacePairV1>,
     logical_work: usize,
@@ -601,6 +1046,217 @@ fn issue_common_articulation_clearance_prerequisite_with_checkpoint_v1(
             binding_fingerprint,
         },
     )))
+}
+
+pub fn issue_common_articulation_clearance_extension_prerequisite_v1(
+    input: CommonArticulationClearanceExtensionInputV1<'_>,
+) -> Result<CommonArticulationClearanceExtensionOutcomeV1, CommonArticulationClearanceErrorV1> {
+    issue_common_articulation_clearance_extension_prerequisite_with_control_v1(
+        input,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+pub fn issue_common_articulation_clearance_extension_prerequisite_with_control_v1(
+    input: CommonArticulationClearanceExtensionInputV1<'_>,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<CommonArticulationClearanceExtensionOutcomeV1, CommonArticulationClearanceErrorV1> {
+    issue_common_articulation_clearance_extension_prerequisite_with_checkpoint_v1(
+        input,
+        &mut || clearance_checkpoint_v1(control),
+    )
+}
+
+fn issue_common_articulation_clearance_extension_prerequisite_with_checkpoint_v1(
+    mut input: CommonArticulationClearanceExtensionInputV1<'_>,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationClearanceErrorV1>,
+) -> Result<CommonArticulationClearanceExtensionOutcomeV1, CommonArticulationClearanceErrorV1> {
+    checkpoint()?;
+    let validated = validate_clearance_extension_input_v1(&input, checkpoint)?;
+    checkpoint()?;
+
+    let common_pose_binding = input.common_pose.binding_fingerprint_v1();
+    let schedule_binding = input.schedule.certificate_binding_fingerprint_v2();
+    let closure_binding = input.closure.partition_binding_fingerprint_v2();
+    let paper_thickness_bits = input.paper_thickness_mm.to_bits();
+    let actual_block_count = input.decomposition.blocks().len();
+    if let Some(reason) = validated.unsupported_reason {
+        checkpoint()?;
+        return Ok(CommonArticulationClearanceExtensionOutcomeV1::Unsupported(
+            CommonArticulationClearanceExtensionGapDiagnosticV1 {
+                reason,
+                common_pose_binding,
+                schedule_binding,
+                closure_binding,
+                paper_thickness_bits,
+                configured_max_blocks: input.limits.max_blocks,
+                actual_block_count,
+                cross_block_pairs: validated.cross_block_pairs,
+                logical_work: validated.logical_work,
+                storage_bytes_upper_bound: validated.storage_bytes_upper_bound,
+            },
+        ));
+    }
+
+    let binding_fingerprint =
+        clearance_extension_binding_fingerprint_v1(&ClearanceExtensionBindingMaterialV1 {
+            common_pose_binding,
+            schedule_binding,
+            closure_binding,
+            paper_thickness_bits,
+            common_pose_limits: input.common_pose_limits,
+            schedule_limits: input.schedule_limits,
+            limits: input.limits,
+            actual_block_count,
+            pairs: &validated.cross_block_pairs,
+        });
+    let whole_parent_continuous = input
+        .whole_parent_continuous
+        .take()
+        .ok_or(CommonArticulationClearanceErrorV1::WholeParentContinuousProofMismatch)?;
+    checkpoint()?;
+    Ok(CommonArticulationClearanceExtensionOutcomeV1::Certified(
+        Box::new(CommonArticulationClearanceExtensionPrerequisiteV1 {
+            issuer_pose: input.pose.clone(),
+            whole_parent_continuous,
+            common_pose_binding,
+            schedule_binding,
+            closure_binding,
+            paper_thickness_bits,
+            common_pose_limits: input.common_pose_limits,
+            schedule_limits: input.schedule_limits,
+            limits: input.limits,
+            actual_block_count,
+            cross_block_pairs: validated.cross_block_pairs,
+            logical_work: validated.logical_work,
+            storage_bytes_upper_bound: validated.storage_bytes_upper_bound,
+            binding_fingerprint,
+        }),
+    ))
+}
+
+fn validate_clearance_extension_input_v1(
+    input: &CommonArticulationClearanceExtensionInputV1<'_>,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationClearanceErrorV1>,
+) -> Result<ValidatedClearanceInputV1, CommonArticulationClearanceErrorV1> {
+    validate_clearance_extension_limits_v1(input.limits)?;
+    if !input.paper_thickness_mm.is_finite() || input.paper_thickness_mm <= 0.0 {
+        return Err(CommonArticulationClearanceErrorV1::InvalidInput);
+    }
+    let block_count = input.decomposition.blocks().len();
+    let face_count = input.geometry.face_ids().len();
+    let hinge_count = input.geometry.hinges().len();
+    if !(COMMON_ARTICULATION_CLEARANCE_EXTENSION_MIN_BLOCKS_V1
+        ..=COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_BLOCKS_V1)
+        .contains(&block_count)
+        || block_count > input.limits.max_blocks
+        || input.common_pose.configured_max_blocks_v1() != input.limits.max_blocks
+        || input.common_pose_limits.max_blocks != input.limits.max_blocks
+        || face_count == 0
+        || face_count > input.limits.max_faces
+        || input.submitted_cross_block_pairs.len() > input.limits.max_cross_block_pairs
+    {
+        return Err(CommonArticulationClearanceErrorV1::ResourceLimit);
+    }
+    if !input.pose.is_for_geometry(input.geometry)
+        || !input.decomposition.is_for_geometry(input.geometry)
+    {
+        return Err(CommonArticulationClearanceErrorV1::InvalidInput);
+    }
+
+    let envelope = resource_envelope_v1(
+        input.decomposition,
+        face_count,
+        hinge_count,
+        input.submitted_cross_block_pairs.len(),
+        input.common_pose.logical_work_v1(),
+    )?;
+    if envelope.raw_pair_candidates > input.limits.max_pair_candidates
+        || envelope.logical_work > input.limits.max_work
+        || envelope.storage_bytes_upper_bound > input.limits.max_storage_bytes
+    {
+        return Err(CommonArticulationClearanceErrorV1::ResourceLimit);
+    }
+
+    checkpoint()?;
+    revalidate_common_pose_extension_with_clearance_checkpoint_v1(
+        input.common_pose,
+        CommonArticulationPoseExtensionInputV1 {
+            geometry: input.geometry,
+            pose: input.pose,
+            decomposition: input.decomposition,
+            paper_thickness_mm: input.paper_thickness_mm,
+            limits: input.common_pose_limits,
+        },
+        checkpoint,
+    )?;
+    checkpoint()?;
+
+    if !input
+        .schedule
+        .matches_binding(input.geometry, input.audit, input.pose.fixed_face())
+        || input.closure.fixed_face() != input.pose.fixed_face()
+        || input.closure.schedule_binding_fingerprint_v2()
+            != input.schedule.certificate_binding_fingerprint_v2()
+        || input.closure.graph_binding_fingerprint_v1()
+            != input.schedule.graph_binding_fingerprint_v1()
+        || !input.closure.every_leaf_covers_graph_v1(input.geometry)
+    {
+        return Err(CommonArticulationClearanceErrorV1::PathBindingMismatch);
+    }
+    checkpoint()?;
+
+    let canonical_source_endpoint = input
+        .schedule
+        .evaluate_endpoint_angle_box(false, input.schedule_limits)
+        .ok();
+    let source_angles = canonical_source_endpoint
+        .as_ref()
+        .and_then(|_| input.schedule.evaluate(0.0));
+    if source_angles.as_ref().is_some_and(|source| {
+        !exact_hinge_angle_bits_match_v1(source.as_slice(), input.pose.hinge_angles().as_slice())
+    }) {
+        return Err(CommonArticulationClearanceErrorV1::PathSourcePoseMismatch);
+    }
+
+    let expected = enumerate_cross_block_pairs_v1(
+        input.decomposition,
+        envelope.raw_pair_candidates,
+        checkpoint,
+    )?;
+    if expected.is_empty() || expected.len() > input.limits.max_cross_block_pairs {
+        return Err(CommonArticulationClearanceErrorV1::ResourceLimit);
+    }
+    validate_submitted_pairs_v1(input.submitted_cross_block_pairs, &expected, checkpoint)?;
+    checkpoint()?;
+
+    let unsupported_reason = if source_angles.is_none() {
+        Some(CommonArticulationClearanceUnsupportedReasonV1::CanonicalSourcePoseUnavailable)
+    } else if let Some(continuous) = input.whole_parent_continuous.as_ref() {
+        if !continuous.is_for(
+            input.geometry,
+            input.audit,
+            input.pose.fixed_face(),
+            input.schedule,
+            input.closure,
+            input.paper_thickness_mm,
+        ) {
+            return Err(CommonArticulationClearanceErrorV1::WholeParentContinuousProofMismatch);
+        }
+        None
+    } else {
+        Some(
+            CommonArticulationClearanceUnsupportedReasonV1::WholeParentOpenIntervalProofUnavailable,
+        )
+    };
+    checkpoint()?;
+
+    Ok(ValidatedClearanceInputV1 {
+        cross_block_pairs: expected,
+        logical_work: envelope.logical_work,
+        storage_bytes_upper_bound: envelope.storage_bytes_upper_bound,
+        unsupported_reason,
+    })
 }
 
 fn validate_clearance_input_v1(
@@ -731,6 +1387,23 @@ fn validate_limits_v1(
     limits: CommonArticulationClearanceLimitsV1,
 ) -> Result<(), CommonArticulationClearanceErrorV1> {
     if limits.max_blocks > COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1
+        || limits.max_faces > COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1
+        || limits.max_cross_block_pairs > COMMON_ARTICULATION_CLEARANCE_MAX_CROSS_BLOCK_PAIRS_V1
+        || limits.max_pair_candidates > COMMON_ARTICULATION_CLEARANCE_MAX_PAIR_CANDIDATES_V1
+        || limits.max_work > COMMON_ARTICULATION_CLEARANCE_MAX_WORK_V1
+        || limits.max_storage_bytes > COMMON_ARTICULATION_CLEARANCE_MAX_STORAGE_BYTES_V1
+    {
+        return Err(CommonArticulationClearanceErrorV1::ResourceLimit);
+    }
+    Ok(())
+}
+
+fn validate_clearance_extension_limits_v1(
+    limits: CommonArticulationClearanceExtensionLimitsV1,
+) -> Result<(), CommonArticulationClearanceErrorV1> {
+    if !(COMMON_ARTICULATION_CLEARANCE_EXTENSION_MIN_BLOCKS_V1
+        ..=COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_BLOCKS_V1)
+        .contains(&limits.max_blocks)
         || limits.max_faces > COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1
         || limits.max_cross_block_pairs > COMMON_ARTICULATION_CLEARANCE_MAX_CROSS_BLOCK_PAIRS_V1
         || limits.max_pair_candidates > COMMON_ARTICULATION_CLEARANCE_MAX_PAIR_CANDIDATES_V1
@@ -918,6 +1591,37 @@ fn revalidate_common_pose_with_clearance_checkpoint_v1(
     })
 }
 
+fn revalidate_common_pose_extension_with_clearance_checkpoint_v1(
+    authority: &CommonArticulationPoseExtensionAuthorityV1,
+    input: CommonArticulationPoseExtensionInputV1<'_>,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationClearanceErrorV1>,
+) -> Result<(), CommonArticulationClearanceErrorV1> {
+    let mut unexpected_checkpoint_error = None;
+    let result = authority.revalidate_with_checkpoint_v1(input, || match checkpoint() {
+        Ok(()) => Ok(()),
+        Err(CommonArticulationClearanceErrorV1::Cancelled) => {
+            Err(CommonArticulationPoseStopV1::Cancelled)
+        }
+        Err(CommonArticulationClearanceErrorV1::DeadlineExceeded) => {
+            Err(CommonArticulationPoseStopV1::DeadlineExceeded)
+        }
+        Err(error) => {
+            unexpected_checkpoint_error = Some(error);
+            Err(CommonArticulationPoseStopV1::Cancelled)
+        }
+    });
+    if let Some(error) = unexpected_checkpoint_error {
+        return Err(error);
+    }
+    result.map_err(|error| match error {
+        CommonArticulationPoseErrorV1::Cancelled => CommonArticulationClearanceErrorV1::Cancelled,
+        CommonArticulationPoseErrorV1::DeadlineExceeded => {
+            CommonArticulationClearanceErrorV1::DeadlineExceeded
+        }
+        error => CommonArticulationClearanceErrorV1::CommonPose(error),
+    })
+}
+
 struct ClearanceBindingMaterialV1<'a> {
     common_pose_binding: [u8; 32],
     schedule_binding: [u8; 32],
@@ -963,6 +1667,61 @@ fn clearance_binding_fingerprint_v1(material: &ClearanceBindingMaterialV1<'_>) -
     hash.finalize().into()
 }
 
+struct ClearanceExtensionBindingMaterialV1<'a> {
+    common_pose_binding: [u8; 32],
+    schedule_binding: [u8; 32],
+    closure_binding: [u8; 32],
+    paper_thickness_bits: u64,
+    common_pose_limits: CommonArticulationPoseExtensionLimitsV1,
+    schedule_limits: CycleScheduleLimitsV1,
+    limits: CommonArticulationClearanceExtensionLimitsV1,
+    actual_block_count: usize,
+    pairs: &'a [CommonArticulationCrossBlockFacePairV1],
+}
+
+fn clearance_extension_binding_fingerprint_v1(
+    material: &ClearanceExtensionBindingMaterialV1<'_>,
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(COMMON_ARTICULATION_CLEARANCE_EXTENSION_PREREQUISITE_MODEL_ID_V1.as_bytes());
+    for value in [
+        COMMON_ARTICULATION_CLEARANCE_EXTENSION_MIN_BLOCKS_V1,
+        material.limits.max_blocks,
+        material.actual_block_count,
+    ] {
+        hash.update((value as u64).to_le_bytes());
+    }
+    hash.update(material.common_pose_binding);
+    hash.update(material.schedule_binding);
+    hash.update(material.closure_binding);
+    hash.update(material.paper_thickness_bits.to_be_bytes());
+    for value in [
+        material.common_pose_limits.max_blocks,
+        material.common_pose_limits.max_faces,
+        material.common_pose_limits.max_hinges,
+        material.common_pose_limits.max_work,
+        material.common_pose_limits.max_retained_bytes,
+        material.schedule_limits.max_hinges,
+        material.schedule_limits.max_degree,
+        material.schedule_limits.max_work,
+        material.limits.max_blocks,
+        material.limits.max_faces,
+        material.limits.max_cross_block_pairs,
+        material.limits.max_pair_candidates,
+        material.limits.max_work,
+        material.limits.max_storage_bytes,
+    ] {
+        hash.update((value as u64).to_be_bytes());
+    }
+    hash.update(material.schedule_limits.max_coefficient_bits.to_be_bytes());
+    hash.update((material.pairs.len() as u64).to_be_bytes());
+    for pair in material.pairs {
+        hash.update(pair.first.canonical_bytes());
+        hash.update(pair.second.canonical_bytes());
+    }
+    hash.finalize().into()
+}
+
 fn clearance_checkpoint_v1(
     control: &CooperativeOperationControlV1<'_>,
 ) -> Result<(), CommonArticulationClearanceErrorV1> {
@@ -973,6 +1732,10 @@ fn clearance_checkpoint_v1(
         }
     })
 }
+
+#[cfg(test)]
+#[path = "common_articulation_clearance/extension_tests.rs"]
+mod extension_tests;
 
 #[cfg(test)]
 #[path = "common_articulation_clearance/tests.rs"]

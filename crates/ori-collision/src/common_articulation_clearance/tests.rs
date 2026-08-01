@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Duration, Instant},
 };
@@ -228,6 +229,42 @@ fn independent_cross_block_pairs_v1(
     pairs
 }
 
+fn strip_fixture_vertex_id_v1(
+    namespace: ProjectId,
+    deterministic: bool,
+    family: u8,
+    index: usize,
+) -> VertexId {
+    if deterministic {
+        let prefix = match family {
+            b'b' => "legacy-clearance-golden-bottom",
+            b't' => "legacy-clearance-golden-top",
+            _ => unreachable!("only bottom and top vertex IDs are requested"),
+        };
+        VertexId::derive_v5(namespace, format!("{prefix}-{index}").as_bytes())
+    } else {
+        VertexId::new()
+    }
+}
+
+fn strip_fixture_edge_id_v1(
+    namespace: ProjectId,
+    deterministic: bool,
+    family: u8,
+    index: usize,
+) -> EdgeId {
+    if deterministic {
+        let prefix = match family {
+            b'b' => "legacy-clearance-golden-boundary",
+            b'h' => "legacy-clearance-golden-hinge",
+            _ => unreachable!("only boundary and hinge edge IDs are requested"),
+        };
+        EdgeId::derive_v5(namespace, format!("{prefix}-{index}").as_bytes())
+    } else {
+        EdgeId::new()
+    }
+}
+
 fn prepare_strip_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
     prepare_strip_fixture_with_common_pose_v1(block_count, None)
 }
@@ -236,14 +273,36 @@ fn prepare_strip_fixture_with_common_pose_v1(
     block_count: usize,
     supplied_common_pose: Option<CommonArticulationPoseAuthorityV1>,
 ) -> ClearanceFixtureV1 {
+    prepare_strip_fixture_with_identity_mode_v1(
+        block_count,
+        supplied_common_pose,
+        ProjectId::new(),
+        false,
+    )
+}
+
+fn prepare_deterministic_legacy_clearance_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
+    prepare_strip_fixture_with_identity_mode_v1(
+        block_count,
+        None,
+        ProjectId::schema_namespace([0x63; 16]),
+        true,
+    )
+}
+
+fn prepare_strip_fixture_with_identity_mode_v1(
+    block_count: usize,
+    supplied_common_pose: Option<CommonArticulationPoseAuthorityV1>,
+    namespace: ProjectId,
+    deterministic_ids: bool,
+) -> ClearanceFixtureV1 {
     assert!((2..=COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1 + 1).contains(&block_count),);
-    let namespace = ProjectId::new();
     let face_count = block_count + 1;
     let bottom = (0..=face_count)
-        .map(|_| VertexId::new())
+        .map(|index| strip_fixture_vertex_id_v1(namespace, deterministic_ids, b'b', index))
         .collect::<Vec<_>>();
     let top = (0..=face_count)
-        .map(|_| VertexId::new())
+        .map(|index| strip_fixture_vertex_id_v1(namespace, deterministic_ids, b't', index))
         .collect::<Vec<_>>();
     let vertices = bottom
         .iter()
@@ -270,14 +329,14 @@ fn prepare_strip_fixture_with_common_pose_v1(
         .collect::<Vec<_>>();
     let mut edges = (0..boundary.len())
         .map(|index| Edge {
-            id: EdgeId::new(),
+            id: strip_fixture_edge_id_v1(namespace, deterministic_ids, b'b', index),
             start: boundary[index],
             end: boundary[(index + 1) % boundary.len()],
             kind: EdgeKind::Boundary,
         })
         .collect::<Vec<_>>();
     edges.extend((1..=block_count).map(|x| Edge {
-        id: EdgeId::new(),
+        id: strip_fixture_edge_id_v1(namespace, deterministic_ids, b'h', x),
         start: bottom[x],
         end: top[x],
         kind: EdgeKind::Mountain,
@@ -526,6 +585,62 @@ fn issue_fixture_clearance_v1(
         CommonArticulationClearanceOutcomeV1::Unsupported(_) => {
             panic!("fixture has a whole-parent positive certificate")
         }
+    }
+}
+
+fn binding_digest_hex_v1(binding: [u8; 32]) -> String {
+    binding
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            write!(hex, "{byte:02x}").expect("writing to String cannot fail");
+            hex
+        })
+}
+
+#[test]
+fn legacy_two_through_ten_clearance_binding_and_revalidation_bytes_remain_frozen() {
+    let expected = [
+        "b4bfd880d59d3c37f77980441150b2bff3e174ad0543cf866ea572060bd62ea2",
+        "6838cbe3dcb92c24f30241c44fa6cebcffc15f7096c92f53bc2a80c0464668b1",
+        "f33e987ed3ab5871298894ef15d145bf769ecf4466f3432da90de67920acb904",
+        "7503a2b80d008e2d00e56b471edc924e60e2a6ca41c70bdecbb8c824040cd09a",
+        "974fe1ab01ecc56d257c2709d605d7ed14e5bf515b193af7d4cbe0222e46f4e5",
+        "1bde0530e6350ea1c8a9e24dd544bc8572de8f0d4e523dba8ba5a94e974cd454",
+        "6f4e0cd5a8af300d1672aa49023e431398f6aef7eeccc1cbee59d1e07f49e664",
+        "2af218852150f46920302a53da1d240e13bb35ac56f8fbe9c6ca1ac19de1f087",
+        "b7848e87371a9400e9e19d0f87ac4a8c46a6d387ada4f70d2698a0e68a3fed42",
+    ];
+
+    assert_eq!(COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1, 10);
+    assert_eq!(CommonArticulationClearanceLimitsV1::default().max_blocks, 8);
+    for (block_count, expected_digest) in (2..=10).zip(expected) {
+        let fixture = prepare_deterministic_legacy_clearance_fixture_v1(block_count);
+        let limits = clearance_limits_for_block_count_v1(block_count);
+        assert_eq!(limits.max_blocks, block_count.max(8));
+
+        let authority = issue_fixture_clearance_v1(&fixture, limits);
+        let repeated = issue_fixture_clearance_v1(&fixture, limits);
+        assert_eq!(
+            authority.binding_fingerprint_v1(),
+            repeated.binding_fingerprint_v1(),
+            "legacy clearance arity {block_count} must issue deterministically",
+        );
+        assert_eq!(
+            binding_digest_hex_v1(authority.binding_fingerprint_v1()),
+            expected_digest,
+            "legacy clearance arity {block_count} golden digest changed",
+        );
+        assert_eq!(
+            binding_digest_hex_v1(repeated.binding_fingerprint_v1()),
+            expected_digest,
+            "repeated legacy clearance arity {block_count} golden digest changed",
+        );
+        authority
+            .revalidate_v1(fixture_revalidation_input_v1(&fixture, limits))
+            .expect("legacy clearance authority revalidation");
+        repeated
+            .revalidate_v1(fixture_revalidation_input_v1(&fixture, limits))
+            .expect("repeated legacy clearance authority revalidation");
     }
 }
 

@@ -20,6 +20,7 @@ mod block_cut_generalized_dihedral;
 mod block_cut_orthogonal_half_turn;
 mod bridge_motion;
 mod coaxial_profile_lattice;
+mod common_articulation_decomposition_v2;
 mod common_articulation_pose;
 mod dense_grid;
 mod exact_common_effective_generator_sign;
@@ -28,8 +29,15 @@ mod exact_cut_carrier;
 mod exact_generator_word;
 mod separated_even_single_vertex_opposite_pair_blocks;
 
+#[allow(unused_imports)]
+pub use common_articulation_decomposition_v2::{
+    CanonicalEdgeBlockLimitsV2, CanonicalMaterialEdgeBlockDecompositionV2,
+    CommonArticulationDecompositionErrorV2, CommonArticulationDecompositionStopV2,
+};
 pub use common_articulation_pose::{
     COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MAX_FACES_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MAX_HINGES_V1,
     COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1,
     COMMON_ARTICULATION_POSE_EXTENSION_MODEL_ID_V1, COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
     COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1, COMMON_ARTICULATION_POSE_MODEL_ID_V1,
@@ -382,6 +390,142 @@ pub enum DyadicIntervalClosureErrorV1 {
     UnprovenClosure { depth: u32, index: u64 },
 }
 
+/// Cooperative stop requested by controlled dyadic-closure proof generation.
+///
+/// A stop never exposes a partial certificate: the controlled proof API
+/// returns an error before constructing its public result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DyadicIntervalClosureStopV1 {
+    Cancelled,
+    DeadlineExceeded,
+}
+
+/// Failure from the opt-in checkpointed dyadic-closure API.
+///
+/// The pre-existing [`DyadicIntervalClosureErrorV1`] is deliberately kept
+/// unchanged so existing exhaustive callers retain their wire and source
+/// compatibility.  Stops are observable only through this new controlled
+/// API and never yield a partial certificate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DyadicIntervalClosureControlErrorV1 {
+    Closure(DyadicIntervalClosureErrorV1),
+    Cancelled,
+    DeadlineExceeded,
+}
+
+impl From<DyadicIntervalClosureErrorV1> for DyadicIntervalClosureControlErrorV1 {
+    fn from(error: DyadicIntervalClosureErrorV1) -> Self {
+        Self::Closure(error)
+    }
+}
+
+fn closure_checkpoint_v1(
+    checkpoint: &mut impl FnMut() -> Result<(), DyadicIntervalClosureStopV1>,
+) -> Result<(), DyadicIntervalClosureControlErrorV1> {
+    checkpoint().map_err(|stop| match stop {
+        DyadicIntervalClosureStopV1::Cancelled => DyadicIntervalClosureControlErrorV1::Cancelled,
+        DyadicIntervalClosureStopV1::DeadlineExceeded => {
+            DyadicIntervalClosureControlErrorV1::DeadlineExceeded
+        }
+    })
+}
+
+/// Stop or checked-index failure from the allocation-free cooperative heap
+/// sorter shared by bounded graph and general-N provenance paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointHeapSortErrorV1<Stop> {
+    Stop(Stop),
+    ResourceLimit,
+}
+
+/// Deterministic ascending heap sort with a caller-owned checkpoint and no
+/// auxiliary allocation.  Every heap construction, extraction, and sift
+/// comparison polls, so an admitted large carrier never enters an opaque
+/// library sort that cannot observe cancellation or a deadline.
+pub(crate) fn checkpoint_heap_sort_by_key_v1<T, K: Ord, Stop>(
+    values: &mut [T],
+    key: impl Fn(&T) -> K,
+    checkpoint: &mut impl FnMut() -> Result<(), Stop>,
+) -> Result<(), CheckpointHeapSortErrorV1<Stop>> {
+    if values.len() < 2 {
+        return Ok(());
+    }
+    let len = values.len();
+    for start in (0..(len / 2)).rev() {
+        checkpoint().map_err(CheckpointHeapSortErrorV1::Stop)?;
+        checkpoint_heap_sift_down_by_key_v1(values, start, len, &key, checkpoint)?;
+    }
+    for end in (1..len).rev() {
+        checkpoint().map_err(CheckpointHeapSortErrorV1::Stop)?;
+        values.swap(0, end);
+        checkpoint_heap_sift_down_by_key_v1(values, 0, end, &key, checkpoint)?;
+    }
+    Ok(())
+}
+
+fn checkpoint_heap_sift_down_by_key_v1<T, K: Ord, Stop>(
+    values: &mut [T],
+    mut root: usize,
+    end: usize,
+    key: &impl Fn(&T) -> K,
+    checkpoint: &mut impl FnMut() -> Result<(), Stop>,
+) -> Result<(), CheckpointHeapSortErrorV1<Stop>> {
+    loop {
+        checkpoint().map_err(CheckpointHeapSortErrorV1::Stop)?;
+        let child = root
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(1))
+            .ok_or(CheckpointHeapSortErrorV1::ResourceLimit)?;
+        if child >= end {
+            return Ok(());
+        }
+        let mut selected = child;
+        if let Some(right) = child.checked_add(1).filter(|right| *right < end) {
+            checkpoint().map_err(CheckpointHeapSortErrorV1::Stop)?;
+            if key(&values[selected]) < key(&values[right]) {
+                selected = right;
+            }
+        }
+        checkpoint().map_err(CheckpointHeapSortErrorV1::Stop)?;
+        if key(&values[root]) >= key(&values[selected]) {
+            return Ok(());
+        }
+        values.swap(root, selected);
+        root = selected;
+    }
+}
+
+fn checked_closure_hinges_with_checkpoint_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    checkpoint: &mut impl FnMut() -> Result<(), DyadicIntervalClosureStopV1>,
+) -> Result<Vec<EdgeId>, DyadicIntervalClosureControlErrorV1> {
+    let mut checked_hinges = Vec::new();
+    checked_hinges
+        .try_reserve_exact(geometry.hinges().len())
+        .map_err(|_| DyadicIntervalClosureErrorV1::ResourceLimit)?;
+    for (index, hinge) in geometry.hinges().iter().enumerate() {
+        if index % 64 == 0 {
+            closure_checkpoint_v1(checkpoint)?;
+        }
+        checked_hinges.push(hinge.edge());
+    }
+    checkpoint_heap_sort_by_key_v1(&mut checked_hinges, EdgeId::canonical_bytes, checkpoint)
+        .map_err(|error| match error {
+            CheckpointHeapSortErrorV1::Stop(stop) => match stop {
+                DyadicIntervalClosureStopV1::Cancelled => {
+                    DyadicIntervalClosureControlErrorV1::Cancelled
+                }
+                DyadicIntervalClosureStopV1::DeadlineExceeded => {
+                    DyadicIntervalClosureControlErrorV1::DeadlineExceeded
+                }
+            },
+            CheckpointHeapSortErrorV1::ResourceLimit => {
+                DyadicIntervalClosureErrorV1::ResourceLimit.into()
+            }
+        })?;
+    Ok(checked_hinges)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CycleBasisLimitsV1 {
     pub max_cycles: usize,
@@ -488,6 +632,12 @@ impl ClosedMaterialHingeGraphPose {
     #[must_use]
     pub fn same_instance(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.instance, &other.instance)
+    }
+
+    /// Crate-private identity anchor for separately typed provenance tokens.
+    #[must_use]
+    pub(crate) fn instance_anchor_v2(&self) -> std::sync::Arc<()> {
+        std::sync::Arc::clone(&self.instance)
     }
 
     #[must_use]
@@ -653,12 +803,46 @@ impl MaterialHingeGraphGeometry {
         tolerance: f64,
         limits: DyadicIntervalClosureLimitsV1,
     ) -> Result<DyadicMaterialHingeIntervalClosureCertificateV1, DyadicIntervalClosureErrorV1> {
+        match self.prove_dyadic_schedule_closure_with_checkpoint_v1(
+            audit,
+            fixed_face,
+            schedule,
+            tolerance,
+            limits,
+            || Ok(()),
+        ) {
+            Ok(certificate) => Ok(certificate),
+            Err(DyadicIntervalClosureControlErrorV1::Closure(error)) => Err(error),
+            Err(
+                DyadicIntervalClosureControlErrorV1::Cancelled
+                | DyadicIntervalClosureControlErrorV1::DeadlineExceeded,
+            ) => unreachable!("a no-op closure checkpoint cannot stop"),
+        }
+    }
+
+    /// Controlled variant of [`Self::prove_dyadic_schedule_closure_v1`].
+    ///
+    /// The no-checkpoint API delegates here with a no-op checkpoint, preserving
+    /// its mathematical premises and public certificate wire exactly. A stop
+    /// is checked at entry, on each major proof loop and leaf, and immediately
+    /// before a certificate becomes public.
+    pub fn prove_dyadic_schedule_closure_with_checkpoint_v1(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        schedule: &CanonicalCycleScheduleV1,
+        tolerance: f64,
+        limits: DyadicIntervalClosureLimitsV1,
+        mut checkpoint: impl FnMut() -> Result<(), DyadicIntervalClosureStopV1>,
+    ) -> Result<DyadicMaterialHingeIntervalClosureCertificateV1, DyadicIntervalClosureControlErrorV1>
+    {
+        closure_checkpoint_v1(&mut checkpoint)?;
         if !schedule.matches_binding(self, audit, fixed_face)
             || limits.max_depth >= 64
             || limits.max_leaves == 0
             || limits.max_work == 0
         {
-            return Err(DyadicIntervalClosureErrorV1::InvalidInput);
+            return Err(DyadicIntervalClosureErrorV1::InvalidInput.into());
         }
         if let Some(group_count) = composed_symmetric_rational_cycles_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
@@ -682,14 +866,9 @@ impl MaterialHingeGraphGeometry {
                 || limits.max_work < group_count
                 || limits.max_depth < required_depth
             {
-                return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                return Err(DyadicIntervalClosureErrorV1::ResourceLimit.into());
             }
-            let mut checked_hinges = self
-                .hinges()
-                .iter()
-                .map(|hinge| hinge.edge())
-                .collect::<Vec<_>>();
-            checked_hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+            let checked_hinges = checked_closure_hinges_with_checkpoint_v1(self, &mut checkpoint)?;
             let certificate = MaterialHingeIntervalClosureCertificateV1 {
                 version: MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1,
                 fixed_face,
@@ -698,8 +877,12 @@ impl MaterialHingeGraphGeometry {
             let base_depth = usize::BITS - 1 - group_count.leading_zeros();
             let base_count = 1_usize << base_depth;
             let split_from = base_count - (group_count - base_count);
-            let mut partitions = Vec::with_capacity(group_count);
+            let mut partitions = Vec::new();
+            partitions
+                .try_reserve_exact(group_count)
+                .map_err(|_| DyadicIntervalClosureErrorV1::ResourceLimit)?;
             for index in 0..base_count {
+                closure_checkpoint_v1(&mut checkpoint)?;
                 if index < split_from {
                     partitions.push((base_depth, index as u64));
                 } else {
@@ -707,25 +890,48 @@ impl MaterialHingeGraphGeometry {
                     partitions.push((base_depth + 1, (index * 2 + 1) as u64));
                 }
             }
+            let mut leaves = Vec::new();
+            leaves
+                .try_reserve_exact(partitions.len())
+                .map_err(|_| DyadicIntervalClosureErrorV1::ResourceLimit)?;
+            for (depth, index) in partitions {
+                closure_checkpoint_v1(&mut checkpoint)?;
+                leaves.push((depth, index, certificate.clone()));
+            }
+            closure_checkpoint_v1(&mut checkpoint)?;
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
                 issuer_geometry: self.instance_anchor_v1(),
                 fixed_face,
                 schedule_binding_fingerprint_v2: schedule.certificate_binding_fingerprint_v2(),
                 graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
-                leaves: partitions
-                    .into_iter()
-                    .map(|(depth, index)| (depth, index, certificate.clone()))
-                    .collect(),
+                leaves,
             });
         }
-        let stationary_closed = self.hinges().iter().all(|hinge| {
-            schedule
+        let mut stationary_closed = true;
+        for (index, hinge) in self.hinges().iter().enumerate() {
+            if index % 64 == 0 {
+                closure_checkpoint_v1(&mut checkpoint)?;
+            }
+            if !schedule
                 .derivative_bound(hinge.edge())
                 .is_some_and(|bound| bound.to_bits() == 0.0_f64.to_bits())
-        }) && schedule.evaluate(0.0).is_some_and(|angles| {
-            self.solve_closed(audit, fixed_face, &angles, tolerance)
-                .is_ok()
-        });
+            {
+                stationary_closed = false;
+                break;
+            }
+        }
+        if stationary_closed {
+            // `solve_closed` is the existing bounded V1 atomic closure
+            // primitive and has no checkpointed variant.  Preserve its
+            // mathematical/wire contract while polling immediately before
+            // and after it; it cannot publish a partial certificate.
+            closure_checkpoint_v1(&mut checkpoint)?;
+            stationary_closed = schedule.evaluate(0.0).is_some_and(|angles| {
+                self.solve_closed(audit, fixed_face, &angles, tolerance)
+                    .is_ok()
+            });
+            closure_checkpoint_v1(&mut checkpoint)?;
+        }
         if stationary_closed
             || bridge_only_motion_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
@@ -779,32 +985,34 @@ impl MaterialHingeGraphGeometry {
                 self, audit, fixed_face, schedule, tolerance,
             )
         {
-            let mut checked_hinges = self
-                .hinges()
-                .iter()
-                .map(|hinge| hinge.edge())
-                .collect::<Vec<_>>();
-            checked_hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+            let checked_hinges = checked_closure_hinges_with_checkpoint_v1(self, &mut checkpoint)?;
+            let mut leaves = Vec::new();
+            leaves
+                .try_reserve_exact(1)
+                .map_err(|_| DyadicIntervalClosureErrorV1::ResourceLimit)?;
+            leaves.push((
+                0,
+                0,
+                MaterialHingeIntervalClosureCertificateV1 {
+                    version: MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1,
+                    fixed_face,
+                    checked_hinges,
+                },
+            ));
+            closure_checkpoint_v1(&mut checkpoint)?;
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
                 issuer_geometry: self.instance_anchor_v1(),
                 fixed_face,
                 schedule_binding_fingerprint_v2: schedule.certificate_binding_fingerprint_v2(),
                 graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
-                leaves: vec![(
-                    0,
-                    0,
-                    MaterialHingeIntervalClosureCertificateV1 {
-                        version: MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1,
-                        fixed_face,
-                        checked_hinges,
-                    },
-                )],
+                leaves,
             });
         }
         let mut pending = vec![(0u32, 0u64)];
         let mut leaves = Vec::new();
         let mut work = 0usize;
         while let Some((depth, index)) = pending.pop() {
+            closure_checkpoint_v1(&mut checkpoint)?;
             work = work
                 .checked_add(1)
                 .filter(|value| *value <= limits.max_work)
@@ -822,14 +1030,14 @@ impl MaterialHingeGraphGeometry {
                         pending.push((child_depth, left + 1));
                         pending.push((child_depth, left));
                         if pending.len().saturating_add(leaves.len()) > limits.max_leaves {
-                            return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                            return Err(DyadicIntervalClosureErrorV1::ResourceLimit.into());
                         }
                         continue;
                     }
                     Err(crate::CycleSchedulePrepareErrorV1::ResourceLimit) => {
-                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit.into());
                     }
-                    Err(_) => return Err(DyadicIntervalClosureErrorV1::InvalidInput),
+                    Err(_) => return Err(DyadicIntervalClosureErrorV1::InvalidInput.into()),
                 };
             match self.prove_interval_closure_v1(
                 audit,
@@ -840,12 +1048,13 @@ impl MaterialHingeGraphGeometry {
             ) {
                 Ok(certificate) => {
                     if leaves.len() >= limits.max_leaves {
-                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit.into());
                     }
+                    closure_checkpoint_v1(&mut checkpoint)?;
                     leaves.push((depth, index, certificate));
                 }
                 Err(KinematicsError::ResourceLimitExceeded) => {
-                    return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                    return Err(DyadicIntervalClosureErrorV1::ResourceLimit.into());
                 }
                 Err(_) if depth < limits.max_depth => {
                     let child_depth = depth + 1;
@@ -856,14 +1065,17 @@ impl MaterialHingeGraphGeometry {
                     pending.push((child_depth, left + 1));
                     pending.push((child_depth, left));
                     if pending.len().saturating_add(leaves.len()) > limits.max_leaves {
-                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit.into());
                     }
                 }
                 Err(_) => {
-                    return Err(DyadicIntervalClosureErrorV1::UnprovenClosure { depth, index });
+                    return Err(
+                        DyadicIntervalClosureErrorV1::UnprovenClosure { depth, index }.into(),
+                    );
                 }
             }
         }
+        closure_checkpoint_v1(&mut checkpoint)?;
         Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
             issuer_geometry: self.instance_anchor_v1(),
             fixed_face,

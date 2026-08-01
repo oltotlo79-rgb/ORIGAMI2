@@ -25,6 +25,10 @@ pub const COMMON_ARTICULATION_POSE_EXTENSION_MODEL_ID_V1: &str =
 pub const COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1: usize = 11;
 /// Hard maximum configured cap admitted by the pose extension.
 pub const COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1: usize = 32;
+/// Hard maximum parent-face count admitted only by the pose extension.
+pub const COMMON_ARTICULATION_POSE_EXTENSION_MAX_FACES_V1: usize = 257;
+/// Hard maximum parent-hinge count admitted only by the pose extension.
+pub const COMMON_ARTICULATION_POSE_EXTENSION_MAX_HINGES_V1: usize = 384;
 
 const COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1: usize = 8;
 const COMMON_ARTICULATION_POSE_MAX_FACES_V1: usize = 256;
@@ -86,8 +90,8 @@ impl CommonArticulationPoseExtensionLimitsV1 {
         }
         Some(Self {
             max_blocks,
-            max_faces: COMMON_ARTICULATION_POSE_MAX_FACES_V1,
-            max_hinges: COMMON_ARTICULATION_POSE_MAX_HINGES_V1,
+            max_faces: COMMON_ARTICULATION_POSE_EXTENSION_MAX_FACES_V1,
+            max_hinges: COMMON_ARTICULATION_POSE_EXTENSION_MAX_HINGES_V1,
             max_work: COMMON_ARTICULATION_POSE_MAX_WORK_V1,
             max_retained_bytes: COMMON_ARTICULATION_POSE_MAX_RETAINED_BYTES_V1,
         })
@@ -806,8 +810,8 @@ fn validate_extension_limits_v1(
         || !(COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1
             ..=COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1)
             .contains(&configured_max_blocks)
-        || limits.max_faces > COMMON_ARTICULATION_POSE_MAX_FACES_V1
-        || limits.max_hinges > COMMON_ARTICULATION_POSE_MAX_HINGES_V1
+        || limits.max_faces > COMMON_ARTICULATION_POSE_EXTENSION_MAX_FACES_V1
+        || limits.max_hinges > COMMON_ARTICULATION_POSE_EXTENSION_MAX_HINGES_V1
         || limits.max_work > COMMON_ARTICULATION_POSE_MAX_WORK_V1
         || limits.max_retained_bytes > COMMON_ARTICULATION_POSE_MAX_RETAINED_BYTES_V1
     {

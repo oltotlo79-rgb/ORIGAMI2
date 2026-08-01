@@ -69,6 +69,10 @@
 
 #![forbid(unsafe_code)]
 
+mod common_articulation_block_closure_set_v2;
+mod common_articulation_pose_v2;
+mod common_articulation_resource_profile;
+mod common_articulation_whole_parent_closure_v2;
 mod dyadic_pose_graph;
 mod graph;
 mod interval;
@@ -79,6 +83,31 @@ mod tree;
 use ori_domain::{EdgeId, FaceId};
 use thiserror::Error;
 
+pub use common_articulation_block_closure_set_v2::{
+    COMMON_ARTICULATION_BLOCK_CLOSURE_SET_MODEL_ID_V2, CommonArticulationBlockClosureSetErrorV2,
+    CommonArticulationBlockClosureSetInputV2, CommonArticulationBlockClosureSetLimitsV2,
+    CommonArticulationBlockClosureSetStopV2, CommonArticulationBlockClosureSetV2,
+    prove_common_articulation_block_closure_set_v2,
+    prove_common_articulation_block_closure_set_with_checkpoint_v2,
+};
+pub use common_articulation_whole_parent_closure_v2::{
+    COMMON_ARTICULATION_WHOLE_PARENT_CLOSURE_MODEL_ID_V2,
+    CommonArticulationWholeParentClosureErrorV2, CommonArticulationWholeParentClosureInputV2,
+    CommonArticulationWholeParentClosureLimitsV2, CommonArticulationWholeParentClosureStopV2,
+    CommonArticulationWholeParentClosureV2, prove_common_articulation_whole_parent_closure_v2,
+    prove_common_articulation_whole_parent_closure_with_checkpoint_v2,
+};
+pub use common_articulation_pose_v2::{
+    COMMON_ARTICULATION_POSE_MODEL_ID_V2, CommonArticulationHingeAngleBitsV2,
+    CommonArticulationPoseAuthorityV2, CommonArticulationPoseBlockRestrictionRefV2,
+    CommonArticulationPoseErrorV2, CommonArticulationPoseInputV2, CommonArticulationPoseStopV2,
+    prove_common_articulation_pose_authority_v2,
+    prove_common_articulation_pose_authority_with_checkpoint_v2,
+};
+pub use common_articulation_resource_profile::{
+    COMMON_ARTICULATION_RESOURCE_PROFILE_MODEL_ID_V2, CommonArticulationCanonicalMiuraResourcesV2,
+    CommonArticulationResourceProfileErrorV2, CommonArticulationResourceProfileV2,
+};
 pub use dyadic_pose_graph::{
     DyadicPoseGraphGenerationErrorV1, DyadicPoseGraphLimitsV1, DyadicPoseGraphTransitionV1,
     GeneratedDyadicPoseGraphV1, generate_bounded_collective_pose_graph_v1,
@@ -86,17 +115,22 @@ pub use dyadic_pose_graph::{
 };
 pub use graph::{
     COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MAX_FACES_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MAX_HINGES_V1,
     COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1,
     COMMON_ARTICULATION_POSE_EXTENSION_MODEL_ID_V1, COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
     COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1, COMMON_ARTICULATION_POSE_MODEL_ID_V1,
     CandidateFaceTransform, CanonicalCycleBasisV1, CanonicalEdgeBlockLimitsV1,
-    CanonicalMaterialEdgeBlockDecompositionV1, CanonicalMaterialEdgeBlockV1,
-    ClosedMaterialHingeGraphPose, CommonArticulationHingeAngleBitsV1,
+    CanonicalEdgeBlockLimitsV2, CanonicalMaterialEdgeBlockDecompositionV1,
+    CanonicalMaterialEdgeBlockDecompositionV2, CanonicalMaterialEdgeBlockV1,
+    ClosedMaterialHingeGraphPose, CommonArticulationDecompositionErrorV2,
+    CommonArticulationDecompositionStopV2, CommonArticulationHingeAngleBitsV1,
     CommonArticulationPoseAuthorityV1, CommonArticulationPoseBlockRestrictionRefV1,
     CommonArticulationPoseErrorV1, CommonArticulationPoseExtensionAuthorityV1,
     CommonArticulationPoseExtensionInputV1, CommonArticulationPoseExtensionLimitsV1,
     CommonArticulationPoseInputV1, CommonArticulationPoseLimitsV1, CommonArticulationPoseStopV1,
-    CycleBasisLimitsV1, DyadicIntervalClosureErrorV1, DyadicIntervalClosureLimitsV1,
+    CycleBasisLimitsV1, DyadicIntervalClosureControlErrorV1, DyadicIntervalClosureErrorV1,
+    DyadicIntervalClosureLimitsV1, DyadicIntervalClosureStopV1,
     DyadicMaterialHingeIntervalClosureCertificateV1,
     EXACT_COMMON_EFFECTIVE_GENERATOR_SIGN_MODEL_ID_V1,
     EXACT_COMMON_SPLIT_PAIR_EFFECTIVE_GENERATOR_SIGN_MODEL_ID_V1, EffectiveGeneratorSignV1,

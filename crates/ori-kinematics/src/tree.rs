@@ -868,6 +868,85 @@ impl MaterialHingeGraphGeometry {
         }
     }
 
+    /// Builds the compact, canonical-3x3 block observation used only by the
+    /// separately typed general-N decomposition.  Unlike the V1 helper this
+    /// never clones the complete parent vertex registry into every block.
+    /// The caller must already have proved the 9-face/12-hinge block shape;
+    /// this method repeats the structural checks so a future caller cannot
+    /// turn the compact allocation bound into an assumption.
+    pub(crate) fn edge_block_instance_v2(
+        &self,
+        face_ids: Vec<FaceId>,
+        hinges: Vec<TreeHinge>,
+    ) -> Result<Self, KinematicsError> {
+        if face_ids.len() != 9 || hinges.len() != 12 {
+            return Err(KinematicsError::ResourceLimitExceeded);
+        }
+        let mut face_set = HashSet::new();
+        face_set
+            .try_reserve(face_ids.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        for face in &face_ids {
+            if !face_set.insert(*face) {
+                return Err(KinematicsError::UnsupportedTopology);
+            }
+        }
+        if hinges.iter().any(|hinge| {
+            !face_set.contains(&hinge.left_face()) || !face_set.contains(&hinge.right_face())
+        }) {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+
+        let mut face_boundaries = Vec::new();
+        face_boundaries
+            .try_reserve_exact(face_ids.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        let mut vertices = HashSet::new();
+        vertices
+            .try_reserve(
+                face_ids
+                    .len()
+                    .checked_mul(4)
+                    .ok_or(KinematicsError::ResourceLimitExceeded)?,
+            )
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        for face in &face_ids {
+            let index = self
+                .face_boundaries
+                .binary_search_by_key(&face.canonical_bytes(), |boundary| {
+                    boundary.face.canonical_bytes()
+                })
+                .map_err(|_| KinematicsError::UnsupportedTopology)?;
+            let boundary = &self.face_boundaries[index];
+            if boundary.vertices.len() != 4 || boundary.edges.len() != 4 {
+                return Err(KinematicsError::UnsupportedTopology);
+            }
+            vertices.extend(boundary.vertices.iter().copied());
+            face_boundaries.push(boundary.clone());
+        }
+        let mut positions = HashMap::new();
+        positions
+            .try_reserve(vertices.len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        for vertex in vertices {
+            positions.insert(
+                vertex,
+                self.positions
+                    .get(&vertex)
+                    .copied()
+                    .ok_or(KinematicsError::UnsupportedTopology)?,
+            );
+        }
+        Ok(Self {
+            issuer: Arc::new(()),
+            fold_model_fingerprint_v1: self.fold_model_fingerprint_v1,
+            face_ids,
+            hinges,
+            positions,
+            face_boundaries,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn new_for_test(face_ids: Vec<FaceId>, hinges: Vec<TreeHinge>) -> Self {
         Self {

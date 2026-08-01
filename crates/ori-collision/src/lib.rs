@@ -59,6 +59,7 @@ mod cayley;
 mod cell_order_transport;
 mod certified_path_graph;
 mod common_articulation_clearance;
+mod common_articulation_clearance_v2;
 mod continuous_layer_transport;
 mod continuous_path;
 mod cooperative_control;
@@ -209,6 +210,15 @@ pub use common_articulation_clearance::{
     issue_common_articulation_clearance_extension_prerequisite_with_control_v1,
     issue_common_articulation_clearance_prerequisite_v1,
     issue_common_articulation_clearance_prerequisite_with_control_v1,
+};
+pub use common_articulation_clearance_v2::{
+    COMMON_ARTICULATION_CLEARANCE_PREREQUISITE_MODEL_ID_V2,
+    COMMON_ARTICULATION_CLEARANCE_UNPROMOTED_MODEL_ID_V2, CommonArticulationClearanceErrorV2,
+    CommonArticulationClearanceInputV2, CommonArticulationClearanceOutcomeV2,
+    CommonArticulationClearancePrerequisiteV2, CommonArticulationClearanceRevalidationInputV2,
+    CommonArticulationClearanceStopV2, CommonArticulationClearanceUnpromotedReasonV2,
+    CommonArticulationCrossBlockFacePairV2, issue_common_articulation_clearance_prerequisite_v2,
+    issue_common_articulation_clearance_prerequisite_with_checkpoint_v2,
 };
 pub use continuous_layer_transport::{
     CONTINUOUS_LAYER_TRANSPORT_CERTIFICATE_MODEL_ID_V1, ContinuousLayerTransportCertificateV1,

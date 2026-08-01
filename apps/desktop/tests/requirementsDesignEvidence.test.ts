@@ -24,9 +24,9 @@ const CURRENT_SEMANTIC_MUS_MODEL_ID
 const CURRENT_SEMANTIC_INVENTORY_HEADING
   = '## 2026-07-30 EDT-009 semantic MUS 現行正本訂正（v4・24/24）'
 const EDT_009_LIMITATION
-  = 'Semantic MUS v4 covers 24 variants in bounded shapes. Detached SAT handles one record via singleton construction and partitions 2..16 by residual-referenced vertices. A two-record component may use pair templates; a larger one requires bit-compatible singletons. Each component and the document are recertified. Exhaustion is unknown, never UNSAT. At 17+ detached SAT is skipped, but current-assignment and direct-conflict checks remain. Coordinates stay private; mutation is never authorized.'
+  = 'Semantic MUS v4 covers 24 variants. Detached SAT partitions 2..16 records by residual vertices. Two-record components may use pair templates. Exactly three records may use one unique ordinary pair plus a singleton leaf sharing one articulation across four translations; larger components require bit-compatible singletons. Component and document residuals are recertified. Exhaustion is Unknown, never UNSAT. At 17+ detached SAT is skipped. Coordinates stay private; mutation is never authorized.'
 const EDT_009_MISSING_ACCEPTANCE
-  = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, incompatible connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies.'
+  = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, unsupported connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies.'
 
 test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]
@@ -298,6 +298,11 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
     ],
     [
       'production-symbol',
+      'crates/ori-core/src/constraint_exactification/three_record_component_constructive.rs',
+      'pub(super) fn construct_pair_plus_singleton_leaf_exact_assignment_v1(',
+    ],
+    [
+      'production-symbol',
       'crates/ori-core/src/constraint_solver.rs',
       'pub(crate) fn residual_referenced_vertices_by_record_v1(',
     ],
@@ -318,6 +323,16 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
     ],
     [
       'test',
+      'crates/ori-core/src/constraint_exactification/component_constructive_tests.rs',
+      'fn unique_pair_plus_singleton_leaf_component_constructs_in_canonical_order()',
+    ],
+    [
+      'test',
+      'apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs',
+      'fn connected_pair_plus_singleton_leaf_publishes_only_detached_exact_sat()',
+    ],
+    [
+      'test',
       'apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs',
       'fn constructive_attempt_post_checkpoint_covers_some_and_none_results()',
     ],
@@ -325,6 +340,11 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
       'production-symbol',
       'apps/desktop/src/lib/geometricConstraints.ts',
       'function isSatisfactionEvidenceKind(',
+    ],
+    [
+      'test',
+      'apps/desktop/tests/geometricConstraints.test.ts',
+      'normalizes a three-record detached construction without accepting coordinates',
     ],
     [
       'test',
@@ -345,6 +365,9 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
   }
   assert.ok(edtEvidence.commits.includes(
     '6c91e5d684cb7a269d78070a0648770064283833',
+  ))
+  assert.ok(edtEvidence.commits.includes(
+    'ad8036c5ade9491d4f466c154676436bd67abdbc',
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { path: string, selector: string }) =>

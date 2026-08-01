@@ -2082,7 +2082,8 @@
         "5132cf7966195a4e8055ea63114fad03948ea47e",
         "a743fa74b7c82a5a683a6b9c9a6054ab619fd56a",
         "2e24e479421ff7ef4f0958407ead862a8c846013",
-        "e6c442d929cf3ea470c5f7070e66f1686653cac8"
+        "e6c442d929cf3ea470c5f7070e66f1686653cac8",
+        "7ae9c951c2369a8f0451c2a90d27eea962dcd912"
       ],
       "evidence": [
         {
@@ -2231,6 +2232,36 @@
           "selector": "fn exact_ten_block_resource_envelope_passes_and_each_one_short_limit_fails_closed()"
         },
         {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/common_articulation_clearance.rs",
+          "selector": "pub const COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1: usize = 10;"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
+          "selector": "fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_ten()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
+          "selector": "fn exact_ten_block_resource_envelope_passes_and_every_one_short_limit_fails_closed_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
+          "selector": "fn actual_eleven_block_clearance_input_is_rejected_by_the_hard_arity_cap_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
+          "selector": "fn exact_ten_lower_path_issues_and_revalidates_without_crossing_permission_boundary_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
+          "selector": "fn exact_ten_lower_path_tamper_and_stops_fail_exact_revalidation_v1()"
+        },
+        {
           "kind": "test",
           "path": "crates/ori-kinematics/src/graph/separated_even_single_vertex_opposite_pair_blocks.rs",
           "selector": "fn exact_eight_through_ten_parent_cardinality_is_bounded_before_decomposition()"
@@ -2309,8 +2340,9 @@
       "limitations": [
         "Certified radial-bifold Apply is only 3..=9 blocks (E2E 4..=9). The 8-block depth/leaves/work 3/8/8 boundary is retained; exact nine binds one whole plus nine restricted proofs/sources (ten each) under fixture closure depth/leaves/work 4/9/9, and every one-short fails closed. Pose and clearance Defaults remain 8; production current-cycle explicitly opts into 9.",
         "The exact ten-bay fixture validates 51 faces, 60 hinges, 20 moving hinges, 60 boundary vertices, and a 30-half-edge convex central face with local opposite-pair/Kawasaki/4M-2V/corridor checks. The bounded selector rejects ten before construction.",
-        "Commit e6c442d929cf3ea470c5f7070e66f1686653cac8 adds a separate exact-ten lower scope: canonical closure depth/leaves/work 4/10/10 and each one-short, plus common-articulation pose hard cap 10 and each face/hinge/work/retained-byte one-short. This is non-authorizing evidence only: it has no clearance, staged/final path, desktop transport, or Apply connection.",
-        "Generic bounded 2..=8 canonical-union authority and its fingerprints remain unchanged and non-authorizing. Exact nine and exact ten use separate scoped companions and binding domains; complete-union evidence alone is also non-authorizing. Pose and clearance Defaults remain 8; clearance hard cap remains 9; production Apply remains 3..=9 blocks (E2E 4..=9).",
+        "Commit e6c442d929cf3ea470c5f7070e66f1686653cac8 adds a separate exact-ten lower scope: canonical closure depth/leaves/work 4/10/10 and each one-short, plus common-articulation pose hard cap 10 and each face/hinge/work/retained-byte one-short.",
+        "Commit 7ae9c951c2369a8f0451c2a90d27eea962dcd912 raises only the library clearance hard cap to 10 while preserving its Default at 8, fixes exact-ten clearance resource and every one-short boundary, rejects an actual eleven-block decomposition, and carries exact-ten prerequisites through staged/final exact revalidation with tamper/cancel/deadline rejection. The resulting final path remains outside project mutation, Apply, viewer, and desktop transport authority.",
+        "Generic bounded 2..=8 canonical-union authority and its fingerprints remain unchanged and non-authorizing. Exact nine and exact ten use separate scoped companions and binding domains; complete-union evidence alone is also non-authorizing. Pose and clearance Defaults remain 8; production Apply remains 3..=9 blocks (E2E 4..=9).",
         "PreparedSupportingLine prioritizes globally supporting lines with canonical-ordinal ties and allocation-free unstable sorting; canonical overlap-cell and final ExactStorage signatures remain compatible with the unprioritized and independent classifiers."
       ],
       "missingAcceptance": [

@@ -3,17 +3,22 @@ use std::collections::HashSet;
 use ori_domain::{EdgeId, FaceId};
 use ori_foldability::LayerOrderSnapshot;
 pub use ori_kinematics::{
-    COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1,
-    COMMON_ARTICULATION_POSE_MODEL_ID_V1, CommonArticulationHingeAngleBitsV1,
-    CommonArticulationPoseAuthorityV1, CommonArticulationPoseBlockRestrictionRefV1,
-    CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1, CommonArticulationPoseLimitsV1,
-    CommonArticulationPoseStopV1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MODEL_ID_V1, COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1, COMMON_ARTICULATION_POSE_MODEL_ID_V1,
+    CommonArticulationHingeAngleBitsV1, CommonArticulationPoseAuthorityV1,
+    CommonArticulationPoseBlockRestrictionRefV1, CommonArticulationPoseErrorV1,
+    CommonArticulationPoseExtensionAuthorityV1, CommonArticulationPoseExtensionInputV1,
+    CommonArticulationPoseExtensionLimitsV1, CommonArticulationPoseInputV1,
+    CommonArticulationPoseLimitsV1, CommonArticulationPoseStopV1,
 };
 use ori_kinematics::{
     CanonicalCycleScheduleV1, CanonicalMaterialEdgeBlockDecompositionV1, CycleScheduleLimitsV1,
     CycleScheduleRestrictionErrorV1, CycleScheduleRestrictionStopV1,
     DyadicMaterialHingeIntervalClosureCertificateV1, MaterialHingeGraphAudit,
     MaterialHingeGraphGeometry, prove_common_articulation_pose_authority_with_checkpoint_v1,
+    prove_common_articulation_pose_extension_authority_with_checkpoint_v1,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -168,6 +173,31 @@ pub fn issue_common_articulation_pose_authority_with_control_v1(
     control: &CooperativeOperationControlV1<'_>,
 ) -> Result<CommonArticulationPoseAuthorityV1, CommonArticulationPoseErrorV1> {
     prove_common_articulation_pose_authority_with_checkpoint_v1(input, || {
+        control.checkpoint().map_err(|stop| match stop {
+            CooperativeOperationStopV1::Cancelled => CommonArticulationPoseStopV1::Cancelled,
+            CooperativeOperationStopV1::DeadlineExceeded => {
+                CommonArticulationPoseStopV1::DeadlineExceeded
+            }
+        })
+    })
+}
+
+/// Issues the separately typed, non-authorizing 11..=configured-cap pose proof.
+pub fn issue_common_articulation_pose_extension_authority_v1(
+    input: CommonArticulationPoseExtensionInputV1<'_>,
+) -> Result<CommonArticulationPoseExtensionAuthorityV1, CommonArticulationPoseErrorV1> {
+    issue_common_articulation_pose_extension_authority_with_control_v1(
+        input,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+}
+
+/// Issues the pose extension while observing cancellation and deadline control.
+pub fn issue_common_articulation_pose_extension_authority_with_control_v1(
+    input: CommonArticulationPoseExtensionInputV1<'_>,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<CommonArticulationPoseExtensionAuthorityV1, CommonArticulationPoseErrorV1> {
+    prove_common_articulation_pose_extension_authority_with_checkpoint_v1(input, || {
         control.checkpoint().map_err(|stop| match stop {
             CooperativeOperationStopV1::Cancelled => CommonArticulationPoseStopV1::Cancelled,
             CooperativeOperationStopV1::DeadlineExceeded => {
@@ -4353,6 +4383,90 @@ mod tests {
         ));
         assert!(matches!(
             issue_common_articulation_pose_authority_with_control_v1(
+                input,
+                &CooperativeOperationControlV1::new(
+                    None,
+                    Instant::now() - Duration::from_millis(1),
+                ),
+            ),
+            Err(CommonArticulationPoseErrorV1::DeadlineExceeded)
+        ));
+    }
+
+    #[test]
+    fn common_articulation_extension_adapter_issues_eleven_and_maps_cooperative_stops() {
+        let (_, (pattern, paper, _)) = miura_block_chain_v1(11);
+        let namespace = ProjectId::new();
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: namespace,
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .expect("eleven-block strip topology");
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("eleven-block strip geometry");
+        let audit = MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+            .expect("eleven-block strip audit");
+        let angles = CanonicalHingeAngles::new(
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).expect("zero hinge angle"))
+                .collect(),
+        )
+        .expect("canonical zero angles");
+        let pose = geometry
+            .solve_closed(&audit, geometry.face_ids()[0], &angles, 0.0)
+            .expect("closed eleven-block strip pose");
+        let decomposition = geometry
+            .decompose_canonical_edge_blocks_v1(
+                &audit,
+                CanonicalEdgeBlockLimitsV1 {
+                    max_blocks: 11,
+                    max_faces_per_block: 32,
+                    max_hinges_per_block: 32,
+                },
+            )
+            .expect("canonical eleven-block decomposition");
+        assert_eq!(decomposition.blocks().len(), 11);
+        let limits = super::CommonArticulationPoseExtensionLimitsV1::with_max_blocks_v1(11)
+            .expect("valid extension cap");
+        let input = super::CommonArticulationPoseExtensionInputV1 {
+            geometry: &geometry,
+            pose: &pose,
+            decomposition: &decomposition,
+            paper_thickness_mm: paper.thickness_mm,
+            limits,
+        };
+        let authority = super::issue_common_articulation_pose_extension_authority_v1(input)
+            .expect("collision extension adapter authority");
+        authority
+            .revalidate_v1(input)
+            .expect("collision extension adapter revalidation");
+        assert!(!authority.authorizes_collision_clearance());
+        assert!(!authority.authorizes_apply());
+        assert!(!authority.authorizes_viewer());
+
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            super::issue_common_articulation_pose_extension_authority_with_control_v1(
+                input,
+                &CooperativeOperationControlV1::new(
+                    Some(&cancelled),
+                    Instant::now() + Duration::from_secs(1),
+                ),
+            ),
+            Err(CommonArticulationPoseErrorV1::Cancelled)
+        ));
+        assert!(matches!(
+            super::issue_common_articulation_pose_extension_authority_with_control_v1(
                 input,
                 &CooperativeOperationControlV1::new(
                     None,

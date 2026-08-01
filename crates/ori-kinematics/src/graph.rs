@@ -29,12 +29,19 @@ mod exact_generator_word;
 mod separated_even_single_vertex_opposite_pair_blocks;
 
 pub use common_articulation_pose::{
-    COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1,
-    COMMON_ARTICULATION_POSE_MODEL_ID_V1, CommonArticulationHingeAngleBitsV1,
-    CommonArticulationPoseAuthorityV1, CommonArticulationPoseBlockRestrictionRefV1,
-    CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1, CommonArticulationPoseLimitsV1,
-    CommonArticulationPoseStopV1, prove_common_articulation_pose_authority_v1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MODEL_ID_V1, COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1, COMMON_ARTICULATION_POSE_MODEL_ID_V1,
+    CommonArticulationHingeAngleBitsV1, CommonArticulationPoseAuthorityV1,
+    CommonArticulationPoseBlockRestrictionRefV1, CommonArticulationPoseErrorV1,
+    CommonArticulationPoseExtensionAuthorityV1, CommonArticulationPoseExtensionInputV1,
+    CommonArticulationPoseExtensionLimitsV1, CommonArticulationPoseInputV1,
+    CommonArticulationPoseLimitsV1, CommonArticulationPoseStopV1,
+    prove_common_articulation_pose_authority_v1,
     prove_common_articulation_pose_authority_with_checkpoint_v1,
+    prove_common_articulation_pose_extension_authority_v1,
+    prove_common_articulation_pose_extension_authority_with_checkpoint_v1,
 };
 pub use exact_common_effective_generator_sign::{
     EXACT_COMMON_EFFECTIVE_GENERATOR_SIGN_MODEL_ID_V1, EffectiveGeneratorSignV1,

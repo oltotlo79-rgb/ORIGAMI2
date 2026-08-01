@@ -17,8 +17,7 @@ fn fixture_planar_cross_v1(
     second: ori_domain::Point2,
     third: ori_domain::Point2,
 ) -> f64 {
-    (second.x - first.x) * (third.y - first.y)
-        - (second.y - first.y) * (third.x - first.x)
+    (second.x - first.x) * (third.y - first.y) - (second.y - first.y) * (third.x - first.x)
 }
 
 fn fixture_point_on_segment_v1(
@@ -50,7 +49,9 @@ fn fixture_segments_intersect_v1(
         || fixture_point_on_segment_v1(second_start, second_end, first_end)
 }
 
-fn separated_bifold_authority_fixture_v1(block_count: usize) -> (
+fn separated_bifold_authority_fixture_v1(
+    block_count: usize,
+) -> (
     MaterialHingeGraphGeometry,
     MaterialHingeGraphAudit,
     ori_kinematics::CanonicalCycleScheduleV1,
@@ -60,6 +61,7 @@ fn separated_bifold_authority_fixture_v1(block_count: usize) -> (
     let (pattern, paper, moving) = match block_count {
         4 => super::super::four_bay_cycle_test_support::four_bay_opposite_bifold_pattern(),
         5 => super::super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
+        6 => super::super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
         _ => panic!("unsupported separated-bifold fixture arity"),
     };
     let analysis = analyze_faces(FaceExtractionInput {
@@ -172,10 +174,38 @@ fn four_bay_opposite_bifold_fixture_retains_original_bit_layout() {
         serde_json::from_str("\"00000000-0000-4000-b000-000000000006\"").unwrap();
     let centers = [(-20.0, -20.0), (20.0, -20.0), (20.0, 20.0), (-20.0, 20.0)];
     let directions = [
-        [(0.0, 1.0), (-1.0, 1.0), (-1.0, 0.0), (0.0, -1.0), (1.0, -1.0), (1.0, 0.0)],
-        [(-1.0, 0.0), (-1.0, -1.0), (0.0, -1.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
-        [(0.0, -1.0), (1.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 1.0), (-1.0, 0.0)],
-        [(1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (-1.0, 0.0), (-1.0, -1.0), (0.0, -1.0)],
+        [
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ],
+        [
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+        ],
+        [
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+        ],
+        [
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+        ],
     ];
     assert_eq!((pattern.vertices.len(), pattern.edges.len()), (28, 48));
     assert_eq!((paper.boundary_vertices.len(), moving.len()), (24, 8));
@@ -183,22 +213,29 @@ fn four_bay_opposite_bifold_fixture_retains_original_bit_layout() {
         centers.into_iter().zip(directions).enumerate()
     {
         let center = &pattern.vertices[group * 7];
-        assert_eq!(center.id, ori_domain::VertexId::derive_v5(namespace, &[0x10, group as u8]));
+        assert_eq!(
+            center.id,
+            ori_domain::VertexId::derive_v5(namespace, &[0x10, group as u8])
+        );
         assert_eq!(center.position, ori_domain::Point2::new(center_x, center_y));
         for (local, (x, y)) in group_directions.into_iter().enumerate() {
             let endpoint = &pattern.vertices[group * 7 + local + 1];
-            let expected = ori_domain::VertexId::derive_v5(
-                namespace,
-                &[0x20, group as u8, local as u8],
-            );
+            let expected =
+                ori_domain::VertexId::derive_v5(namespace, &[0x20, group as u8, local as u8]);
             assert_eq!(endpoint.id, expected);
-            assert_eq!(endpoint.position, ori_domain::Point2::new(center_x + x, center_y + y));
+            assert_eq!(
+                endpoint.position,
+                ori_domain::Point2::new(center_x + x, center_y + y)
+            );
             assert_eq!(paper.boundary_vertices[group * 6 + local], expected);
         }
     }
     for index in 0..24 {
         let boundary = &pattern.edges[index];
-        assert_eq!(boundary.id, ori_domain::EdgeId::derive_v5(namespace, &[0x50, index as u8]));
+        assert_eq!(
+            boundary.id,
+            ori_domain::EdgeId::derive_v5(namespace, &[0x50, index as u8])
+        );
         assert_eq!(boundary.start, paper.boundary_vertices[index]);
         assert_eq!(boundary.end, paper.boundary_vertices[(index + 1) % 24]);
         assert_eq!(boundary.kind, ori_domain::EdgeKind::Boundary);
@@ -225,13 +262,22 @@ fn four_bay_opposite_bifold_fixture_retains_original_bit_layout() {
     assert_eq!(moving, expected_moving);
 }
 
-#[test]
-fn five_bay_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable() {
-    let (pattern, paper, moving) =
-        super::super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern();
+fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
+    let (pattern, paper, moving) = match block_count {
+        5 => super::super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
+        6 => super::super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
+        _ => panic!("unsupported extended opposite-bifold fixture arity"),
+    };
     let validation = ori_core::validate_paper(&paper, &pattern);
-    assert!(validation.is_valid(), "five-bay paper: {:?}", validation.issues);
-    assert_eq!((paper.boundary_vertices.len(), moving.len()), (30, 10));
+    assert!(
+        validation.is_valid(),
+        "{block_count}-bay paper: {:?}",
+        validation.issues
+    );
+    assert_eq!(
+        (paper.boundary_vertices.len(), moving.len()),
+        (block_count * 6, block_count * 2)
+    );
     let position = |vertex| {
         pattern
             .vertices
@@ -264,7 +310,7 @@ fn five_bay_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable()
     }
 
     let radial_hinges = &pattern.edges[paper.boundary_vertices.len()..];
-    assert_eq!(radial_hinges.len(), 30);
+    assert_eq!(radial_hinges.len(), block_count * 6);
     assert!(radial_hinges.chunks_exact(6).remainder().is_empty());
     let moving_set = moving
         .iter()
@@ -311,7 +357,8 @@ fn five_bay_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable()
             .collect::<Vec<_>>();
         for (local, (hinge, direction)) in hinges.iter().zip(&directions).enumerate() {
             let length_squared = direction.x * direction.x + direction.y * direction.y;
-            if matches!(group, 0 | 3) && moving_set.contains(&hinge.id) {
+            let short_corner = matches!((block_count, group), (5, 0 | 3) | (6, 0..=3));
+            if short_corner && moving_set.contains(&hinge.id) {
                 assert!(
                     length_squared >= (5.0 * paper_thickness).powi(2)
                         && length_squared <= (6.0 * paper_thickness).powi(2),
@@ -334,8 +381,7 @@ fn five_bay_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable()
             .collect::<Vec<_>>();
         let sectors = (0..6)
             .map(|index| {
-                (angles[(index + 1) % 6] - angles[index])
-                    .rem_euclid(std::f64::consts::TAU)
+                (angles[(index + 1) % 6] - angles[index]).rem_euclid(std::f64::consts::TAU)
             })
             .collect::<Vec<_>>();
         assert!(sectors.iter().all(|sector| *sector > 0.0));
@@ -346,21 +392,24 @@ fn five_bay_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable()
     }
 
     let analysis = analyze_faces(FaceExtractionInput {
-        identity_namespace: fixed_id("b605", 1),
+        identity_namespace: fixed_id(if block_count == 5 { "b605" } else { "b606" }, 1),
         source_revision: 1,
         paper: &paper,
         pattern: &pattern,
     });
     let topology = analysis
         .snapshot
-        .unwrap_or_else(|| panic!("five-bay topology: {:?}", analysis.issues));
-    assert_eq!((topology.faces.len(), topology.hinge_adjacency.len()), (26, 30));
+        .unwrap_or_else(|| panic!("{block_count}-bay topology: {:?}", analysis.issues));
+    assert_eq!(
+        (topology.faces.len(), topology.hinge_adjacency.len()),
+        (block_count * 5 + 1, block_count * 6)
+    );
     let shared = topology
         .faces
         .iter()
         .max_by_key(|face| face.outer.half_edges.len())
         .expect("shared material face");
-    assert_eq!(shared.outer.half_edges.len(), 15);
+    assert_eq!(shared.outer.half_edges.len(), block_count * 3);
     let shared_polygon = shared
         .outer
         .half_edges
@@ -386,12 +435,22 @@ fn five_bay_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable()
         turns.iter().all(|turn| *turn * orientation >= 0.0),
         "shared face is not convex: polygon={shared_polygon:?}, turns={turns:?}",
     );
-    assert_eq!(turns.iter().filter(|turn| **turn != 0.0).count(), 5);
+    assert_eq!(
+        turns.iter().filter(|turn| **turn != 0.0).count(),
+        block_count
+    );
 }
 
 #[test]
-fn separated_four_and_five_bifolds_issue_strict_parent_positive_authority() {
-    for block_count in [4, 5] {
+fn five_and_six_bay_opposite_bifold_fixtures_are_simple_convex_and_locally_flat_foldable() {
+    for block_count in [5, 6] {
+        assert_extended_opposite_bifold_fixture_v1(block_count);
+    }
+}
+
+#[test]
+fn separated_four_five_and_six_bifolds_issue_strict_parent_positive_authority() {
+    for block_count in [4, 5, 6] {
         assert_separated_bifold_parent_positive_authority_v1(block_count);
     }
 }
@@ -703,9 +762,7 @@ fn radial_bifold_theorem_rejects_structural_and_separation_impersonators() {
                     } else {
                         vec![coefficient(0)]
                     },
-                    denominator_power_coefficients: vec![coefficient(if active { 100 } else {
-                        1
-                    })],
+                    denominator_power_coefficients: vec![coefficient(if active { 100 } else { 1 })],
                 }
             })
             .collect::<Vec<_>>();

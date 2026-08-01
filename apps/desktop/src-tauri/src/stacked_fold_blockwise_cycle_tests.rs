@@ -58,7 +58,7 @@ fn blockwise_control_gate_rejects_stops_and_accepts_only_current_generation() {
 }
 
 #[test]
-fn bounded_multi_block_transport_preflight_enforces_six_proof_aggregate_and_exact_limits() {
+fn bounded_multi_block_transport_preflight_enforces_seven_proof_aggregate_and_exact_limits() {
     use ori_collision::GeneralCellTransportLimitsV1;
 
     use super::stacked_fold_blockwise_cycle::{
@@ -79,7 +79,8 @@ fn bounded_multi_block_transport_preflight_enforces_six_proof_aggregate_and_exac
         .and_then(|work| work.checked_add_v1(per_proof))
         .and_then(|work| work.checked_add_v1(per_proof))
         .and_then(|work| work.checked_add_v1(per_proof))
-        .expect("whole-parent plus five-block aggregate");
+        .and_then(|work| work.checked_add_v1(per_proof))
+        .expect("whole-parent plus six-block aggregate");
     assert_eq!(
         (
             aggregate.transitions,
@@ -87,7 +88,7 @@ fn bounded_multi_block_transport_preflight_enforces_six_proof_aggregate_and_exac
             aggregate.layer_records,
             aggregate.boundary_samples,
         ),
-        (18, 30, 42, 66),
+        (21, 35, 49, 77),
     );
     let exact = GeneralCellTransportLimitsV1 {
         max_transitions: aggregate.transitions,
@@ -219,7 +220,7 @@ fn bounded_multi_block_layer_peak_preflight_is_arity_independent_and_checked() {
 }
 
 #[test]
-fn bounded_multi_block_layer_peak_handles_exact_three_four_and_five_before_any_clone() {
+fn bounded_multi_block_layer_peak_handles_exact_three_through_six_before_any_clone() {
     use ori_foldability::{
         GLOBAL_FLAT_FOLDABILITY_MODEL_ID, GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID,
         LayerFace, LayerOrderDerivation, LayerOrderProvenance, LayerOrderSnapshot,
@@ -263,6 +264,7 @@ fn bounded_multi_block_layer_peak_handles_exact_three_four_and_five_before_any_c
     let three_face_sets = [selected_faces; 3];
     let four_face_sets = [selected_faces; 4];
     let five_face_sets = [selected_faces; 5];
+    let six_face_sets = [selected_faces; 6];
     let three_plan =
         BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &three_face_sets, 5, 7)
             .expect("checked proof-retained and temporary peak");
@@ -272,10 +274,14 @@ fn bounded_multi_block_layer_peak_handles_exact_three_four_and_five_before_any_c
     let five_plan =
         BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &five_face_sets, 5, 7)
             .expect("five-block retained-byte plan");
+    let six_plan =
+        BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &six_face_sets, 5, 7)
+            .expect("six-block retained-byte plan");
     assert_eq!(three_plan.block_sources.len(), 3);
     assert_eq!(four_plan.block_sources.len(), 4);
     assert_eq!(five_plan.block_sources.len(), 5);
-    for plan in [&three_plan, &four_plan, &five_plan] {
+    assert_eq!(six_plan.block_sources.len(), 6);
+    for plan in [&three_plan, &four_plan, &five_plan, &six_plan] {
         let restricted_sum = plan
             .block_sources
             .iter()
@@ -291,7 +297,7 @@ fn bounded_multi_block_layer_peak_handles_exact_three_four_and_five_before_any_c
             source_peak + plan.proof_retained + plan.peak_temporary
         );
     }
-    for unsupported_face_sets in [&[selected_faces; 2][..], &[selected_faces; 6][..]] {
+    for unsupported_face_sets in [&[selected_faces; 2][..], &[selected_faces; 7][..]] {
         assert_eq!(
             BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(
                 &source,
@@ -306,10 +312,10 @@ fn bounded_multi_block_layer_peak_handles_exact_three_four_and_five_before_any_c
     assert_eq!(
         materialize_bounded_multi_block_layer_sources_v1(
             &source,
-            &five_face_sets,
+            &six_face_sets,
             5,
             7,
-            five_plan.peak - 1,
+            six_plan.peak - 1,
         ),
         Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
     );
@@ -321,18 +327,18 @@ fn bounded_multi_block_layer_peak_handles_exact_three_four_and_five_before_any_c
     let (whole_source, block_sources, materialized_plan) =
         materialize_bounded_multi_block_layer_sources_v1(
             &source,
-            &five_face_sets,
+            &six_face_sets,
             5,
             7,
-            five_plan.peak,
+            six_plan.peak,
         )
-        .expect("the exact five-block retained-byte peak is accepted");
-    assert_eq!(materialized_plan, five_plan);
-    assert_eq!(block_sources.len(), 5);
+        .expect("the exact six-block retained-byte peak is accepted");
+    assert_eq!(materialized_plan, six_plan);
+    assert_eq!(block_sources.len(), 6);
     assert_eq!(
         bounded_multi_block_layer_source_clone_attempts_for_test_v1(),
-        6,
-        "one whole source and all five restricted sources are materialized"
+        7,
+        "one whole source and all six restricted sources are materialized"
     );
     assert!(
         whole_source
@@ -351,7 +357,7 @@ fn bounded_multi_block_layer_peak_handles_exact_three_four_and_five_before_any_c
     assert_eq!(
         materialize_bounded_multi_block_layer_sources_v1(
             &source,
-            &five_face_sets,
+            &six_face_sets,
             usize::MAX,
             1,
             usize::MAX,

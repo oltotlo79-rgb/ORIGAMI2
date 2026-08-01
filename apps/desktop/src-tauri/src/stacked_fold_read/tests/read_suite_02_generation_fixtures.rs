@@ -70,9 +70,9 @@ fn bounded_multi_block_projective_active_source_angle_v1() -> f64 {
 }
 
 #[test]
-fn four_and_five_block_opposite_bifolds_preview_apply_and_reopen_history() {
+fn four_five_and_six_block_opposite_bifolds_preview_apply_and_reopen_history() {
     let _generation_guard = lock_stacked_fold_read_generation_test();
-    for block_count in [4, 5] {
+    for block_count in [4, 5, 6] {
         assert_opposite_bifold_lifecycle_v1(block_count);
     }
 }
@@ -81,6 +81,7 @@ fn assert_opposite_bifold_lifecycle_v1(block_count: usize) {
     let (pattern, paper, moving) = match block_count {
         4 => super::four_bay_cycle_test_support::four_bay_opposite_bifold_pattern(),
         5 => super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
+        6 => super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
         _ => unreachable!(),
     };
     assert_eq!(moving.len(), block_count * 2);
@@ -136,7 +137,7 @@ fn assert_opposite_bifold_lifecycle_v1(block_count: usize) {
             cycle_schedule_v1: schedule_request,
         },
     )
-    .expect("four/five separated radial-bifold blocks certify");
+    .expect("four/five/six separated radial-bifold blocks certify");
     assert_eq!(preview.source_revision, revision);
     assert_eq!(preview.target_revision, revision + 1);
     assert!(preview.continuous_path_certified);
@@ -435,7 +436,7 @@ fn five_block_radial_bifold_tamper_fails_closed_without_transaction() {
 }
 
 #[test]
-fn six_block_strip_remains_outside_bounded_multi_block_current_cycle_authority() {
+fn six_block_strip_remains_uncertified_inside_bounded_multi_block_arity() {
     let _generation_guard = lock_stacked_fold_read_generation_test();
     let namespace = ProjectId::new();
     let (pattern, paper, hinges) = common_articulation_strip_fixture_v1(7);
@@ -483,7 +484,7 @@ fn six_block_strip_remains_outside_bounded_multi_block_current_cycle_authority()
             cycle_schedule_v1: bounded_multi_block_projective_unfold_schedule_v1(&hinges, &hinges),
         },
     )
-    .expect_err("six canonical blocks remain outside the exact 3..=5 production boundary");
+    .expect_err("arity alone must not certify an unsupported six-block strip");
     assert_eq!(error, CYCLE_PATH_UNCERTIFIED_MESSAGE);
     assert_eq!(transactions.pending_token_for_test_v1(), None);
     let project =

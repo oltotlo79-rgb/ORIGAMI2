@@ -37,6 +37,17 @@ pub fn five_bay_opposite_bifold_pattern() -> (CreasePattern, Paper, Vec<EdgeId>)
     opposite_bifold_corner_pattern(5)
 }
 
+/// Six separated radial-bifold bays sharing one convex central material face.
+/// The first five bay identities and coordinates are exactly those of
+/// [`five_bay_opposite_bifold_pattern`]. The sixth bay mirrors the west bay on
+/// the east, while the four square corners expose the corresponding
+/// 135-degree central sectors. As in the five-bay fixture, the short opposite
+/// pair at each 135-degree corner is Valley and every other ray is Mountain.
+#[allow(dead_code)]
+pub fn six_bay_opposite_bifold_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    opposite_bifold_corner_pattern(6)
+}
+
 #[allow(dead_code)]
 pub fn two_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     rational_cycle_bay_pattern(2)
@@ -155,7 +166,7 @@ fn rational_cycle_bay_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<
 }
 
 fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<EdgeId>) {
-    assert!(matches!(group_count, 4 | 5));
+    assert!(matches!(group_count, 4 | 5 | 6));
     let namespace: ProjectId =
         serde_json::from_str("\"00000000-0000-4000-b000-000000000006\"").unwrap();
     let mut vertices = Vec::new();
@@ -203,6 +214,14 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
             (0.0, -1.0),
             (1.0, -1.0),
         ],
+        [
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+        ],
     ];
     // A convex pentagonal shared face needs the two west square corners to
     // expose a 135-degree interior sector.  The boundary rays and the other
@@ -225,12 +244,29 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         (-0.5, -0.25),
         (-1.0, -1.0),
     ];
+    let six_second_directions = [
+        (-1.0, 0.0),
+        (-0.5, -0.25),
+        (-1.0, -1.0),
+        (1.0, 0.0),
+        (0.5, 0.25),
+        (1.0, 1.0),
+    ];
+    let six_third_directions = [
+        (1.0, -1.0),
+        (0.5, -0.25),
+        (1.0, 0.0),
+        (-1.0, 1.0),
+        (-0.5, 0.25),
+        (-1.0, 0.0),
+    ];
     for (group, ((center_x, center_y), group_directions)) in [
         (-20.0, -20.0),
         (20.0, -20.0),
         (20.0, 20.0),
         (-20.0, 20.0),
         (-40.0, 0.0),
+        (40.0, 0.0),
     ]
     .into_iter()
     .zip(directions)
@@ -240,6 +276,10 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         let group_directions = match (group_count, group) {
             (5, 0) => five_first_directions,
             (5, 3) => five_fourth_directions,
+            (6, 0) => five_first_directions,
+            (6, 1) => six_second_directions,
+            (6, 2) => six_third_directions,
+            (6, 3) => five_fourth_directions,
             _ => group_directions,
         };
         let center = Vertex {
@@ -265,6 +305,17 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         }
     }
 
+    if group_count == 6 {
+        // Keep the first five group identities stable while walking the new
+        // east bay between the southeast and northeast groups on the outer
+        // paper boundary.
+        let original = boundary;
+        boundary = Vec::with_capacity(original.len());
+        for group in [0, 1, 5, 2, 3, 4] {
+            boundary.extend_from_slice(&original[group * 6..(group + 1) * 6]);
+        }
+    }
+
     let mut edges = (0..boundary.len())
         .map(|index| Edge {
             id: EdgeId::derive_v5(namespace, &[0x50, index as u8]),
@@ -279,8 +330,8 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
     edges.extend((0..group_count * 6).map(|index| {
         let group = index / 6;
         let local = index % 6;
-        let kind = if group_count == 5 {
-            let moving_pair = if matches!(group, 0 | 3) {
+        let kind = if matches!(group_count, 5 | 6) {
+            let moving_pair = if matches!((group_count, group), (5, 0 | 3) | (6, 0..=3)) {
                 [1, 4]
             } else {
                 [0, 3]
@@ -304,7 +355,7 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
     }));
     let moving = (0..group_count)
         .flat_map(|group| {
-            let (first, opposite) = if group_count == 5 && matches!(group, 0 | 3) {
+            let (first, opposite) = if matches!((group_count, group), (5, 0 | 3) | (6, 0..=3)) {
                 (1, 4)
             } else {
                 (0, 3)

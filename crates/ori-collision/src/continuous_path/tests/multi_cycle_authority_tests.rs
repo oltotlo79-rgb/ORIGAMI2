@@ -58,8 +58,11 @@ fn separated_bifold_authority_fixture_v1(
     DyadicMaterialHingeIntervalClosureCertificateV1,
     FaceId,
 ) {
-    let (pattern, paper, moving) =
-        super::super::four_bay_cycle_test_support::bounded_bay_opposite_bifold_pattern(block_count);
+    let (pattern, paper, moving) = if block_count == 10 {
+        super::super::four_bay_cycle_test_support::ten_bay_opposite_bifold_pattern()
+    } else {
+        super::super::four_bay_cycle_test_support::bounded_bay_opposite_bifold_pattern(block_count)
+    };
     let analysis = analyze_faces(FaceExtractionInput {
         identity_namespace: fixed_id("b601", 1),
         source_revision: 1,
@@ -155,6 +158,7 @@ fn separated_bifold_authority_fixture_v1(
     let exact_closure_limits = match block_count {
         8 => Some((3, 8, 8)),
         9 => Some((4, 9, 9)),
+        10 => Some((4, 10, 10)),
         _ => None,
     };
     if let Some((max_depth, max_leaves, max_work)) = exact_closure_limits {
@@ -187,13 +191,17 @@ fn separated_bifold_authority_fixture_v1(
         });
     if let Some((_, max_leaves, _)) = exact_closure_limits {
         assert_eq!(closure.leaves().len(), max_leaves);
-        let expected_partition = if block_count == 8 {
-            (0_u64..8).map(|index| (3, index)).collect::<Vec<_>>()
-        } else {
-            (0_u64..7)
+        let expected_partition = match block_count {
+            8 => (0_u64..8).map(|index| (3, index)).collect::<Vec<_>>(),
+            9 => (0_u64..7)
                 .map(|index| (3, index))
                 .chain([(4, 14), (4, 15)])
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            10 => (0_u64..6)
+                .map(|index| (3, index))
+                .chain([(4, 12), (4, 13), (4, 14), (4, 15)])
+                .collect::<Vec<_>>(),
+            _ => unreachable!("exact closure limits are defined only for 8..=10 blocks"),
         };
         assert_eq!(
             closure
@@ -553,6 +561,16 @@ fn bounded_separated_opposite_bifolds_issue_strict_parent_positive_authority() {
 #[test]
 fn exact_nine_separated_opposite_bifolds_issue_strict_parent_positive_authority() {
     assert_separated_bifold_parent_positive_authority_v1(9);
+}
+
+#[test]
+fn exact_ten_separated_opposite_bifolds_issue_canonical_closure() {
+    let (geometry, audit, schedule, closure, fixed) = separated_bifold_authority_fixture_v1(10);
+    assert_eq!((geometry.face_ids().len(), geometry.hinges().len()), (51, 60));
+    assert!(schedule.matches_binding(&geometry, &audit, fixed));
+    assert_eq!(closure.leaves().len(), 10);
+    assert!(closure.has_canonical_complete_partition_v1());
+    assert!(closure.every_leaf_covers_graph_v1(&geometry));
 }
 
 fn assert_separated_bifold_parent_positive_authority_v1(block_count: usize) {

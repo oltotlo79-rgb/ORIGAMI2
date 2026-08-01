@@ -9,9 +9,9 @@ use super::{
 };
 
 const SEPARATED_EVEN_SINGLE_VERTEX_OPPOSITE_PAIR_MIN_BLOCK_COUNT_V1: usize = 8;
-const SEPARATED_EVEN_SINGLE_VERTEX_OPPOSITE_PAIR_MAX_BLOCK_COUNT_V1: usize = 9;
+const SEPARATED_EVEN_SINGLE_VERTEX_OPPOSITE_PAIR_MAX_BLOCK_COUNT_V1: usize = 10;
 
-fn bounded_eight_or_nine_parent_block_count_v1(
+fn bounded_eight_through_ten_parent_block_count_v1(
     closure_hinge_count: usize,
     face_count: usize,
     hinge_count: usize,
@@ -37,7 +37,7 @@ fn bounded_eight_or_nine_parent_block_count_v1(
 /// so the independently closing blocks compose around the unchanged fixed face.
 /// Parent source/midpoint/target solves revalidate the decomposition binding and
 /// orientation branch before an opaque closure certificate is issued. V1 is
-/// deliberately admits only eight or nine blocks. Existing two-through-seven
+/// deliberately admits only eight through ten blocks. Existing two-through-seven
 /// closure partitions remain unchanged, while the eight-block branch retains
 /// its prior exact partition and certificate token.
 pub(super) fn separated_even_single_vertex_opposite_pair_blocks_premises_v1(
@@ -53,7 +53,7 @@ pub(super) fn separated_even_single_vertex_opposite_pair_blocks_premises_v1(
     {
         return None;
     }
-    let expected_block_count = bounded_eight_or_nine_parent_block_count_v1(
+    let expected_block_count = bounded_eight_through_ten_parent_block_count_v1(
         audit.closure_hinges().len(),
         geometry.face_ids().len(),
         geometry.hinges().len(),
@@ -130,7 +130,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_eight_and_nine_parent_cardinality_is_bounded_before_decomposition() {
+    fn exact_eight_through_ten_parent_cardinality_is_bounded_before_decomposition() {
         for (blocks, faces, hinges) in [
             (8, 25, 32),
             (8, 41, 48),
@@ -138,15 +138,19 @@ mod tests {
             (9, 28, 36),
             (9, 46, 54),
             (9, 208, 216),
+            (10, 31, 40),
+            (10, 51, 60),
+            (10, 231, 240),
         ] {
             assert_eq!(
-                bounded_eight_or_nine_parent_block_count_v1(blocks, faces, hinges),
+                bounded_eight_through_ten_parent_block_count_v1(blocks, faces, hinges),
                 Some(blocks),
             );
         }
 
         for (closure_hinges, faces, hinges) in [
             (7, 25, 32),
+            (11, 31, 40),
             (10, 28, 36),
             (8, 24, 31),
             (8, 186, 193),
@@ -156,11 +160,16 @@ mod tests {
             (9, 209, 217),
             (9, 45, 54),
             (9, 47, 54),
+            (10, 30, 39),
+            (10, 232, 241),
+            (10, 30, 40),
+            (10, 32, 40),
             (8, usize::MAX, 192),
             (9, 208, usize::MAX),
+            (10, usize::MAX, 240),
         ] {
             assert_eq!(
-                bounded_eight_or_nine_parent_block_count_v1(closure_hinges, faces, hinges,),
+                bounded_eight_through_ten_parent_block_count_v1(closure_hinges, faces, hinges,),
                 None,
             );
         }

@@ -121,7 +121,8 @@ pub use block_composition::{
     MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1, MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1,
     MultiBlockClosureAuthorityV1, MultiBlockClosureInputV1, MultiBlockPositiveLayerAuthorityV1,
     MultiBlockPositiveLayerInputV1, diagnose_block_union_completeness_v1,
-    diagnose_exact_nine_block_union_completeness_v1, issue_block_composed_path_authority_v1,
+    diagnose_exact_nine_block_union_completeness_v1,
+    diagnose_exact_ten_block_union_completeness_v1, issue_block_composed_path_authority_v1,
     issue_blockwise_closure_authority_v1, issue_blockwise_positive_layer_authority_v1,
     issue_common_articulation_block_composed_path_authority_v1,
     issue_common_articulation_block_composed_path_authority_with_control_v1,
@@ -130,8 +131,9 @@ pub use block_composition::{
     issue_common_articulation_pose_authority_v1,
     issue_common_articulation_pose_authority_with_control_v1,
     issue_complete_multi_block_positive_layer_authority_v1,
-    issue_exact_nine_block_closure_authority_v1, issue_multi_block_closure_authority_v1,
-    issue_multi_block_positive_layer_authority_v1, multi_block_count_supported_v1,
+    issue_exact_nine_block_closure_authority_v1, issue_exact_ten_block_closure_authority_v1,
+    issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
+    multi_block_count_supported_v1,
 };
 pub use cell_order_transport::{
     CURRENT_POSE_CELL_ORDER_MODEL_ID_V1, CURRENT_POSE_TWO_FACE_NON_FLAT_CELL_ORDER_MODEL_ID_V1,

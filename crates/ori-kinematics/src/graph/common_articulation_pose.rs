@@ -17,7 +17,7 @@ use crate::{
 
 pub const COMMON_ARTICULATION_POSE_MODEL_ID_V1: &str = "common_articulation_pose_authority_v1";
 pub const COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1: usize = 2;
-pub const COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1: usize = 9;
+pub const COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1: usize = 10;
 
 const COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1: usize = 8;
 const COMMON_ARTICULATION_POSE_MAX_FACES_V1: usize = 256;
@@ -1111,12 +1111,12 @@ mod tests {
     }
 
     #[test]
-    fn two_three_five_eight_and_nine_block_chains_issue_exact_parent_pose_restrictions() {
-        for block_count in [2, 3, 5, 8, 9] {
+    fn two_three_five_eight_nine_and_ten_block_chains_issue_exact_parent_pose_restrictions() {
+        for block_count in [2, 3, 5, 8, 9, 10] {
             let fixture = chain_fixture_v1(block_count);
-            let limits = if block_count == COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1 {
+            let limits = if block_count > COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1 {
                 CommonArticulationPoseLimitsV1 {
-                    max_blocks: COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
+                    max_blocks: block_count,
                     ..CommonArticulationPoseLimitsV1::default()
                 }
             } else {
@@ -1125,6 +1125,7 @@ mod tests {
             let authority = prove_common_articulation_pose_authority_v1(fixture.input(0.1, limits))
                 .expect("bounded common pose authority");
             assert_eq!(authority.block_count_v1(), block_count);
+            assert_eq!(authority.limits.max_blocks, limits.max_blocks);
             assert_eq!(authority.articulation_faces_v1().len(), block_count - 1);
             assert_eq!(
                 authority.paper_thickness_mm_v1().to_bits(),
@@ -1164,13 +1165,23 @@ mod tests {
     }
 
     #[test]
-    fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_nine() {
+    fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_ten() {
         assert_eq!(
             CommonArticulationPoseLimitsV1::default().max_blocks,
             COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1
         );
         assert_eq!(COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1, 8);
-        assert_eq!(COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, 9);
+        assert_eq!(COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, 10);
+
+        let nine_block_limits = CommonArticulationPoseLimitsV1 {
+            max_blocks: 9,
+            ..CommonArticulationPoseLimitsV1::default()
+        };
+        let fixture = chain_fixture_v1(9);
+        let authority =
+            prove_common_articulation_pose_authority_v1(fixture.input(0.1, nine_block_limits))
+                .expect("nine-block caller limit remains exact");
+        assert_eq!(authority.limits.max_blocks, 9);
     }
 
     #[test]
@@ -1259,8 +1270,63 @@ mod tests {
     }
 
     #[test]
-    fn ten_blocks_and_nonpositive_or_nonfinite_thickness_are_rejected() {
-        let fixture = chain_fixture_v1(10);
+    fn exact_ten_block_resource_envelope_passes_and_each_one_short_limit_fails_closed() {
+        let fixture = shared_face_star_fixture_v1(10);
+        let baseline_limits = CommonArticulationPoseLimitsV1 {
+            max_blocks: 10,
+            ..CommonArticulationPoseLimitsV1::default()
+        };
+        let baseline =
+            prove_common_articulation_pose_authority_v1(fixture.input(0.1, baseline_limits))
+                .expect("ten-block baseline");
+        assert_eq!(fixture.geometry.face_ids().len(), 51);
+        assert_eq!(fixture.geometry.hinges().len(), 60);
+        assert_eq!(baseline.logical_work_v1(), 2_864);
+        assert_eq!(baseline.retained_bytes_upper_bound_v1(), 12_048);
+
+        let exact = CommonArticulationPoseLimitsV1 {
+            max_blocks: 10,
+            max_faces: 51,
+            max_hinges: 60,
+            max_work: 2_864,
+            max_retained_bytes: 12_048,
+        };
+        prove_common_articulation_pose_authority_v1(fixture.input(0.1, exact))
+            .expect("exact ten-block resource limits");
+
+        for one_short in [
+            CommonArticulationPoseLimitsV1 {
+                max_blocks: exact.max_blocks - 1,
+                ..exact
+            },
+            CommonArticulationPoseLimitsV1 {
+                max_faces: exact.max_faces - 1,
+                ..exact
+            },
+            CommonArticulationPoseLimitsV1 {
+                max_hinges: exact.max_hinges - 1,
+                ..exact
+            },
+            CommonArticulationPoseLimitsV1 {
+                max_work: exact.max_work - 1,
+                ..exact
+            },
+            CommonArticulationPoseLimitsV1 {
+                max_retained_bytes: exact.max_retained_bytes - 1,
+                ..exact
+            },
+        ] {
+            assert_eq!(
+                prove_common_articulation_pose_authority_v1(fixture.input(0.1, one_short))
+                    .expect_err("one-short ten-block limit"),
+                CommonArticulationPoseErrorV1::ResourceLimit
+            );
+        }
+    }
+
+    #[test]
+    fn eleven_blocks_and_nonpositive_or_nonfinite_thickness_are_rejected() {
+        let fixture = chain_fixture_v1(11);
         assert_eq!(
             prove_common_articulation_pose_authority_v1(fixture.input(
                 0.1,
@@ -1269,7 +1335,7 @@ mod tests {
                     ..CommonArticulationPoseLimitsV1::default()
                 },
             ))
-            .expect_err("ten blocks exceed the hard cap"),
+            .expect_err("eleven blocks exceed the hard cap"),
             CommonArticulationPoseErrorV1::ResourceLimit
         );
         let fixture = chain_fixture_v1(2);

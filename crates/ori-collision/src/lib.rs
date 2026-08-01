@@ -80,6 +80,10 @@ mod zero_thickness;
 #[path = "../../../test-support/miura_cactus.rs"]
 mod miura_cactus_test_support;
 
+#[cfg(test)]
+#[path = "../../../test-support/common_articulation_extension.rs"]
+mod common_articulation_extension_test_support;
+
 pub use cayley::{
     MAX_COMPOSED_THICKNESS_HINGES_V1, NativeSingleHingeThicknessBoundaryV1,
     NativeTreeHingeThicknessBoundariesV1, SingleHingeThicknessBoundaryErrorV1,
@@ -109,6 +113,9 @@ pub use block_composition::{
     BlockComposedPathAuthorityV1, BlockUnionCompletenessGapReportV1, BlockUnionCompletenessInputV1,
     BlockwiseClosureAuthorityV1, BlockwiseClosureInputV1, BlockwisePositiveLayerAuthorityV1,
     BlockwisePositiveLayerInputV1, BoundedMultiBlockExtensionLimitsV1,
+    COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_EXTENSION_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_EXTENSION_MIN_BLOCKS_V1,
+    COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_EXTENSION_MODEL_ID_V1,
     COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_MODEL_ID_V1,
     COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_MODEL_ID_V1,
     COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1,
@@ -117,6 +124,10 @@ pub use block_composition::{
     COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1, COMMON_ARTICULATION_POSE_MODEL_ID_V1,
     COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1,
     CommonArticulationBlockComposedPathAuthorityV1, CommonArticulationBlockComposedPathErrorV1,
+    CommonArticulationBlockComposedPathExtensionAuthorityV1,
+    CommonArticulationBlockComposedPathExtensionErrorV1,
+    CommonArticulationBlockComposedPathExtensionInputV1,
+    CommonArticulationBlockComposedPathExtensionRevalidationInputV1,
     CommonArticulationBlockComposedPathInputV1, CommonArticulationContinuousLayerPathAuthorityV1,
     CommonArticulationContinuousLayerPathErrorV1, CommonArticulationContinuousLayerPathInputV1,
     CommonArticulationContinuousLayerPathRevalidationInputV1, CommonArticulationHingeAngleBitsV1,
@@ -135,6 +146,8 @@ pub use block_composition::{
     issue_bounded_multi_block_extension_closure_authority_v1,
     issue_common_articulation_block_composed_path_authority_v1,
     issue_common_articulation_block_composed_path_authority_with_control_v1,
+    issue_common_articulation_block_composed_path_extension_authority_v1,
+    issue_common_articulation_block_composed_path_extension_authority_with_control_v1,
     issue_common_articulation_continuous_layer_path_authority_v1,
     issue_common_articulation_continuous_layer_path_authority_with_control_v1,
     issue_common_articulation_pose_authority_v1,

@@ -30,6 +30,20 @@ use crate::{
     GeneralMultiFaceCellTransportProofV1, PositiveThicknessContinuousCertificateV1,
 };
 
+mod common_articulation_extension;
+
+pub use common_articulation_extension::{
+    COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_EXTENSION_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_EXTENSION_MIN_BLOCKS_V1,
+    COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_EXTENSION_MODEL_ID_V1,
+    CommonArticulationBlockComposedPathExtensionAuthorityV1,
+    CommonArticulationBlockComposedPathExtensionErrorV1,
+    CommonArticulationBlockComposedPathExtensionInputV1,
+    CommonArticulationBlockComposedPathExtensionRevalidationInputV1,
+    issue_common_articulation_block_composed_path_extension_authority_v1,
+    issue_common_articulation_block_composed_path_extension_authority_with_control_v1,
+};
+
 pub const BLOCK_COMPOSED_PATH_MODEL_ID_V1: &str = "block_composed_path_authority_v1";
 pub const COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_MODEL_ID_V1: &str =
     "common_articulation_block_composed_path_authority_v1";

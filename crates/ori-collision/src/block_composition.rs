@@ -38,17 +38,29 @@ pub const MULTI_BLOCK_MIN_BLOCKS_V1: usize = 2;
 pub const MULTI_BLOCK_MAX_BLOCKS_V1: usize = 8;
 const EXACT_NINE_BLOCK_ARITY_V1: usize = 9;
 const EXACT_TEN_BLOCK_ARITY_V1: usize = 10;
+/// Minimum actual arity admitted by the non-authorizing bounded extension scope.
+pub const BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1: usize = 11;
+/// Hard maximum configured cap admitted by the bounded extension scope.
+pub const BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1: usize = BLOCK_COMPOSITION_LIMIT_V1;
 pub const MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
     "bounded_multi_block_positive_layer_authority_v1";
 pub const COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
     "complete_live_multi_block_positive_layer_authority_v1";
 pub const BLOCK_UNION_COMPLETENESS_MAX_ITEMS_V1: usize = 4_096;
 
+/// Explicit limits for the non-authorizing 11..=32 bounded extension scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundedMultiBlockExtensionLimitsV1 {
+    /// Inclusive configured cap; valid values are 11 through 32.
+    pub max_blocks: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MultiBlockAdmissionScopeV1 {
     GenericSubmitted2To8,
     ExactNineSubmittedSet,
     ExactTenSubmittedSet,
+    BoundedExtensionSubmittedSet { configured_max_blocks: usize },
 }
 
 impl MultiBlockAdmissionScopeV1 {
@@ -57,6 +69,14 @@ impl MultiBlockAdmissionScopeV1 {
             Self::GenericSubmitted2To8 => multi_block_count_supported_v1(count),
             Self::ExactNineSubmittedSet => count == EXACT_NINE_BLOCK_ARITY_V1,
             Self::ExactTenSubmittedSet => count == EXACT_TEN_BLOCK_ARITY_V1,
+            Self::BoundedExtensionSubmittedSet {
+                configured_max_blocks,
+            } => {
+                configured_max_blocks >= BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1
+                    && configured_max_blocks <= BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1
+                    && count >= BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1
+                    && count <= configured_max_blocks
+            }
         }
     }
 
@@ -65,6 +85,9 @@ impl MultiBlockAdmissionScopeV1 {
             Self::GenericSubmitted2To8 => b"closure_v1",
             Self::ExactNineSubmittedSet => b"exact-nine-submitted-set-closure-v1",
             Self::ExactTenSubmittedSet => b"exact-ten-submitted-set-closure-v1",
+            Self::BoundedExtensionSubmittedSet { .. } => {
+                b"bounded-extension-submitted-set-closure-v1"
+            }
         }
     }
 
@@ -73,6 +96,9 @@ impl MultiBlockAdmissionScopeV1 {
             Self::GenericSubmitted2To8 => None,
             Self::ExactNineSubmittedSet => Some(b"exact-nine-submitted-set-positive-layer-v1"),
             Self::ExactTenSubmittedSet => Some(b"exact-ten-submitted-set-positive-layer-v1"),
+            Self::BoundedExtensionSubmittedSet { .. } => {
+                Some(b"bounded-extension-submitted-set-positive-layer-v1")
+            }
         }
     }
 
@@ -81,8 +107,51 @@ impl MultiBlockAdmissionScopeV1 {
             Self::GenericSubmitted2To8 => None,
             Self::ExactNineSubmittedSet => Some(b"exact-nine-submitted-set-complete-live-v1"),
             Self::ExactTenSubmittedSet => Some(b"exact-ten-submitted-set-complete-live-v1"),
+            Self::BoundedExtensionSubmittedSet { .. } => {
+                Some(b"bounded-extension-submitted-set-complete-live-v1")
+            }
         }
     }
+
+    fn bind_extension_cardinality_v1(self, actual_count: usize, hash: &mut Sha256) {
+        if let Self::BoundedExtensionSubmittedSet {
+            configured_max_blocks,
+        } = self
+        {
+            hash.update((BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1 as u64).to_le_bytes());
+            hash.update((configured_max_blocks as u64).to_le_bytes());
+            hash.update((actual_count as u64).to_le_bytes());
+        }
+    }
+
+    fn bind_closure_domain_v1(self, actual_count: usize, hash: &mut Sha256) {
+        hash.update(self.closure_domain_tag_v1());
+        self.bind_extension_cardinality_v1(actual_count, hash);
+    }
+
+    fn bind_positive_layer_domain_v1(self, actual_count: usize, hash: &mut Sha256) {
+        if let Some(domain_tag) = self.positive_layer_domain_tag_v1() {
+            hash.update(domain_tag);
+        }
+        self.bind_extension_cardinality_v1(actual_count, hash);
+    }
+
+    fn bind_complete_live_domain_v1(self, actual_count: usize, hash: &mut Sha256) {
+        if let Some(domain_tag) = self.complete_live_domain_tag_v1() {
+            hash.update(domain_tag);
+        }
+        self.bind_extension_cardinality_v1(actual_count, hash);
+    }
+}
+
+fn bounded_multi_block_extension_scope_v1(
+    limits: BoundedMultiBlockExtensionLimitsV1,
+) -> Option<MultiBlockAdmissionScopeV1> {
+    (BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1..=BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1)
+        .contains(&limits.max_blocks)
+        .then_some(MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+            configured_max_blocks: limits.max_blocks,
+        })
 }
 
 pub fn issue_common_articulation_pose_authority_v1(
@@ -257,6 +326,25 @@ pub fn diagnose_exact_ten_block_union_completeness_v1(
     )
 }
 
+/// Diagnoses one explicitly bounded extension submitted set.
+///
+/// This separate scope admits 11 through the caller's configured maximum,
+/// which may never exceed [`BLOCK_COMPOSITION_LIMIT_V1`]. The configured cap
+/// remains part of every descendant binding and this report grants no motion,
+/// mutation, Apply, or viewer authority.
+#[must_use]
+pub fn diagnose_bounded_multi_block_extension_union_completeness_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    blocks: &[BlockUnionCompletenessInputV1<'_>],
+    limits: BoundedMultiBlockExtensionLimitsV1,
+) -> Option<BlockUnionCompletenessGapReportV1> {
+    diagnose_block_union_completeness_with_scope_v1(
+        geometry,
+        blocks,
+        bounded_multi_block_extension_scope_v1(limits)?,
+    )
+}
+
 fn diagnose_block_union_completeness_with_scope_v1(
     geometry: &MaterialHingeGraphGeometry,
     blocks: &[BlockUnionCompletenessInputV1<'_>],
@@ -355,10 +443,11 @@ struct OwnedMultiBlockV1 {
 
 /// Sealed authority for one submitted tree.
 ///
-/// The generic issuer remains frozen at 2..=8 blocks; a separately scoped
-/// companions admit exactly nine or exactly ten. No branch is whole-graph or project-
-/// mutation authority. A production adapter must separately bind the canonical
-/// union of all submitted hinges to the complete live graph.
+/// The generic issuer remains frozen at 2..=8 blocks. Separate scopes admit
+/// exactly nine, exactly ten, or 11 through an explicitly configured cap no
+/// greater than [`BLOCK_COMPOSITION_LIMIT_V1`]. No branch is whole-graph or
+/// project-mutation authority. A production adapter must separately bind the
+/// canonical union of all submitted hinges to the complete live graph.
 pub struct MultiBlockClosureAuthorityV1 {
     scope: MultiBlockAdmissionScopeV1,
     binding: [u8; 32],
@@ -444,6 +533,9 @@ impl CompleteMultiBlockPositiveLayerAuthorityV1 {
             }
             MultiBlockAdmissionScopeV1::ExactTenSubmittedSet => {
                 MultiBlockAdmissionScopeV1::ExactNineSubmittedSet
+            }
+            MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet { .. } => {
+                MultiBlockAdmissionScopeV1::ExactTenSubmittedSet
             }
         };
     }
@@ -1284,6 +1376,25 @@ pub fn issue_exact_ten_block_closure_authority_v1(
     )
 }
 
+/// Issues a non-authorizing closure parent for one bounded extension set.
+///
+/// The configured maximum must be in 11..=32 and the actual submitted count
+/// must be in 11..=that maximum. This authority is deliberately not connected
+/// to common-pose, clearance, staged/final, desktop, Apply, or viewer paths.
+pub fn issue_bounded_multi_block_extension_closure_authority_v1(
+    inputs: Vec<MultiBlockClosureInputV1<'_>>,
+    thickness: f64,
+    issuer_context: [u8; 32],
+    limits: BoundedMultiBlockExtensionLimitsV1,
+) -> Option<MultiBlockClosureAuthorityV1> {
+    issue_multi_block_closure_authority_with_scope_v1(
+        inputs,
+        thickness,
+        issuer_context,
+        bounded_multi_block_extension_scope_v1(limits)?,
+    )
+}
+
 fn issue_multi_block_closure_authority_with_scope_v1(
     inputs: Vec<MultiBlockClosureInputV1<'_>>,
     thickness: f64,
@@ -1360,7 +1471,7 @@ fn issue_multi_block_closure_authority_with_scope_v1(
     }
     let mut hash = Sha256::new();
     hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
-    hash.update(scope.closure_domain_tag_v1());
+    scope.bind_closure_domain_v1(blocks.len(), &mut hash);
     hash.update(thickness.to_bits().to_le_bytes());
     hash.update(issuer_context);
     for block in &blocks {
@@ -1692,9 +1803,7 @@ fn complete_multi_block_positive_layer_binding_v1(
 ) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
-    if let Some(domain_tag) = scope.complete_live_domain_tag_v1() {
-        hash.update(domain_tag);
-    }
+    scope.bind_complete_live_domain_v1(blocks.len(), &mut hash);
     hash.update(parent_binding);
     hash.update((live_faces.len() as u64).to_le_bytes());
     for face in live_faces {
@@ -1728,9 +1837,7 @@ fn complete_multi_block_positive_layer_binding_with_checkpoint_v1(
 ) -> Result<[u8; 32], CommonArticulationContinuousLayerPathErrorV1> {
     let mut hash = Sha256::new();
     hash.update(COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
-    if let Some(domain_tag) = scope.complete_live_domain_tag_v1() {
-        hash.update(domain_tag);
-    }
+    scope.bind_complete_live_domain_v1(blocks.len(), &mut hash);
     hash.update(parent_binding);
     hash.update((live_faces.len() as u64).to_le_bytes());
     for face in live_faces {
@@ -1780,9 +1887,7 @@ fn multi_block_positive_layer_binding_v1(
     records.sort_unstable();
     let mut hash = Sha256::new();
     hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
-    if let Some(domain_tag) = scope.positive_layer_domain_tag_v1() {
-        hash.update(domain_tag);
-    }
+    scope.bind_positive_layer_domain_v1(layers.len(), &mut hash);
     hash.update(parent_binding);
     hash.update(articulation_layer_fingerprint);
     for (target, thickness, transitions, pairs) in records {
@@ -1817,9 +1922,7 @@ fn multi_block_positive_layer_binding_with_checkpoint_v1(
     records.sort_unstable();
     let mut hash = Sha256::new();
     hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
-    if let Some(domain_tag) = scope.positive_layer_domain_tag_v1() {
-        hash.update(domain_tag);
-    }
+    scope.bind_positive_layer_domain_v1(layers.len(), &mut hash);
     hash.update(parent_binding);
     hash.update(articulation_layer_fingerprint);
     for (target, thickness, transitions, pairs) in records {
@@ -3468,8 +3571,10 @@ mod tests {
         assert!(
             (multi_block_count_supported_v1(block_count)
                 || block_count == EXACT_NINE_BLOCK_ARITY_V1
-                || block_count == EXACT_TEN_BLOCK_ARITY_V1)
-                && block_count >= 3
+                || block_count == EXACT_TEN_BLOCK_ARITY_V1
+                || (super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1
+                    ..=super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1)
+                    .contains(&block_count))
         );
         let namespace = ProjectId::new();
         let blocks = (0..block_count)
@@ -3728,6 +3833,17 @@ mod tests {
             EXACT_TEN_BLOCK_ARITY_V1 => {
                 super::diagnose_exact_ten_block_union_completeness_v1(geometry, &inputs)
             }
+            count
+                if (super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1
+                    ..=super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1)
+                    .contains(&count) =>
+            {
+                super::diagnose_bounded_multi_block_extension_union_completeness_v1(
+                    geometry,
+                    &inputs,
+                    super::BoundedMultiBlockExtensionLimitsV1 { max_blocks: count },
+                )
+            }
             _ => super::diagnose_block_union_completeness_v1(geometry, &inputs),
         }
     }
@@ -3785,6 +3901,15 @@ mod tests {
         let generic = super::MultiBlockAdmissionScopeV1::GenericSubmitted2To8;
         let exact_nine = super::MultiBlockAdmissionScopeV1::ExactNineSubmittedSet;
         let exact_ten = super::MultiBlockAdmissionScopeV1::ExactTenSubmittedSet;
+        let extension_eleven = super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+            configured_max_blocks: 11,
+        };
+        let extension_twelve = super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+            configured_max_blocks: 12,
+        };
+        let extension_hard_max = super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+            configured_max_blocks: super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1,
+        };
         assert!(generic.admits_block_count_v1(2));
         assert!(generic.admits_block_count_v1(8));
         assert!(!generic.admits_block_count_v1(9));
@@ -3795,6 +3920,22 @@ mod tests {
         assert!(!exact_ten.admits_block_count_v1(9));
         assert!(exact_ten.admits_block_count_v1(10));
         assert!(!exact_ten.admits_block_count_v1(11));
+        assert!(!extension_eleven.admits_block_count_v1(10));
+        assert!(extension_eleven.admits_block_count_v1(11));
+        assert!(!extension_eleven.admits_block_count_v1(12));
+        assert!(!extension_twelve.admits_block_count_v1(10));
+        assert!(extension_twelve.admits_block_count_v1(11));
+        assert!(extension_twelve.admits_block_count_v1(12));
+        assert!(!extension_twelve.admits_block_count_v1(13));
+        assert!(extension_hard_max.admits_block_count_v1(11));
+        assert!(
+            extension_hard_max
+                .admits_block_count_v1(super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1)
+        );
+        assert!(
+            !extension_hard_max
+                .admits_block_count_v1(super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1 + 1)
+        );
 
         assert_eq!(generic.closure_domain_tag_v1(), b"closure_v1");
         assert_eq!(generic.positive_layer_domain_tag_v1(), None);
@@ -3810,6 +3951,30 @@ mod tests {
         assert_eq!(
             exact_nine.complete_live_domain_tag_v1(),
             Some(b"exact-nine-submitted-set-complete-live-v1".as_slice()),
+        );
+        assert_eq!(
+            exact_ten.closure_domain_tag_v1(),
+            b"exact-ten-submitted-set-closure-v1",
+        );
+        assert_eq!(
+            exact_ten.positive_layer_domain_tag_v1(),
+            Some(b"exact-ten-submitted-set-positive-layer-v1".as_slice()),
+        );
+        assert_eq!(
+            exact_ten.complete_live_domain_tag_v1(),
+            Some(b"exact-ten-submitted-set-complete-live-v1".as_slice()),
+        );
+        assert_eq!(
+            extension_eleven.closure_domain_tag_v1(),
+            b"bounded-extension-submitted-set-closure-v1",
+        );
+        assert_eq!(
+            extension_eleven.positive_layer_domain_tag_v1(),
+            Some(b"bounded-extension-submitted-set-positive-layer-v1".as_slice()),
+        );
+        assert_eq!(
+            extension_eleven.complete_live_domain_tag_v1(),
+            Some(b"bounded-extension-submitted-set-complete-live-v1".as_slice()),
         );
         let effective_domains = [
             generic.closure_domain_tag_v1(),
@@ -3827,6 +3992,13 @@ mod tests {
             exact_ten
                 .complete_live_domain_tag_v1()
                 .expect("exact-ten complete-live domain"),
+            extension_eleven.closure_domain_tag_v1(),
+            extension_eleven
+                .positive_layer_domain_tag_v1()
+                .expect("bounded-extension positive-layer domain"),
+            extension_eleven
+                .complete_live_domain_tag_v1()
+                .expect("bounded-extension complete-live domain"),
         ];
         for (index, domain) in effective_domains.iter().enumerate() {
             assert!(
@@ -3836,24 +4008,39 @@ mod tests {
             );
         }
 
-        let closure_domain_probe = |scope: super::MultiBlockAdmissionScopeV1| {
+        let closure_domain_probe = |scope: super::MultiBlockAdmissionScopeV1,
+                                    actual_count: usize| {
             let mut hash = Sha256::new();
             hash.update(super::MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
-            hash.update(scope.closure_domain_tag_v1());
+            scope.bind_closure_domain_v1(actual_count, &mut hash);
             hash.update(b"identical-owned-input-probe-v1");
             <[u8; 32]>::from(hash.finalize())
         };
         assert_ne!(
-            closure_domain_probe(generic),
-            closure_domain_probe(exact_nine)
+            closure_domain_probe(generic, 8),
+            closure_domain_probe(exact_nine, 9)
         );
         assert_ne!(
-            closure_domain_probe(generic),
-            closure_domain_probe(exact_ten)
+            closure_domain_probe(generic, 8),
+            closure_domain_probe(exact_ten, 10)
         );
         assert_ne!(
-            closure_domain_probe(exact_nine),
-            closure_domain_probe(exact_ten)
+            closure_domain_probe(exact_nine, 9),
+            closure_domain_probe(exact_ten, 10)
+        );
+        assert_ne!(
+            closure_domain_probe(exact_ten, 10),
+            closure_domain_probe(extension_eleven, 11)
+        );
+        assert_ne!(
+            closure_domain_probe(extension_eleven, 11),
+            closure_domain_probe(extension_twelve, 11),
+            "the configured cap must be part of the extension binding",
+        );
+        assert_ne!(
+            closure_domain_probe(extension_twelve, 11),
+            closure_domain_probe(extension_twelve, 12),
+            "the actual count must be part of the extension binding",
         );
     }
 
@@ -4708,11 +4895,117 @@ mod tests {
         hash.finalize().into()
     }
 
+    fn direct_extension_cardinality_v1(
+        hash: &mut Sha256,
+        configured_max_blocks: usize,
+        actual_count: usize,
+    ) {
+        for value in [
+            super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1 as u64,
+            configured_max_blocks as u64,
+            actual_count as u64,
+        ] {
+            hash.update(value.to_le_bytes());
+        }
+    }
+
+    fn direct_bounded_extension_closure_binding_v1(
+        authority: &super::MultiBlockClosureAuthorityV1,
+        configured_max_blocks: usize,
+        actual_count: usize,
+    ) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(super::MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+        hash.update(b"bounded-extension-submitted-set-closure-v1");
+        direct_extension_cardinality_v1(&mut hash, configured_max_blocks, actual_count);
+        hash.update(authority.thickness_bits.to_le_bytes());
+        hash.update(authority.issuer_context);
+        for block in &authority.blocks {
+            hash.update(block.schedule.graph_binding_fingerprint_v1());
+            hash.update(block.schedule.certificate_binding_fingerprint_v2());
+            hash.update(block.closure.partition_binding_fingerprint_v2());
+            hash.update((block.edges.len() as u64).to_le_bytes());
+            for edge in &block.edges {
+                hash.update(edge.canonical_bytes());
+            }
+            for face in &block.faces {
+                hash.update(face.canonical_bytes());
+            }
+        }
+        hash.finalize().into()
+    }
+
+    fn direct_bounded_extension_positive_layer_binding_v1(
+        authority: &super::MultiBlockPositiveLayerAuthorityV1,
+        configured_max_blocks: usize,
+        actual_count: usize,
+    ) -> [u8; 32] {
+        let mut records = authority
+            .layer
+            .iter()
+            .map(|proof| {
+                (
+                    proof.target_order_hash(),
+                    proof.paper_thickness_mm().to_bits(),
+                    proof.transition_hashes().len(),
+                    proof.pair_order_count(),
+                )
+            })
+            .collect::<Vec<_>>();
+        records.sort_unstable();
+        let mut hash = Sha256::new();
+        hash.update(super::MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+        hash.update(b"bounded-extension-submitted-set-positive-layer-v1");
+        direct_extension_cardinality_v1(&mut hash, configured_max_blocks, actual_count);
+        hash.update(authority.parent.binding);
+        hash.update(authority.articulation_layer_fingerprint);
+        for (target, thickness, transitions, pairs) in records {
+            hash.update(target);
+            hash.update(thickness.to_le_bytes());
+            hash.update((transitions as u64).to_le_bytes());
+            hash.update((pairs as u64).to_le_bytes());
+        }
+        hash.finalize().into()
+    }
+
+    fn direct_bounded_extension_complete_binding_v1(
+        authority: &super::CompleteMultiBlockPositiveLayerAuthorityV1,
+        configured_max_blocks: usize,
+        actual_count: usize,
+    ) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+        hash.update(b"bounded-extension-submitted-set-complete-live-v1");
+        direct_extension_cardinality_v1(&mut hash, configured_max_blocks, actual_count);
+        hash.update(authority.parent.binding);
+        hash.update((authority.live_faces.len() as u64).to_le_bytes());
+        for face in &authority.live_faces {
+            hash.update(face.canonical_bytes());
+        }
+        hash.update((authority.live_hinges.len() as u64).to_le_bytes());
+        for hinge in &authority.live_hinges {
+            hash.update(hinge.canonical_bytes());
+        }
+        hash.update((authority.blocks.len() as u64).to_le_bytes());
+        for block in &authority.blocks {
+            hash.update((block.faces.len() as u64).to_le_bytes());
+            for face in &block.faces {
+                hash.update(face.canonical_bytes());
+            }
+            hash.update((block.edges.len() as u64).to_le_bytes());
+            for edge in &block.edges {
+                hash.update(edge.canonical_bytes());
+            }
+        }
+        hash.finalize().into()
+    }
+
     struct ExpectedScopeDomainsV1 {
         scope: super::MultiBlockAdmissionScopeV1,
         closure: &'static [u8],
         positive: Option<&'static [u8]>,
         complete: Option<&'static [u8]>,
+        extension_cardinality: Option<[u64; 3]>,
     }
 
     fn expected_scope_domains_v1(block_count: usize) -> ExpectedScopeDomainsV1 {
@@ -4722,19 +5015,41 @@ mod tests {
                 closure: b"exact-nine-submitted-set-closure-v1",
                 positive: Some(b"exact-nine-submitted-set-positive-layer-v1"),
                 complete: Some(b"exact-nine-submitted-set-complete-live-v1"),
+                extension_cardinality: None,
             },
             EXACT_TEN_BLOCK_ARITY_V1 => ExpectedScopeDomainsV1 {
                 scope: super::MultiBlockAdmissionScopeV1::ExactTenSubmittedSet,
                 closure: b"exact-ten-submitted-set-closure-v1",
                 positive: Some(b"exact-ten-submitted-set-positive-layer-v1"),
                 complete: Some(b"exact-ten-submitted-set-complete-live-v1"),
+                extension_cardinality: None,
             },
             count if multi_block_count_supported_v1(count) => ExpectedScopeDomainsV1 {
                 scope: super::MultiBlockAdmissionScopeV1::GenericSubmitted2To8,
                 closure: b"closure_v1",
                 positive: None,
                 complete: None,
+                extension_cardinality: None,
             },
+            count
+                if (super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1
+                    ..=super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1)
+                    .contains(&count) =>
+            {
+                ExpectedScopeDomainsV1 {
+                    scope: super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+                        configured_max_blocks: count,
+                    },
+                    closure: b"bounded-extension-submitted-set-closure-v1",
+                    positive: Some(b"bounded-extension-submitted-set-positive-layer-v1"),
+                    complete: Some(b"bounded-extension-submitted-set-complete-live-v1"),
+                    extension_cardinality: Some([
+                        super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1 as u64,
+                        count as u64,
+                        count as u64,
+                    ]),
+                }
+            }
             _ => panic!("unsupported complete multi-block arity: {block_count}"),
         }
     }
@@ -4749,41 +5064,223 @@ mod tests {
         let layer_fingerprint = [0x52; 32];
         let domains = expected_scope_domains_v1(block_count);
         let expected_scope = domains.scope;
-        let closure_inputs = prepared
-            .iter()
-            .zip(&scheduled)
-            .map(
-                |((_, geometry, audit, _, _), (schedule, closure))| MultiBlockClosureInputV1 {
-                    geometry,
-                    audit,
-                    schedule,
-                    closure,
+        let closure_inputs = || {
+            prepared
+                .iter()
+                .zip(&scheduled)
+                .map(
+                    |((_, geometry, audit, _, _), (schedule, closure))| MultiBlockClosureInputV1 {
+                        geometry,
+                        audit,
+                        schedule,
+                        closure,
+                    },
+                )
+                .collect::<Vec<_>>()
+        };
+        let repeated_closure_inputs = |count: usize| {
+            (0..count)
+                .map(|index| {
+                    let (_, geometry, audit, _, _) = &prepared[index % prepared.len()];
+                    let (schedule, closure) = &scheduled[index % scheduled.len()];
+                    MultiBlockClosureInputV1 {
+                        geometry,
+                        audit,
+                        schedule,
+                        closure,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        if block_count == super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1 {
+            let repeated_union_inputs = |count: usize| {
+                (0..count)
+                    .map(|index| {
+                        let (_, geometry, _, moving, _) = &prepared[index % prepared.len()];
+                        super::BlockUnionCompletenessInputV1 {
+                            faces: geometry.face_ids(),
+                            hinges: moving,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for invalid_cap in [
+                0,
+                EXACT_TEN_BLOCK_ARITY_V1,
+                super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1 + 1,
+                usize::MAX,
+            ] {
+                let limits = super::BoundedMultiBlockExtensionLimitsV1 {
+                    max_blocks: invalid_cap,
+                };
+                assert!(
+                    super::diagnose_bounded_multi_block_extension_union_completeness_v1(
+                        &live_geometry,
+                        &repeated_union_inputs(block_count),
+                        limits,
+                    )
+                    .is_none(),
+                    "invalid configured cap {invalid_cap} reached union diagnosis",
+                );
+                assert!(
+                    super::issue_bounded_multi_block_extension_closure_authority_v1(
+                        closure_inputs(),
+                        thickness,
+                        issuer_context,
+                        limits,
+                    )
+                    .is_none(),
+                    "invalid configured cap {invalid_cap} reached closure issuance",
+                );
+            }
+            for invalid_actual in [EXACT_TEN_BLOCK_ARITY_V1, block_count + 1] {
+                let limits = super::BoundedMultiBlockExtensionLimitsV1 {
+                    max_blocks: block_count,
+                };
+                assert!(
+                    super::diagnose_bounded_multi_block_extension_union_completeness_v1(
+                        &live_geometry,
+                        &repeated_union_inputs(invalid_actual),
+                        limits,
+                    )
+                    .is_none(),
+                    "actual count {invalid_actual} escaped configured cap {block_count}",
+                );
+                assert!(
+                    super::issue_bounded_multi_block_extension_closure_authority_v1(
+                        repeated_closure_inputs(invalid_actual),
+                        thickness,
+                        issuer_context,
+                        limits,
+                    )
+                    .is_none(),
+                    "actual count {invalid_actual} escaped configured cap {block_count}",
+                );
+            }
+            let hard_max = super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1;
+            let hard_limits = super::BoundedMultiBlockExtensionLimitsV1 {
+                max_blocks: hard_max,
+            };
+            assert!(
+                super::diagnose_bounded_multi_block_extension_union_completeness_v1(
+                    &live_geometry,
+                    &repeated_union_inputs(hard_max + 1),
+                    hard_limits,
+                )
+                .is_none(),
+                "actual count above the global hard cap reached union diagnosis",
+            );
+            assert!(
+                super::issue_bounded_multi_block_extension_closure_authority_v1(
+                    repeated_closure_inputs(hard_max + 1),
+                    thickness,
+                    issuer_context,
+                    hard_limits,
+                )
+                .is_none(),
+                "actual count above the global hard cap reached closure issuance",
+            );
+
+            let cap_eleven = super::issue_bounded_multi_block_extension_closure_authority_v1(
+                closure_inputs(),
+                thickness,
+                issuer_context,
+                super::BoundedMultiBlockExtensionLimitsV1 {
+                    max_blocks: block_count,
                 },
             )
-            .collect();
+            .expect("bounded-extension cap-eleven authority");
+            let cap_twelve = super::issue_bounded_multi_block_extension_closure_authority_v1(
+                closure_inputs(),
+                thickness,
+                issuer_context,
+                super::BoundedMultiBlockExtensionLimitsV1 {
+                    max_blocks: block_count + 1,
+                },
+            )
+            .expect("bounded-extension cap-twelve authority over eleven actual blocks");
+            let cap_hard_max = super::issue_bounded_multi_block_extension_closure_authority_v1(
+                closure_inputs(),
+                thickness,
+                issuer_context,
+                super::BoundedMultiBlockExtensionLimitsV1 {
+                    max_blocks: super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1,
+                },
+            )
+            .expect("bounded-extension hard-max authority over eleven actual blocks");
+            assert_ne!(
+                cap_eleven.binding_fingerprint_v1(),
+                cap_twelve.binding_fingerprint_v1(),
+                "configured-cap replay must change the closure binding",
+            );
+            assert_ne!(
+                cap_twelve.binding_fingerprint_v1(),
+                cap_hard_max.binding_fingerprint_v1(),
+                "the accepted hard maximum must remain bound independently",
+            );
+            assert_eq!(
+                cap_eleven.binding_fingerprint_v1(),
+                direct_bounded_extension_closure_binding_v1(&cap_eleven, block_count, block_count,),
+            );
+            assert_eq!(
+                cap_twelve.binding_fingerprint_v1(),
+                direct_bounded_extension_closure_binding_v1(
+                    &cap_twelve,
+                    block_count + 1,
+                    block_count,
+                ),
+            );
+            assert_eq!(
+                cap_hard_max.binding_fingerprint_v1(),
+                direct_bounded_extension_closure_binding_v1(
+                    &cap_hard_max,
+                    super::BOUNDED_MULTI_BLOCK_EXTENSION_MAX_BLOCKS_V1,
+                    block_count,
+                ),
+            );
+        }
         let parent = match expected_scope {
             super::MultiBlockAdmissionScopeV1::GenericSubmitted2To8 => {
-                issue_multi_block_closure_authority_v1(closure_inputs, thickness, issuer_context)
+                issue_multi_block_closure_authority_v1(closure_inputs(), thickness, issuer_context)
             }
             super::MultiBlockAdmissionScopeV1::ExactNineSubmittedSet => {
                 issue_exact_nine_block_closure_authority_v1(
-                    closure_inputs,
+                    closure_inputs(),
                     thickness,
                     issuer_context,
                 )
             }
             super::MultiBlockAdmissionScopeV1::ExactTenSubmittedSet => {
                 issue_exact_ten_block_closure_authority_v1(
-                    closure_inputs,
+                    closure_inputs(),
                     thickness,
                     issuer_context,
                 )
             }
+            super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+                configured_max_blocks,
+            } => super::issue_bounded_multi_block_extension_closure_authority_v1(
+                closure_inputs(),
+                thickness,
+                issuer_context,
+                super::BoundedMultiBlockExtensionLimitsV1 {
+                    max_blocks: configured_max_blocks,
+                },
+            ),
         }
         .expect("complete multi-block closure authority");
+        let expected_closure_binding = match domains.extension_cardinality {
+            Some([_, configured_max_blocks, actual_count]) => {
+                direct_bounded_extension_closure_binding_v1(
+                    &parent,
+                    configured_max_blocks as usize,
+                    actual_count as usize,
+                )
+            }
+            None => direct_closure_binding_v1(&parent, domains.closure),
+        };
         assert_eq!(
-            parent.binding,
-            direct_closure_binding_v1(&parent, domains.closure),
+            parent.binding, expected_closure_binding,
             "closure fingerprint changed at arity {block_count}",
         );
         if block_count > MULTI_BLOCK_MAX_BLOCKS_V1 {
@@ -4793,46 +5290,48 @@ mod tests {
                 "exact closure domain collapsed into the generic domain at arity {block_count}",
             );
         }
-        let proofs = prepared
-            .iter()
-            .zip(&scheduled)
-            .map(|((_, geometry, audit, _, source), (schedule, closure))| {
-                let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
-                    geometry,
-                    audit,
-                    closure.fixed_face(),
-                    schedule,
-                    closure,
-                    thickness,
-                    32,
-                )
-                .expect("complete multi-block positive path");
-                let layer =
-                    certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
+        let prepare_positive_layer_proofs = || {
+            prepared
+                .iter()
+                .zip(&scheduled)
+                .map(|((_, geometry, audit, _, source), (schedule, closure))| {
+                    let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
                         geometry,
                         audit,
-                        source,
+                        closure.fixed_face(),
                         schedule,
                         closure,
-                        positive_continuous: &positive,
-                        paper_thickness_mm: thickness,
-                        tolerance: 1.0e-8,
-                        limits: GeneralCellTransportLimitsV1 {
-                            max_transitions: closure.leaves().len() + 1,
-                            max_cells: 1_000_000,
-                            max_layer_records: 1_000_000,
-                            max_boundary_samples: 1_000_000,
-                        },
-                    })
-                    .expect("complete multi-block layer transport");
-                (positive, layer)
-            })
-            .collect::<Vec<_>>();
+                        thickness,
+                        32,
+                    )
+                    .expect("complete multi-block positive path");
+                    let layer =
+                        certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
+                            geometry,
+                            audit,
+                            source,
+                            schedule,
+                            closure,
+                            positive_continuous: &positive,
+                            paper_thickness_mm: thickness,
+                            tolerance: 1.0e-8,
+                            limits: GeneralCellTransportLimitsV1 {
+                                max_transitions: closure.leaves().len() + 1,
+                                max_cells: 1_000_000,
+                                max_layer_records: 1_000_000,
+                                max_boundary_samples: 1_000_000,
+                            },
+                        })
+                        .expect("complete multi-block layer transport");
+                    (positive, layer)
+                })
+                .collect::<Vec<_>>()
+        };
         let parent = issue_multi_block_positive_layer_authority_v1(
             parent,
             prepared
                 .iter()
-                .zip(proofs)
+                .zip(prepare_positive_layer_proofs())
                 .map(|((_, geometry, _, _, source), (positive, layer))| {
                     MultiBlockPositiveLayerInputV1 {
                         geometry,
@@ -4845,9 +5344,18 @@ mod tests {
             layer_fingerprint,
         )
         .expect("complete multi-block positive layer authority");
+        let expected_positive_binding = match domains.extension_cardinality {
+            Some([_, configured_max_blocks, actual_count]) => {
+                direct_bounded_extension_positive_layer_binding_v1(
+                    &parent,
+                    configured_max_blocks as usize,
+                    actual_count as usize,
+                )
+            }
+            None => direct_positive_layer_binding_v1(&parent, domains.positive),
+        };
         assert_eq!(
-            parent.binding,
-            direct_positive_layer_binding_v1(&parent, domains.positive),
+            parent.binding, expected_positive_binding,
             "positive-layer fingerprint changed at arity {block_count}",
         );
         if block_count > MULTI_BLOCK_MAX_BLOCKS_V1 {
@@ -4857,6 +5365,66 @@ mod tests {
                 "exact positive-layer domain collapsed into the generic domain at arity {block_count}",
             );
         }
+        let cap_replay_parent = if matches!(
+            expected_scope,
+            super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet { .. }
+        ) {
+            let replay_max = block_count + 1;
+            let replay_closure = super::issue_bounded_multi_block_extension_closure_authority_v1(
+                closure_inputs(),
+                thickness,
+                issuer_context,
+                super::BoundedMultiBlockExtensionLimitsV1 {
+                    max_blocks: replay_max,
+                },
+            )
+            .expect("bounded-extension replay-cap closure authority");
+            assert_eq!(
+                replay_closure.binding_fingerprint_v1(),
+                direct_bounded_extension_closure_binding_v1(
+                    &replay_closure,
+                    replay_max,
+                    block_count,
+                ),
+            );
+            assert_ne!(
+                parent.parent.binding_fingerprint_v1(),
+                replay_closure.binding_fingerprint_v1(),
+                "configured cap must separate closure authorities over identical actual inputs",
+            );
+            let replay_positive = issue_multi_block_positive_layer_authority_v1(
+                replay_closure,
+                prepared
+                    .iter()
+                    .zip(prepare_positive_layer_proofs())
+                    .map(|((_, geometry, _, _, source), (positive, layer))| {
+                        MultiBlockPositiveLayerInputV1 {
+                            geometry,
+                            source,
+                            positive,
+                            layer,
+                        }
+                    })
+                    .collect(),
+                layer_fingerprint,
+            )
+            .expect("bounded-extension replay-cap positive-layer authority");
+            assert_eq!(
+                replay_positive.binding,
+                direct_bounded_extension_positive_layer_binding_v1(
+                    &replay_positive,
+                    replay_max,
+                    block_count,
+                ),
+            );
+            assert_ne!(
+                parent.binding, replay_positive.binding,
+                "configured cap must separate positive authorities over identical actual inputs",
+            );
+            Some(replay_positive)
+        } else {
+            None
+        };
         let sources = prepared
             .iter()
             .map(|(_, _, _, _, source)| source)
@@ -4888,6 +5456,116 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+
+        let cap_replay_complete_binding = if let Some(replay_parent) = cap_replay_parent {
+            let union_inputs = || {
+                block_faces
+                    .iter()
+                    .zip(&block_hinges)
+                    .map(|(faces, hinges)| super::BlockUnionCompletenessInputV1 { faces, hinges })
+                    .collect::<Vec<_>>()
+            };
+            let current_cap_report =
+                super::diagnose_bounded_multi_block_extension_union_completeness_v1(
+                    &live_geometry,
+                    &union_inputs(),
+                    super::BoundedMultiBlockExtensionLimitsV1 {
+                        max_blocks: block_count,
+                    },
+                )
+                .expect("bounded-extension current-cap report");
+            let replay_max = block_count + 1;
+            let replay_cap_report =
+                super::diagnose_bounded_multi_block_extension_union_completeness_v1(
+                    &live_geometry,
+                    &union_inputs(),
+                    super::BoundedMultiBlockExtensionLimitsV1 {
+                        max_blocks: replay_max,
+                    },
+                )
+                .expect("bounded-extension replay-cap report");
+            assert!(current_cap_report.exact_live_union_observed());
+            assert!(!current_cap_report.authorizes_project_mutation());
+            assert!(!current_cap_report.authorizes_multi_block_composition());
+            assert_ne!(current_cap_report.scope, replay_cap_report.scope);
+            assert!(super::complete_multi_block_report_matches_parent_v1(
+                &live_geometry,
+                &current_cap_report,
+                &parent,
+            ));
+            assert!(
+                !super::complete_multi_block_report_matches_parent_v1(
+                    &live_geometry,
+                    &replay_cap_report,
+                    &parent,
+                ),
+                "a report issued under another configured cap must not replay",
+            );
+            assert!(super::complete_multi_block_report_matches_parent_v1(
+                &live_geometry,
+                &replay_cap_report,
+                &replay_parent,
+            ));
+            assert!(
+                !super::complete_multi_block_report_matches_parent_v1(
+                    &live_geometry,
+                    &current_cap_report,
+                    &replay_parent,
+                ),
+                "a current-cap report must not replay against the divergent-cap parent",
+            );
+
+            let replay_complete = issue_complete_multi_block_positive_layer_authority_v1(
+                &live_geometry,
+                replay_cap_report,
+                replay_parent,
+                &sources,
+                thickness,
+                issuer_context,
+                layer_fingerprint,
+                &target_angles,
+            )
+            .expect("bounded-extension replay-cap complete authority");
+            assert_eq!(
+                replay_complete.binding,
+                direct_bounded_extension_complete_binding_v1(
+                    &replay_complete,
+                    replay_max,
+                    block_count,
+                ),
+            );
+            assert!(!replay_complete.authorizes_project_mutation());
+            assert!(!replay_complete.authorizes_apply());
+            assert!(!replay_complete.authorizes_viewer());
+
+            if block_count == super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1 {
+                let oversized_faces = (0..block_count)
+                    .map(|_| vec![FaceId::new(); 400])
+                    .collect::<Vec<_>>();
+                let oversized_hinges = (0..block_count)
+                    .map(|_| vec![EdgeId::new()])
+                    .collect::<Vec<_>>();
+                let oversized_inputs = oversized_faces
+                    .iter()
+                    .zip(&oversized_hinges)
+                    .map(|(faces, hinges)| super::BlockUnionCompletenessInputV1 { faces, hinges })
+                    .collect::<Vec<_>>();
+                assert!(
+                    super::diagnose_bounded_multi_block_extension_union_completeness_v1(
+                        &live_geometry,
+                        &oversized_inputs,
+                        super::BoundedMultiBlockExtensionLimitsV1 {
+                            max_blocks: block_count,
+                        },
+                    )
+                    .is_none(),
+                    "submitted union work above the shared resource cap must fail closed",
+                );
+            }
+            Some(replay_complete.binding)
+        } else {
+            None
+        };
 
         let mut omitted_faces = block_faces.clone();
         let omitted_face = omitted_faces[0]
@@ -4974,23 +5652,24 @@ mod tests {
                 }
             }
         }
-        let (cycle_first, cycle_second) = non_adjacent.expect("non-adjacent blocks");
-        let cycle_face = cyclic_faces[cycle_second]
-            .iter()
-            .copied()
-            .find(|face| {
-                !cyclic_faces
-                    .iter()
-                    .enumerate()
-                    .any(|(index, candidate)| index != cycle_second && candidate.contains(face))
-            })
-            .expect("cycle face");
-        cyclic_faces[cycle_first].push(cycle_face);
-        assert!(
-            !completeness_report_v1(&live_geometry, &cyclic_faces, &block_hinges)
-                .expect("cycle report")
-                .exact_live_union_observed()
-        );
+        if let Some((cycle_first, cycle_second)) = non_adjacent {
+            let cycle_face = cyclic_faces[cycle_second]
+                .iter()
+                .copied()
+                .find(|face| {
+                    !cyclic_faces
+                        .iter()
+                        .enumerate()
+                        .any(|(index, candidate)| index != cycle_second && candidate.contains(face))
+                })
+                .expect("cycle face");
+            cyclic_faces[cycle_first].push(cycle_face);
+            assert!(
+                !completeness_report_v1(&live_geometry, &cyclic_faces, &block_hinges)
+                    .expect("cycle report")
+                    .exact_live_union_observed()
+            );
+        }
 
         let mut mismatched_faces = block_faces.clone();
         let first_unique = mismatched_faces[0]
@@ -5034,15 +5713,29 @@ mod tests {
         let report = completeness_report_v1(&live_geometry, &reversed_faces, &reversed_hinges)
             .expect("canonical complete report");
         assert!(report.exact_live_union_observed());
-        let wrong_scopes = [
+        let alternate_extension_cap = match expected_scope {
+            super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+                configured_max_blocks,
+            } if configured_max_blocks == super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1 => {
+                configured_max_blocks + 1
+            }
+            super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+                configured_max_blocks,
+            } => configured_max_blocks - 1,
+            _ => super::BOUNDED_MULTI_BLOCK_EXTENSION_MIN_BLOCKS_V1,
+        };
+        let wrong_scopes = vec![
             super::MultiBlockAdmissionScopeV1::GenericSubmitted2To8,
             super::MultiBlockAdmissionScopeV1::ExactNineSubmittedSet,
             super::MultiBlockAdmissionScopeV1::ExactTenSubmittedSet,
+            super::MultiBlockAdmissionScopeV1::BoundedExtensionSubmittedSet {
+                configured_max_blocks: alternate_extension_cap,
+            },
         ]
         .into_iter()
         .filter(|scope| *scope != expected_scope)
         .collect::<Vec<_>>();
-        assert_eq!(wrong_scopes.len(), 2);
+        assert!(!wrong_scopes.is_empty());
         assert_eq!(report.scope, expected_scope);
         assert_eq!(parent.scope, expected_scope);
         for wrong_scope in &wrong_scopes {
@@ -5070,9 +5763,24 @@ mod tests {
             &target_angles,
         )
         .expect("sealed complete multi-block authority");
+        if let Some(replay_binding) = cap_replay_complete_binding {
+            assert_ne!(
+                authority.binding, replay_binding,
+                "configured cap must separate complete authorities over identical actual inputs",
+            );
+        }
+        let expected_complete_binding = match domains.extension_cardinality {
+            Some([_, configured_max_blocks, actual_count]) => {
+                direct_bounded_extension_complete_binding_v1(
+                    &authority,
+                    configured_max_blocks as usize,
+                    actual_count as usize,
+                )
+            }
+            None => direct_complete_binding_v1(&authority, domains.complete),
+        };
         assert_eq!(
-            authority.binding,
-            direct_complete_binding_v1(&authority, domains.complete),
+            authority.binding, expected_complete_binding,
             "complete-live fingerprint changed at arity {block_count}",
         );
         if block_count > MULTI_BLOCK_MAX_BLOCKS_V1 {
@@ -5227,8 +5935,11 @@ mod tests {
     }
 
     #[test]
-    fn representative_generic_complete_authorities_preserve_legacy_fingerprints() {
-        for block_count in [3_usize, 4, 5, MULTI_BLOCK_MAX_BLOCKS_V1] {
+    fn every_generic_arity_preserves_the_legacy_direct_fingerprint_algorithm() {
+        // Fixture namespaces are intentionally fresh per run, so a fixed digest
+        // would be meaningless. The oracle above is the unchanged pre-extension
+        // byte-update algorithm and covers every frozen Generic2..8 arity.
+        for block_count in MULTI_BLOCK_MIN_BLOCKS_V1..=MULTI_BLOCK_MAX_BLOCKS_V1 {
             assert_complete_live_multi_block_authority_v1(block_count);
         }
     }
@@ -5241,5 +5952,11 @@ mod tests {
     #[test]
     fn exact_ten_complete_live_authority_is_explicitly_scoped_and_non_authorizing() {
         assert_complete_live_multi_block_authority_v1(10);
+    }
+
+    #[test]
+    fn bounded_extension_eleven_and_twelve_complete_live_paths_are_scoped_and_non_authorizing() {
+        assert_complete_live_multi_block_authority_v1(11);
+        assert_complete_live_multi_block_authority_v1(12);
     }
 }

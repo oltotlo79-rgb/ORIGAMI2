@@ -433,6 +433,26 @@ impl CompleteMultiBlockPositiveLayerAuthorityV1 {
         self.blocks.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn corrupt_scope_for_test_v1(&mut self) {
+        self.scope = match self.scope {
+            MultiBlockAdmissionScopeV1::GenericSubmitted2To8 => {
+                MultiBlockAdmissionScopeV1::ExactNineSubmittedSet
+            }
+            MultiBlockAdmissionScopeV1::ExactNineSubmittedSet => {
+                MultiBlockAdmissionScopeV1::ExactTenSubmittedSet
+            }
+            MultiBlockAdmissionScopeV1::ExactTenSubmittedSet => {
+                MultiBlockAdmissionScopeV1::ExactNineSubmittedSet
+            }
+        };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_partition_for_test_v1(&mut self) {
+        self.blocks.swap(0, 1);
+    }
+
     #[must_use]
     pub const fn exact_live_union_certified_v1(&self) -> bool {
         true
@@ -2613,6 +2633,16 @@ impl CommonArticulationContinuousLayerPathAuthorityV1 {
     #[must_use]
     pub const fn complete_binding_fingerprint_v1(&self) -> [u8; 32] {
         self.complete.binding_fingerprint_v1()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_complete_scope_for_test_v1(&mut self) {
+        self.complete.corrupt_scope_for_test_v1();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_complete_partition_for_test_v1(&mut self) {
+        self.complete.corrupt_partition_for_test_v1();
     }
 
     #[must_use]

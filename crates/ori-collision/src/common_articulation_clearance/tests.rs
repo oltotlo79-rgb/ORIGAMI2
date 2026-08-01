@@ -18,12 +18,15 @@ use crate::{
     block_composition::complete_multi_block_report_matches_parent_for_test_v1,
     certify_canonical_positive_thickness_cycle_schedule_path_v1,
     certify_general_multi_face_cell_transport_v1, diagnose_block_union_completeness_v1,
+    diagnose_exact_nine_block_union_completeness_v1,
+    diagnose_exact_ten_block_union_completeness_v1,
     issue_common_articulation_block_composed_path_authority_v1,
     issue_common_articulation_block_composed_path_authority_with_control_v1,
     issue_common_articulation_continuous_layer_path_authority_with_control_v1,
     issue_common_articulation_pose_authority_v1,
-    issue_complete_multi_block_positive_layer_authority_v1, issue_multi_block_closure_authority_v1,
-    issue_multi_block_positive_layer_authority_v1,
+    issue_complete_multi_block_positive_layer_authority_v1,
+    issue_exact_nine_block_closure_authority_v1, issue_exact_ten_block_closure_authority_v1,
+    issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
 };
 use ori_core::{analyze_global_flat_foldability, analyze_local_flat_foldability};
 use ori_domain::{
@@ -54,13 +57,24 @@ struct ClearanceFixtureV1 {
 }
 
 fn common_pose_limits_for_block_count_v1(block_count: usize) -> CommonArticulationPoseLimitsV1 {
-    if block_count == COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1 {
+    if block_count > super::COMMON_ARTICULATION_CLEARANCE_DEFAULT_MAX_BLOCKS_V1 {
         CommonArticulationPoseLimitsV1 {
-            max_blocks: COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1,
+            max_blocks: block_count,
             ..CommonArticulationPoseLimitsV1::default()
         }
     } else {
         CommonArticulationPoseLimitsV1::default()
+    }
+}
+
+fn clearance_limits_for_block_count_v1(block_count: usize) -> CommonArticulationClearanceLimitsV1 {
+    if block_count > super::COMMON_ARTICULATION_CLEARANCE_DEFAULT_MAX_BLOCKS_V1 {
+        CommonArticulationClearanceLimitsV1 {
+            max_blocks: block_count,
+            ..CommonArticulationClearanceLimitsV1::default()
+        }
+    } else {
+        CommonArticulationClearanceLimitsV1::default()
     }
 }
 
@@ -215,7 +229,14 @@ fn independent_cross_block_pairs_v1(
 }
 
 fn prepare_strip_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
-    assert!((2..=COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1).contains(&block_count));
+    prepare_strip_fixture_with_common_pose_v1(block_count, None)
+}
+
+fn prepare_strip_fixture_with_common_pose_v1(
+    block_count: usize,
+    supplied_common_pose: Option<CommonArticulationPoseAuthorityV1>,
+) -> ClearanceFixtureV1 {
+    assert!((2..=COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1 + 1).contains(&block_count),);
     let namespace = ProjectId::new();
     let face_count = block_count + 1;
     let bottom = (0..=face_count)
@@ -291,7 +312,7 @@ fn prepare_strip_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
         .decompose_canonical_edge_blocks_v1(
             &audit,
             CanonicalEdgeBlockLimitsV1 {
-                max_blocks: COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1,
+                max_blocks: block_count.max(COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1),
                 max_faces_per_block: 2,
                 max_hinges_per_block: 2,
             },
@@ -314,14 +335,18 @@ fn prepare_strip_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
     let pose = geometry
         .solve_closed(&audit, fixed_face, &angles, 0.0)
         .expect("closed strip pose");
-    let common_pose = issue_common_articulation_pose_authority_v1(CommonArticulationPoseInputV1 {
-        geometry: &geometry,
-        pose: &pose,
-        decomposition: &decomposition,
-        paper_thickness_mm,
-        limits: common_pose_limits_for_block_count_v1(block_count),
-    })
-    .expect("common strip articulation pose");
+    let common_pose = if let Some(common_pose) = supplied_common_pose {
+        common_pose
+    } else {
+        issue_common_articulation_pose_authority_v1(CommonArticulationPoseInputV1 {
+            geometry: &geometry,
+            pose: &pose,
+            decomposition: &decomposition,
+            paper_thickness_mm,
+            limits: common_pose_limits_for_block_count_v1(block_count),
+        })
+        .expect("common strip articulation pose")
+    };
     let (schedule, closure) = prepare_schedule_v1(
         &geometry,
         &audit,
@@ -514,7 +539,9 @@ fn fixture_revalidation_input_v1(
         pose: &fixture.pose,
         decomposition: &fixture.decomposition,
         common_pose: &fixture.common_pose,
-        common_pose_limits: CommonArticulationPoseLimitsV1::default(),
+        common_pose_limits: common_pose_limits_for_block_count_v1(
+            fixture.decomposition.blocks().len(),
+        ),
         schedule: &fixture.schedule,
         schedule_limits: CycleScheduleLimitsV1::default(),
         closure: &fixture.closure,
@@ -566,6 +593,8 @@ struct FinalPathFixtureV1 {
     source: Box<LayerOrderSnapshot>,
     whole_parent_layer: GeneralMultiFaceCellTransportProofV1,
     paper_thickness_mm: f64,
+    common_pose_limits: CommonArticulationPoseLimitsV1,
+    clearance_limits: CommonArticulationClearanceLimitsV1,
     clearance_pair_count: usize,
     issuer_context: [u8; 32],
     articulation_layer_fingerprint: [u8; 32],
@@ -594,7 +623,7 @@ impl FinalPathFixtureV1 {
                 pose: &self.pose,
                 decomposition: &self.decomposition,
                 staged: self.staged,
-                common_pose_limits: CommonArticulationPoseLimitsV1::default(),
+                common_pose_limits: self.common_pose_limits,
                 schedule: &self.schedule,
                 schedule_limits: CycleScheduleLimitsV1::default(),
                 closure: &self.closure,
@@ -627,7 +656,9 @@ impl FinalPathFixtureV1 {
             source,
             whole_parent_layer,
             paper_thickness_mm,
-            clearance_pair_count: _,
+            common_pose_limits,
+            clearance_limits,
+            clearance_pair_count,
             issuer_context,
             articulation_layer_fingerprint,
         } = self;
@@ -639,12 +670,12 @@ impl FinalPathFixtureV1 {
                 pose: &pose,
                 decomposition: &decomposition,
                 staged,
-                common_pose_limits: CommonArticulationPoseLimitsV1::default(),
+                common_pose_limits,
                 schedule: &schedule,
                 schedule_limits: CycleScheduleLimitsV1::default(),
                 closure: &closure,
                 paper_thickness_mm,
-                clearance_limits: CommonArticulationClearanceLimitsV1::default(),
+                clearance_limits,
                 complete,
                 block_sources: &block_source_refs,
                 issuer_context,
@@ -668,6 +699,9 @@ impl FinalPathFixtureV1 {
             target_angles,
             source,
             paper_thickness_mm,
+            common_pose_limits,
+            clearance_limits,
+            clearance_pair_count,
             issuer_context,
             articulation_layer_fingerprint,
         }
@@ -686,6 +720,9 @@ struct IssuedFinalPathFixtureV1 {
     target_angles: Vec<(EdgeId, f64)>,
     source: Box<LayerOrderSnapshot>,
     paper_thickness_mm: f64,
+    common_pose_limits: CommonArticulationPoseLimitsV1,
+    clearance_limits: CommonArticulationClearanceLimitsV1,
+    clearance_pair_count: usize,
     issuer_context: [u8; 32],
     articulation_layer_fingerprint: [u8; 32],
 }
@@ -700,12 +737,12 @@ impl IssuedFinalPathFixtureV1 {
             audit: &self.audit,
             pose: &self.pose,
             decomposition: &self.decomposition,
-            common_pose_limits: CommonArticulationPoseLimitsV1::default(),
+            common_pose_limits: self.common_pose_limits,
             schedule: &self.schedule,
             schedule_limits: CycleScheduleLimitsV1::default(),
             closure: &self.closure,
             paper_thickness_mm: self.paper_thickness_mm,
-            clearance_limits: CommonArticulationClearanceLimitsV1::default(),
+            clearance_limits: self.clearance_limits,
             block_sources,
             issuer_context: self.issuer_context,
             articulation_layer_fingerprint: self.articulation_layer_fingerprint,
@@ -717,6 +754,10 @@ impl IssuedFinalPathFixtureV1 {
 
 fn prepare_final_path_fixture_v1() -> FinalPathFixtureV1 {
     prepare_final_path_fixture_with_variants_v1(false, false, 2)
+}
+
+fn prepare_exact_ten_final_path_fixture_v1() -> FinalPathFixtureV1 {
+    prepare_final_path_fixture_with_variants_v1(false, false, 10)
 }
 
 fn prepare_final_path_fixture_with_noncanonical_block_schedules_v1(
@@ -744,7 +785,9 @@ fn prepare_final_path_fixture_from_clearance_v1(
     foreign_block_source: bool,
 ) -> FinalPathFixtureV1 {
     let clearance_pair_count = fixture.pairs.len();
-    let clearance_limits = CommonArticulationClearanceLimitsV1::default();
+    let block_count = fixture.decomposition.blocks().len();
+    let common_pose_limits = common_pose_limits_for_block_count_v1(block_count);
+    let clearance_limits = clearance_limits_for_block_count_v1(block_count);
     let clearance = issue_fixture_clearance_v1(&fixture, clearance_limits);
     let whole_parent_layer =
         certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
@@ -783,7 +826,7 @@ fn prepare_final_path_fixture_from_clearance_v1(
             pose: &pose,
             decomposition: &decomposition,
             common_pose,
-            common_pose_limits: CommonArticulationPoseLimitsV1::default(),
+            common_pose_limits,
             schedule: &schedule,
             schedule_limits: CycleScheduleLimitsV1::default(),
             closure: &closure,
@@ -887,21 +930,34 @@ fn prepare_final_path_fixture_from_clearance_v1(
     }
     let issuer_context = [0x61; 32];
     let articulation_layer_fingerprint = [0x62; 32];
-    let parent = issue_multi_block_closure_authority_v1(
-        decomposition
-            .blocks()
-            .iter()
-            .zip(&block_schedules)
-            .map(|(block, (schedule, closure))| MultiBlockClosureInputV1 {
-                geometry: block.geometry(),
-                audit: block.audit(),
-                schedule,
-                closure,
-            })
-            .collect(),
-        paper_thickness_mm,
-        issuer_context,
-    )
+    let closure_inputs = decomposition
+        .blocks()
+        .iter()
+        .zip(&block_schedules)
+        .map(|(block, (schedule, closure))| MultiBlockClosureInputV1 {
+            geometry: block.geometry(),
+            audit: block.audit(),
+            schedule,
+            closure,
+        })
+        .collect();
+    let parent = match block_count {
+        9 => issue_exact_nine_block_closure_authority_v1(
+            closure_inputs,
+            paper_thickness_mm,
+            issuer_context,
+        ),
+        10 => issue_exact_ten_block_closure_authority_v1(
+            closure_inputs,
+            paper_thickness_mm,
+            issuer_context,
+        ),
+        _ => issue_multi_block_closure_authority_v1(
+            closure_inputs,
+            paper_thickness_mm,
+            issuer_context,
+        ),
+    }
     .expect("final-path block closure");
     let block_proofs = decomposition
         .blocks()
@@ -990,18 +1046,20 @@ fn prepare_final_path_fixture_from_clearance_v1(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let report = diagnose_block_union_completeness_v1(
-        &geometry,
-        &decomposition
-            .blocks()
-            .iter()
-            .zip(&block_hinges)
-            .map(|(block, hinges)| BlockUnionCompletenessInputV1 {
-                faces: block.geometry().face_ids(),
-                hinges,
-            })
-            .collect::<Vec<_>>(),
-    )
+    let completeness_inputs = decomposition
+        .blocks()
+        .iter()
+        .zip(&block_hinges)
+        .map(|(block, hinges)| BlockUnionCompletenessInputV1 {
+            faces: block.geometry().face_ids(),
+            hinges,
+        })
+        .collect::<Vec<_>>();
+    let report = match block_count {
+        9 => diagnose_exact_nine_block_union_completeness_v1(&geometry, &completeness_inputs),
+        10 => diagnose_exact_ten_block_union_completeness_v1(&geometry, &completeness_inputs),
+        _ => diagnose_block_union_completeness_v1(&geometry, &completeness_inputs),
+    }
     .expect("final-path completeness report");
     assert!(report.exact_live_union_observed());
     let block_source_refs = block_sources.iter().collect::<Vec<_>>();
@@ -1059,6 +1117,8 @@ fn prepare_final_path_fixture_from_clearance_v1(
         source,
         whole_parent_layer,
         paper_thickness_mm,
+        common_pose_limits,
+        clearance_limits,
         clearance_pair_count,
         issuer_context,
         articulation_layer_fingerprint,
@@ -1159,17 +1219,10 @@ fn hard_limits_cannot_be_relaxed_v1() {
 }
 
 #[test]
-fn cross_block_clearance_proves_three_five_eight_and_nine_block_positive_thickness_v1() {
-    for block_count in [3, 5, 8, 9] {
+fn cross_block_clearance_proves_three_five_eight_nine_and_ten_block_positive_thickness_v1() {
+    for block_count in [3, 5, 8, 9, 10] {
         let fixture = prepare_strip_fixture_v1(block_count);
-        let limits = if block_count == COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1 {
-            CommonArticulationClearanceLimitsV1 {
-                max_blocks: COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1,
-                ..CommonArticulationClearanceLimitsV1::default()
-            }
-        } else {
-            CommonArticulationClearanceLimitsV1::default()
-        };
+        let limits = clearance_limits_for_block_count_v1(block_count);
         let outcome = issue_common_articulation_clearance_prerequisite_v1(fixture.input(
             &fixture.pairs,
             Some(fixture.positive.clone()),
@@ -1204,6 +1257,11 @@ fn cross_block_clearance_proves_three_five_eight_and_nine_block_positive_thickne
         assert_ne!(authority.binding_fingerprint_v1(), [0; 32]);
         assert!(authority.logical_work_v1() > 0);
         assert!(authority.storage_bytes_upper_bound_v1() > 0);
+        assert_eq!(authority.limits.max_blocks, limits.max_blocks);
+        assert_eq!(
+            authority.common_pose_limits.max_blocks,
+            common_pose_limits_for_block_count_v1(block_count).max_blocks,
+        );
         assert!(authority.cross_block_open_interval_clearance_proven_v1());
         assert!(!authority.authorizes_continuous_motion());
         assert!(!authority.authorizes_collision_clearance());
@@ -1214,7 +1272,7 @@ fn cross_block_clearance_proves_three_five_eight_and_nine_block_positive_thickne
 }
 
 #[test]
-fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_nine() {
+fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_ten() {
     assert_eq!(
         CommonArticulationClearanceLimitsV1::default().max_blocks,
         super::COMMON_ARTICULATION_CLEARANCE_DEFAULT_MAX_BLOCKS_V1
@@ -1223,7 +1281,19 @@ fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_nine(
         super::COMMON_ARTICULATION_CLEARANCE_DEFAULT_MAX_BLOCKS_V1,
         8
     );
-    assert_eq!(COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1, 9);
+    assert_eq!(COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1, 10);
+
+    let fixture = prepare_strip_fixture_v1(9);
+    let limits = clearance_limits_for_block_count_v1(9);
+    let outcome = issue_common_articulation_clearance_prerequisite_v1(fixture.input(
+        &fixture.pairs,
+        Some(fixture.positive.clone()),
+        limits,
+    ))
+    .expect("nine-block exact caller limits");
+    let authority = outcome.as_certified().expect("nine-block clearance");
+    assert_eq!(authority.limits.max_blocks, 9);
+    assert_eq!(authority.common_pose_limits.max_blocks, 9);
 }
 
 #[test]
@@ -1239,6 +1309,22 @@ fn nine_block_clearance_cap_one_short_fails_closed_before_proof_work_v1() {
             },
         ))
         .expect_err("nine blocks exceed the one-short clearance cap"),
+        CommonArticulationClearanceErrorV1::ResourceLimit
+    );
+}
+
+#[test]
+fn actual_eleven_block_clearance_input_is_rejected_by_the_hard_arity_cap_v1() {
+    let foreign_common_pose = prepare_strip_fixture_v1(10).common_pose;
+    let fixture = prepare_strip_fixture_with_common_pose_v1(11, Some(foreign_common_pose));
+    let valid_hard_limits = clearance_limits_for_block_count_v1(10);
+    assert_eq!(
+        issue_common_articulation_clearance_prerequisite_v1(fixture.input(
+            &fixture.pairs,
+            Some(fixture.positive.clone()),
+            valid_hard_limits,
+        ))
+        .expect_err("the clearance hard arity cap rejects an actual eleven-block decomposition"),
         CommonArticulationClearanceErrorV1::ResourceLimit
     );
 }
@@ -1566,6 +1652,81 @@ fn exact_resource_envelope_passes_and_every_one_short_limit_fails_closed_v1() {
                 one_short,
             ))
             .expect_err("one-short clearance limit"),
+            CommonArticulationClearanceErrorV1::ResourceLimit
+        );
+    }
+}
+
+#[test]
+fn exact_ten_block_resource_envelope_passes_and_every_one_short_limit_fails_closed_v1() {
+    let fixture = prepare_strip_fixture_v1(10);
+    let envelope = resource_envelope_v1(
+        &fixture.decomposition,
+        fixture.geometry.face_ids().len(),
+        fixture.geometry.hinges().len(),
+        fixture.pairs.len(),
+        fixture.common_pose.logical_work_v1(),
+    )
+    .expect("exact ten-block resource envelope");
+    assert_eq!(fixture.geometry.face_ids().len(), 11);
+    assert_eq!(fixture.geometry.hinges().len(), 10);
+    assert_eq!(fixture.pairs.len(), 55);
+    assert_eq!(fixture.common_pose.logical_work_v1(), 1_024);
+    assert_eq!(envelope.raw_pair_candidates, 180);
+    assert_eq!(envelope.logical_work, 3_507);
+    assert_eq!(envelope.storage_bytes_upper_bound, 10_272);
+
+    let exact = CommonArticulationClearanceLimitsV1 {
+        max_blocks: 10,
+        max_faces: 11,
+        max_cross_block_pairs: 55,
+        max_pair_candidates: 180,
+        max_work: 3_507,
+        max_storage_bytes: 10_272,
+    };
+    let outcome = issue_common_articulation_clearance_prerequisite_v1(fixture.input(
+        &fixture.pairs,
+        Some(fixture.positive.clone()),
+        exact,
+    ))
+    .expect("exact ten-block limits");
+    let authority = outcome.as_certified().expect("ten-block clearance");
+    assert_eq!(authority.logical_work_v1(), 3_507);
+    assert_eq!(authority.storage_bytes_upper_bound_v1(), 10_272);
+
+    for one_short in [
+        CommonArticulationClearanceLimitsV1 {
+            max_blocks: exact.max_blocks - 1,
+            ..exact
+        },
+        CommonArticulationClearanceLimitsV1 {
+            max_faces: exact.max_faces - 1,
+            ..exact
+        },
+        CommonArticulationClearanceLimitsV1 {
+            max_cross_block_pairs: exact.max_cross_block_pairs - 1,
+            ..exact
+        },
+        CommonArticulationClearanceLimitsV1 {
+            max_pair_candidates: exact.max_pair_candidates - 1,
+            ..exact
+        },
+        CommonArticulationClearanceLimitsV1 {
+            max_work: exact.max_work - 1,
+            ..exact
+        },
+        CommonArticulationClearanceLimitsV1 {
+            max_storage_bytes: exact.max_storage_bytes - 1,
+            ..exact
+        },
+    ] {
+        assert_eq!(
+            issue_common_articulation_clearance_prerequisite_v1(fixture.input(
+                &fixture.pairs,
+                Some(fixture.positive.clone()),
+                one_short,
+            ))
+            .expect_err("one-short ten-block clearance limit"),
             CommonArticulationClearanceErrorV1::ResourceLimit
         );
     }
@@ -1984,8 +2145,8 @@ fn final_continuous_layer_path_is_positive_and_stops_at_permission_boundary_v1()
 }
 
 #[test]
-fn final_continuous_layer_path_accepts_three_four_five_and_eight_blocks_v1() {
-    for block_count in [3, 4, 5, 8] {
+fn final_continuous_layer_path_accepts_three_four_five_eight_and_exact_nine_blocks_v1() {
+    for block_count in [3, 4, 5, 8, 9] {
         let fixture = prepare_final_path_fixture_with_variants_v1(false, false, block_count)
             .issue_for_revalidation();
         let block_sources = fixture.block_sources.iter().collect::<Vec<_>>();
@@ -2001,6 +2162,127 @@ fn final_continuous_layer_path_accepts_three_four_five_and_eight_blocks_v1() {
         assert!(!fixture.authority.authorizes_apply());
         assert!(!fixture.authority.authorizes_viewer());
     }
+}
+
+#[test]
+fn exact_ten_lower_path_issues_and_revalidates_without_crossing_permission_boundary_v1() {
+    let fixture = prepare_exact_ten_final_path_fixture_v1();
+    assert_eq!(fixture.common_pose_limits.max_blocks, 10);
+    assert_eq!(fixture.clearance_limits.max_blocks, 10);
+    assert_eq!(fixture.staged.block_count_v1(), 10);
+    assert_ne!(fixture.staged.binding_fingerprint_v1(), [0; 32]);
+    assert_ne!(fixture.staged.common_pose_binding_fingerprint_v1(), [0; 32]);
+    assert_ne!(fixture.staged.clearance_binding_fingerprint_v1(), [0; 32]);
+    assert!(!fixture.staged.authorizes_continuous_motion());
+    assert!(!fixture.staged.authorizes_collision_clearance());
+    assert!(!fixture.staged.authorizes_project_mutation());
+    assert!(!fixture.staged.authorizes_apply());
+    assert!(!fixture.staged.authorizes_viewer());
+    assert_eq!(fixture.complete.block_count_v1(), 10);
+    assert!(fixture.complete.exact_live_union_certified_v1());
+    assert!(!fixture.complete.authorizes_project_mutation());
+    assert!(!fixture.complete.authorizes_apply());
+    assert!(!fixture.complete.authorizes_viewer());
+
+    let issued = fixture.issue_for_revalidation();
+    let block_sources = issued.block_sources.iter().collect::<Vec<_>>();
+    issued
+        .authority
+        .revalidate_v1(issued.input(&block_sources))
+        .expect("exact-ten final authority revalidation");
+    assert_eq!(issued.authority.block_count_v1(), 10);
+    assert_ne!(issued.authority.binding_fingerprint_v1(), [0; 32]);
+    assert_ne!(issued.authority.staged_binding_fingerprint_v1(), [0; 32]);
+    assert_ne!(issued.authority.complete_binding_fingerprint_v1(), [0; 32]);
+    assert!(issued.authority.authorizes_continuous_motion());
+    assert!(issued.authority.authorizes_collision_clearance());
+    assert!(issued.authority.authorizes_layer_transport());
+    assert!(!issued.authority.authorizes_project_mutation());
+    assert!(!issued.authority.authorizes_apply());
+    assert!(!issued.authority.authorizes_viewer());
+}
+
+#[test]
+fn exact_ten_lower_path_tamper_and_stops_fail_exact_revalidation_v1() {
+    let mut fixture = prepare_exact_ten_final_path_fixture_v1().issue_for_revalidation();
+    let block_sources = fixture.block_sources.iter().collect::<Vec<_>>();
+
+    fixture.authority.corrupt_complete_scope_for_test_v1();
+    assert_eq!(
+        fixture
+            .authority
+            .revalidate_v1(fixture.input(&block_sources))
+            .unwrap_err(),
+        CommonArticulationContinuousLayerPathErrorV1::CompleteMultiBlockMismatch
+    );
+    fixture.authority.corrupt_complete_scope_for_test_v1();
+
+    fixture.authority.corrupt_complete_partition_for_test_v1();
+    assert_eq!(
+        fixture
+            .authority
+            .revalidate_v1(fixture.input(&block_sources))
+            .unwrap_err(),
+        CommonArticulationContinuousLayerPathErrorV1::CompleteMultiBlockMismatch
+    );
+    fixture.authority.corrupt_complete_partition_for_test_v1();
+
+    let mut target_angles = fixture.target_angles.clone();
+    target_angles[0].1 = f64::from_bits(target_angles[0].1.to_bits() ^ 1);
+    let mut input = fixture.input(&block_sources);
+    input.target_angles = &target_angles;
+    assert_eq!(
+        fixture.authority.revalidate_v1(input).unwrap_err(),
+        CommonArticulationContinuousLayerPathErrorV1::CompleteMultiBlockMismatch
+    );
+
+    let replayed_source = (*fixture.source).clone();
+    let mut input = fixture.input(&block_sources);
+    input.source = &replayed_source;
+    assert_eq!(
+        fixture.authority.revalidate_v1(input).unwrap_err(),
+        CommonArticulationContinuousLayerPathErrorV1::WholeParentLayerMismatch
+    );
+
+    let one_short_clearance = CommonArticulationClearanceLimitsV1 {
+        max_cross_block_pairs: fixture.clearance_pair_count - 1,
+        ..fixture.clearance_limits
+    };
+    let mut input = fixture.input(&block_sources);
+    input.clearance_limits = one_short_clearance;
+    assert_eq!(
+        fixture.authority.revalidate_v1(input).unwrap_err(),
+        CommonArticulationContinuousLayerPathErrorV1::Staged(
+            CommonArticulationBlockComposedPathErrorV1::Clearance(
+                CommonArticulationClearanceErrorV1::ResourceLimit,
+            ),
+        )
+    );
+
+    let input = fixture.input(&block_sources);
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        fixture.authority.revalidate_with_control_v1(
+            input,
+            &CooperativeOperationControlV1::new(
+                Some(&cancelled),
+                Instant::now() + Duration::from_secs(1),
+            ),
+        ),
+        Err(CommonArticulationContinuousLayerPathErrorV1::Cancelled)
+    );
+    assert_eq!(
+        fixture.authority.revalidate_with_control_v1(
+            input,
+            &CooperativeOperationControlV1::new(None, Instant::now()),
+        ),
+        Err(CommonArticulationContinuousLayerPathErrorV1::DeadlineExceeded)
+    );
+
+    fixture
+        .authority
+        .revalidate_v1(input)
+        .expect("failed exact-ten revalidation never mutates retained authority");
 }
 
 #[test]

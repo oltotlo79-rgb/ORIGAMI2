@@ -9,12 +9,31 @@ const rustTest = readFileSync('src-tauri/tests/event_schema_corpus.rs', 'utf8')
 test('frontend formal and Rust matrix jobs all execute the event corpus contracts', () => {
   const frontend = jobBody('frontend', 'rust')
   const rust = jobBody('rust', 'windows-bundle')
+  const windowsStart = rust.indexOf('          if [ "$RUNNER_OS" = "Windows" ]; then')
+  const macosStart = rust.indexOf('          else\n            run_component workspace-core-debug', windowsStart)
+  const macosEnd = rust.indexOf('\n          fi\n          if [ "$test_status"', macosStart)
+  assert.ok(windowsStart >= 0 && macosStart > windowsStart && macosEnd > macosStart)
+  const windows = rust.slice(windowsStart, macosStart)
+  const macos = rust.slice(macosStart, macosEnd)
+
   assert.match(frontend, /- run: npm test/u)
   assert.match(frontend, /node --test \.\.\/\.\.\/\.github\/tests\/formal-release\.test\.mjs/u)
   assert.match(rust, /matrix:\s*\n\s+os: \[windows-latest, macos-latest\]/u)
-  assert.match(rust, /cargo test -p "\$package" --locked --all-targets/u)
-  assert.match(rust, /origami2-desktop/u)
-  assert.match(rust, /cargo test --workspace --locked --all-targets/u)
+  assert.match(windows, /cargo test -p "\$package" --locked --all-targets --no-fail-fast/u)
+  assert.match(macos, /cargo test --workspace --exclude origami2-desktop --locked --all-targets --no-fail-fast/u)
+  for (const branch of [windows, macos]) {
+    assert.match(branch, /cargo test -p origami2-desktop --release --locked --lib --no-fail-fast/u)
+    assert.match(branch, /cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast/u)
+  }
+  assertInOrder(windows, [
+    'run_component origami2-desktop-release-lib',
+    'run_component origami2-desktop-event-schema-debug',
+  ])
+  assertInOrder(macos, [
+    'run_component workspace-core-debug',
+    'run_component origami2-desktop-release-lib',
+    'run_component origami2-desktop-event-schema-debug',
+  ])
 })
 
 test('the Rust integration target packages the one canonical fixture at compile time', () => {
@@ -43,4 +62,13 @@ function jobBody(name: string, next: string): string {
   const end = workflow.indexOf(`\n  ${next}:`, start)
   assert.ok(start >= 0 && end > start)
   return workflow.slice(start, end)
+}
+
+function assertInOrder(source: string, values: string[]): void {
+  let previous = -1
+  for (const value of values) {
+    const current = source.indexOf(value, previous + 1)
+    assert.ok(current > previous, `expected ${value} after the preceding Rust component`)
+    previous = current
+  }
 }

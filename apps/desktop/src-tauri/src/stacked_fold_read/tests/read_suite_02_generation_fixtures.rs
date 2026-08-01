@@ -77,15 +77,15 @@ fn bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history() {
     }
 }
 
+#[test]
+fn nine_block_opposite_bifold_preview_apply_and_reopen_history() {
+    let _generation_guard = lock_stacked_fold_read_generation_test();
+    assert_opposite_bifold_lifecycle_v1(9);
+}
+
 fn assert_opposite_bifold_lifecycle_v1(block_count: usize) {
-    let (pattern, paper, moving) = match block_count {
-        4 => super::four_bay_cycle_test_support::four_bay_opposite_bifold_pattern(),
-        5 => super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
-        6 => super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
-        7 => super::four_bay_cycle_test_support::seven_bay_opposite_bifold_pattern(),
-        8 => super::four_bay_cycle_test_support::eight_bay_opposite_bifold_pattern(),
-        _ => unreachable!(),
-    };
+    let (pattern, paper, moving) =
+        super::four_bay_cycle_test_support::bounded_bay_opposite_bifold_pattern(block_count);
     assert_eq!(moving.len(), block_count * 2);
     assert!(paper.thickness_mm > 0.0);
     let mut project = super::super::ProjectState::new_with_paper(pattern, paper);

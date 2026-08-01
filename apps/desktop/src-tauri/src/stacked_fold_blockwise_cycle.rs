@@ -14,12 +14,13 @@ use ori_collision::{
     certify_canonical_positive_thickness_cycle_schedule_path_v1,
     certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1,
     certify_general_multi_face_cell_transport_v1, checked_general_cell_transport_memory_work_v1,
-    diagnose_block_union_completeness_v1,
+    diagnose_block_union_completeness_v1, diagnose_exact_nine_block_union_completeness_v1,
     issue_common_articulation_block_composed_path_authority_with_control_v1,
     issue_common_articulation_clearance_prerequisite_with_control_v1,
     issue_common_articulation_continuous_layer_path_authority_with_control_v1,
     issue_common_articulation_pose_authority_with_control_v1,
-    issue_complete_multi_block_positive_layer_authority_v1, issue_multi_block_closure_authority_v1,
+    issue_complete_multi_block_positive_layer_authority_v1,
+    issue_exact_nine_block_closure_authority_v1, issue_multi_block_closure_authority_v1,
     issue_multi_block_positive_layer_authority_v1, preflight_general_cell_transport_work_v1,
 };
 use ori_domain::{FaceId, ProjectId};
@@ -99,7 +100,8 @@ const FIVE_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 5;
 const SIX_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 6;
 const SEVEN_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 7;
 const EIGHT_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 8;
-const BOUNDED_MULTI_BLOCK_CURRENT_CYCLE_MAX_ARITY_V1: usize = EIGHT_BLOCK_CURRENT_CYCLE_ARITY_V1;
+const NINE_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 9;
+const BOUNDED_MULTI_BLOCK_CURRENT_CYCLE_MAX_ARITY_V1: usize = NINE_BLOCK_CURRENT_CYCLE_ARITY_V1;
 const BOUNDED_MULTI_BLOCK_WHOLE_SOURCE_PEAK_MULTIPLICITY_V1: usize = 3;
 const BOUNDED_MULTI_BLOCK_RESTRICTED_SOURCE_PEAK_MULTIPLICITY_V1: usize = 2;
 
@@ -163,7 +165,7 @@ fn production_bounded_multi_block_layer_peak_limit_v1() -> usize {
     ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES
 }
 
-/// Computes the source-retention peak shared by the exact 3..=8-block paths.
+/// Computes the source-retention peak shared by the exact 3..=9-block paths.
 ///
 /// The multiplicities are independent of block count: the live whole source is
 /// retained by the capability, materialized input, and completed whole-parent
@@ -1414,6 +1416,9 @@ fn prepare_bounded_multi_block_current_cycle_fallback_v1(
         EIGHT_BLOCK_CURRENT_CYCLE_ARITY_V1 => {
             b"eight-block-current-cycle-articulation-layer-v1".as_slice()
         }
+        NINE_BLOCK_CURRENT_CYCLE_ARITY_V1 => {
+            b"nine-block-current-cycle-articulation-layer-v1".as_slice()
+        }
         _ => return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned()),
     });
     articulation_fingerprint.update(issuer_context);
@@ -1431,9 +1436,12 @@ fn prepare_bounded_multi_block_current_cycle_fallback_v1(
             closure: block_closure,
         });
     }
-    let closure_parent =
+    let closure_parent = if expected_block_count == NINE_BLOCK_CURRENT_CYCLE_ARITY_V1 {
+        issue_exact_nine_block_closure_authority_v1(closure_inputs, thickness, issuer_context)
+    } else {
         issue_multi_block_closure_authority_v1(closure_inputs, thickness, issuer_context)
-            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    }
+    .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let positive_layer_parent = issue_multi_block_positive_layer_authority_v1(
         closure_parent,
         positive_layer_inputs,
@@ -1451,8 +1459,12 @@ fn prepare_bounded_multi_block_current_cycle_fallback_v1(
             hinges,
         });
     }
-    let completeness_report = diagnose_block_union_completeness_v1(geometry, &completeness_inputs)
-        .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let completeness_report = if expected_block_count == NINE_BLOCK_CURRENT_CYCLE_ARITY_V1 {
+        diagnose_exact_nine_block_union_completeness_v1(geometry, &completeness_inputs)
+    } else {
+        diagnose_block_union_completeness_v1(geometry, &completeness_inputs)
+    }
+    .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     if !completeness_report.exact_live_union_observed() {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
     }

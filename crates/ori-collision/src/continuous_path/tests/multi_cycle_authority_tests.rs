@@ -58,14 +58,8 @@ fn separated_bifold_authority_fixture_v1(
     DyadicMaterialHingeIntervalClosureCertificateV1,
     FaceId,
 ) {
-    let (pattern, paper, moving) = match block_count {
-        4 => super::super::four_bay_cycle_test_support::four_bay_opposite_bifold_pattern(),
-        5 => super::super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
-        6 => super::super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
-        7 => super::super::four_bay_cycle_test_support::seven_bay_opposite_bifold_pattern(),
-        8 => super::super::four_bay_cycle_test_support::eight_bay_opposite_bifold_pattern(),
-        _ => panic!("unsupported separated-bifold fixture arity"),
-    };
+    let (pattern, paper, moving) =
+        super::super::four_bay_cycle_test_support::bounded_bay_opposite_bifold_pattern(block_count);
     let analysis = analyze_faces(FaceExtractionInput {
         identity_namespace: fixed_id("b601", 1),
         source_revision: 1,
@@ -151,18 +145,23 @@ fn separated_bifold_authority_fixture_v1(
         CycleScheduleLimitsV1::default(),
     )
     .expect("separated opposite-bifold schedule");
-    let eight_block_closure_limits =
+    let bounded_block_closure_limits =
         |max_depth, max_leaves, max_work| DyadicIntervalClosureLimitsV1 {
             max_depth,
             max_leaves,
             max_work,
             schedule_limits: CycleScheduleLimitsV1::default(),
         };
-    if block_count == 8 {
+    let exact_closure_limits = match block_count {
+        8 => Some((3, 8, 8)),
+        9 => Some((4, 9, 9)),
+        _ => None,
+    };
+    if let Some((max_depth, max_leaves, max_work)) = exact_closure_limits {
         for limits in [
-            eight_block_closure_limits(2, 8, 8),
-            eight_block_closure_limits(3, 7, 8),
-            eight_block_closure_limits(3, 8, 7),
+            bounded_block_closure_limits(max_depth - 1, max_leaves, max_work),
+            bounded_block_closure_limits(max_depth, max_leaves - 1, max_work),
+            bounded_block_closure_limits(max_depth, max_leaves, max_work - 1),
         ] {
             assert!(matches!(
                 geometry
@@ -171,8 +170,8 @@ fn separated_bifold_authority_fixture_v1(
             ));
         }
     }
-    let closure_limits = if block_count == 8 {
-        eight_block_closure_limits(3, 8, 8)
+    let closure_limits = if let Some((max_depth, max_leaves, max_work)) = exact_closure_limits {
+        bounded_block_closure_limits(max_depth, max_leaves, max_work)
     } else {
         DyadicIntervalClosureLimitsV1 {
             max_depth: 8,
@@ -186,15 +185,23 @@ fn separated_bifold_authority_fixture_v1(
         .unwrap_or_else(|error| {
             panic!("{block_count}-block separated opposite-bifold closure: {error:?}")
         });
-    if block_count == 8 {
-        assert_eq!(closure.leaves().len(), 8);
+    if let Some((_, max_leaves, _)) = exact_closure_limits {
+        assert_eq!(closure.leaves().len(), max_leaves);
+        let expected_partition = if block_count == 8 {
+            (0_u64..8).map(|index| (3, index)).collect::<Vec<_>>()
+        } else {
+            (0_u64..7)
+                .map(|index| (3, index))
+                .chain([(4, 14), (4, 15)])
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
             closure
                 .leaves()
                 .iter()
                 .map(|(depth, index, _)| (*depth, *index))
                 .collect::<Vec<_>>(),
-            (0_u64..8).map(|index| (3, index)).collect::<Vec<_>>(),
+            expected_partition,
         );
         assert!(closure.has_canonical_complete_partition_v1());
         assert!(closure.every_leaf_covers_graph_v1(&geometry));
@@ -298,14 +305,32 @@ fn four_bay_opposite_bifold_fixture_retains_original_bit_layout() {
     assert_eq!(moving, expected_moving);
 }
 
-fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
-    let (pattern, paper, moving) = match block_count {
-        5 => super::super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
-        6 => super::super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
-        7 => super::super::four_bay_cycle_test_support::seven_bay_opposite_bifold_pattern(),
-        8 => super::super::four_bay_cycle_test_support::eight_bay_opposite_bifold_pattern(),
-        _ => panic!("unsupported extended opposite-bifold fixture arity"),
+#[test]
+fn bounded_opposite_bifold_selector_rejects_ten_before_fixture_construction() {
+    let panic = match std::panic::catch_unwind(|| {
+        super::super::four_bay_cycle_test_support::bounded_bay_opposite_bifold_pattern(10)
+    }) {
+        Ok(_) => panic!("ten-bay selector call must fail before fixture construction"),
+        Err(payload) => payload,
     };
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("selector panic message");
+    assert_eq!(
+        message,
+        "unsupported opposite-bifold fixture arity: 10; expected 4..=9"
+    );
+}
+
+fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
+    assert!(
+        matches!(block_count, 5..=9),
+        "unsupported extended opposite-bifold fixture arity: {block_count}; expected 5..=9"
+    );
+    let (pattern, paper, moving) =
+        super::super::four_bay_cycle_test_support::bounded_bay_opposite_bifold_pattern(block_count);
     let validation = ori_core::validate_paper(&paper, &pattern);
     assert!(
         validation.is_valid(),
@@ -397,7 +422,11 @@ fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
             let length_squared = direction.x * direction.x + direction.y * direction.y;
             let short_corner = matches!(
                 (block_count, group),
-                (5, 0 | 3) | (6, 0..=3) | (7, 0..=3 | 6) | (8, 0..=3 | 6 | 7)
+                (5, 0 | 3)
+                    | (6, 0..=3)
+                    | (7, 0..=3 | 6)
+                    | (8, 0..=3 | 6 | 7)
+                    | (9, 0..=4 | 6..=8)
             );
             if short_corner && moving_set.contains(&hinge.id) {
                 assert!(
@@ -439,6 +468,7 @@ fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
                 6 => "b606",
                 7 => "b607",
                 8 => "b608",
+                9 => "b609",
                 _ => unreachable!(),
             },
             1,
@@ -499,10 +529,20 @@ fn bounded_extended_opposite_bifold_fixtures_are_simple_convex_and_locally_flat_
 }
 
 #[test]
+fn exact_nine_extended_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable() {
+    assert_extended_opposite_bifold_fixture_v1(9);
+}
+
+#[test]
 fn bounded_separated_opposite_bifolds_issue_strict_parent_positive_authority() {
     for block_count in [4, 5, 6, 7, 8] {
         assert_separated_bifold_parent_positive_authority_v1(block_count);
     }
+}
+
+#[test]
+fn exact_nine_separated_opposite_bifolds_issue_strict_parent_positive_authority() {
+    assert_separated_bifold_parent_positive_authority_v1(9);
 }
 
 fn assert_separated_bifold_parent_positive_authority_v1(block_count: usize) {

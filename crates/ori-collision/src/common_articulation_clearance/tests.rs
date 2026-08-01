@@ -53,6 +53,17 @@ struct ClearanceFixtureV1 {
     paper_thickness_mm: f64,
 }
 
+fn common_pose_limits_for_block_count_v1(block_count: usize) -> CommonArticulationPoseLimitsV1 {
+    if block_count == COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1 {
+        CommonArticulationPoseLimitsV1 {
+            max_blocks: COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1,
+            ..CommonArticulationPoseLimitsV1::default()
+        }
+    } else {
+        CommonArticulationPoseLimitsV1::default()
+    }
+}
+
 impl ClearanceFixtureV1 {
     fn input<'a>(
         &'a self,
@@ -96,7 +107,9 @@ impl ClearanceFixtureV1 {
             pose,
             decomposition,
             common_pose,
-            common_pose_limits: CommonArticulationPoseLimitsV1::default(),
+            common_pose_limits: common_pose_limits_for_block_count_v1(
+                self.decomposition.blocks().len(),
+            ),
             schedule,
             schedule_limits: CycleScheduleLimitsV1::default(),
             closure,
@@ -306,7 +319,7 @@ fn prepare_strip_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
         pose: &pose,
         decomposition: &decomposition,
         paper_thickness_mm,
-        limits: CommonArticulationPoseLimitsV1::default(),
+        limits: common_pose_limits_for_block_count_v1(block_count),
     })
     .expect("common strip articulation pose");
     let (schedule, closure) = prepare_schedule_v1(
@@ -410,7 +423,7 @@ fn prepare_cactus_fixture_v1(block_count: usize) -> ClearanceFixtureV1 {
         pose: &pose,
         decomposition: &decomposition,
         paper_thickness_mm,
-        limits: CommonArticulationPoseLimitsV1::default(),
+        limits: common_pose_limits_for_block_count_v1(block_count),
     })
     .expect("common cactus articulation pose");
     let (schedule, closure) = prepare_schedule_v1(
@@ -1114,7 +1127,7 @@ fn hard_limits_cannot_be_relaxed_v1() {
     let defaults = CommonArticulationClearanceLimitsV1::default();
     for excessive in [
         CommonArticulationClearanceLimitsV1 {
-            max_blocks: defaults.max_blocks + 1,
+            max_blocks: COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1 + 1,
             ..defaults
         },
         CommonArticulationClearanceLimitsV1 {
@@ -1146,13 +1159,21 @@ fn hard_limits_cannot_be_relaxed_v1() {
 }
 
 #[test]
-fn cross_block_clearance_proves_three_five_and_eight_block_positive_thickness_v1() {
-    for block_count in [3, 5, 8] {
+fn cross_block_clearance_proves_three_five_eight_and_nine_block_positive_thickness_v1() {
+    for block_count in [3, 5, 8, 9] {
         let fixture = prepare_strip_fixture_v1(block_count);
+        let limits = if block_count == COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1 {
+            CommonArticulationClearanceLimitsV1 {
+                max_blocks: COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1,
+                ..CommonArticulationClearanceLimitsV1::default()
+            }
+        } else {
+            CommonArticulationClearanceLimitsV1::default()
+        };
         let outcome = issue_common_articulation_clearance_prerequisite_v1(fixture.input(
             &fixture.pairs,
             Some(fixture.positive.clone()),
-            CommonArticulationClearanceLimitsV1::default(),
+            limits,
         ))
         .expect("whole-parent cross-block clearance");
         assert!(outcome.is_certified());
@@ -1190,6 +1211,36 @@ fn cross_block_clearance_proves_three_five_and_eight_block_positive_thickness_v1
         assert!(!authority.authorizes_apply());
         assert!(!authority.authorizes_viewer());
     }
+}
+
+#[test]
+fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_nine() {
+    assert_eq!(
+        CommonArticulationClearanceLimitsV1::default().max_blocks,
+        super::COMMON_ARTICULATION_CLEARANCE_DEFAULT_MAX_BLOCKS_V1
+    );
+    assert_eq!(
+        super::COMMON_ARTICULATION_CLEARANCE_DEFAULT_MAX_BLOCKS_V1,
+        8
+    );
+    assert_eq!(COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1, 9);
+}
+
+#[test]
+fn nine_block_clearance_cap_one_short_fails_closed_before_proof_work_v1() {
+    let fixture = prepare_strip_fixture_v1(9);
+    assert_eq!(
+        issue_common_articulation_clearance_prerequisite_v1(fixture.input(
+            &fixture.pairs,
+            Some(fixture.positive.clone()),
+            CommonArticulationClearanceLimitsV1 {
+                max_blocks: 8,
+                ..CommonArticulationClearanceLimitsV1::default()
+            },
+        ))
+        .expect_err("nine blocks exceed the one-short clearance cap"),
+        CommonArticulationClearanceErrorV1::ResourceLimit
+    );
 }
 
 #[test]

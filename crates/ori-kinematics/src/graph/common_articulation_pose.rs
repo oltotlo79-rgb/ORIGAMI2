@@ -17,8 +17,9 @@ use crate::{
 
 pub const COMMON_ARTICULATION_POSE_MODEL_ID_V1: &str = "common_articulation_pose_authority_v1";
 pub const COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1: usize = 2;
-pub const COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1: usize = 8;
+pub const COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1: usize = 9;
 
+const COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1: usize = 8;
 const COMMON_ARTICULATION_POSE_MAX_FACES_V1: usize = 256;
 const COMMON_ARTICULATION_POSE_MAX_HINGES_V1: usize = 256;
 const COMMON_ARTICULATION_POSE_MAX_WORK_V1: usize = 65_536;
@@ -41,7 +42,7 @@ pub struct CommonArticulationPoseLimitsV1 {
 impl Default for CommonArticulationPoseLimitsV1 {
     fn default() -> Self {
         Self {
-            max_blocks: COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
+            max_blocks: COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1,
             max_faces: COMMON_ARTICULATION_POSE_MAX_FACES_V1,
             max_hinges: COMMON_ARTICULATION_POSE_MAX_HINGES_V1,
             max_work: COMMON_ARTICULATION_POSE_MAX_WORK_V1,
@@ -1110,13 +1111,19 @@ mod tests {
     }
 
     #[test]
-    fn two_three_five_and_eight_block_chains_issue_exact_parent_pose_restrictions() {
-        for block_count in [2, 3, 5, 8] {
+    fn two_three_five_eight_and_nine_block_chains_issue_exact_parent_pose_restrictions() {
+        for block_count in [2, 3, 5, 8, 9] {
             let fixture = chain_fixture_v1(block_count);
-            let authority = prove_common_articulation_pose_authority_v1(
-                fixture.input(0.1, CommonArticulationPoseLimitsV1::default()),
-            )
-            .expect("bounded common pose authority");
+            let limits = if block_count == COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1 {
+                CommonArticulationPoseLimitsV1 {
+                    max_blocks: COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
+                    ..CommonArticulationPoseLimitsV1::default()
+                }
+            } else {
+                CommonArticulationPoseLimitsV1::default()
+            };
+            let authority = prove_common_articulation_pose_authority_v1(fixture.input(0.1, limits))
+                .expect("bounded common pose authority");
             assert_eq!(authority.block_count_v1(), block_count);
             assert_eq!(authority.articulation_faces_v1().len(), block_count - 1);
             assert_eq!(
@@ -1151,9 +1158,35 @@ mod tests {
                 }
             }
             authority
-                .revalidate_v1(fixture.input(0.1, CommonArticulationPoseLimitsV1::default()))
+                .revalidate_v1(fixture.input(0.1, limits))
                 .expect("exact live revalidation");
         }
+    }
+
+    #[test]
+    fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_nine() {
+        assert_eq!(
+            CommonArticulationPoseLimitsV1::default().max_blocks,
+            COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1
+        );
+        assert_eq!(COMMON_ARTICULATION_POSE_DEFAULT_MAX_BLOCKS_V1, 8);
+        assert_eq!(COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1, 9);
+    }
+
+    #[test]
+    fn nine_block_pose_cap_one_short_fails_closed_before_authority_issuance() {
+        let fixture = chain_fixture_v1(9);
+        assert_eq!(
+            prove_common_articulation_pose_authority_v1(fixture.input(
+                0.1,
+                CommonArticulationPoseLimitsV1 {
+                    max_blocks: 8,
+                    ..CommonArticulationPoseLimitsV1::default()
+                },
+            ))
+            .expect_err("nine blocks exceed the one-short pose cap"),
+            CommonArticulationPoseErrorV1::ResourceLimit
+        );
     }
 
     #[test]
@@ -1226,13 +1259,17 @@ mod tests {
     }
 
     #[test]
-    fn nine_blocks_and_nonpositive_or_nonfinite_thickness_are_rejected() {
-        let fixture = chain_fixture_v1(9);
+    fn ten_blocks_and_nonpositive_or_nonfinite_thickness_are_rejected() {
+        let fixture = chain_fixture_v1(10);
         assert_eq!(
-            prove_common_articulation_pose_authority_v1(
-                fixture.input(0.1, CommonArticulationPoseLimitsV1::default())
-            )
-            .expect_err("nine blocks exceed the hard cap"),
+            prove_common_articulation_pose_authority_v1(fixture.input(
+                0.1,
+                CommonArticulationPoseLimitsV1 {
+                    max_blocks: COMMON_ARTICULATION_POSE_MAX_BLOCKS_V1,
+                    ..CommonArticulationPoseLimitsV1::default()
+                },
+            ))
+            .expect_err("ten blocks exceed the hard cap"),
             CommonArticulationPoseErrorV1::ResourceLimit
         );
         let fixture = chain_fixture_v1(2);

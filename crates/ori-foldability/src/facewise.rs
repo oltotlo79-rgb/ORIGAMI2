@@ -37,6 +37,8 @@ use crate::{
 const CELL_KEY_DOMAIN: &[u8] = b"ORIGAMI2\0overlap-cell\0v1\0";
 const CONTROL_POLL_RECORDS: usize = 1_024;
 const SERIALIZATION_POLL_BYTES: usize = 64 * 1_024;
+const FACE_INTERIOR_LEFT: u8 = 1;
+const FACE_INTERIOR_RIGHT: u8 = 2;
 const TACO_TACO_VALID_SOURCE_TUPLES: [&str; 16] = [
     "111112", "111121", "111222", "112111", "121112", "121222", "122111", "122212", "211121",
     "211222", "212111", "212221", "221222", "222111", "222212", "222221",
@@ -1457,6 +1459,22 @@ struct OverlapCell {
     covering_faces: Vec<usize>,
 }
 
+struct ArrangementRegion {
+    boundary: Vec<Point>,
+    /// Sorted superset of faces whose interiors can still meet this region.
+    /// `None` is retained only by the test-only unpropagated baseline.
+    possible_faces: Option<Vec<usize>>,
+}
+
+struct PreparedSupportingLine {
+    face_index: usize,
+    edge_index: usize,
+    canonical_ordinal: usize,
+    face_masks: Vec<u8>,
+    face_mask_bytes: usize,
+    globally_supporting: bool,
+}
+
 #[derive(Clone, Copy)]
 struct ExactAxisAlignedBounds {
     min_x_point: usize,
@@ -1524,6 +1542,35 @@ fn exact_axis_aligned_bounds_are_strictly_separated<O: GlobalFlatFoldabilityObse
         )? == Ordering::Less)
 }
 
+fn exact_axis_aligned_bounds_interiors_cannot_overlap<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &[Point],
+    first_bounds: ExactAxisAlignedBounds,
+    second: &[Point],
+    second_bounds: ExactAxisAlignedBounds,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    Ok(cmp(
+        &first[first_bounds.max_x_point].x,
+        &second[second_bounds.min_x_point].x,
+        runtime,
+    )? != Ordering::Greater
+        || cmp(
+            &second[second_bounds.max_x_point].x,
+            &first[first_bounds.min_x_point].x,
+            runtime,
+        )? != Ordering::Greater
+        || cmp(
+            &first[first_bounds.max_y_point].y,
+            &second[second_bounds.min_y_point].y,
+            runtime,
+        )? != Ordering::Greater
+        || cmp(
+            &second[second_bounds.max_y_point].y,
+            &first[first_bounds.min_y_point].y,
+            runtime,
+        )? != Ordering::Greater)
+}
+
 fn exact_point_is_strictly_outside_axis_aligned_bounds<
     O: GlobalFlatFoldabilityObserver + ?Sized,
 >(
@@ -1538,6 +1585,86 @@ fn exact_point_is_strictly_outside_axis_aligned_bounds<
             || cmp(&point.y, &polygon[bounds.min_y_point].y, runtime)? == Ordering::Less
             || cmp(&point.y, &polygon[bounds.max_y_point].y, runtime)? == Ordering::Greater,
     )
+}
+
+fn convex_polygon_contains_polygon<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    container: &[Point],
+    candidate: &[Point],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if container.len() < 3 || candidate.len() < 3 {
+        return Ok(false);
+    }
+    let mut point_poll = 0_usize;
+    for edge in 0..container.len() {
+        let first = &container[edge];
+        let second = &container[(edge + 1) % container.len()];
+        for point in candidate {
+            runtime.poll_control(&mut point_poll)?;
+            if cross(first, second, point, runtime)?.is_negative() {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn convex_polygon_interiors_overlap<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &[Point],
+    second: &[Point],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if first.len() < 3 || second.len() < 3 {
+        return Ok(false);
+    }
+    // Both polygons are positive-area, convex, and counter-clockwise at every
+    // production call site. Their interiors overlap exactly when each
+    // supporting edge half-plane of either polygon contains a strictly-left
+    // vertex of the other polygon. Absence of such a vertex proves separation
+    // or boundary-only contact without constructing clipped rationals.
+    for (supporting_polygon, candidate) in [(first, second), (second, first)] {
+        for edge in 0..supporting_polygon.len() {
+            runtime.checkpoint(None)?;
+            let axis_first = &supporting_polygon[edge];
+            let axis_second = &supporting_polygon[(edge + 1) % supporting_polygon.len()];
+            let mut has_strictly_left_vertex = false;
+            let mut point_poll = 0_usize;
+            for point in candidate {
+                runtime.poll_control(&mut point_poll)?;
+                if cross(axis_first, axis_second, point, runtime)?.is_positive() {
+                    has_strictly_left_vertex = true;
+                    break;
+                }
+            }
+            if !has_strictly_left_vertex {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn consistent_polygon_class_coverage<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    covering_faces: &[usize],
+    polygon_classes: &[usize],
+    class_index: usize,
+    representative: usize,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if polygon_classes.get(representative) != Some(&class_index) {
+        return Err(FacewiseAbort::Execution(internal_error()));
+    }
+    let representative_is_covering = covering_faces.binary_search(&representative).is_ok();
+    let mut class_poll = 0_usize;
+    for (face_index, &candidate_class) in polygon_classes.iter().enumerate() {
+        runtime.poll_control(&mut class_poll)?;
+        if candidate_class == class_index
+            && covering_faces.binary_search(&face_index).is_ok() != representative_is_covering
+        {
+            return Err(certificate_failure());
+        }
+    }
+    Ok(representative_is_covering)
 }
 
 fn build_verifier_face_bounds<O: GlobalFlatFoldabilityObserver + ?Sized>(
@@ -1629,12 +1756,222 @@ fn supporting_line_keep_flags<O: GlobalFlatFoldabilityObserver + ?Sized>(
     Ok((flags, flag_bytes))
 }
 
+fn supporting_line_face_interior_masks<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    faces: &[FoldedFace],
+    line_first: &Point,
+    line_second: &Point,
+    retained_transient_bytes: usize,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<(Vec<u8>, usize)> {
+    let requested_bytes = runtime.allocation_bytes(faces.len(), std::mem::size_of::<u8>())?;
+    runtime.ensure_transient_exact_storage(
+        retained_transient_bytes
+            .checked_add(requested_bytes)
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
+    let mut masks = Vec::new();
+    masks
+        .try_reserve_exact(faces.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let retained_bytes = runtime.allocation_bytes(masks.capacity(), std::mem::size_of::<u8>())?;
+    runtime.ensure_transient_exact_storage(
+        retained_transient_bytes
+            .checked_add(retained_bytes)
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
+    for face in faces {
+        runtime.checkpoint(None)?;
+        let mut mask = 0_u8;
+        let mut point_poll = 0_usize;
+        for point in &face.polygon {
+            runtime.poll_control(&mut point_poll)?;
+            match exact_side_sign(&cross(line_first, line_second, point, runtime)?) {
+                Ordering::Greater => mask |= FACE_INTERIOR_LEFT,
+                Ordering::Less => mask |= FACE_INTERIOR_RIGHT,
+                Ordering::Equal => {}
+            }
+        }
+        // A positive-area convex face can meet a closed child half-plane in
+        // positive area only when at least one of its vertices is strictly in
+        // that child's open half-plane. Boundary-only contact is deliberately
+        // absent from the mask and cannot cover a positive-area region.
+        masks.push(mask);
+    }
+    Ok((masks, retained_bytes))
+}
+
+fn possible_face_storage_bytes<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    possible_faces: &Vec<usize>,
+    runtime: &Runtime<'_, O>,
+) -> FacewiseResult<usize> {
+    runtime.allocation_bytes(possible_faces.capacity(), std::mem::size_of::<usize>())
+}
+
+fn normalize_covering_face_capacity<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    possible_faces: Vec<usize>,
+    face_count: usize,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<Vec<usize>> {
+    let mut target_capacity = 0_usize;
+    while target_capacity < possible_faces.len() {
+        target_capacity =
+            next_vector_capacity(target_capacity, target_capacity, face_count, runtime)?;
+    }
+    if possible_faces.capacity() == target_capacity {
+        return Ok(possible_faces);
+    }
+    let old_bytes = possible_face_storage_bytes(&possible_faces, runtime)?;
+    let new_bytes = runtime.allocation_bytes(target_capacity, std::mem::size_of::<usize>())?;
+    runtime.ensure_transient_exact_storage(
+        old_bytes
+            .checked_add(new_bytes)
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
+    let mut normalized = Vec::new();
+    normalized
+        .try_reserve_exact(target_capacity)
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    normalized.extend(possible_faces);
+    Ok(normalized)
+}
+
+fn retain_possible_faces_for_side<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    possible_faces: &mut Vec<usize>,
+    face_masks: &[u8],
+    side_mask: u8,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()> {
+    let mut write = 0_usize;
+    let mut face_poll = 0_usize;
+    for read in 0..possible_faces.len() {
+        runtime.poll_control(&mut face_poll)?;
+        let face_index = possible_faces[read];
+        let Some(mask) = face_masks.get(face_index) else {
+            return Err(FacewiseAbort::Execution(internal_error()));
+        };
+        if mask & side_mask != 0 {
+            possible_faces[write] = face_index;
+            write += 1;
+        }
+    }
+    possible_faces.truncate(write);
+    Ok(())
+}
+
+fn split_possible_faces_for_line<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    possible_faces: Vec<usize>,
+    face_masks: &[u8],
+    reused_input: ReusedSplitInput,
+    retained_transient_bytes: usize,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<(Vec<usize>, Vec<usize>, usize)> {
+    match reused_input {
+        ReusedSplitInput::Left | ReusedSplitInput::Right => {
+            let (side_mask, left_side) = if reused_input == ReusedSplitInput::Left {
+                (FACE_INTERIOR_LEFT, true)
+            } else {
+                (FACE_INTERIOR_RIGHT, false)
+            };
+            let mut retained = possible_faces;
+            retain_possible_faces_for_side(&mut retained, face_masks, side_mask, runtime)?;
+            let retained_bytes = possible_face_storage_bytes(&retained, runtime)?;
+            runtime.ensure_transient_exact_storage(
+                retained_transient_bytes
+                    .checked_add(retained_bytes)
+                    .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            )?;
+            if left_side {
+                Ok((retained, Vec::new(), retained_bytes))
+            } else {
+                Ok((Vec::new(), retained, retained_bytes))
+            }
+        }
+        ReusedSplitInput::None => {
+            let mut left_count = 0_usize;
+            let mut right_count = 0_usize;
+            let mut count_poll = 0_usize;
+            for &face_index in &possible_faces {
+                runtime.poll_control(&mut count_poll)?;
+                let Some(mask) = face_masks.get(face_index) else {
+                    return Err(FacewiseAbort::Execution(internal_error()));
+                };
+                left_count = left_count.saturating_add(usize::from(mask & FACE_INTERIOR_LEFT != 0));
+                right_count =
+                    right_count.saturating_add(usize::from(mask & FACE_INTERIOR_RIGHT != 0));
+            }
+            let requested_bytes = runtime.allocation_bytes(
+                left_count
+                    .checked_add(right_count)
+                    .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+                std::mem::size_of::<usize>(),
+            )?;
+            runtime.ensure_transient_exact_storage(
+                retained_transient_bytes
+                    .checked_add(requested_bytes)
+                    .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            )?;
+            let mut left = Vec::new();
+            left.try_reserve_exact(left_count).map_err(|_| {
+                runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+            })?;
+            let mut right = Vec::new();
+            right.try_reserve_exact(right_count).map_err(|_| {
+                runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+            })?;
+            let retained_bytes = possible_face_storage_bytes(&left, runtime)?
+                .checked_add(possible_face_storage_bytes(&right, runtime)?)
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+            runtime.ensure_transient_exact_storage(
+                retained_transient_bytes
+                    .checked_add(retained_bytes)
+                    .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            )?;
+            let mut fill_poll = 0_usize;
+            for face_index in possible_faces {
+                runtime.poll_control(&mut fill_poll)?;
+                let mask = face_masks[face_index];
+                if mask & FACE_INTERIOR_LEFT != 0 {
+                    left.push(face_index);
+                }
+                if mask & FACE_INTERIOR_RIGHT != 0 {
+                    right.push(face_index);
+                }
+            }
+            Ok((left, right, retained_bytes))
+        }
+    }
+}
+
 fn build_overlap_cells<O: GlobalFlatFoldabilityObserver + ?Sized>(
     faces: &[FoldedFace],
     pairs: &[OverlapPair],
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<Vec<OverlapCell>> {
-    build_overlap_cells_with_supporting_line_deduplication(faces, pairs, runtime, true, true)
+    build_overlap_cells_with_supporting_line_deduplication(
+        faces,
+        pairs,
+        runtime,
+        OverlapCellBuildOptions::DEFAULT,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct OverlapCellBuildOptions {
+    deduplicate_supporting_lines: bool,
+    prune_region_face_bounds: bool,
+    reuse_prevalidated_regions: bool,
+    propagate_region_face_candidates: bool,
+    prioritize_global_supporting_lines: bool,
+}
+
+impl OverlapCellBuildOptions {
+    const DEFAULT: Self = Self {
+        deduplicate_supporting_lines: true,
+        prune_region_face_bounds: true,
+        reuse_prevalidated_regions: true,
+        propagate_region_face_candidates: true,
+        prioritize_global_supporting_lines: true,
+    };
 }
 
 #[cfg(test)]
@@ -1645,7 +1982,15 @@ fn build_overlap_cells_without_supporting_line_deduplication<
     pairs: &[OverlapPair],
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<Vec<OverlapCell>> {
-    build_overlap_cells_with_supporting_line_deduplication(faces, pairs, runtime, false, true)
+    build_overlap_cells_with_supporting_line_deduplication(
+        faces,
+        pairs,
+        runtime,
+        OverlapCellBuildOptions {
+            deduplicate_supporting_lines: false,
+            ..OverlapCellBuildOptions::DEFAULT
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1656,7 +2001,72 @@ fn build_overlap_cells_without_region_face_bounds_pruning<
     pairs: &[OverlapPair],
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<Vec<OverlapCell>> {
-    build_overlap_cells_with_supporting_line_deduplication(faces, pairs, runtime, true, false)
+    build_overlap_cells_with_supporting_line_deduplication(
+        faces,
+        pairs,
+        runtime,
+        OverlapCellBuildOptions {
+            prune_region_face_bounds: false,
+            ..OverlapCellBuildOptions::DEFAULT
+        },
+    )
+}
+
+#[cfg(test)]
+fn build_overlap_cells_without_prevalidated_region_reuse<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    faces: &[FoldedFace],
+    pairs: &[OverlapPair],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<Vec<OverlapCell>> {
+    build_overlap_cells_with_supporting_line_deduplication(
+        faces,
+        pairs,
+        runtime,
+        OverlapCellBuildOptions {
+            reuse_prevalidated_regions: false,
+            ..OverlapCellBuildOptions::DEFAULT
+        },
+    )
+}
+
+#[cfg(test)]
+fn build_overlap_cells_without_region_face_candidate_propagation<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    faces: &[FoldedFace],
+    pairs: &[OverlapPair],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<Vec<OverlapCell>> {
+    build_overlap_cells_with_supporting_line_deduplication(
+        faces,
+        pairs,
+        runtime,
+        OverlapCellBuildOptions {
+            propagate_region_face_candidates: false,
+            ..OverlapCellBuildOptions::DEFAULT
+        },
+    )
+}
+
+#[cfg(test)]
+fn build_overlap_cells_without_global_supporting_line_priority<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    faces: &[FoldedFace],
+    pairs: &[OverlapPair],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<Vec<OverlapCell>> {
+    build_overlap_cells_with_supporting_line_deduplication(
+        faces,
+        pairs,
+        runtime,
+        OverlapCellBuildOptions {
+            prioritize_global_supporting_lines: false,
+            ..OverlapCellBuildOptions::DEFAULT
+        },
+    )
 }
 
 fn build_overlap_cells_with_supporting_line_deduplication<
@@ -1665,9 +2075,33 @@ fn build_overlap_cells_with_supporting_line_deduplication<
     faces: &[FoldedFace],
     pairs: &[OverlapPair],
     runtime: &mut Runtime<'_, O>,
-    deduplicate_supporting_lines: bool,
-    prune_region_face_bounds: bool,
+    options: OverlapCellBuildOptions,
 ) -> FacewiseResult<Vec<OverlapCell>> {
+    let saved_arrangement_bytes = runtime.exact_storage.arrangement_bytes;
+    let result = build_overlap_cells_with_supporting_line_deduplication_inner(
+        faces, pairs, runtime, options,
+    );
+    if result.is_err() {
+        runtime.exact_storage.arrangement_bytes = saved_arrangement_bytes;
+    }
+    result
+}
+
+fn build_overlap_cells_with_supporting_line_deduplication_inner<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    faces: &[FoldedFace],
+    pairs: &[OverlapPair],
+    runtime: &mut Runtime<'_, O>,
+    options: OverlapCellBuildOptions,
+) -> FacewiseResult<Vec<OverlapCell>> {
+    let OverlapCellBuildOptions {
+        deduplicate_supporting_lines,
+        prune_region_face_bounds,
+        reuse_prevalidated_regions,
+        propagate_region_face_candidates,
+        prioritize_global_supporting_lines,
+    } = options;
     let mut all_points = faces.iter().flat_map(|face| face.polygon.iter());
     let first = all_points.next().ok_or_else(internal_abort)?;
     let (mut min_x, mut max_x) = (first.x.clone(), first.x.clone());
@@ -1708,8 +2142,45 @@ fn build_overlap_cells_with_supporting_line_deduplication<
         },
         Point { x: min_x, y: max_y },
     ];
-    runtime.set_arrangement_exact_storage(exact_storage_bytes_points(&bounding_rectangle)?)?;
-    let mut regions = vec![bounding_rectangle];
+    let mut retained_region_exact_bytes = exact_storage_bytes_points(&bounding_rectangle)?;
+    runtime.set_arrangement_exact_storage(retained_region_exact_bytes)?;
+    let initial_possible_faces = if propagate_region_face_candidates {
+        let allocation = (|| {
+            let requested_bytes =
+                runtime.allocation_bytes(faces.len(), std::mem::size_of::<usize>())?;
+            runtime.set_arrangement_exact_storage(
+                retained_region_exact_bytes
+                    .checked_add(requested_bytes)
+                    .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            )?;
+            let mut possible_faces = Vec::new();
+            possible_faces.try_reserve_exact(faces.len()).map_err(|_| {
+                runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+            })?;
+            let retained_bytes = possible_face_storage_bytes(&possible_faces, runtime)?;
+            runtime.set_arrangement_exact_storage(
+                retained_region_exact_bytes
+                    .checked_add(retained_bytes)
+                    .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            )?;
+            possible_faces.extend(0..faces.len());
+            Ok((possible_faces, retained_bytes))
+        })();
+        match allocation {
+            Ok((possible_faces, retained_bytes)) => (Some(possible_faces), retained_bytes),
+            Err(abort) => {
+                runtime.exact_storage.arrangement_bytes = retained_region_exact_bytes;
+                return Err(abort);
+            }
+        }
+    } else {
+        (None, 0_usize)
+    };
+    let mut retained_region_metadata_bytes = initial_possible_faces.1;
+    let mut regions = vec![ArrangementRegion {
+        boundary: bounding_rectangle,
+        possible_faces: initial_possible_faces.0,
+    }];
     let mut supporting_lines = faces
         .iter()
         .enumerate()
@@ -1717,6 +2188,16 @@ fn build_overlap_cells_with_supporting_line_deduplication<
             (0..face.polygon.len()).map(move |edge_index| (face_index, edge_index))
         })
         .collect::<Vec<_>>();
+    let supporting_line_tuple_bytes = runtime.allocation_bytes(
+        supporting_lines.capacity(),
+        std::mem::size_of::<(usize, usize)>(),
+    )?;
+    runtime.set_arrangement_exact_storage(
+        retained_region_exact_bytes
+            .checked_add(retained_region_metadata_bytes)
+            .and_then(|total| total.checked_add(supporting_line_tuple_bytes))
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
     supporting_lines.sort_unstable_by_key(|(face_index, edge_index)| {
         (
             faces[*face_index].source.layer.face_key,
@@ -1733,38 +2214,197 @@ fn build_overlap_cells_with_supporting_line_deduplication<
             keep
         });
     }
-    for (face_index, edge_index) in supporting_lines {
+    let mut retained_supporting_line_mask_bytes = 0_usize;
+    let requested_prepared_line_bytes = runtime.allocation_bytes(
+        supporting_lines.len(),
+        std::mem::size_of::<PreparedSupportingLine>(),
+    )?;
+    runtime.set_arrangement_exact_storage(
+        retained_region_exact_bytes
+            .checked_add(retained_region_metadata_bytes)
+            .and_then(|total| total.checked_add(supporting_line_tuple_bytes))
+            .and_then(|total| total.checked_add(requested_prepared_line_bytes))
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
+    let mut prepared_supporting_lines = Vec::new();
+    prepared_supporting_lines
+        .try_reserve_exact(supporting_lines.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let prepared_line_structure_bytes = runtime.allocation_bytes(
+        prepared_supporting_lines.capacity(),
+        std::mem::size_of::<PreparedSupportingLine>(),
+    )?;
+    runtime.set_arrangement_exact_storage(
+        retained_region_exact_bytes
+            .checked_add(retained_region_metadata_bytes)
+            .and_then(|total| total.checked_add(supporting_line_tuple_bytes))
+            .and_then(|total| total.checked_add(prepared_line_structure_bytes))
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
+    for (canonical_ordinal, (face_index, edge_index)) in supporting_lines.into_iter().enumerate() {
         runtime.checkpoint(None)?;
         let line_first = &faces[face_index].polygon[edge_index];
         let line_second =
             &faces[face_index].polygon[(edge_index + 1) % faces[face_index].polygon.len()];
+        let (face_masks, face_mask_bytes) = if propagate_region_face_candidates {
+            supporting_line_face_interior_masks(faces, line_first, line_second, 0, runtime)?
+        } else {
+            (Vec::new(), 0_usize)
+        };
+        let globally_supporting = propagate_region_face_candidates
+            && (!face_masks.iter().any(|mask| mask & FACE_INTERIOR_LEFT != 0)
+                || !face_masks
+                    .iter()
+                    .any(|mask| mask & FACE_INTERIOR_RIGHT != 0));
+        retained_supporting_line_mask_bytes = retained_supporting_line_mask_bytes
+            .checked_add(face_mask_bytes)
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+        runtime.set_arrangement_exact_storage(
+            retained_region_exact_bytes
+                .checked_add(retained_region_metadata_bytes)
+                .and_then(|total| total.checked_add(supporting_line_tuple_bytes))
+                .and_then(|total| total.checked_add(prepared_line_structure_bytes))
+                .and_then(|total| total.checked_add(retained_supporting_line_mask_bytes))
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+        )?;
+        prepared_supporting_lines.push(PreparedSupportingLine {
+            face_index,
+            edge_index,
+            canonical_ordinal,
+            face_masks,
+            face_mask_bytes,
+            globally_supporting,
+        });
+    }
+    // Consuming the canonical tuple buffer above releases it before sorting
+    // or traversing the prepared line records.
+    runtime.set_arrangement_exact_storage(
+        retained_region_exact_bytes
+            .checked_add(retained_region_metadata_bytes)
+            .and_then(|total| total.checked_add(prepared_line_structure_bytes))
+            .and_then(|total| total.checked_add(retained_supporting_line_mask_bytes))
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
+    if prioritize_global_supporting_lines && propagate_region_face_candidates {
+        // The ordinal preserves the existing canonical tie order without the
+        // hidden scratch allocation of a stable sort.
+        prepared_supporting_lines
+            .sort_unstable_by_key(|line| (!line.globally_supporting, line.canonical_ordinal));
+    }
+    for supporting_line in prepared_supporting_lines {
+        runtime.checkpoint(None)?;
+        let PreparedSupportingLine {
+            face_index,
+            edge_index,
+            canonical_ordinal: _,
+            face_masks,
+            face_mask_bytes,
+            globally_supporting: _,
+        } = supporting_line;
+        let line_first = &faces[face_index].polygon[edge_index];
+        let line_second =
+            &faces[face_index].polygon[(edge_index + 1) % faces[face_index].polygon.len()];
         let mut next_regions = Vec::new();
-        let mut next_region_bytes = 0_usize;
-        let mut next_region_transient_bytes = 0_usize;
+        let mut next_region_exact_bytes = 0_usize;
+        let mut next_region_metadata_bytes = 0_usize;
         for region in regions {
             runtime.checkpoint(None)?;
-            let (mut left, mut right, reused_input) = split_owned_convex_polygon_by_line(
-                region,
+            let ArrangementRegion {
+                boundary,
+                possible_faces,
+            } = region;
+            let retained_transient_bytes = next_region_exact_bytes
+                .checked_add(next_region_metadata_bytes)
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+            let (left, right, reused_input) = split_owned_convex_polygon_by_line(
+                boundary,
                 line_first,
                 line_second,
-                next_region_transient_bytes,
+                retained_transient_bytes,
                 runtime,
             )?;
-            simplify_convex_polygon(&mut left, runtime)?;
-            simplify_convex_polygon(&mut right, runtime)?;
-            for (side, candidate) in [left, right].into_iter().enumerate() {
+            let split_boundary_bytes = exact_storage_bytes_points(&left)?
+                .checked_add(exact_storage_bytes_points(&right)?)
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+            let (left_possible_faces, right_possible_faces, split_metadata_bytes) =
+                if let Some(possible_faces) = possible_faces {
+                    let (left_faces, right_faces, metadata_bytes) = split_possible_faces_for_line(
+                        possible_faces,
+                        &face_masks,
+                        reused_input,
+                        retained_transient_bytes
+                            .checked_add(split_boundary_bytes)
+                            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+                        runtime,
+                    )?;
+                    (Some(left_faces), Some(right_faces), metadata_bytes)
+                } else {
+                    (None, None, 0_usize)
+                };
+            runtime.ensure_transient_exact_storage(
+                retained_transient_bytes
+                    .checked_add(split_boundary_bytes)
+                    .and_then(|total| total.checked_add(split_metadata_bytes))
+                    .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            )?;
+            for (side, (mut candidate, candidate_possible_faces)) in
+                [(left, left_possible_faces), (right, right_possible_faces)]
+                    .into_iter()
+                    .enumerate()
+            {
+                if candidate_possible_faces.as_ref().is_some_and(Vec::is_empty) {
+                    continue;
+                }
+                let candidate_metadata_bytes = candidate_possible_faces
+                    .as_ref()
+                    .map_or(Ok(0_usize), |possible_faces| {
+                        possible_face_storage_bytes(possible_faces, runtime)
+                    })?;
+                if reuse_prevalidated_regions && reused_input.matches_side(side) {
+                    // Every retained region was simplified and proved to have
+                    // positive area when it entered the prior generation. A
+                    // strict same-side preflight transfers that owned region
+                    // unchanged, so repeating both exact passes cannot alter
+                    // its boundary or orientation.
+                    let candidate_bytes = exact_storage_bytes_points(&candidate)?;
+                    next_region_exact_bytes = next_region_exact_bytes
+                        .checked_add(candidate_bytes)
+                        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+                    next_region_metadata_bytes = next_region_metadata_bytes
+                        .checked_add(candidate_metadata_bytes)
+                        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+                    runtime.ensure_transient_exact_storage(
+                        next_region_exact_bytes
+                            .checked_add(next_region_metadata_bytes)
+                            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+                    )?;
+                    next_regions.push(ArrangementRegion {
+                        boundary: candidate,
+                        possible_faces: candidate_possible_faces,
+                    });
+                    continue;
+                }
+                simplify_convex_polygon(&mut candidate, runtime)?;
                 if candidate.len() < 3 {
                     continue;
                 }
                 if signed_double_area(&candidate, runtime)?.is_positive() {
                     let candidate_bytes = exact_storage_bytes_points(&candidate)?;
-                    next_region_bytes = next_region_bytes.saturating_add(candidate_bytes);
-                    if !reused_input.matches_side(side) {
-                        next_region_transient_bytes =
-                            next_region_transient_bytes.saturating_add(candidate_bytes);
-                    }
-                    runtime.ensure_transient_exact_storage(next_region_transient_bytes)?;
-                    next_regions.push(candidate);
+                    next_region_exact_bytes = next_region_exact_bytes
+                        .checked_add(candidate_bytes)
+                        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+                    next_region_metadata_bytes = next_region_metadata_bytes
+                        .checked_add(candidate_metadata_bytes)
+                        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+                    runtime.ensure_transient_exact_storage(
+                        next_region_exact_bytes
+                            .checked_add(next_region_metadata_bytes)
+                            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+                    )?;
+                    next_regions.push(ArrangementRegion {
+                        boundary: candidate,
+                        possible_faces: candidate_possible_faces,
+                    });
                 }
             }
         }
@@ -1778,7 +2418,7 @@ fn build_overlap_cells_with_supporting_line_deduplication<
             ));
         }
         let segment_count = next_regions.iter().try_fold(0_usize, |total, region| {
-            total.checked_add(region.len()).ok_or({
+            total.checked_add(region.boundary.len()).ok_or({
                 FacewiseAbort::Unknown(
                     GlobalFlatFoldabilityUnknownReason::OverlapArrangementLimitReached {
                         resource: FlatFoldabilityResource::ArrangementSegments,
@@ -1789,15 +2429,44 @@ fn build_overlap_cells_with_supporting_line_deduplication<
             })
         })?;
         runtime.set_arrangement_segments(segment_count)?;
-        runtime.set_arrangement_exact_storage(next_region_bytes)?;
+        drop(face_masks);
+        retained_region_exact_bytes = next_region_exact_bytes;
+        retained_region_metadata_bytes = next_region_metadata_bytes;
+        retained_supporting_line_mask_bytes = retained_supporting_line_mask_bytes
+            .checked_sub(face_mask_bytes)
+            .ok_or_else(|| FacewiseAbort::Execution(internal_error()))?;
+        runtime.set_arrangement_exact_storage(
+            retained_region_exact_bytes
+                .checked_add(retained_region_metadata_bytes)
+                .and_then(|total| total.checked_add(prepared_line_structure_bytes))
+                .and_then(|total| total.checked_add(retained_supporting_line_mask_bytes))
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+        )?;
         regions = next_regions;
     }
 
-    let retained_region_bytes = runtime.exact_storage.arrangement_bytes;
-    let face_bounds = if prune_region_face_bounds {
+    if retained_supporting_line_mask_bytes != 0 {
+        return Err(FacewiseAbort::Execution(internal_error()));
+    }
+    // The prepared record buffer is released with its consuming iterator.
+    runtime.set_arrangement_exact_storage(
+        retained_region_exact_bytes
+            .checked_add(retained_region_metadata_bytes)
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
+
+    let retained_arrangement_bytes = retained_region_exact_bytes
+        .checked_add(retained_region_metadata_bytes)
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    // Once every retained supporting line has filtered each region's face
+    // candidates, that sorted list is the exact positive-area covering set:
+    // every convex face contributes all of its edge supporting lines, and a
+    // region outside that face is removed by at least one exterior half-plane.
+    // Bounds are therefore needed only by the test-only unpropagated baseline.
+    let face_bounds = if prune_region_face_bounds && !propagate_region_face_candidates {
         Some(build_arrangement_face_bounds(
             faces,
-            retained_region_bytes,
+            retained_arrangement_bytes,
             runtime,
         )?)
     } else {
@@ -1809,12 +2478,12 @@ fn build_overlap_cells_with_supporting_line_deduplication<
     let (cells, cell_boundary_bytes) = match classified {
         Ok(classified) => classified,
         Err(abort) => {
-            runtime.exact_storage.arrangement_bytes = retained_region_bytes;
+            runtime.exact_storage.arrangement_bytes = retained_arrangement_bytes;
             return Err(abort);
         }
     };
     if let Err(abort) = runtime.set_arrangement_exact_storage(cell_boundary_bytes) {
-        runtime.exact_storage.arrangement_bytes = retained_region_bytes;
+        runtime.exact_storage.arrangement_bytes = retained_arrangement_bytes;
         return Err(abort);
     }
     Ok(cells)
@@ -1862,7 +2531,7 @@ fn build_arrangement_face_bounds<O: GlobalFlatFoldabilityObserver + ?Sized>(
 fn classify_overlap_regions<O: GlobalFlatFoldabilityObserver + ?Sized>(
     faces: &[FoldedFace],
     pairs: &[OverlapPair],
-    regions: Vec<Vec<Point>>,
+    regions: Vec<ArrangementRegion>,
     face_bounds: Option<&[ExactAxisAlignedBounds]>,
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<(Vec<OverlapCell>, usize)> {
@@ -1872,54 +2541,75 @@ fn classify_overlap_regions<O: GlobalFlatFoldabilityObserver + ?Sized>(
     let mut cells = BTreeMap::<[u8; 32], OverlapCell>::new();
     for region in regions {
         runtime.checkpoint(None)?;
-        let representative = representative_point(&region, runtime)?;
-        let mut covering_faces = Vec::new();
-        let mut covering_face_poll = 0_usize;
-        for (index, face) in faces.iter().enumerate() {
-            runtime.poll_control(&mut covering_face_poll)?;
-            if let Some(bounds) = face_bounds
-                && exact_point_is_strictly_outside_axis_aligned_bounds(
-                    &representative,
-                    &face.polygon,
-                    bounds[index],
-                    runtime,
-                )?
-            {
-                continue;
-            }
-            if point_in_convex_polygon(&representative, &face.polygon, runtime)? {
-                if covering_faces.len() == covering_faces.capacity() {
-                    let prior_capacity = covering_faces.capacity();
-                    let next_capacity = next_vector_capacity(
-                        prior_capacity,
-                        covering_faces.len(),
-                        faces.len(),
+        let ArrangementRegion {
+            boundary,
+            possible_faces,
+        } = region;
+        let covering_faces = if let Some(possible_faces) = possible_faces {
+            // Every positive-area arrangement region lies wholly in one open
+            // half-plane of every retained line. Deduplication removes only
+            // coincident lines, while the per-line masks are recomputed for
+            // every face and orientation. A face survives precisely when the
+            // region is on the interior side of each of that face's edge
+            // lines, which is exactly convex-polygon interior membership.
+            // Preserve the certificate's deterministic covering-vector
+            // capacity (and therefore exact byte accounting) from the
+            // independent classifier while avoiding all geometric rechecks.
+            normalize_covering_face_capacity(possible_faces, faces.len(), runtime)?
+        } else {
+            // Test-only baseline used to prove the propagated invariant against
+            // the independent representative-point classifier.
+            let representative = representative_point(&boundary, runtime)?;
+            let mut covering_faces = Vec::new();
+            let mut covering_face_poll = 0_usize;
+            for (index, face) in faces.iter().enumerate() {
+                runtime.poll_control(&mut covering_face_poll)?;
+                if let Some(bounds) = face_bounds
+                    && exact_point_is_strictly_outside_axis_aligned_bounds(
+                        &representative,
+                        &face.polygon,
+                        bounds[index],
                         runtime,
-                    )?;
-                    let old_bytes =
-                        runtime.allocation_bytes(prior_capacity, std::mem::size_of::<usize>())?;
-                    let next_bytes =
-                        runtime.allocation_bytes(next_capacity, std::mem::size_of::<usize>())?;
-                    runtime.ensure_transient_exact_storage(
-                        old_bytes
-                            .checked_add(next_bytes)
-                            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
-                    )?;
-                    covering_faces
-                        .try_reserve_exact(next_capacity - covering_faces.len())
-                        .map_err(|_| {
-                            runtime
-                                .exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
-                        })?;
+                    )?
+                {
+                    continue;
                 }
-                covering_faces.push(index);
+                if point_in_convex_polygon(&representative, &face.polygon, runtime)? {
+                    if covering_faces.len() == covering_faces.capacity() {
+                        let prior_capacity = covering_faces.capacity();
+                        let next_capacity = next_vector_capacity(
+                            prior_capacity,
+                            covering_faces.len(),
+                            faces.len(),
+                            runtime,
+                        )?;
+                        let old_bytes = runtime
+                            .allocation_bytes(prior_capacity, std::mem::size_of::<usize>())?;
+                        let next_bytes = runtime
+                            .allocation_bytes(next_capacity, std::mem::size_of::<usize>())?;
+                        runtime.ensure_transient_exact_storage(
+                            old_bytes
+                                .checked_add(next_bytes)
+                                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+                        )?;
+                        covering_faces
+                            .try_reserve_exact(next_capacity - covering_faces.len())
+                            .map_err(|_| {
+                                runtime.exact_storage_limit_failure(
+                                    runtime.limits.max_certificate_bytes,
+                                )
+                            })?;
+                    }
+                    covering_faces.push(index);
+                }
             }
-        }
-        drop(representative);
+            drop(representative);
+            covering_faces
+        };
         if covering_faces.is_empty() {
             continue;
         }
-        let key = overlap_cell_key(&region, &covering_faces, faces, runtime)?;
+        let key = overlap_cell_key(&boundary, &covering_faces, faces, runtime)?;
         if let std::collections::btree_map::Entry::Vacant(entry) = cells.entry(key.0) {
             let covering_bytes = runtime
                 .allocation_bytes(covering_faces.capacity(), std::mem::size_of::<usize>())?;
@@ -1930,7 +2620,7 @@ fn classify_overlap_regions<O: GlobalFlatFoldabilityObserver + ?Sized>(
             runtime.add_certificate_structure_storage(retained_structure_bytes)?;
             entry.insert(OverlapCell {
                 key,
-                boundary: region,
+                boundary,
                 covering_faces,
             });
         }
@@ -4200,7 +4890,7 @@ fn verify_overlap_cell_interiors_are_disjoint<O: GlobalFlatFoldabilityObserver +
         for first_cell in 0..cells.len() {
             runtime.checkpoint(None)?;
             for second_cell in (first_cell + 1)..cells.len() {
-                if exact_axis_aligned_bounds_are_strictly_separated(
+                if exact_axis_aligned_bounds_interiors_cannot_overlap(
                     &cells[first_cell].boundary,
                     bounds[first_cell],
                     &cells[second_cell].boundary,
@@ -4209,14 +4899,11 @@ fn verify_overlap_cell_interiors_are_disjoint<O: GlobalFlatFoldabilityObserver +
                 )? {
                     continue;
                 }
-                let intersection = convex_polygon_intersection(
+                if convex_polygon_interiors_overlap(
                     &cells[first_cell].boundary,
                     &cells[second_cell].boundary,
                     runtime,
-                )?;
-                if intersection.len() >= 3
-                    && signed_double_area(&intersection, runtime)?.is_positive()
-                {
+                )? {
                     return Err(certificate_failure());
                 }
             }
@@ -4314,12 +5001,13 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 &embedding.faces[second].polygon,
                 runtime,
             )?;
-            if intersection.len() >= 3 && signed_double_area(&intersection, runtime)?.is_positive()
-            {
+            if intersection.len() >= 3 {
                 let area = signed_double_area(&intersection, runtime)?;
-                let area_storage = exact::rational_storage_bytes(&area)?;
-                runtime.add_verification_storage(area_storage)?;
-                actual_pair_areas.push(((first, second), area));
+                if area.is_positive() {
+                    let area_storage = exact::rational_storage_bytes(&area)?;
+                    runtime.add_verification_storage(area_storage)?;
+                    actual_pair_areas.push(((first, second), area));
+                }
             }
         }
     }
@@ -4363,6 +5051,18 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         runtime.checkpoint(None)?;
         for second in (first + 1)..embedding.faces.len() {
             for third in (second + 1)..embedding.faces.len() {
+                // The pair-value keys were just proved identical to the
+                // independently recomputed positive-area overlap pairs. A
+                // positive three-face common interior necessarily projects
+                // to a positive common interior for each of its three pairs,
+                // so a missing pair rejects the triple without any exact
+                // bounds, clipping, or retained predicate-cache entry.
+                if !pair_values.contains_key(&(first, second))
+                    || !pair_values.contains_key(&(first, third))
+                    || !pair_values.contains_key(&(second, third))
+                {
+                    continue;
+                }
                 let mut classes = [
                     polygon_classes[first],
                     polygon_classes[second],
@@ -4453,7 +5153,6 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
             }
         }
     }
-
     let cell_key_entry_bytes = std::mem::size_of::<[u8; 32]>()
         .checked_add(3 * std::mem::size_of::<usize>())
         .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
@@ -4486,14 +5185,11 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
         )?;
         let boundary_set_exact = exact_storage_bytes_points(&cell.boundary)?;
-        let expected_face_bytes =
-            runtime.allocation_bytes(embedding.faces.len(), std::mem::size_of::<usize>())?;
         let ordered_face_bytes =
             runtime.allocation_bytes(cell.covering_faces.len(), std::mem::size_of::<usize>())?;
         let cell_temporary_bytes = covering_set_bytes
             .checked_add(boundary_set_structure)
             .and_then(|total| total.checked_add(boundary_set_exact))
-            .and_then(|total| total.checked_add(expected_face_bytes))
             .and_then(|total| total.checked_add(ordered_face_bytes))
             .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
         runtime.add_verification_storage(cell_temporary_bytes)?;
@@ -4541,55 +5237,33 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         {
             return Err(certificate_failure());
         }
-        let mut expected_faces = Vec::new();
-        expected_faces
-            .try_reserve_exact(embedding.faces.len())
-            .map_err(|_| {
-                runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
-            })?;
-        let representative = representative_point(&cell.boundary, runtime)?;
-        for (face_index, face) in embedding.faces.iter().enumerate() {
-            if exact_point_is_strictly_outside_axis_aligned_bounds(
-                &representative,
-                &face.polygon,
-                face_bounds[face_index],
-                runtime,
-            )? {
-                continue;
-            }
-            if point_in_convex_polygon(&representative, &face.polygon, runtime)? {
-                expected_faces.push(face_index);
-            }
-        }
-        drop(representative);
-        if expected_faces != cell.covering_faces {
-            return Err(certificate_failure());
-        }
         let cell_bounds = exact_axis_aligned_bounds(&cell.boundary, runtime)?;
-        for (face_index, face) in embedding.faces.iter().enumerate() {
-            if exact_axis_aligned_bounds_are_strictly_separated(
+        for (class_index, &representative) in polygon_representatives.iter().enumerate() {
+            let face_covers_cell = consistent_polygon_class_coverage(
+                &cell.covering_faces,
+                &polygon_classes,
+                class_index,
+                representative,
+                runtime,
+            )?;
+            let face = &embedding.faces[representative];
+            if exact_axis_aligned_bounds_interiors_cannot_overlap(
                 &cell.boundary,
                 cell_bounds,
                 &face.polygon,
-                face_bounds[face_index],
+                face_bounds[representative],
                 runtime,
             )? {
-                if cell.covering_faces.contains(&face_index) {
+                if face_covers_cell {
                     return Err(certificate_failure());
                 }
                 continue;
             }
-            let intersection = convex_polygon_intersection(&cell.boundary, &face.polygon, runtime)?;
-            let intersection_area = if intersection.len() >= 3 {
-                signed_double_area(&intersection, runtime)?
-            } else {
-                Rational::zero()
-            };
-            if cell.covering_faces.contains(&face_index) {
-                if intersection_area != cell_area {
+            if face_covers_cell {
+                if !convex_polygon_contains_polygon(&face.polygon, &cell.boundary, runtime)? {
                     return Err(certificate_failure());
                 }
-            } else if intersection_area.is_positive() {
+            } else if convex_polygon_interiors_overlap(&cell.boundary, &face.polygon, runtime)? {
                 return Err(certificate_failure());
             }
         }
@@ -4612,7 +5286,6 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         }
         let retained_cell_area_bytes = exact::rational_storage_bytes(&cell_area)?;
         drop(ordered_faces);
-        drop(expected_faces);
         runtime.restore_verification_storage(cell_scope_base);
         runtime.add_verification_storage(retained_cell_area_bytes)?;
         verified_cell_areas.push(cell_area);

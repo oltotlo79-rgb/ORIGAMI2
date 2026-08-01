@@ -36,11 +36,48 @@ pub const BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1: &str = "blockwise_positive_layer
 pub const BLOCKWISE_POSITIVE_LAYER_ARITY_V1: usize = 2;
 pub const MULTI_BLOCK_MIN_BLOCKS_V1: usize = 2;
 pub const MULTI_BLOCK_MAX_BLOCKS_V1: usize = 8;
+const EXACT_NINE_BLOCK_ARITY_V1: usize = 9;
 pub const MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
     "bounded_multi_block_positive_layer_authority_v1";
 pub const COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
     "complete_live_multi_block_positive_layer_authority_v1";
 pub const BLOCK_UNION_COMPLETENESS_MAX_ITEMS_V1: usize = 4_096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MultiBlockAdmissionScopeV1 {
+    GenericSubmitted2To8,
+    ExactNineSubmittedSet,
+}
+
+impl MultiBlockAdmissionScopeV1 {
+    const fn admits_block_count_v1(self, count: usize) -> bool {
+        match self {
+            Self::GenericSubmitted2To8 => multi_block_count_supported_v1(count),
+            Self::ExactNineSubmittedSet => count == EXACT_NINE_BLOCK_ARITY_V1,
+        }
+    }
+
+    const fn closure_domain_tag_v1(self) -> &'static [u8] {
+        match self {
+            Self::GenericSubmitted2To8 => b"closure_v1",
+            Self::ExactNineSubmittedSet => b"exact-nine-submitted-set-closure-v1",
+        }
+    }
+
+    const fn positive_layer_domain_tag_v1(self) -> Option<&'static [u8]> {
+        match self {
+            Self::GenericSubmitted2To8 => None,
+            Self::ExactNineSubmittedSet => Some(b"exact-nine-submitted-set-positive-layer-v1"),
+        }
+    }
+
+    const fn complete_live_domain_tag_v1(self) -> Option<&'static [u8]> {
+        match self {
+            Self::GenericSubmitted2To8 => None,
+            Self::ExactNineSubmittedSet => Some(b"exact-nine-submitted-set-complete-live-v1"),
+        }
+    }
+}
 
 pub fn issue_common_articulation_pose_authority_v1(
     input: CommonArticulationPoseInputV1<'_>,
@@ -72,6 +109,7 @@ pub struct BlockUnionCompletenessInputV1<'a> {
 
 #[derive(Debug, Clone)]
 pub struct BlockUnionCompletenessGapReportV1 {
+    scope: MultiBlockAdmissionScopeV1,
     issuer: MaterialHingeGraphGeometry,
     live_faces: Vec<FaceId>,
     live_hinges: Vec<EdgeId>,
@@ -171,11 +209,41 @@ pub fn diagnose_block_union_completeness_v1(
     geometry: &MaterialHingeGraphGeometry,
     blocks: &[BlockUnionCompletenessInputV1<'_>],
 ) -> Option<BlockUnionCompletenessGapReportV1> {
+    diagnose_block_union_completeness_with_scope_v1(
+        geometry,
+        blocks,
+        MultiBlockAdmissionScopeV1::GenericSubmitted2To8,
+    )
+}
+
+/// Exact-nine companion for one bounded submitted block set.
+///
+/// The generic submitted-set authority remains frozen at 2..=8. This entry
+/// admits only nine inputs and still returns non-authorizing union evidence;
+/// the caller must independently bind the exact live graph and every motion
+/// theorem before it can reach Apply.
+#[must_use]
+pub fn diagnose_exact_nine_block_union_completeness_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    blocks: &[BlockUnionCompletenessInputV1<'_>],
+) -> Option<BlockUnionCompletenessGapReportV1> {
+    diagnose_block_union_completeness_with_scope_v1(
+        geometry,
+        blocks,
+        MultiBlockAdmissionScopeV1::ExactNineSubmittedSet,
+    )
+}
+
+fn diagnose_block_union_completeness_with_scope_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    blocks: &[BlockUnionCompletenessInputV1<'_>],
+    scope: MultiBlockAdmissionScopeV1,
+) -> Option<BlockUnionCompletenessGapReportV1> {
     let live_item_count = geometry
         .face_ids()
         .len()
         .checked_add(geometry.hinges().len())?;
-    if !(2..=MULTI_BLOCK_MAX_BLOCKS_V1).contains(&blocks.len())
+    if !scope.admits_block_count_v1(blocks.len())
         || blocks
             .iter()
             .any(|block| block.faces.is_empty() || block.hinges.is_empty())
@@ -225,6 +293,7 @@ pub fn diagnose_block_union_completeness_v1(
         && !hinge_duplicates
         && block_articulation_incidence_is_tree_v1(&canonical_blocks);
     Some(BlockUnionCompletenessGapReportV1 {
+        scope,
         issuer: geometry.clone(),
         live_faces,
         live_hinges,
@@ -261,12 +330,14 @@ struct OwnedMultiBlockV1 {
     faces: Vec<FaceId>,
 }
 
-/// Sealed authority for one submitted 2..=8 block tree.
+/// Sealed authority for one submitted tree.
 ///
-/// This is deliberately not whole-graph or project-mutation authority. A
-/// future production adapter must separately bind the canonical union of all
-/// submitted hinges to the complete live graph before relying on it.
+/// The generic issuer remains frozen at 2..=8 blocks; a separately scoped
+/// companion admits exactly nine. Neither branch is whole-graph or project-
+/// mutation authority. A production adapter must separately bind the canonical
+/// union of all submitted hinges to the complete live graph.
 pub struct MultiBlockClosureAuthorityV1 {
+    scope: MultiBlockAdmissionScopeV1,
     binding: [u8; 32],
     blocks: Vec<OwnedMultiBlockV1>,
     thickness_bits: u64,
@@ -298,6 +369,7 @@ pub struct MultiBlockPositiveLayerInputV1<'a> {
 /// does not add the missing whole-graph completeness premise described by
 /// [`MultiBlockClosureAuthorityV1`].
 pub struct MultiBlockPositiveLayerAuthorityV1 {
+    scope: MultiBlockAdmissionScopeV1,
     binding: [u8; 32],
     parent: MultiBlockClosureAuthorityV1,
     positive: Vec<PositiveThicknessContinuousCertificateV1>,
@@ -313,6 +385,7 @@ pub struct MultiBlockPositiveLayerAuthorityV1 {
 /// cross-block layer transport, and therefore never authorizes Apply, project
 /// mutation, or a viewer snapshot.
 pub struct CompleteMultiBlockPositiveLayerAuthorityV1 {
+    scope: MultiBlockAdmissionScopeV1,
     binding: [u8; 32],
     issuer: MaterialHingeGraphGeometry,
     live_faces: Vec<FaceId>,
@@ -397,9 +470,13 @@ impl CompleteMultiBlockPositiveLayerAuthorityV1 {
         }
         let live_faces = canonical_faces_with_checkpoint_v1(live_geometry, checkpoint)?;
         let live_hinges = canonical_hinges_with_checkpoint_v1(live_geometry, checkpoint)?;
-        if self.live_faces != live_faces
+        if self.scope != self.parent.scope
+            || self.parent.scope != self.parent.parent.scope
+            || !self.scope.admits_block_count_v1(self.blocks.len())
+            || self.live_faces != live_faces
             || self.live_hinges != live_hinges
             || !complete_block_union_matches_live_with_checkpoint_v1(
+                self.scope,
                 &self.blocks,
                 &self.live_faces,
                 &self.live_hinges,
@@ -418,6 +495,7 @@ impl CompleteMultiBlockPositiveLayerAuthorityV1 {
                 .parent
                 .target_angles_match_with_checkpoint_v1(target_angles, checkpoint)?
             || complete_multi_block_positive_layer_binding_with_checkpoint_v1(
+                self.scope,
                 self.parent.binding,
                 &self.live_faces,
                 &self.live_hinges,
@@ -550,7 +628,9 @@ impl MultiBlockPositiveLayerAuthorityV1 {
         checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
     ) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
         checkpoint()?;
-        if sources.len() != self.parent.blocks.len()
+        if self.scope != self.parent.scope
+            || !self.scope.admits_block_count_v1(self.parent.blocks.len())
+            || sources.len() != self.parent.blocks.len()
             || thickness.to_bits() != self.parent.thickness_bits
             || issuer_context != self.parent.issuer_context
             || issuer_context == [0; 32]
@@ -587,6 +667,7 @@ impl MultiBlockPositiveLayerAuthorityV1 {
             }
         }
         Ok(multi_block_positive_layer_binding_with_checkpoint_v1(
+            self.scope,
             self.parent.binding,
             &self.layer,
             articulation_layer_fingerprint,
@@ -1118,7 +1199,38 @@ pub fn issue_multi_block_closure_authority_v1(
     thickness: f64,
     issuer_context: [u8; 32],
 ) -> Option<MultiBlockClosureAuthorityV1> {
-    if !multi_block_count_supported_v1(inputs.len())
+    issue_multi_block_closure_authority_with_scope_v1(
+        inputs,
+        thickness,
+        issuer_context,
+        MultiBlockAdmissionScopeV1::GenericSubmitted2To8,
+    )
+}
+
+/// Issues a non-authorizing parent for exactly nine submitted blocks.
+///
+/// The private scope derives both its exact arity and distinct domain tag, so
+/// this branch cannot be confused with the frozen generic 2..=8 authority.
+pub fn issue_exact_nine_block_closure_authority_v1(
+    inputs: Vec<MultiBlockClosureInputV1<'_>>,
+    thickness: f64,
+    issuer_context: [u8; 32],
+) -> Option<MultiBlockClosureAuthorityV1> {
+    issue_multi_block_closure_authority_with_scope_v1(
+        inputs,
+        thickness,
+        issuer_context,
+        MultiBlockAdmissionScopeV1::ExactNineSubmittedSet,
+    )
+}
+
+fn issue_multi_block_closure_authority_with_scope_v1(
+    inputs: Vec<MultiBlockClosureInputV1<'_>>,
+    thickness: f64,
+    issuer_context: [u8; 32],
+    scope: MultiBlockAdmissionScopeV1,
+) -> Option<MultiBlockClosureAuthorityV1> {
+    if !scope.admits_block_count_v1(inputs.len())
         || !thickness.is_finite()
         || thickness <= 0.0
         || issuer_context == [0; 32]
@@ -1188,7 +1300,7 @@ pub fn issue_multi_block_closure_authority_v1(
     }
     let mut hash = Sha256::new();
     hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
-    hash.update(b"closure_v1");
+    hash.update(scope.closure_domain_tag_v1());
     hash.update(thickness.to_bits().to_le_bytes());
     hash.update(issuer_context);
     for block in &blocks {
@@ -1204,6 +1316,7 @@ pub fn issue_multi_block_closure_authority_v1(
         }
     }
     Some(MultiBlockClosureAuthorityV1 {
+        scope,
         binding: hash.finalize().into(),
         blocks,
         thickness_bits: thickness.to_bits(),
@@ -1216,7 +1329,11 @@ pub fn issue_multi_block_positive_layer_authority_v1(
     mut inputs: Vec<MultiBlockPositiveLayerInputV1<'_>>,
     articulation_layer_fingerprint: [u8; 32],
 ) -> Option<MultiBlockPositiveLayerAuthorityV1> {
-    if inputs.len() != parent.blocks.len() || articulation_layer_fingerprint == [0; 32] {
+    let scope = parent.scope;
+    if !scope.admits_block_count_v1(parent.blocks.len())
+        || inputs.len() != parent.blocks.len()
+        || articulation_layer_fingerprint == [0; 32]
+    {
         return None;
     }
     inputs.sort_unstable_by_key(|input| {
@@ -1266,11 +1383,13 @@ pub fn issue_multi_block_positive_layer_authority_v1(
         .map(|input| (input.positive, input.layer))
         .unzip();
     let binding = multi_block_positive_layer_binding_v1(
+        scope,
         parent.binding,
         &layer,
         articulation_layer_fingerprint,
     );
     Some(MultiBlockPositiveLayerAuthorityV1 {
+        scope,
         binding,
         parent,
         positive,
@@ -1307,13 +1426,16 @@ pub fn issue_complete_multi_block_positive_layer_authority_v1(
     {
         return None;
     }
+    let scope = parent.scope;
     let binding = complete_multi_block_positive_layer_binding_v1(
+        scope,
         parent.binding,
         &report.live_faces,
         &report.live_hinges,
         &report.blocks,
     );
     let authority = CompleteMultiBlockPositiveLayerAuthorityV1 {
+        scope,
         binding,
         issuer: report.issuer,
         live_faces: report.live_faces,
@@ -1338,9 +1460,13 @@ fn complete_multi_block_report_matches_parent_v1(
     report: &BlockUnionCompletenessGapReportV1,
     parent: &MultiBlockPositiveLayerAuthorityV1,
 ) -> bool {
-    report.is_for(live_geometry)
+    report.scope == parent.scope
+        && parent.scope == parent.parent.scope
+        && report.scope.admits_block_count_v1(report.blocks.len())
+        && report.is_for(live_geometry)
         && report.complete
         && complete_block_union_matches_live_v1(
+            report.scope,
             &report.blocks,
             &report.live_faces,
             &report.live_hinges,
@@ -1403,11 +1529,12 @@ fn owned_multi_block_bindings_with_checkpoint_v1(
 }
 
 fn complete_block_union_matches_live_v1(
+    scope: MultiBlockAdmissionScopeV1,
     blocks: &[CanonicalBlockBindingV1],
     live_faces: &[FaceId],
     live_hinges: &[EdgeId],
 ) -> bool {
-    if !multi_block_count_supported_v1(blocks.len())
+    if !scope.admits_block_count_v1(blocks.len())
         || blocks.iter().any(|block| {
             block.faces.is_empty()
                 || block.edges.is_empty()
@@ -1441,12 +1568,13 @@ fn complete_block_union_matches_live_v1(
 }
 
 fn complete_block_union_matches_live_with_checkpoint_v1(
+    scope: MultiBlockAdmissionScopeV1,
     blocks: &[CanonicalBlockBindingV1],
     live_faces: &[FaceId],
     live_hinges: &[EdgeId],
     checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
 ) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
-    if !multi_block_count_supported_v1(blocks.len()) {
+    if !scope.admits_block_count_v1(blocks.len()) {
         return Ok(false);
     }
     for block in blocks {
@@ -1496,6 +1624,7 @@ fn complete_block_union_matches_live_with_checkpoint_v1(
 }
 
 fn complete_multi_block_positive_layer_binding_v1(
+    scope: MultiBlockAdmissionScopeV1,
     parent_binding: [u8; 32],
     live_faces: &[FaceId],
     live_hinges: &[EdgeId],
@@ -1503,6 +1632,9 @@ fn complete_multi_block_positive_layer_binding_v1(
 ) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    if let Some(domain_tag) = scope.complete_live_domain_tag_v1() {
+        hash.update(domain_tag);
+    }
     hash.update(parent_binding);
     hash.update((live_faces.len() as u64).to_le_bytes());
     for face in live_faces {
@@ -1527,6 +1659,7 @@ fn complete_multi_block_positive_layer_binding_v1(
 }
 
 fn complete_multi_block_positive_layer_binding_with_checkpoint_v1(
+    scope: MultiBlockAdmissionScopeV1,
     parent_binding: [u8; 32],
     live_faces: &[FaceId],
     live_hinges: &[EdgeId],
@@ -1535,6 +1668,9 @@ fn complete_multi_block_positive_layer_binding_with_checkpoint_v1(
 ) -> Result<[u8; 32], CommonArticulationContinuousLayerPathErrorV1> {
     let mut hash = Sha256::new();
     hash.update(COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    if let Some(domain_tag) = scope.complete_live_domain_tag_v1() {
+        hash.update(domain_tag);
+    }
     hash.update(parent_binding);
     hash.update((live_faces.len() as u64).to_le_bytes());
     for face in live_faces {
@@ -1565,6 +1701,7 @@ fn complete_multi_block_positive_layer_binding_with_checkpoint_v1(
 }
 
 fn multi_block_positive_layer_binding_v1(
+    scope: MultiBlockAdmissionScopeV1,
     parent_binding: [u8; 32],
     layers: &[GeneralMultiFaceCellTransportProofV1],
     articulation_layer_fingerprint: [u8; 32],
@@ -1583,6 +1720,9 @@ fn multi_block_positive_layer_binding_v1(
     records.sort_unstable();
     let mut hash = Sha256::new();
     hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    if let Some(domain_tag) = scope.positive_layer_domain_tag_v1() {
+        hash.update(domain_tag);
+    }
     hash.update(parent_binding);
     hash.update(articulation_layer_fingerprint);
     for (target, thickness, transitions, pairs) in records {
@@ -1595,6 +1735,7 @@ fn multi_block_positive_layer_binding_v1(
 }
 
 fn multi_block_positive_layer_binding_with_checkpoint_v1(
+    scope: MultiBlockAdmissionScopeV1,
     parent_binding: [u8; 32],
     layers: &[GeneralMultiFaceCellTransportProofV1],
     articulation_layer_fingerprint: [u8; 32],
@@ -1616,6 +1757,9 @@ fn multi_block_positive_layer_binding_with_checkpoint_v1(
     records.sort_unstable();
     let mut hash = Sha256::new();
     hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    if let Some(domain_tag) = scope.positive_layer_domain_tag_v1() {
+        hash.update(domain_tag);
+    }
     hash.update(parent_binding);
     hash.update(articulation_layer_fingerprint);
     for (target, thickness, transitions, pairs) in records {
@@ -3119,13 +3263,14 @@ mod tests {
     use super::{
         COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1, CanonicalBlockBindingV1,
         CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1,
-        CommonArticulationPoseLimitsV1, MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1,
-        MultiBlockClosureInputV1, MultiBlockPositiveLayerInputV1,
-        block_articulation_incidence_is_tree_v1, issue_common_articulation_pose_authority_v1,
+        CommonArticulationPoseLimitsV1, Digest, EXACT_NINE_BLOCK_ARITY_V1,
+        MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1, MultiBlockClosureInputV1,
+        MultiBlockPositiveLayerInputV1, Sha256, block_articulation_incidence_is_tree_v1,
+        issue_common_articulation_pose_authority_v1,
         issue_common_articulation_pose_authority_with_control_v1,
         issue_complete_multi_block_positive_layer_authority_v1,
-        issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
-        multi_block_count_supported_v1,
+        issue_exact_nine_block_closure_authority_v1, issue_multi_block_closure_authority_v1,
+        issue_multi_block_positive_layer_authority_v1, multi_block_count_supported_v1,
     };
     use crate::{
         CooperativeOperationControlV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
@@ -3249,7 +3394,11 @@ mod tests {
     }
 
     fn miura_block_chain_v1(block_count: usize) -> (Vec<MiuraBlockFixture>, MiuraBlockFixture) {
-        assert!((3..=MULTI_BLOCK_MAX_BLOCKS_V1).contains(&block_count));
+        assert!(
+            (multi_block_count_supported_v1(block_count)
+                || block_count == EXACT_NINE_BLOCK_ARITY_V1)
+                && block_count >= 3
+        );
         let namespace = ProjectId::new();
         let blocks = (0..block_count)
             .map(|index| {
@@ -3500,7 +3649,11 @@ mod tests {
             .zip(hinge_blocks)
             .map(|(faces, hinges)| super::BlockUnionCompletenessInputV1 { faces, hinges })
             .collect::<Vec<_>>();
-        super::diagnose_block_union_completeness_v1(geometry, &inputs)
+        if inputs.len() == EXACT_NINE_BLOCK_ARITY_V1 {
+            super::diagnose_exact_nine_block_union_completeness_v1(geometry, &inputs)
+        } else {
+            super::diagnose_block_union_completeness_v1(geometry, &inputs)
+        }
     }
 
     #[test]
@@ -3549,6 +3702,173 @@ mod tests {
         assert!(!multi_block_count_supported_v1(
             MULTI_BLOCK_MAX_BLOCKS_V1 + 1
         ));
+    }
+
+    #[test]
+    fn submitted_set_scopes_have_disjoint_arity_and_binding_domains() {
+        let generic = super::MultiBlockAdmissionScopeV1::GenericSubmitted2To8;
+        let exact_nine = super::MultiBlockAdmissionScopeV1::ExactNineSubmittedSet;
+        assert!(generic.admits_block_count_v1(2));
+        assert!(generic.admits_block_count_v1(8));
+        assert!(!generic.admits_block_count_v1(9));
+        assert!(!exact_nine.admits_block_count_v1(8));
+        assert!(exact_nine.admits_block_count_v1(9));
+        assert!(!exact_nine.admits_block_count_v1(10));
+
+        assert_eq!(generic.closure_domain_tag_v1(), b"closure_v1");
+        assert_eq!(generic.positive_layer_domain_tag_v1(), None);
+        assert_eq!(generic.complete_live_domain_tag_v1(), None);
+        let exact_domains = [
+            exact_nine.closure_domain_tag_v1(),
+            exact_nine
+                .positive_layer_domain_tag_v1()
+                .expect("exact-nine positive-layer domain"),
+            exact_nine
+                .complete_live_domain_tag_v1()
+                .expect("exact-nine complete-live domain"),
+        ];
+        assert!(
+            exact_domains
+                .iter()
+                .all(|domain| *domain != generic.closure_domain_tag_v1())
+        );
+        for (index, domain) in exact_domains.iter().enumerate() {
+            assert!(
+                exact_domains[index + 1..]
+                    .iter()
+                    .all(|other| domain != other)
+            );
+        }
+
+        let closure_domain_probe = |scope: super::MultiBlockAdmissionScopeV1| {
+            let mut hash = Sha256::new();
+            hash.update(super::MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+            hash.update(scope.closure_domain_tag_v1());
+            hash.update(b"identical-owned-input-probe-v1");
+            <[u8; 32]>::from(hash.finalize())
+        };
+        assert_ne!(
+            closure_domain_probe(generic),
+            closure_domain_probe(exact_nine)
+        );
+    }
+
+    #[test]
+    fn exact_nine_submitted_set_companions_preserve_generic_eight_block_boundary() {
+        let (prepared, scheduled, live_geometry, _) = prepare_complete_chain_v1(9);
+        let closure_inputs = || {
+            prepared
+                .iter()
+                .zip(&scheduled)
+                .map(
+                    |((_, geometry, audit, _, _), (schedule, closure))| MultiBlockClosureInputV1 {
+                        geometry,
+                        audit,
+                        schedule,
+                        closure,
+                    },
+                )
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            issue_multi_block_closure_authority_v1(closure_inputs(), 0.1, [0x91; 32]).is_none(),
+            "the generic submitted-set issuer remains capped at eight blocks",
+        );
+        assert!(
+            super::issue_exact_nine_block_closure_authority_v1(
+                closure_inputs().into_iter().take(8).collect(),
+                0.1,
+                [0x91; 32],
+            )
+            .is_none(),
+            "the companion issuer admits exactly nine blocks only",
+        );
+        let ten_closure_inputs = (0..10)
+            .map(|index| {
+                let (_, geometry, audit, _, _) = &prepared[index % prepared.len()];
+                let (schedule, closure) = &scheduled[index % scheduled.len()];
+                MultiBlockClosureInputV1 {
+                    geometry,
+                    audit,
+                    schedule,
+                    closure,
+                }
+            })
+            .collect();
+        assert!(
+            super::issue_exact_nine_block_closure_authority_v1(
+                ten_closure_inputs,
+                0.1,
+                [0x91; 32],
+            )
+            .is_none(),
+            "the companion issuer rejects ten blocks",
+        );
+        let authority =
+            super::issue_exact_nine_block_closure_authority_v1(closure_inputs(), 0.1, [0x91; 32])
+                .expect("exact-nine submitted-set authority");
+        assert_eq!(authority.block_count_v1(), 9);
+        assert_eq!(
+            authority.scope,
+            super::MultiBlockAdmissionScopeV1::ExactNineSubmittedSet,
+        );
+        assert_ne!(authority.binding_fingerprint_v1(), [0; 32]);
+
+        let block_faces = prepared
+            .iter()
+            .map(|(_, geometry, _, _, _)| geometry.face_ids().to_vec())
+            .collect::<Vec<_>>();
+        let block_hinges = prepared
+            .iter()
+            .map(|(_, geometry, _, _, _)| {
+                geometry
+                    .hinges()
+                    .iter()
+                    .map(|hinge| hinge.edge())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let union_inputs = block_faces
+            .iter()
+            .zip(&block_hinges)
+            .map(|(faces, hinges)| super::BlockUnionCompletenessInputV1 { faces, hinges })
+            .collect::<Vec<_>>();
+        assert!(
+            super::diagnose_block_union_completeness_v1(&live_geometry, &union_inputs).is_none(),
+            "the generic union diagnosis remains capped at eight blocks",
+        );
+        assert!(
+            super::diagnose_exact_nine_block_union_completeness_v1(
+                &live_geometry,
+                &union_inputs[..8],
+            )
+            .is_none(),
+            "the companion union diagnosis admits exactly nine blocks only",
+        );
+        let ten_union_inputs = (0..10)
+            .map(|index| super::BlockUnionCompletenessInputV1 {
+                faces: &block_faces[index % block_faces.len()],
+                hinges: &block_hinges[index % block_hinges.len()],
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            super::diagnose_exact_nine_block_union_completeness_v1(
+                &live_geometry,
+                &ten_union_inputs,
+            )
+            .is_none(),
+            "the companion union diagnosis rejects ten blocks",
+        );
+        let report =
+            super::diagnose_exact_nine_block_union_completeness_v1(&live_geometry, &union_inputs)
+                .expect("exact-nine live-union report");
+        assert_eq!(
+            report.scope,
+            super::MultiBlockAdmissionScopeV1::ExactNineSubmittedSet,
+        );
+        assert!(report.exact_live_union_observed());
+        assert!(!report.authorizes_multi_block_composition());
+        assert!(!report.authorizes_project_mutation());
     }
 
     #[test]
@@ -4075,6 +4395,86 @@ mod tests {
         assert!(!authority.revalidates_v1(&sources, thickness, issuer_context, layer_fingerprint,));
     }
 
+    fn legacy_generic_closure_binding_v1(
+        authority: &super::MultiBlockClosureAuthorityV1,
+    ) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(super::MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+        hash.update(b"closure_v1");
+        hash.update(authority.thickness_bits.to_le_bytes());
+        hash.update(authority.issuer_context);
+        for block in &authority.blocks {
+            hash.update(block.schedule.graph_binding_fingerprint_v1());
+            hash.update(block.schedule.certificate_binding_fingerprint_v2());
+            hash.update(block.closure.partition_binding_fingerprint_v2());
+            hash.update((block.edges.len() as u64).to_le_bytes());
+            for edge in &block.edges {
+                hash.update(edge.canonical_bytes());
+            }
+            for face in &block.faces {
+                hash.update(face.canonical_bytes());
+            }
+        }
+        hash.finalize().into()
+    }
+
+    fn legacy_generic_positive_layer_binding_v1(
+        authority: &super::MultiBlockPositiveLayerAuthorityV1,
+    ) -> [u8; 32] {
+        let mut records = authority
+            .layer
+            .iter()
+            .map(|proof| {
+                (
+                    proof.target_order_hash(),
+                    proof.paper_thickness_mm().to_bits(),
+                    proof.transition_hashes().len(),
+                    proof.pair_order_count(),
+                )
+            })
+            .collect::<Vec<_>>();
+        records.sort_unstable();
+        let mut hash = Sha256::new();
+        hash.update(super::MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+        hash.update(authority.parent.binding);
+        hash.update(authority.articulation_layer_fingerprint);
+        for (target, thickness, transitions, pairs) in records {
+            hash.update(target);
+            hash.update(thickness.to_le_bytes());
+            hash.update((transitions as u64).to_le_bytes());
+            hash.update((pairs as u64).to_le_bytes());
+        }
+        hash.finalize().into()
+    }
+
+    fn legacy_generic_complete_binding_v1(
+        authority: &super::CompleteMultiBlockPositiveLayerAuthorityV1,
+    ) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+        hash.update(authority.parent.binding);
+        hash.update((authority.live_faces.len() as u64).to_le_bytes());
+        for face in &authority.live_faces {
+            hash.update(face.canonical_bytes());
+        }
+        hash.update((authority.live_hinges.len() as u64).to_le_bytes());
+        for hinge in &authority.live_hinges {
+            hash.update(hinge.canonical_bytes());
+        }
+        hash.update((authority.blocks.len() as u64).to_le_bytes());
+        for block in &authority.blocks {
+            hash.update((block.faces.len() as u64).to_le_bytes());
+            for face in &block.faces {
+                hash.update(face.canonical_bytes());
+            }
+            hash.update((block.edges.len() as u64).to_le_bytes());
+            for edge in &block.edges {
+                hash.update(edge.canonical_bytes());
+            }
+        }
+        hash.finalize().into()
+    }
+
     fn assert_complete_live_multi_block_authority_v1(block_count: usize) {
         let (prepared, scheduled, live_geometry, detached_live_geometry) =
             prepare_complete_chain_v1(block_count);
@@ -4083,23 +4483,33 @@ mod tests {
         let thickness = 0.1;
         let issuer_context = [0x51; 32];
         let layer_fingerprint = [0x52; 32];
-        let parent = issue_multi_block_closure_authority_v1(
-            prepared
-                .iter()
-                .zip(&scheduled)
-                .map(
-                    |((_, geometry, audit, _, _), (schedule, closure))| MultiBlockClosureInputV1 {
-                        geometry,
-                        audit,
-                        schedule,
-                        closure,
-                    },
-                )
-                .collect(),
-            thickness,
-            issuer_context,
-        )
+        let closure_inputs = prepared
+            .iter()
+            .zip(&scheduled)
+            .map(
+                |((_, geometry, audit, _, _), (schedule, closure))| MultiBlockClosureInputV1 {
+                    geometry,
+                    audit,
+                    schedule,
+                    closure,
+                },
+            )
+            .collect();
+        let parent = if block_count == EXACT_NINE_BLOCK_ARITY_V1 {
+            issue_exact_nine_block_closure_authority_v1(closure_inputs, thickness, issuer_context)
+        } else {
+            issue_multi_block_closure_authority_v1(closure_inputs, thickness, issuer_context)
+        }
         .expect("complete multi-block closure authority");
+        if block_count <= MULTI_BLOCK_MAX_BLOCKS_V1 {
+            assert_eq!(
+                parent.binding,
+                legacy_generic_closure_binding_v1(&parent),
+                "generic closure fingerprint changed at arity {block_count}",
+            );
+        } else {
+            assert_ne!(parent.binding, legacy_generic_closure_binding_v1(&parent));
+        }
         let proofs = prepared
             .iter()
             .zip(&scheduled)
@@ -4152,6 +4562,18 @@ mod tests {
             layer_fingerprint,
         )
         .expect("complete multi-block positive layer authority");
+        if block_count <= MULTI_BLOCK_MAX_BLOCKS_V1 {
+            assert_eq!(
+                parent.binding,
+                legacy_generic_positive_layer_binding_v1(&parent),
+                "generic positive-layer fingerprint changed at arity {block_count}",
+            );
+        } else {
+            assert_ne!(
+                parent.binding,
+                legacy_generic_positive_layer_binding_v1(&parent),
+            );
+        }
         let sources = prepared
             .iter()
             .map(|(_, _, _, _, source)| source)
@@ -4329,6 +4751,25 @@ mod tests {
         let report = completeness_report_v1(&live_geometry, &reversed_faces, &reversed_hinges)
             .expect("canonical complete report");
         assert!(report.exact_live_union_observed());
+        let expected_scope = if block_count == EXACT_NINE_BLOCK_ARITY_V1 {
+            super::MultiBlockAdmissionScopeV1::ExactNineSubmittedSet
+        } else {
+            super::MultiBlockAdmissionScopeV1::GenericSubmitted2To8
+        };
+        let wrong_scope = if block_count == EXACT_NINE_BLOCK_ARITY_V1 {
+            super::MultiBlockAdmissionScopeV1::GenericSubmitted2To8
+        } else {
+            super::MultiBlockAdmissionScopeV1::ExactNineSubmittedSet
+        };
+        assert_eq!(report.scope, expected_scope);
+        assert_eq!(parent.scope, expected_scope);
+        let mut wrong_scope_report = report.clone();
+        wrong_scope_report.scope = wrong_scope;
+        assert!(!super::complete_multi_block_report_matches_parent_v1(
+            &live_geometry,
+            &wrong_scope_report,
+            &parent,
+        ));
         assert!(!super::complete_multi_block_report_matches_parent_v1(
             &detached_live_geometry,
             &report,
@@ -4345,6 +4786,18 @@ mod tests {
             &target_angles,
         )
         .expect("sealed complete multi-block authority");
+        if block_count <= MULTI_BLOCK_MAX_BLOCKS_V1 {
+            assert_eq!(
+                authority.binding,
+                legacy_generic_complete_binding_v1(&authority),
+                "generic complete-live fingerprint changed at arity {block_count}",
+            );
+        } else {
+            assert_ne!(
+                authority.binding,
+                legacy_generic_complete_binding_v1(&authority),
+            );
+        }
         assert_eq!(
             authority.model_id(),
             COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1
@@ -4354,6 +4807,47 @@ mod tests {
         assert!(!authority.authorizes_project_mutation());
         assert!(!authority.authorizes_apply());
         assert!(!authority.authorizes_viewer());
+        assert!(authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        assert_eq!(authority.scope, expected_scope);
+        assert_eq!(authority.parent.scope, expected_scope);
+        assert_eq!(authority.parent.parent.scope, expected_scope);
+        authority.scope = wrong_scope;
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        authority.scope = expected_scope;
+        authority.parent.scope = wrong_scope;
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        authority.parent.scope = expected_scope;
+        authority.parent.parent.scope = wrong_scope;
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        authority.parent.parent.scope = expected_scope;
         assert!(authority.revalidates_v1(
             &live_geometry,
             &sources,
@@ -4447,9 +4941,14 @@ mod tests {
     }
 
     #[test]
-    fn complete_live_three_four_and_eight_block_authorities_are_sealed_and_non_authorizing() {
-        for block_count in [3_usize, 4, 5, 8] {
+    fn representative_generic_complete_authorities_preserve_legacy_fingerprints() {
+        for block_count in [3_usize, 4, 5, MULTI_BLOCK_MAX_BLOCKS_V1] {
             assert_complete_live_multi_block_authority_v1(block_count);
         }
+    }
+
+    #[test]
+    fn exact_nine_complete_live_authority_is_explicitly_scoped_and_non_authorizing() {
+        assert_complete_live_multi_block_authority_v1(9);
     }
 }

@@ -61,13 +61,13 @@ fn blockwise_control_gate_rejects_stops_and_accepts_only_current_generation() {
 fn bounded_multi_block_current_cycle_arity_matches_certified_boundary() {
     use super::stacked_fold_blockwise_cycle::bounded_multi_block_current_cycle_arity_supported_v1;
 
-    for block_count in 3..=8 {
+    for block_count in 3..=9 {
         assert!(
             bounded_multi_block_current_cycle_arity_supported_v1(block_count),
             "{block_count}-block current cycles stay inside the certified production boundary"
         );
     }
-    for block_count in [0, 1, 2, 9, 10, usize::MAX] {
+    for block_count in [0, 1, 2, 10, 11, usize::MAX] {
         assert!(
             !bounded_multi_block_current_cycle_arity_supported_v1(block_count),
             "{block_count}-block current cycles must fail closed outside the certified production boundary"
@@ -100,7 +100,8 @@ fn bounded_multi_block_transport_preflight_accounts_for_whole_parent_and_all_blo
         .and_then(|work| work.checked_add_v1(per_proof))
         .and_then(|work| work.checked_add_v1(per_proof))
         .and_then(|work| work.checked_add_v1(per_proof))
-        .expect("whole-parent plus eight-block aggregate");
+        .and_then(|work| work.checked_add_v1(per_proof))
+        .expect("whole-parent plus nine-block aggregate");
     assert_eq!(
         (
             aggregate.transitions,
@@ -108,7 +109,7 @@ fn bounded_multi_block_transport_preflight_accounts_for_whole_parent_and_all_blo
             aggregate.layer_records,
             aggregate.boundary_samples,
         ),
-        (27, 45, 63, 99),
+        (30, 50, 70, 110),
     );
     let exact = GeneralCellTransportLimitsV1 {
         max_transitions: aggregate.transitions,
@@ -287,6 +288,7 @@ fn bounded_multi_block_layer_peak_materializes_only_after_exact_preflight() {
     let six_face_sets = [selected_faces; 6];
     let seven_face_sets = [selected_faces; 7];
     let eight_face_sets = [selected_faces; 8];
+    let nine_face_sets = [selected_faces; 9];
     let three_plan =
         BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &three_face_sets, 5, 7)
             .expect("checked proof-retained and temporary peak");
@@ -305,12 +307,16 @@ fn bounded_multi_block_layer_peak_materializes_only_after_exact_preflight() {
     let eight_plan =
         BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &eight_face_sets, 5, 7)
             .expect("eight-block retained-byte plan");
+    let nine_plan =
+        BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &nine_face_sets, 5, 7)
+            .expect("nine-block retained-byte plan");
     assert_eq!(three_plan.block_sources.len(), 3);
     assert_eq!(four_plan.block_sources.len(), 4);
     assert_eq!(five_plan.block_sources.len(), 5);
     assert_eq!(six_plan.block_sources.len(), 6);
     assert_eq!(seven_plan.block_sources.len(), 7);
     assert_eq!(eight_plan.block_sources.len(), 8);
+    assert_eq!(nine_plan.block_sources.len(), 9);
     for plan in [
         &three_plan,
         &four_plan,
@@ -318,6 +324,7 @@ fn bounded_multi_block_layer_peak_materializes_only_after_exact_preflight() {
         &six_plan,
         &seven_plan,
         &eight_plan,
+        &nine_plan,
     ] {
         let restricted_sum = plan
             .block_sources
@@ -334,7 +341,7 @@ fn bounded_multi_block_layer_peak_materializes_only_after_exact_preflight() {
             source_peak + plan.proof_retained + plan.peak_temporary
         );
     }
-    for unsupported_face_sets in [&[selected_faces; 2][..], &[selected_faces; 9][..]] {
+    for unsupported_face_sets in [&[selected_faces; 2][..], &[selected_faces; 10][..]] {
         assert_eq!(
             BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(
                 &source,
@@ -349,10 +356,10 @@ fn bounded_multi_block_layer_peak_materializes_only_after_exact_preflight() {
     assert_eq!(
         materialize_bounded_multi_block_layer_sources_v1(
             &source,
-            &eight_face_sets,
+            &nine_face_sets,
             5,
             7,
-            eight_plan.peak - 1,
+            nine_plan.peak - 1,
         ),
         Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
     );
@@ -364,18 +371,18 @@ fn bounded_multi_block_layer_peak_materializes_only_after_exact_preflight() {
     let (whole_source, block_sources, materialized_plan) =
         materialize_bounded_multi_block_layer_sources_v1(
             &source,
-            &eight_face_sets,
+            &nine_face_sets,
             5,
             7,
-            eight_plan.peak,
+            nine_plan.peak,
         )
-        .expect("the exact eight-block retained-byte peak is accepted");
-    assert_eq!(materialized_plan, eight_plan);
-    assert_eq!(block_sources.len(), 8);
+        .expect("the exact nine-block retained-byte peak is accepted");
+    assert_eq!(materialized_plan, nine_plan);
+    assert_eq!(block_sources.len(), 9);
     assert_eq!(
         bounded_multi_block_layer_source_clone_attempts_for_test_v1(),
-        9,
-        "one whole source and all eight restricted sources are materialized"
+        10,
+        "one whole source and all nine restricted sources are materialized"
     );
     assert!(
         whole_source
@@ -394,7 +401,7 @@ fn bounded_multi_block_layer_peak_materializes_only_after_exact_preflight() {
     assert_eq!(
         materialize_bounded_multi_block_layer_sources_v1(
             &source,
-            &eight_face_sets,
+            &nine_face_sets,
             usize::MAX,
             1,
             usize::MAX,

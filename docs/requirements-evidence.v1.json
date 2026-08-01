@@ -2078,7 +2078,8 @@
         "6edb66662f4d0033d470660c5a0e3b5d6c8a4be5",
         "3470a8debf63f78d28a6f5be5c64d5a1883554a8",
         "c3ed1bddf1dda7e213c0687068c3338f3a3f6c51",
-        "f1e8b460fe73be88372851fa86fe5ca656c76463"
+        "f1e8b460fe73be88372851fa86fe5ca656c76463",
+        "5132cf7966195a4e8055ea63114fad03948ea47e"
       ],
       "evidence": [
         {
@@ -2112,24 +2113,79 @@
           "selector": "pub(super) const fn bounded_multi_block_current_cycle_arity_supported_v1("
         },
         {
+          "kind": "production-symbol",
+          "path": "crates/ori-kinematics/src/graph/separated_even_single_vertex_opposite_pair_blocks.rs",
+          "selector": "pub(super) fn separated_even_single_vertex_opposite_pair_blocks_premises_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle.rs",
+          "selector": "pub(super) fn checked_bounded_multi_block_layer_peak_retained_bytes_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-kinematics/src/graph.rs",
+          "selector": "fn even_single_vertex_opposite_pair_cycle_closure_premises_v1("
+        },
+        {
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/stacked_fold_read/tests/read_suite_02_generation_fixtures.rs",
           "selector": "fn bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history()"
         },
         {
           "kind": "test",
-          "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle_tests.rs",
-          "selector": "fn bounded_multi_block_current_cycle_arity_is_exactly_three_through_seven()"
+          "path": "test-support/four_bay_cycle.rs",
+          "selector": "pub fn eight_bay_opposite_bifold_pattern()"
         },
         {
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle_tests.rs",
-          "selector": "fn bounded_multi_block_transport_preflight_enforces_eight_proof_aggregate_and_exact_limits()"
+          "selector": "fn bounded_multi_block_current_cycle_arity_matches_certified_boundary()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle_tests.rs",
+          "selector": "fn bounded_multi_block_transport_preflight_accounts_for_whole_parent_and_all_blocks()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle_tests.rs",
+          "selector": "fn bounded_multi_block_layer_peak_materializes_only_after_exact_preflight()"
         },
         {
           "kind": "test",
           "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
-          "selector": "fn separated_four_five_six_and_seven_bifolds_issue_strict_parent_positive_authority()"
+          "selector": "fn bounded_separated_opposite_bifolds_issue_strict_parent_positive_authority()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
+          "selector": "fn bounded_extended_opposite_bifold_fixtures_are_simple_convex_and_locally_flat_foldable()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph.rs",
+          "selector": "fn opposite_pair_closure_rejects_mixed_assignment_hidden_at_three_zero_samples()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-foldability/src/facewise.rs",
+          "selector": "fn build_overlap_pairs_with_exact_bounds_pruning<"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-foldability/src/facewise/tests.rs",
+          "selector": "fn exact_bounds_pair_pruning_preserves_canonical_pairs_and_reduces_exact_work()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-foldability/src/facewise.rs",
+          "selector": "fn split_owned_convex_polygon_by_line<"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-foldability/src/facewise/tests.rs",
+          "selector": "fn owned_split_reuses_only_strictly_one_sided_inputs_and_preserves_exact_outputs()"
         },
         {
           "kind": "test",
@@ -2163,11 +2219,11 @@
         }
       ],
       "limitations": [
-        "Production Apply covers certified bounded current cycles only: common-articulation admission is exactly 3..=7 blocks, with end-to-end 4/5/6/7-block radial-bifold coverage. The seven-block fixture has 36 material faces, 42 hinges, and 14 moving hinges; its path binds one whole-parent proof and seven restricted proofs (eight total) under checked work/storage and layer-peak limits.",
-        "Instruction/export evidence requires exact fixed-face, instruction-model, and source/target-pose binding in a local registry; persisted or reopened references alone are not authority. LayerOrderViewer is a read-only XZ schematic for global-flat results and flat targets, not a general non-flat viewer or mutation authority."
+        "Certified radial-bifold Apply is only 3..=8 blocks (E2E 4..8). At 8, one whole plus eight restricted proofs/sources bind under exact depth/leaves/work 3/8/8; each one-short fails closed.",
+        "Separate bounded 2..=8 canonical-union authority is unchanged and non-authorizing; exact AABB/split paths preserve cells and fail closed."
       ],
       "missingAcceptance": [
-        "Arbitrary new straight-line folds through the current 3D pose with automatic per-layer crease insertion; arbitrary-pose and arbitrary-schedule positive-thickness multi-hinge collision/continuous-path/closure proofs including shared-hinge admission; general multi-layer transport; production Apply for eight-or-more blocks and arbitrary multi-block configurations; and a general non-flat post-apply layer-order viewer."
+        "Nine-plus or arbitrary multi-block Apply; arbitrary positive-thickness multi-hinge proof/transport; 3D crease insertion; general non-flat viewer."
       ]
     },
     {

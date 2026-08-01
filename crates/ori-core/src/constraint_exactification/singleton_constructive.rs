@@ -110,7 +110,10 @@ pub fn construct_two_constraint_exact_assignment_v1(
 /// components retain the existing canonical construction; an exactly
 /// two-record component may additionally use the existing sound pair
 /// constructor when independent singleton coordinates are incompatible.
-/// Larger connected components retain the bit-identical singleton rule. The
+/// A three-record component first retains the bit-identical singleton rule. If
+/// that fails, exactly one constructible ordinary-pair decomposition may be
+/// joined to the remaining singleton leaf through exactly one referenced
+/// articulation vertex. Four fixed translations are attempted, and the
 /// progressive candidate grants no authority unless the complete production
 /// residual verifier re-certifies all three records together.
 ///
@@ -131,9 +134,11 @@ pub fn construct_three_constraint_exact_assignment_v1(
 /// Canonically ordered referenced-vertex components are assembled
 /// progressively. One-record components use singleton templates, exactly
 /// two-record components can fall back to the existing sound pair templates,
-/// and larger components retain the bit-identical singleton merge. The
-/// complete production residual verifier must re-certify the merged candidate
-/// before an observational-only assignment is returned.
+/// and an exactly three-record component can use the unique ordinary-pair plus
+/// single-articulation singleton-leaf template. Other larger components retain
+/// the bit-identical singleton merge. The complete production residual
+/// verifier must re-certify the merged candidate before an observational-only
+/// assignment is returned.
 ///
 /// Unsupported templates, any shared-coordinate disagreement, direct
 /// conflicts, invalid geometry, and any nonzero full-document residual return
@@ -154,10 +159,12 @@ pub fn construct_four_constraint_exact_assignment_v1(
 /// derived from every explicit vertex role and both endpoints of every
 /// referenced edge. One-record components use the singleton constructor;
 /// exactly two-record components can use the existing ordinary
-/// crease-pattern pair constructor after an incompatible singleton merge.
-/// Larger components retain the bit-identical singleton rule. Every component
-/// and the final candidate are independently checked by the production
-/// binary64 residual verifier.
+/// crease-pattern pair constructor after an incompatible singleton merge. An
+/// exactly three-record component can additionally use one unique ordinary
+/// pair joined to a singleton leaf at exactly one referenced articulation
+/// vertex. Other larger components retain the bit-identical singleton rule.
+/// Every component and the final candidate are independently checked by the
+/// production binary64 residual verifier.
 ///
 /// At exactly two records, a fixed pair-template prepass runs first. It tries
 /// at most one cardinal-rotation candidate and four ordinary translated
@@ -166,12 +173,14 @@ pub fn construct_four_constraint_exact_assignment_v1(
 /// same failed pair is not retried as a component.
 ///
 /// The explicit sixteen-record ceiling bounds both memory and work. With
-/// `N <= 16` records and at most `P <= 8` two-record components, the
+/// `N <= 16` records, `P` two-record components, and `T` admitted three-record
+/// components with `2P + 3T <= N`, the
 /// conservative worst case is 138 bounded preparation-or-verification passes
 /// and 112 full-pattern clones: `5N`/`4N` from singleton attempts,
-/// `6P`/`5P` from pair attempts, at most eight component merge
-/// verification/clones, and the whole-document preparation/final verifier.
-/// There is no combinatorial assignment search.
+/// `6P`/`5P` from pair attempts, `5T`/`4T` from three-record attempts, at most
+/// eight component merge verification/clones, and the whole-document
+/// preparation/final verifier. A two-record component remains the dominant
+/// per-record cost, and there is no combinatorial assignment search.
 ///
 /// Documents outside the two-through-sixteen range, unsupported templates,
 /// shared-coordinate disagreement, exhaustion of fixed translations, direct
@@ -197,9 +206,9 @@ fn construct_bounded_singleton_composition_v1(
     )
 }
 
-type CanonicalAssignment = BTreeMap<[u8; 16], (VertexId, Point2)>;
+pub(super) type CanonicalAssignment = BTreeMap<[u8; 16], (VertexId, Point2)>;
 
-fn single_constraint_canonical_assignment(
+pub(super) fn single_constraint_canonical_assignment(
     pattern: &CreasePattern,
     constraint: &GeometricConstraintKindV1,
 ) -> Option<CanonicalAssignment> {

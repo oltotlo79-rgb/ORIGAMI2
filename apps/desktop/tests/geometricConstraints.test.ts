@@ -1558,6 +1558,32 @@ test('normalizes only bounded exact-model satisfiability certificates', () => {
   }
 })
 
+test('normalizes a three-record detached construction without accepting coordinates', () => {
+  const result = {
+    status: 'proven_satisfiable',
+    model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
+    transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
+    evidence_kind: 'detached_constructed_assignment',
+    constraint_count: 3,
+    equation_count: 3,
+    authorizes_project_mutation: false,
+    replayable_across_runtimes: true,
+  } as const
+  const normalized = normalizeGeometricConstraintPreflightResponse(
+    response(result),
+    BINDING,
+  )
+  assert.deepEqual(normalized?.result, result)
+  assertDeepFrozen(normalized)
+
+  for (const forbidden of ['pattern', 'vertices', 'positions', 'assignment']) {
+    assert.equal(normalizeGeometricConstraintPreflightResponse(response({
+      ...result,
+      [forbidden]: [],
+    }), BINDING), null)
+  }
+})
+
 test('preflight response is bound to the exact project instance, project, and revision', () => {
   for (const raw of [
     { ...response({ status: 'no_direct_conflict' }), project_instance_id: uuid(9) },

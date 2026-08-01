@@ -914,8 +914,8 @@ describe('GeometricConstraintPanel', () => {
         GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID,
       transcendental_model_id: DETERMINISTIC_TRANSCENDENTAL_MODEL_ID_V1,
       evidence_kind: 'detached_constructed_assignment',
-      constraint_count: 8,
-      equation_count: 8,
+      constraint_count: 3,
+      equation_count: 3,
       authorizes_project_mutation: false,
       replayable_across_runtimes: true,
     } as const
@@ -923,7 +923,7 @@ describe('GeometricConstraintPanel', () => {
 
     let status = screen.getByRole('status')
     expect(status.textContent).toContain(
-      '現在配置とは別の厳密配置が構成・再認証されました（全8件・8方程式）。',
+      '現在配置とは別の厳密配置が構成・再認証されました（全3件・3方程式）。',
     )
     expect(status.textContent).toContain(
       'この証拠はプロジェクト変更を認可しません。',
@@ -938,7 +938,7 @@ describe('GeometricConstraintPanel', () => {
     })
     status = screen.getByRole('status')
     expect(status.textContent).toContain(
-      'A detached exact assignment was constructed and re-certified for all 8 constraints and 8 deterministic binary64 residual equations.',
+      'A detached exact assignment was constructed and re-certified for all 3 constraints and 3 deterministic binary64 residual equations.',
     )
     expect(status.textContent).toContain(
       'This evidence does not authorize project mutation.',

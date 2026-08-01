@@ -12,6 +12,7 @@ mod component_constructive;
 mod length_constructive;
 mod pair_constructive;
 mod singleton_constructive;
+mod three_record_component_constructive;
 mod unit_parallel_fixed_angle_constructive;
 mod unit_terminal_two_hop_parallel_angle_constructive;
 mod unit_two_hop_parallel_constructive;

@@ -508,6 +508,65 @@ fn connected_pair_component_and_disjoint_singleton_publish_detached_without_coor
 }
 
 #[test]
+fn connected_pair_plus_singleton_leaf_publishes_only_detached_exact_sat() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(0.0, 0.0);
+    let shared = fixture.vertex(3.0, 4.0);
+    let leaf_end = fixture.vertex(8.0, 1.0);
+    let first = fixture.edge(first_start, shared);
+    let leaf = fixture.edge(shared, leaf_end);
+    let pattern = CreasePattern {
+        vertices: fixture.vertices,
+        edges: fixture.edges,
+    };
+    let document = document([
+        GeometricConstraintKindV1::Horizontal { edge: first },
+        GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 2.0,
+        },
+        GeometricConstraintKindV1::Vertical { edge: leaf },
+    ]);
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(&pattern, &document)
+            .expect("the pair-plus-leaf source is structurally valid")
+            .is_none(),
+        "the source must not already satisfy the connected three-record document",
+    );
+    let pattern_before = pattern.clone();
+    let document_before = document.clone();
+
+    let result = analyze_geometric_constraint_document(&pattern, &document);
+    assert_eq!(result, expected_positive_document(3, 3));
+    assert_eq!(pattern, pattern_before);
+    assert_eq!(document, document_before);
+    let encoded =
+        serde_json::to_value(&result).expect("serialize pair-plus-singleton-leaf SAT result");
+    let object = encoded
+        .as_object()
+        .expect("the tagged pair-plus-leaf SAT response is an object");
+    assert_eq!(object.len(), 8);
+    assert_eq!(
+        object.get("evidence_kind"),
+        Some(&serde_json::json!("detached_constructed_assignment")),
+    );
+    for forbidden in ["pattern", "vertices", "positions", "assignment"] {
+        assert!(
+            !object.contains_key(forbidden),
+            "connected component coordinates must not cross the DTO as {forbidden}",
+        );
+    }
+
+    let assignment =
+        ori_core::construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &document)
+            .expect("the bounded pair-plus-leaf constructor must produce an exact witness");
+    assert_constructed_sat_publication_rechecks_cancel_and_deadline(
+        &document,
+        assignment.certificate(),
+    );
+}
+
+#[test]
 fn eight_pair_components_publish_at_sixteen_and_seventeen_falls_through() {
     let mut fixture = FixtureBuilder::default();
     let mut constraints = Vec::new();

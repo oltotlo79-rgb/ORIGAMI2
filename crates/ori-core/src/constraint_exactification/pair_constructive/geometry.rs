@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use ori_domain::{CreasePattern, Edge, EdgeId, Point2, VertexId};
 
-pub(super) type CanonicalAssignment = BTreeMap<[u8; 16], (VertexId, Point2)>;
+pub(in crate::constraint_exactification) type CanonicalAssignment =
+    BTreeMap<[u8; 16], (VertexId, Point2)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Axis {
@@ -250,7 +251,9 @@ fn assign_point(
     }
 }
 
-pub(super) fn assignment_points_are_distinct(assignment: &CanonicalAssignment) -> bool {
+pub(in crate::constraint_exactification) fn assignment_points_are_distinct(
+    assignment: &CanonicalAssignment,
+) -> bool {
     let points = assignment
         .values()
         .map(|(_, point)| *point)
@@ -261,7 +264,7 @@ pub(super) fn assignment_points_are_distinct(assignment: &CanonicalAssignment) -
         .all(|(index, point)| !points[index + 1..].contains(point))
 }
 
-pub(super) fn apply_translated_assignment(
+pub(in crate::constraint_exactification) fn apply_translated_assignment(
     candidate: &mut CreasePattern,
     assignment: &CanonicalAssignment,
     offset: Point2,
@@ -301,6 +304,6 @@ pub(super) fn ordinary_positive(value: f64) -> bool {
     value > 0.0 && value.is_normal()
 }
 
-pub(super) fn ordinary_or_zero(value: f64) -> bool {
+pub(in crate::constraint_exactification) fn ordinary_or_zero(value: f64) -> bool {
     value == 0.0 || value.is_normal()
 }

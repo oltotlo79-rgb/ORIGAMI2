@@ -9,6 +9,7 @@ use super::{
         MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
         construct_single_constraint_exact_assignment_v1,
     },
+    three_record_component_constructive::construct_pair_plus_singleton_leaf_exact_assignment_v1,
 };
 use crate::{
     ConstraintPreflightV1, GeometricConstraintLimitsV1,
@@ -31,6 +32,8 @@ pub(super) const MAX_BOUNDED_COMPONENT_FULL_PATTERN_CLONES_V1: usize = 112;
 /// components first retain the original bit-identical singleton merge; an
 /// exactly two-record component may additionally use the existing ordinary
 /// crease-pattern pair constructor when the singleton merge is incompatible.
+/// An exactly three-record component may use the narrow ordinary-pair plus
+/// single-articulation singleton-leaf constructor.
 ///
 /// Each completed component is assembled on the progressively certified
 /// candidate. This makes every later component constructor validate all
@@ -39,21 +42,23 @@ pub(super) const MAX_BOUNDED_COMPONENT_FULL_PATTERN_CLONES_V1: usize = 112;
 /// A final full-document exact certificate remains the sole authority that can
 /// escape.
 ///
-/// For `N <= 16` records and `P <= floor(N / 2) <= 8` two-record components,
-/// the conservative worst case is at most 138 bounded
+/// For `N <= 16`, `P` two-record components, and `T` admitted three-record
+/// components, the conservative worst case remains at most 138 bounded
 /// preparation-or-verification passes and 112 full-pattern clones:
 ///
 /// - `N` singleton attempts, each with one preparation and at most four
 ///   verifier-backed candidates (`5N` passes and `4N` clones);
 /// - `P` pair attempts, each with one preparation and at most five
 ///   verifier-backed candidates (`6P` passes and `5P` clones);
+/// - `T` three-record attempts, each with one preparation and at most four
+///   verifier-backed candidates (`5T` passes and `4T` clones);
 /// - at most eight multi-singleton component merge verifications/clones; and
 /// - one whole-document preparation plus one final full verification.
 ///
-/// The special two-record whole-document pair prepass is never retried as a
-/// component pair, so it remains below the same global envelope. No
-/// residual-only algebraic overlay participates in this crease-pattern
-/// assignment path.
+/// Since `2P + 3T <= N`, a two-record component remains the dominant cost per
+/// record. The special two-record whole-document pair prepass is never retried
+/// as a component pair, so it remains below the same global envelope. No
+/// residual-only algebraic overlay participates in this crease-pattern path.
 pub(super) fn construct_bounded_component_exact_assignment_v1(
     pattern: &CreasePattern,
     document: &GeometricConstraintDocumentV1,
@@ -109,6 +114,20 @@ pub(super) fn construct_bounded_component_exact_assignment_v1(
                 &referenced_by_record,
                 component,
             )
+            .or_else(|| {
+                (component.record_indices.len() == 3)
+                    .then(|| {
+                        construct_pair_plus_singleton_leaf_exact_assignment_v1(
+                            base,
+                            &component_document,
+                        )
+                    })
+                    .flatten()
+                    .map(CurrentRuntimeExactConstraintAssignmentV1::into_pattern)
+                    .filter(|candidate| {
+                        candidate_changes_only(base, candidate, &component.referenced_vertices)
+                    })
+            })
             .or_else(|| {
                 (component.record_indices.len() == 2 && !only_component_is_two_record_prepass)
                     .then(|| {

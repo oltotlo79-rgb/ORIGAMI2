@@ -13,6 +13,11 @@ use super::{
         MAX_BOUNDED_COMPONENT_PREPARATION_OR_VERIFICATION_PASSES_V1,
     },
     construct_bounded_singleton_composition_exact_assignment_v1,
+    three_record_component_constructive::{
+        MAX_THREE_RECORD_COMPONENT_CONSTRUCTIVE_CANDIDATES_V1,
+        MAX_THREE_RECORD_COMPONENT_REFERENCED_VERTICES_V1,
+        construct_pair_plus_singleton_leaf_exact_assignment_v1,
+    },
 };
 use crate::{
     certify_binary64_exact_geometric_constraint_satisfaction_v1,
@@ -90,6 +95,8 @@ fn component_constructor_work_envelope_is_frozen() {
         138,
     );
     assert_eq!(MAX_BOUNDED_COMPONENT_FULL_PATTERN_CLONES_V1, 112);
+    assert_eq!(MAX_THREE_RECORD_COMPONENT_CONSTRUCTIVE_CANDIDATES_V1, 4);
+    assert_eq!(MAX_THREE_RECORD_COMPONENT_REFERENCED_VERTICES_V1, 7);
 }
 
 #[test]
@@ -420,22 +427,26 @@ fn whole_document_direct_conflict_precedes_a_constructible_pair_component() {
 }
 
 #[test]
-fn three_record_connected_component_without_a_sound_component_template_fails_closed() {
+fn unique_pair_plus_singleton_leaf_component_constructs_in_canonical_order() {
     let mut fixture = FixtureBuilder::default();
     let first_start = fixture.vertex(0.0, 0.0);
     let shared = fixture.vertex(3.0, 4.0);
     let second_end = fixture.vertex(8.0, 1.0);
+    let external_start = fixture.vertex(40.0, 5.0);
+    let external_end = fixture.vertex(44.0, 9.0);
     let first = fixture.edge(first_start, shared);
     let second = fixture.edge(shared, second_end);
+    fixture.edge(external_start, external_end);
     let pattern = fixture.finish();
-    let source = document([
+    let records = [
         record(GeometricConstraintKindV1::Horizontal { edge: first }),
         record(GeometricConstraintKindV1::FixedLength {
             edge: first,
             length_mm: 2.0,
         }),
         record(GeometricConstraintKindV1::Vertical { edge: second }),
-    ]);
+    ];
+    let source = document(records.clone());
 
     assert!(
         certify_binary64_exact_geometric_constraint_satisfaction_v1(&pattern, &source)
@@ -443,22 +454,290 @@ fn three_record_connected_component_without_a_sound_component_template_fails_clo
             .is_none(),
         "the source geometry must not already be an exact witness",
     );
+    let assignment = construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &source)
+        .expect("the unique ordinary pair plus singleton leaf must construct");
+    assert_eq!(assignment.pattern().edges, pattern.edges);
+    for external in [external_start, external_end] {
+        let before = pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == external)
+            .expect("external source vertex");
+        let after = assignment
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == external)
+            .expect("external candidate vertex");
+        assert_eq!(before.position.x.to_bits(), after.position.x.to_bits());
+        assert_eq!(before.position.y.to_bits(), after.position.y.to_bits());
+    }
     assert!(
-        construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &source).is_none(),
-        "a size-three component cannot borrow authority from one pair subcomponent",
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(assignment.pattern(), &source)
+            .expect("the constructed component remains structurally valid")
+            .is_some(),
     );
 
     let mut reordered_pattern = pattern.clone();
     reordered_pattern.vertices.reverse();
     reordered_pattern.edges.reverse();
-    let mut reordered_source = source.clone();
-    reordered_source.constraints.reverse();
-    assert!(
-        construct_bounded_singleton_composition_exact_assignment_v1(
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let reordered_source = document(order.map(|index| records[index].clone()));
+        let reordered = construct_bounded_singleton_composition_exact_assignment_v1(
             &reordered_pattern,
             &reordered_source,
         )
-        .is_none(),
-        "unsupported size-three classification must be order independent",
+        .expect("all six record permutations and reversed storage must construct");
+        assert_eq!(
+            position_bits(assignment.pattern()),
+            position_bits(reordered.pattern()),
+        );
+    }
+}
+
+#[test]
+fn ambiguous_pair_plus_leaf_decompositions_fail_closed() {
+    let mut fixture = FixtureBuilder::default();
+    let center = fixture.vertex(10.0, 10.0);
+    let first_end = fixture.vertex(12.0, 11.0);
+    let second_end = fixture.vertex(9.0, 14.0);
+    let third_end = fixture.vertex(15.0, 8.0);
+    let first = fixture.edge(center, first_end);
+    let second = fixture.edge(center, second_end);
+    let third = fixture.edge(center, third_end);
+    let pattern = fixture.finish();
+    let source = document([
+        record(GeometricConstraintKindV1::Horizontal { edge: first }),
+        record(GeometricConstraintKindV1::Horizontal { edge: second }),
+        record(GeometricConstraintKindV1::Horizontal { edge: third }),
+    ]);
+
+    assert!(
+        construct_pair_plus_singleton_leaf_exact_assignment_v1(&pattern, &source).is_none(),
+        "three constructible pair choices are ambiguous and must not acquire authority",
+    );
+}
+
+#[test]
+fn connected_three_record_component_without_an_ordinary_pair_template_fails_closed() {
+    let mut fixture = FixtureBuilder::default();
+    let center = fixture.vertex(0.0, 0.0);
+    let first_end = fixture.vertex(2.0, 0.0);
+    let second_end = fixture.vertex(0.0, 2.0);
+    let third_end = fixture.vertex(-2.0, 0.0);
+    let first = fixture.edge(center, first_end);
+    let second = fixture.edge(center, second_end);
+    let third = fixture.edge(center, third_end);
+    let pattern = fixture.finish();
+    let source = document([
+        record(GeometricConstraintKindV1::FixedAngle {
+            vertex: center,
+            first_edge: first,
+            second_edge: second,
+            angle_degrees: 60.0,
+        }),
+        record(GeometricConstraintKindV1::FixedAngle {
+            vertex: center,
+            first_edge: second,
+            second_edge: third,
+            angle_degrees: 60.0,
+        }),
+        record(GeometricConstraintKindV1::FixedAngle {
+            vertex: center,
+            first_edge: third,
+            second_edge: first,
+            angle_degrees: 60.0,
+        }),
+    ]);
+
+    assert!(
+        construct_pair_plus_singleton_leaf_exact_assignment_v1(&pattern, &source).is_none(),
+        "connectivity alone must not be mistaken for a supported decomposition",
+    );
+}
+
+#[test]
+fn pair_and_leaf_sharing_two_vertices_is_not_a_single_articulation_template() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(10.0, 10.0);
+    let shared = fixture.vertex(13.0, 14.0);
+    let second_end = fixture.vertex(18.0, 9.0);
+    let first = fixture.edge(first_start, shared);
+    let second = fixture.edge(shared, second_end);
+    let pattern = fixture.finish();
+    let source = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge: first }),
+        record(GeometricConstraintKindV1::EqualLength {
+            first_edge: first,
+            second_edge: second,
+        }),
+    ]);
+
+    assert!(
+        construct_pair_plus_singleton_leaf_exact_assignment_v1(&pattern, &source).is_none(),
+        "a two-vertex overlap is not a leaf articulation",
+    );
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &source).is_none(),
+        "the bounded compositor must preserve the narrow classification",
+    );
+}
+
+#[test]
+fn pair_and_leaf_without_a_shared_vertex_are_not_one_three_record_template() {
+    let mut fixture = FixtureBuilder::default();
+    let pair_start = fixture.vertex(0.0, 0.0);
+    let pair_end = fixture.vertex(3.0, 4.0);
+    let leaf_start = fixture.vertex(20.0, 1.0);
+    let leaf_end = fixture.vertex(24.0, 6.0);
+    let pair = fixture.edge(pair_start, pair_end);
+    let leaf = fixture.edge(leaf_start, leaf_end);
+    let pattern = fixture.finish();
+    let source = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: pair,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge: pair }),
+        record(GeometricConstraintKindV1::Vertical { edge: leaf }),
+    ]);
+
+    assert!(
+        construct_pair_plus_singleton_leaf_exact_assignment_v1(&pattern, &source).is_none(),
+        "a detached singleton is not the narrow connected template",
+    );
+}
+
+#[test]
+fn direct_conflict_and_non_finite_input_precede_three_record_construction() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(0.0, 0.0);
+    let shared = fixture.vertex(3.0, 4.0);
+    let second_end = fixture.vertex(8.0, 1.0);
+    let first = fixture.edge(first_start, shared);
+    let second = fixture.edge(shared, second_end);
+    let pattern = fixture.finish();
+    let conflict = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 1.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Vertical { edge: second }),
+    ]);
+    assert!(
+        construct_pair_plus_singleton_leaf_exact_assignment_v1(&pattern, &conflict).is_none(),
+        "a direct theorem must fail before decomposition",
+    );
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &conflict).is_none(),
+    );
+
+    let non_finite = document([
+        record(GeometricConstraintKindV1::Horizontal { edge: first }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: f64::NAN,
+        }),
+        record(GeometricConstraintKindV1::Vertical { edge: second }),
+    ]);
+    assert!(
+        construct_pair_plus_singleton_leaf_exact_assignment_v1(&pattern, &non_finite).is_none(),
+        "invalid numeric input must fail during preparation",
+    );
+}
+
+#[test]
+fn all_four_pair_plus_leaf_offsets_can_be_exhausted_by_real_geometry() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(100.0, 100.0);
+    let shared = fixture.vertex(103.0, 104.0);
+    let second_end = fixture.vertex(108.0, 101.0);
+    let first = fixture.edge(first_start, shared);
+    let second = fixture.edge(shared, second_end);
+    let canonical_origin = if first_start.canonical_bytes() < shared.canonical_bytes() {
+        first_start
+    } else {
+        shared
+    };
+    for point in [
+        Point2::new(0.0, 0.0),
+        Point2::new(16.0, 32.0),
+        Point2::new(-16.0, 8.0),
+        Point2::new(1024.0, -512.0),
+    ] {
+        let blocker = fixture.vertex(point.x, point.y);
+        fixture.edge(canonical_origin, blocker);
+    }
+    let pattern = fixture.finish();
+    let source = document([
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge: first }),
+        record(GeometricConstraintKindV1::Vertical { edge: second }),
+    ]);
+
+    assert!(
+        construct_pair_plus_singleton_leaf_exact_assignment_v1(&pattern, &source).is_none(),
+        "each fixed translation collapses one unreferenced blocker edge",
+    );
+}
+
+#[test]
+fn pair_plus_leaf_participates_at_sixteen_and_seventeen_is_rejected() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(0.0, 0.0);
+    let shared = fixture.vertex(3.0, 4.0);
+    let second_end = fixture.vertex(8.0, 1.0);
+    let repeated_start = fixture.vertex(40.0, 2.0);
+    let repeated_end = fixture.vertex(43.0, 7.0);
+    let first = fixture.edge(first_start, shared);
+    let second = fixture.edge(shared, second_end);
+    let repeated = fixture.edge(repeated_start, repeated_end);
+    let pattern = fixture.finish();
+    let mut records = vec![
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Horizontal { edge: first }),
+        record(GeometricConstraintKindV1::Vertical { edge: second }),
+    ];
+    for _ in 0..13 {
+        records.push(record(GeometricConstraintKindV1::Horizontal {
+            edge: repeated,
+        }));
+    }
+    let sixteen = document(records);
+    let assignment =
+        construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &sixteen)
+            .expect("the narrow three-record component must remain available at the ceiling");
+    assert_eq!(assignment.certificate().constraint_count(), 16);
+
+    let mut seventeen = sixteen.clone();
+    seventeen
+        .constraints
+        .push(record(GeometricConstraintKindV1::Horizontal {
+            edge: repeated,
+        }));
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &seventeen).is_none(),
+        "the existing sixteen-record ceiling remains unchanged",
     );
 }

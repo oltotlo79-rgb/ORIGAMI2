@@ -14,7 +14,7 @@ use crate::{
 
 mod algebraic;
 mod cardinal_rotation;
-mod geometry;
+pub(super) mod geometry;
 
 pub(crate) use algebraic::{
     MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1,
@@ -97,7 +97,7 @@ pub(crate) fn construct_pair_constraint_exact_assignment_v1(
     None
 }
 
-fn pair_canonical_assignment(
+pub(super) fn pair_canonical_assignment(
     pattern: &CreasePattern,
     first: &GeometricConstraintKindV1,
     second: &GeometricConstraintKindV1,

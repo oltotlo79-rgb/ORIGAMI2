@@ -1,4 +1,4 @@
-//! Regression coverage for the native four/five-cycle cactus path.  This remains
+//! Regression coverage for the native four/five/six/seven-cycle cactus path. This remains
 //! deliberately separate from desktop post-Apply proof tests: the authority
 //! here is issued directly by the collision/kinematics boundary.
 
@@ -62,6 +62,7 @@ fn separated_bifold_authority_fixture_v1(
         4 => super::super::four_bay_cycle_test_support::four_bay_opposite_bifold_pattern(),
         5 => super::super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
         6 => super::super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
+        7 => super::super::four_bay_cycle_test_support::seven_bay_opposite_bifold_pattern(),
         _ => panic!("unsupported separated-bifold fixture arity"),
     };
     let analysis = analyze_faces(FaceExtractionInput {
@@ -266,6 +267,7 @@ fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
     let (pattern, paper, moving) = match block_count {
         5 => super::super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
         6 => super::super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
+        7 => super::super::four_bay_cycle_test_support::seven_bay_opposite_bifold_pattern(),
         _ => panic!("unsupported extended opposite-bifold fixture arity"),
     };
     let validation = ori_core::validate_paper(&paper, &pattern);
@@ -357,7 +359,10 @@ fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
             .collect::<Vec<_>>();
         for (local, (hinge, direction)) in hinges.iter().zip(&directions).enumerate() {
             let length_squared = direction.x * direction.x + direction.y * direction.y;
-            let short_corner = matches!((block_count, group), (5, 0 | 3) | (6, 0..=3));
+            let short_corner = matches!(
+                (block_count, group),
+                (5, 0 | 3) | (6, 0..=3) | (7, 0..=3 | 6)
+            );
             if short_corner && moving_set.contains(&hinge.id) {
                 assert!(
                     length_squared >= (5.0 * paper_thickness).powi(2)
@@ -392,7 +397,15 @@ fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
     }
 
     let analysis = analyze_faces(FaceExtractionInput {
-        identity_namespace: fixed_id(if block_count == 5 { "b605" } else { "b606" }, 1),
+        identity_namespace: fixed_id(
+            match block_count {
+                5 => "b605",
+                6 => "b606",
+                7 => "b607",
+                _ => unreachable!(),
+            },
+            1,
+        ),
         source_revision: 1,
         paper: &paper,
         pattern: &pattern,
@@ -442,15 +455,15 @@ fn assert_extended_opposite_bifold_fixture_v1(block_count: usize) {
 }
 
 #[test]
-fn five_and_six_bay_opposite_bifold_fixtures_are_simple_convex_and_locally_flat_foldable() {
-    for block_count in [5, 6] {
+fn five_six_and_seven_bay_opposite_bifold_fixtures_are_simple_convex_and_locally_flat_foldable() {
+    for block_count in [5, 6, 7] {
         assert_extended_opposite_bifold_fixture_v1(block_count);
     }
 }
 
 #[test]
-fn separated_four_five_and_six_bifolds_issue_strict_parent_positive_authority() {
-    for block_count in [4, 5, 6] {
+fn separated_four_five_six_and_seven_bifolds_issue_strict_parent_positive_authority() {
+    for block_count in [4, 5, 6, 7] {
         assert_separated_bifold_parent_positive_authority_v1(block_count);
     }
 }

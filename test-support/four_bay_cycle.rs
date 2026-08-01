@@ -48,6 +48,16 @@ pub fn six_bay_opposite_bifold_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) 
     opposite_bifold_corner_pattern(6)
 }
 
+/// Seven separated radial-bifold bays sharing one convex central material
+/// face with seven strict corners. The first six bay identities and coordinates
+/// are exactly those of [`six_bay_opposite_bifold_pattern`]. The seventh bay is
+/// a north insertion between the northeast and northwest bays. All seven bays
+/// retain three exact opposite ray pairs and the same 4M/2V assignment.
+#[allow(dead_code)]
+pub fn seven_bay_opposite_bifold_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    opposite_bifold_corner_pattern(7)
+}
+
 #[allow(dead_code)]
 pub fn two_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     rational_cycle_bay_pattern(2)
@@ -166,7 +176,7 @@ fn rational_cycle_bay_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<
 }
 
 fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<EdgeId>) {
-    assert!(matches!(group_count, 4 | 5 | 6));
+    assert!(matches!(group_count, 4 | 5 | 6 | 7));
     let namespace: ProjectId =
         serde_json::from_str("\"00000000-0000-4000-b000-000000000006\"").unwrap();
     let mut vertices = Vec::new();
@@ -222,6 +232,14 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
             (0.0, 1.0),
             (-1.0, 1.0),
         ],
+        [
+            (1.0, -0.5),
+            (0.546875, 0.0),
+            (1.0, 0.5),
+            (-1.0, 0.5),
+            (-0.546875, 0.0),
+            (-1.0, -0.5),
+        ],
     ];
     // A convex pentagonal shared face needs the two west square corners to
     // expose a 135-degree interior sector.  The boundary rays and the other
@@ -260,13 +278,34 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         (-0.5, 0.25),
         (-1.0, 0.0),
     ];
-    for (group, ((center_x, center_y), group_directions)) in [
+    // In the seven-bay polygon, the new north corner lies at (0, 30). The
+    // neighboring northeast and northwest fans point their skipped sector at
+    // the exact vectors to that corner. The short moving rays use the 21-28-35
+    // triple scaled by 1/64, so their length is exactly 35/64 mm.
+    let seven_third_directions = [
+        (1.0, -1.0),
+        (0.4375, -0.328125),
+        (1.0, -0.5),
+        (-1.0, 1.0),
+        (-0.4375, 0.328125),
+        (-1.0, 0.5),
+    ];
+    let seven_fourth_directions = [
+        (1.0, 0.5),
+        (0.4375, 0.328125),
+        (1.0, 1.0),
+        (-1.0, -0.5),
+        (-0.4375, -0.328125),
+        (-1.0, -1.0),
+    ];
+    for (group, ((center_x, center_y), default_directions)) in [
         (-20.0, -20.0),
         (20.0, -20.0),
         (20.0, 20.0),
         (-20.0, 20.0),
         (-40.0, 0.0),
         (40.0, 0.0),
+        (0.0, 30.0),
     ]
     .into_iter()
     .zip(directions)
@@ -280,7 +319,11 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
             (6, 1) => six_second_directions,
             (6, 2) => six_third_directions,
             (6, 3) => five_fourth_directions,
-            _ => group_directions,
+            (7, 0) => five_first_directions,
+            (7, 1) => six_second_directions,
+            (7, 2) => seven_third_directions,
+            (7, 3) => seven_fourth_directions,
+            _ => default_directions,
         };
         let center = Vertex {
             id: VertexId::derive_v5(namespace, &[0x10, group as u8]),
@@ -289,11 +332,12 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         centers.push(center.id);
         vertices.push(center);
         // Counter-clockwise exterior fan walk. The first four groups rotate
-        // ninety degrees around the square and the optional fifth extends the
-        // paper boundary on the west. All three ray pairs are exact opposites;
-        // the skipped ray-five-to-ray-zero sector belongs to the common
-        // articulation face. The two 135-degree corners return pair one/four
-        // as moving, while every other bay returns pair zero/three.
+        // ninety degrees around the square; the optional fifth extends the
+        // paper boundary west, the sixth mirrors that bay east, and the
+        // seventh inserts a shallow north corner. All three ray pairs are
+        // exact opposites. The skipped ray-five-to-ray-zero sector belongs to
+        // the common articulation face. Every non-right convex corner returns
+        // pair one/four as moving; each 90-degree bay returns pair zero/three.
         for (local, (x, y)) in group_directions.into_iter().enumerate() {
             let vertex = Vertex {
                 id: VertexId::derive_v5(namespace, &[0x20, group as u8, local as u8]),
@@ -314,6 +358,15 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
         for group in [0, 1, 5, 2, 3, 4] {
             boundary.extend_from_slice(&original[group * 6..(group + 1) * 6]);
         }
+    } else if group_count == 7 {
+        // Insert the north bay between the existing northeast and northwest
+        // identities without changing any of the first six vertex or hinge
+        // identifiers.
+        let original = boundary;
+        boundary = Vec::with_capacity(original.len());
+        for group in [0, 1, 5, 2, 6, 3, 4] {
+            boundary.extend_from_slice(&original[group * 6..(group + 1) * 6]);
+        }
     }
 
     let mut edges = (0..boundary.len())
@@ -330,8 +383,11 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
     edges.extend((0..group_count * 6).map(|index| {
         let group = index / 6;
         let local = index % 6;
-        let kind = if matches!(group_count, 5 | 6) {
-            let moving_pair = if matches!((group_count, group), (5, 0 | 3) | (6, 0..=3)) {
+        let kind = if matches!(group_count, 5 | 6 | 7) {
+            let moving_pair = if matches!(
+                (group_count, group),
+                (5, 0 | 3) | (6, 0..=3) | (7, 0..=3 | 6)
+            ) {
                 [1, 4]
             } else {
                 [0, 3]
@@ -355,7 +411,10 @@ fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, 
     }));
     let moving = (0..group_count)
         .flat_map(|group| {
-            let (first, opposite) = if matches!((group_count, group), (5, 0 | 3) | (6, 0..=3)) {
+            let (first, opposite) = if matches!(
+                (group_count, group),
+                (5, 0 | 3) | (6, 0..=3) | (7, 0..=3 | 6)
+            ) {
                 (1, 4)
             } else {
                 (0, 3)

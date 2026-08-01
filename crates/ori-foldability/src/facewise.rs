@@ -1395,10 +1395,156 @@ struct OverlapCell {
     covering_faces: Vec<usize>,
 }
 
+#[derive(Clone, Copy)]
+struct ExactAxisAlignedBounds {
+    min_x_point: usize,
+    max_x_point: usize,
+    min_y_point: usize,
+    max_y_point: usize,
+}
+
+fn exact_axis_aligned_bounds<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    polygon: &[Point],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<ExactAxisAlignedBounds> {
+    if polygon.is_empty() {
+        return Err(certificate_failure());
+    }
+    let mut bounds = ExactAxisAlignedBounds {
+        min_x_point: 0,
+        max_x_point: 0,
+        min_y_point: 0,
+        max_y_point: 0,
+    };
+    for point in 1..polygon.len() {
+        if cmp(&polygon[point].x, &polygon[bounds.min_x_point].x, runtime)? == Ordering::Less {
+            bounds.min_x_point = point;
+        }
+        if cmp(&polygon[point].x, &polygon[bounds.max_x_point].x, runtime)? == Ordering::Greater {
+            bounds.max_x_point = point;
+        }
+        if cmp(&polygon[point].y, &polygon[bounds.min_y_point].y, runtime)? == Ordering::Less {
+            bounds.min_y_point = point;
+        }
+        if cmp(&polygon[point].y, &polygon[bounds.max_y_point].y, runtime)? == Ordering::Greater {
+            bounds.max_y_point = point;
+        }
+    }
+    Ok(bounds)
+}
+
+fn exact_axis_aligned_bounds_are_strictly_separated<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &[Point],
+    first_bounds: ExactAxisAlignedBounds,
+    second: &[Point],
+    second_bounds: ExactAxisAlignedBounds,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    Ok(cmp(
+        &first[first_bounds.max_x_point].x,
+        &second[second_bounds.min_x_point].x,
+        runtime,
+    )? == Ordering::Less
+        || cmp(
+            &second[second_bounds.max_x_point].x,
+            &first[first_bounds.min_x_point].x,
+            runtime,
+        )? == Ordering::Less
+        || cmp(
+            &first[first_bounds.max_y_point].y,
+            &second[second_bounds.min_y_point].y,
+            runtime,
+        )? == Ordering::Less
+        || cmp(
+            &second[second_bounds.max_y_point].y,
+            &first[first_bounds.min_y_point].y,
+            runtime,
+        )? == Ordering::Less)
+}
+
+fn supporting_lines_share_exact_line<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    faces: &[FoldedFace],
+    first: (usize, usize),
+    second: (usize, usize),
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    let first_start = &faces[first.0].polygon[first.1];
+    let first_end = &faces[first.0].polygon[(first.1 + 1) % faces[first.0].polygon.len()];
+    let second_start = &faces[second.0].polygon[second.1];
+    let second_end = &faces[second.0].polygon[(second.1 + 1) % faces[second.0].polygon.len()];
+    Ok(
+        cross(first_start, first_end, second_start, runtime)?.is_zero()
+            && cross(first_start, first_end, second_end, runtime)?.is_zero(),
+    )
+}
+
+fn supporting_line_keep_flags<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    faces: &[FoldedFace],
+    supporting_lines: &[(usize, usize)],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<(Vec<u8>, usize)> {
+    // Preserve control priority before reserving the short-lived
+    // deduplication buffer. The caller consumes and drops it before any later
+    // arrangement allocation, so a transient peak check is sufficient.
+    runtime.checkpoint(None)?;
+    let requested_flag_bytes =
+        runtime.allocation_bytes(supporting_lines.len(), std::mem::size_of::<u8>())?;
+    runtime.ensure_transient_exact_storage(requested_flag_bytes)?;
+    let mut flags = Vec::new();
+    flags
+        .try_reserve_exact(supporting_lines.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let flag_bytes = runtime.allocation_bytes(flags.capacity(), std::mem::size_of::<u8>())?;
+    runtime.ensure_transient_exact_storage(flag_bytes)?;
+    let mut comparison_poll = 0_usize;
+    for (candidate_index, candidate) in supporting_lines.iter().copied().enumerate() {
+        runtime.checkpoint(None)?;
+        let mut keep = true;
+        for prior_index in 0..candidate_index {
+            runtime.poll_control(&mut comparison_poll)?;
+            if flags[prior_index] != 0
+                && supporting_lines_share_exact_line(
+                    faces,
+                    supporting_lines[prior_index],
+                    candidate,
+                    runtime,
+                )?
+            {
+                keep = false;
+                break;
+            }
+        }
+        flags.push(u8::from(keep));
+    }
+    Ok((flags, flag_bytes))
+}
+
 fn build_overlap_cells<O: GlobalFlatFoldabilityObserver + ?Sized>(
     faces: &[FoldedFace],
     pairs: &[OverlapPair],
     runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<Vec<OverlapCell>> {
+    build_overlap_cells_with_supporting_line_deduplication(faces, pairs, runtime, true)
+}
+
+#[cfg(test)]
+fn build_overlap_cells_without_supporting_line_deduplication<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    faces: &[FoldedFace],
+    pairs: &[OverlapPair],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<Vec<OverlapCell>> {
+    build_overlap_cells_with_supporting_line_deduplication(faces, pairs, runtime, false)
+}
+
+fn build_overlap_cells_with_supporting_line_deduplication<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    faces: &[FoldedFace],
+    pairs: &[OverlapPair],
+    runtime: &mut Runtime<'_, O>,
+    deduplicate_supporting_lines: bool,
 ) -> FacewiseResult<Vec<OverlapCell>> {
     let mut all_points = faces.iter().flat_map(|face| face.polygon.iter());
     let first = all_points.next().ok_or_else(internal_abort)?;
@@ -1456,6 +1602,15 @@ fn build_overlap_cells<O: GlobalFlatFoldabilityObserver + ?Sized>(
             faces[*face_index].source.layer.face_id.canonical_bytes(),
         )
     });
+    if deduplicate_supporting_lines {
+        let (keep_flags, _) = supporting_line_keep_flags(faces, &supporting_lines, runtime)?;
+        let mut line_index = 0_usize;
+        supporting_lines.retain(|_| {
+            let keep = keep_flags[line_index] != 0;
+            line_index += 1;
+            keep
+        });
+    }
     for (face_index, edge_index) in supporting_lines {
         runtime.checkpoint(None)?;
         let line_first = &faces[face_index].polygon[edge_index];
@@ -3612,6 +3767,57 @@ fn certificate_failure() -> FacewiseAbort {
     })
 }
 
+fn verify_overlap_cell_interiors_are_disjoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    cells: &[OverlapCell],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()> {
+    // Preserve control priority before reserving verifier-only acceleration
+    // storage. Bounds retain only point indexes; the exact rationals remain
+    // owned and accounted by the canonical overlap-cell boundaries.
+    runtime.checkpoint(None)?;
+    let verification_base = runtime.verification_storage_bytes();
+    let bounds_bytes =
+        runtime.allocation_bytes(cells.len(), std::mem::size_of::<ExactAxisAlignedBounds>())?;
+    runtime.add_verification_storage(bounds_bytes)?;
+    let verification = (|| {
+        let mut bounds = Vec::new();
+        bounds.try_reserve_exact(cells.len()).map_err(|_| {
+            runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+        })?;
+        for cell in cells {
+            runtime.checkpoint(None)?;
+            bounds.push(exact_axis_aligned_bounds(&cell.boundary, runtime)?);
+        }
+        for first_cell in 0..cells.len() {
+            runtime.checkpoint(None)?;
+            for second_cell in (first_cell + 1)..cells.len() {
+                if exact_axis_aligned_bounds_are_strictly_separated(
+                    &cells[first_cell].boundary,
+                    bounds[first_cell],
+                    &cells[second_cell].boundary,
+                    bounds[second_cell],
+                    runtime,
+                )? {
+                    continue;
+                }
+                let intersection = convex_polygon_intersection(
+                    &cells[first_cell].boundary,
+                    &cells[second_cell].boundary,
+                    runtime,
+                )?;
+                if intersection.len() >= 3
+                    && signed_double_area(&intersection, runtime)?.is_positive()
+                {
+                    return Err(certificate_failure());
+                }
+            }
+        }
+        Ok(())
+    })();
+    runtime.restore_verification_storage(verification_base);
+    verification
+}
+
 fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
     embedding: &FlatEmbedding,
     pairs: &[OverlapPair],
@@ -3947,20 +4153,7 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         runtime.add_verification_storage(retained_cell_area_bytes)?;
         verified_cell_areas.push(cell_area);
     }
-    for first_cell in 0..cells.len() {
-        runtime.checkpoint(None)?;
-        for second_cell in (first_cell + 1)..cells.len() {
-            let intersection = convex_polygon_intersection(
-                &cells[first_cell].boundary,
-                &cells[second_cell].boundary,
-                runtime,
-            )?;
-            if intersection.len() >= 3 && signed_double_area(&intersection, runtime)?.is_positive()
-            {
-                return Err(certificate_failure());
-            }
-        }
-    }
+    verify_overlap_cell_interiors_are_disjoint(cells, runtime)?;
     for ((first, second), expected_area) in &actual_pair_areas {
         runtime.checkpoint(None)?;
         let mut covered_area = Rational::zero();

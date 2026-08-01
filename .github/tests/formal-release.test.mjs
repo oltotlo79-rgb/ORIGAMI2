@@ -984,7 +984,7 @@ test('CI requires the production C6 dyadic browser, exact native lifecycle, and 
   }
   assert.match(nativeRead, /fn revalidates_private_proofs_v1\(/u)
   for (const lifecycle of [
-    'four_five_and_six_block_opposite_bifolds_preview_apply_and_reopen_history',
+    'bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history',
     'balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history',
     'coupled_cactus_previews_fail_closed_without_continuous_authority',
     'theta_positive_thickness_preview_fails_closed_without_continuous_authority',

@@ -243,6 +243,60 @@ fn arrangement_boundary_bytes(cells: &[OverlapCell]) -> usize {
         .fold(0_usize, usize::saturating_add)
 }
 
+fn overlap_cell_signatures(cells: &[OverlapCell]) -> Vec<(OverlapCellKey, Vec<Point>, Vec<usize>)> {
+    cells
+        .iter()
+        .map(|cell| (cell.key, cell.boundary.clone(), cell.covering_faces.clone()))
+        .collect()
+}
+
+fn build_cells_with_supporting_line_deduplication_mode(
+    faces: &[FoldedFace],
+    pairs: &[OverlapPair],
+    limits: GlobalFlatFoldabilityLimits,
+    deduplicate_supporting_lines: bool,
+) -> FacewiseResult<(
+    Vec<OverlapCell>,
+    GlobalFlatFoldabilityWorkCounts,
+    ExactStorage,
+)> {
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut runtime = Runtime::new(&mut observer, limits, zero_work());
+    let cells = if deduplicate_supporting_lines {
+        build_overlap_cells(faces, pairs, &mut runtime)
+    } else {
+        build_overlap_cells_without_supporting_line_deduplication(faces, pairs, &mut runtime)
+    }?;
+    Ok((cells, runtime.work, runtime.exact_storage))
+}
+
+fn baseline_overlap_cell_interiors_are_disjoint(cells: &[OverlapCell]) -> bool {
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut runtime = Runtime::new(
+        &mut observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    for first_cell in 0..cells.len() {
+        for second_cell in (first_cell + 1)..cells.len() {
+            let intersection = convex_polygon_intersection(
+                &cells[first_cell].boundary,
+                &cells[second_cell].boundary,
+                &mut runtime,
+            )
+            .expect("baseline cell intersection");
+            if intersection.len() >= 3
+                && signed_double_area(&intersection, &mut runtime)
+                    .expect("baseline intersection area")
+                    .is_positive()
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn assert_certificate_reverification_failed(result: FacewiseResult<()>) {
     assert!(matches!(
         result,
@@ -822,6 +876,234 @@ fn canonical_cell_reverification_rejects_split_missing_merged_and_duplicate_part
 }
 
 #[test]
+fn supporting_line_deduplication_preserves_canonical_cells_and_keys() {
+    let faces = vec![
+        synthetic_face(0, rectangle(0, 0, 4, 4), true),
+        synthetic_face(1, rectangle(0, 0, 4, 4), false),
+        synthetic_face(2, rectangle(2, 6, 3, 7), true),
+        synthetic_face(3, rectangle(2, 6, 3, 7), false),
+        synthetic_face(4, rectangle(4, 1, 6, 3), true),
+    ];
+    let mut pair_observer = NoopGlobalFlatFoldabilityObserver;
+    let mut pair_runtime = Runtime::new(
+        &mut pair_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    let pairs = build_overlap_pairs(&faces, &mut pair_runtime).expect("fixture overlap pairs");
+    let (optimized, optimized_work, optimized_storage) =
+        build_cells_with_supporting_line_deduplication_mode(
+            &faces,
+            &pairs,
+            GlobalFlatFoldabilityLimits::default(),
+            true,
+        )
+        .expect("deduplicated-line arrangement");
+    let (baseline, baseline_work, baseline_storage) =
+        build_cells_with_supporting_line_deduplication_mode(
+            &faces,
+            &pairs,
+            GlobalFlatFoldabilityLimits::default(),
+            false,
+        )
+        .expect("all-line arrangement");
+
+    assert_eq!(
+        overlap_cell_signatures(&optimized),
+        overlap_cell_signatures(&baseline)
+    );
+    assert_eq!(
+        optimized_work.arrangement_segments,
+        baseline_work.arrangement_segments
+    );
+    assert_eq!(optimized_work.overlap_cells, baseline_work.overlap_cells);
+    assert_eq!(optimized_storage.total(), baseline_storage.total());
+    assert!(optimized_work.exact_operations < baseline_work.exact_operations);
+    assert!(optimized_work.exact_values < baseline_work.exact_values);
+}
+
+#[test]
+fn supporting_line_identity_is_exact_undirected_and_unbounded() {
+    let huge: num_bigint::BigInt = num_bigint::BigInt::from(1_u8) << 4_096_usize;
+    let line_face = |index, first, second| synthetic_face(index, vec![first, second], true);
+    let faces = vec![
+        line_face(0, integer_point(0, 0), integer_point(4, 4)),
+        line_face(1, integer_point(8, 8), integer_point(2, 2)),
+        line_face(2, integer_point(20, 20), integer_point(24, 24)),
+        line_face(3, integer_point(0, 1), integer_point(4, 5)),
+        line_face(4, integer_point(4, 4), integer_point(4, 8)),
+        line_face(
+            5,
+            Point {
+                x: Rational::from_integer(huge.clone()),
+                y: Rational::from_integer(huge.clone()),
+            },
+            Point {
+                x: Rational::from_integer(&huge + 4),
+                y: Rational::from_integer(&huge + 4),
+            },
+        ),
+        line_face(
+            6,
+            Point {
+                x: Rational::from_integer(huge.clone()),
+                y: Rational::from_integer(huge.clone()),
+            },
+            Point {
+                x: Rational::from_integer(&huge + 4),
+                y: Rational::from_integer(&huge + 5),
+            },
+        ),
+    ];
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut runtime = Runtime::new(
+        &mut observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    assert!(supporting_lines_share_exact_line(&faces, (0, 0), (1, 0), &mut runtime).unwrap());
+    assert!(supporting_lines_share_exact_line(&faces, (0, 0), (2, 0), &mut runtime).unwrap());
+    assert!(supporting_lines_share_exact_line(&faces, (0, 0), (5, 0), &mut runtime).unwrap());
+    assert!(!supporting_lines_share_exact_line(&faces, (0, 0), (3, 0), &mut runtime).unwrap());
+    assert!(!supporting_lines_share_exact_line(&faces, (0, 0), (4, 0), &mut runtime).unwrap());
+    assert!(!supporting_lines_share_exact_line(&faces, (0, 0), (6, 0), &mut runtime).unwrap());
+    assert!(runtime.work.exact_operations > 0);
+    assert!(runtime.work.exact_values > 0);
+}
+
+#[test]
+fn supporting_line_deduplication_preserves_order_limits_and_control() {
+    let mut canonical = synthetic_face(0, rectangle(0, 0, 4, 4), true);
+    let mut duplicate = synthetic_face(1, rectangle(0, 0, 4, 4), false);
+    duplicate.source.layer.face_key = canonical.source.layer.face_key;
+    if duplicate.source.layer.face_id.canonical_bytes()
+        < canonical.source.layer.face_id.canonical_bytes()
+    {
+        std::mem::swap(
+            &mut canonical.source.layer.face_id,
+            &mut duplicate.source.layer.face_id,
+        );
+    }
+    let faces = vec![canonical, duplicate];
+    let mut sorted_lines = faces
+        .iter()
+        .enumerate()
+        .flat_map(|(face_index, face)| {
+            (0..face.polygon.len()).map(move |edge_index| (face_index, edge_index))
+        })
+        .collect::<Vec<_>>();
+    sorted_lines.sort_unstable_by_key(|(face_index, edge_index)| {
+        (
+            faces[*face_index].source.layer.face_key,
+            *edge_index,
+            faces[*face_index].source.layer.face_id.canonical_bytes(),
+        )
+    });
+
+    let mut measuring_observer = NoopGlobalFlatFoldabilityObserver;
+    let mut measuring_runtime = Runtime::new(
+        &mut measuring_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    let (measured_flags, measured_bytes) =
+        supporting_line_keep_flags(&faces, &sorted_lines, &mut measuring_runtime)
+            .expect("measure line deduplication");
+    assert_eq!(measured_flags, [1, 0, 1, 0, 1, 0, 1, 0]);
+    assert_eq!(measuring_runtime.exact_storage.arrangement_bytes, 0);
+    let measured_operations = measuring_runtime.work.exact_operations;
+    assert!(measured_operations > 0);
+
+    for maximum in [measured_operations, measured_operations - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_exact_operations: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        let result = supporting_line_keep_flags(&faces, &sorted_lines, &mut runtime);
+        if maximum == measured_operations {
+            result.expect("line deduplication exact-work equality is admitted");
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::ExactOperations,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == measured_operations
+            ));
+        }
+    }
+
+    for maximum in [measured_bytes, measured_bytes - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        let result = supporting_line_keep_flags(&faces, &sorted_lines, &mut runtime);
+        if maximum == measured_bytes {
+            result.expect("line deduplication storage equality is admitted");
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::CertificateBytes,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == measured_bytes
+            ));
+        }
+    }
+
+    let mut deadline_observer = DeadlineAfter {
+        continued_checkpoints: 0,
+    };
+    let mut deadline_runtime = Runtime::new(
+        &mut deadline_observer,
+        GlobalFlatFoldabilityLimits {
+            max_certificate_bytes: 0,
+            ..GlobalFlatFoldabilityLimits::default()
+        },
+        zero_work(),
+    );
+    assert!(matches!(
+        supporting_line_keep_flags(&faces, &sorted_lines, &mut deadline_runtime),
+        Err(FacewiseAbort::Unknown(
+            GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. }
+        ))
+    ));
+
+    let mut cancel_observer = CancelAfter {
+        continued_checkpoints: 1,
+    };
+    let mut cancel_runtime = Runtime::new(
+        &mut cancel_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    assert!(matches!(
+        supporting_line_keep_flags(&faces, &sorted_lines, &mut cancel_runtime),
+        Err(FacewiseAbort::Execution(
+            GlobalFlatFoldabilityExecutionError::Cancelled
+        ))
+    ));
+    assert_eq!(cancel_runtime.exact_storage.total(), Some(0));
+}
+
+#[test]
 fn canonical_arrangement_is_invariant_to_storage_order_and_edge_direction() {
     let (paper, pattern, topology) = three_panel_accordion();
     let expected = geometry_arrangement_signature(&paper, &pattern, &topology);
@@ -974,6 +1256,284 @@ fn point_and_line_contacts_create_no_overlap_order() {
         .expect("point-contact cells reverify");
     verify_canonical_overlap_cells(&line_contact, &line_cells, &mut runtime)
         .expect("line-contact cells reverify");
+}
+
+#[test]
+fn exact_bounds_prune_only_strict_separation_and_keep_boundary_contacts() {
+    let first = rectangle(0, 0, 4, 4);
+    let separated = rectangle(5, 0, 7, 2);
+    let point_contact = rectangle(4, 4, 6, 6);
+    let line_contact = rectangle(4, 1, 6, 3);
+    let contained = rectangle(1, 1, 2, 2);
+    let crossing = rectangle(3, -1, 5, 2);
+    let huge: num_bigint::BigInt = num_bigint::BigInt::from(1_u8) << 4_096_usize;
+    let huge_first = vec![
+        Point {
+            x: Rational::from_integer(huge.clone()),
+            y: Rational::from_integer(0.into()),
+        },
+        Point {
+            x: Rational::from_integer(&huge + 2),
+            y: Rational::from_integer(0.into()),
+        },
+        Point {
+            x: Rational::from_integer(&huge + 2),
+            y: Rational::from_integer(2.into()),
+        },
+        Point {
+            x: Rational::from_integer(huge.clone()),
+            y: Rational::from_integer(2.into()),
+        },
+    ];
+    let huge_second = vec![
+        Point {
+            x: Rational::from_integer(&huge + 3),
+            y: Rational::from_integer(0.into()),
+        },
+        Point {
+            x: Rational::from_integer(&huge + 5),
+            y: Rational::from_integer(0.into()),
+        },
+        Point {
+            x: Rational::from_integer(&huge + 5),
+            y: Rational::from_integer(2.into()),
+        },
+        Point {
+            x: Rational::from_integer(&huge + 3),
+            y: Rational::from_integer(2.into()),
+        },
+    ];
+
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut runtime = Runtime::new(
+        &mut observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    let first_bounds = exact_axis_aligned_bounds(&first, &mut runtime).expect("first bounds");
+    for (candidate, expected_separated) in [
+        (&separated, true),
+        (&point_contact, false),
+        (&line_contact, false),
+        (&contained, false),
+        (&crossing, false),
+    ] {
+        let candidate_bounds =
+            exact_axis_aligned_bounds(candidate, &mut runtime).expect("candidate bounds");
+        assert_eq!(
+            exact_axis_aligned_bounds_are_strictly_separated(
+                &first,
+                first_bounds,
+                candidate,
+                candidate_bounds,
+                &mut runtime,
+            )
+            .expect("exact bounds comparison"),
+            expected_separated
+        );
+    }
+    let huge_first_bounds =
+        exact_axis_aligned_bounds(&huge_first, &mut runtime).expect("first huge bounds");
+    let huge_second_bounds =
+        exact_axis_aligned_bounds(&huge_second, &mut runtime).expect("second huge bounds");
+    assert!(
+        exact_axis_aligned_bounds_are_strictly_separated(
+            &huge_first,
+            huge_first_bounds,
+            &huge_second,
+            huge_second_bounds,
+            &mut runtime,
+        )
+        .expect("huge exact bounds comparison")
+    );
+}
+
+#[test]
+fn exact_bounds_disjointness_matches_unpruned_baseline() {
+    let cases = [
+        (
+            vec![
+                synthetic_cell(1, rectangle(0, 0, 2, 2), vec![0]),
+                synthetic_cell(2, rectangle(3, 0, 5, 2), vec![1]),
+            ],
+            true,
+        ),
+        (
+            vec![
+                synthetic_cell(3, rectangle(0, 0, 2, 2), vec![0]),
+                synthetic_cell(4, rectangle(2, 2, 4, 4), vec![1]),
+            ],
+            true,
+        ),
+        (
+            vec![
+                synthetic_cell(5, rectangle(0, 0, 2, 2), vec![0]),
+                synthetic_cell(6, rectangle(2, 0, 4, 2), vec![1]),
+            ],
+            true,
+        ),
+        (
+            vec![
+                synthetic_cell(7, rectangle(0, 0, 4, 4), vec![0]),
+                synthetic_cell(8, rectangle(1, 1, 2, 2), vec![1]),
+            ],
+            false,
+        ),
+        (
+            vec![
+                synthetic_cell(9, rectangle(0, 0, 4, 4), vec![0]),
+                synthetic_cell(10, rectangle(3, -1, 5, 2), vec![1]),
+            ],
+            false,
+        ),
+    ];
+    for (cells, expected_disjoint) in cases {
+        let baseline = baseline_overlap_cell_interiors_are_disjoint(&cells);
+        assert_eq!(baseline, expected_disjoint);
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        let optimized = verify_overlap_cell_interiors_are_disjoint(&cells, &mut runtime);
+        assert_eq!(optimized.is_ok(), baseline);
+        if !baseline {
+            assert_certificate_reverification_failed(optimized);
+        }
+        assert_eq!(runtime.verification_storage_bytes(), 0);
+    }
+}
+
+#[test]
+fn exact_bounds_disjointness_preserves_work_storage_and_control_boundaries() {
+    let cells = vec![
+        synthetic_cell(1, rectangle(0, 0, 2, 2), vec![0]),
+        synthetic_cell(2, rectangle(3, 0, 5, 2), vec![1]),
+    ];
+    let bounds_bytes = cells.len() * std::mem::size_of::<ExactAxisAlignedBounds>();
+
+    let mut measuring_observer = NoopGlobalFlatFoldabilityObserver;
+    let mut measuring_runtime = Runtime::new(
+        &mut measuring_observer,
+        GlobalFlatFoldabilityLimits::default(),
+        zero_work(),
+    );
+    verify_overlap_cell_interiors_are_disjoint(&cells, &mut measuring_runtime)
+        .expect("measure exact bounds work");
+    let exact_operations = measuring_runtime.work.exact_operations;
+    assert!(exact_operations > 0);
+
+    for maximum in [exact_operations, exact_operations - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_exact_operations: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        let result = verify_overlap_cell_interiors_are_disjoint(&cells, &mut runtime);
+        if maximum == exact_operations {
+            result.expect("exact work equality is admitted");
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::ExactOperations,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == exact_operations
+            ));
+        }
+        assert_eq!(runtime.verification_storage_bytes(), 0);
+    }
+
+    for maximum in [bounds_bytes, bounds_bytes - 1] {
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: maximum,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        let result = verify_overlap_cell_interiors_are_disjoint(&cells, &mut runtime);
+        if maximum == bounds_bytes {
+            result.expect("exact bounds storage equality is admitted");
+        } else {
+            assert!(matches!(
+                result,
+                Err(FacewiseAbort::Unknown(
+                    GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::CertificateBytes,
+                        limit,
+                        observed,
+                    }
+                )) if limit == maximum && observed == bounds_bytes
+            ));
+        }
+        assert_eq!(runtime.verification_storage_bytes(), 0);
+    }
+
+    let mut deadline_observer = DeadlineAfter {
+        continued_checkpoints: 0,
+    };
+    let mut deadline_runtime = Runtime::new(
+        &mut deadline_observer,
+        GlobalFlatFoldabilityLimits {
+            max_certificate_bytes: 0,
+            ..GlobalFlatFoldabilityLimits::default()
+        },
+        zero_work(),
+    );
+    assert!(matches!(
+        verify_overlap_cell_interiors_are_disjoint(&cells, &mut deadline_runtime),
+        Err(FacewiseAbort::Unknown(
+            GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. }
+        ))
+    ));
+    assert_eq!(deadline_runtime.verification_storage_bytes(), 0);
+
+    let mut cancel_observer = AlwaysCancel;
+    let mut cancel_runtime = Runtime::new(
+        &mut cancel_observer,
+        GlobalFlatFoldabilityLimits {
+            max_certificate_bytes: 0,
+            ..GlobalFlatFoldabilityLimits::default()
+        },
+        zero_work(),
+    );
+    assert!(matches!(
+        verify_overlap_cell_interiors_are_disjoint(&cells, &mut cancel_runtime),
+        Err(FacewiseAbort::Execution(
+            GlobalFlatFoldabilityExecutionError::Cancelled
+        ))
+    ));
+    assert_eq!(cancel_runtime.verification_storage_bytes(), 0);
+
+    let mut mid_cancel_observer = CancelAfter {
+        continued_checkpoints: 1,
+    };
+    let mut mid_cancel_runtime = Runtime::new(
+        &mut mid_cancel_observer,
+        GlobalFlatFoldabilityLimits {
+            max_certificate_bytes: bounds_bytes,
+            ..GlobalFlatFoldabilityLimits::default()
+        },
+        zero_work(),
+    );
+    assert!(matches!(
+        verify_overlap_cell_interiors_are_disjoint(&cells, &mut mid_cancel_runtime),
+        Err(FacewiseAbort::Execution(
+            GlobalFlatFoldabilityExecutionError::Cancelled
+        ))
+    ));
+    assert_eq!(mid_cancel_runtime.verification_storage_bytes(), 0);
 }
 
 #[test]

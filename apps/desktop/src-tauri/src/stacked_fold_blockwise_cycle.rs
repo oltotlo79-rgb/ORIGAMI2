@@ -97,7 +97,8 @@ const THREE_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 3;
 const FOUR_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 4;
 const FIVE_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 5;
 const SIX_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 6;
-const BOUNDED_MULTI_BLOCK_CURRENT_CYCLE_MAX_ARITY_V1: usize = SIX_BLOCK_CURRENT_CYCLE_ARITY_V1;
+const SEVEN_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 7;
+const BOUNDED_MULTI_BLOCK_CURRENT_CYCLE_MAX_ARITY_V1: usize = SEVEN_BLOCK_CURRENT_CYCLE_ARITY_V1;
 const BOUNDED_MULTI_BLOCK_WHOLE_SOURCE_PEAK_MULTIPLICITY_V1: usize = 3;
 const BOUNDED_MULTI_BLOCK_RESTRICTED_SOURCE_PEAK_MULTIPLICITY_V1: usize = 2;
 
@@ -161,7 +162,7 @@ fn production_bounded_multi_block_layer_peak_limit_v1() -> usize {
     ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES
 }
 
-/// Computes the source-retention peak shared by the exact 3..=6-block paths.
+/// Computes the source-retention peak shared by the exact 3..=7-block paths.
 ///
 /// The multiplicities are independent of block count: the live whole source is
 /// retained by the capability, materialized input, and completed whole-parent
@@ -1405,6 +1406,9 @@ fn prepare_bounded_multi_block_current_cycle_fallback_v1(
         }
         SIX_BLOCK_CURRENT_CYCLE_ARITY_V1 => {
             b"six-block-current-cycle-articulation-layer-v1".as_slice()
+        }
+        SEVEN_BLOCK_CURRENT_CYCLE_ARITY_V1 => {
+            b"seven-block-current-cycle-articulation-layer-v1".as_slice()
         }
         _ => return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned()),
     });

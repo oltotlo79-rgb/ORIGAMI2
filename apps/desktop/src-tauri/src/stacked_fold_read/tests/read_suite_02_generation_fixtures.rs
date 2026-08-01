@@ -70,9 +70,9 @@ fn bounded_multi_block_projective_active_source_angle_v1() -> f64 {
 }
 
 #[test]
-fn four_five_and_six_block_opposite_bifolds_preview_apply_and_reopen_history() {
+fn bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history() {
     let _generation_guard = lock_stacked_fold_read_generation_test();
-    for block_count in [4, 5, 6] {
+    for block_count in [4, 5, 6, 7] {
         assert_opposite_bifold_lifecycle_v1(block_count);
     }
 }
@@ -82,6 +82,7 @@ fn assert_opposite_bifold_lifecycle_v1(block_count: usize) {
         4 => super::four_bay_cycle_test_support::four_bay_opposite_bifold_pattern(),
         5 => super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
         6 => super::four_bay_cycle_test_support::six_bay_opposite_bifold_pattern(),
+        7 => super::four_bay_cycle_test_support::seven_bay_opposite_bifold_pattern(),
         _ => unreachable!(),
     };
     assert_eq!(moving.len(), block_count * 2);
@@ -137,7 +138,7 @@ fn assert_opposite_bifold_lifecycle_v1(block_count: usize) {
             cycle_schedule_v1: schedule_request,
         },
     )
-    .expect("four/five/six separated radial-bifold blocks certify");
+    .expect("bounded separated radial-bifold blocks certify");
     assert_eq!(preview.source_revision, revision);
     assert_eq!(preview.target_revision, revision + 1);
     assert!(preview.continuous_path_certified);
@@ -276,19 +277,24 @@ fn assert_opposite_bifold_lifecycle_v1(block_count: usize) {
             assert_eq!(artifact.step_count, 2);
             assert!(artifact.page_count >= artifact.step_count);
             assert!(!artifact.bytes.is_empty());
-            assert!(matches!(
-                ori_formats::export_instruction_document_with_path_certificate_attestation_v1(
-                    format,
-                    &project.name,
-                    &model,
-                    project.editor.pattern(),
-                    project.editor.paper(),
-                    &one_ulp_tampered,
-                    snapshot,
-                    &attestation,
+            assert!(
+                matches!(
+                    ori_formats::export_instruction_document_with_path_certificate_attestation_v1(
+                        format,
+                        &project.name,
+                        &model,
+                        project.editor.pattern(),
+                        project.editor.paper(),
+                        &one_ulp_tampered,
+                        snapshot,
+                        &attestation,
+                    ),
+                    Err(
+                        ori_formats::InstructionExportError::InvalidPathCertificateReference { .. }
+                    )
                 ),
-                Err(ori_formats::InstructionExportError::InvalidPathCertificateReference { .. })
-            ), "one-ULP endpoint drift cannot reuse the exact native path attestation");
+                "one-ULP endpoint drift cannot reuse the exact native path attestation"
+            );
         }
     }
     let archive = project

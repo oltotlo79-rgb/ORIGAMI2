@@ -3116,15 +3116,14 @@ fn replay_forward(
         .beginner_design_profile
         .generation_provenance
         .as_ref();
-    profile_state.provenance_trusted = if after_provenance.is_none() {
-        true
-    } else if applies_authorized_beginner_generation {
-        true
-    } else if before_provenance.as_ref() == after_provenance {
-        profile_state.provenance_trusted
-    } else {
-        false
-    };
+    profile_state.provenance_trusted =
+        if after_provenance.is_none() || applies_authorized_beginner_generation {
+            true
+        } else if before_provenance.as_ref() == after_provenance {
+            profile_state.provenance_trusted
+        } else {
+            false
+        };
     Ok(HistoryEntry {
         forward,
         inverse,

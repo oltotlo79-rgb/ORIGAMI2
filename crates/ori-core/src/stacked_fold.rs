@@ -3302,6 +3302,10 @@ struct ReconstructedRefinedTargetV1 {
     overlaps: Vec<ReconstructedRefinedTargetOverlapV1>,
 }
 
+// This short-lived reconstruction keeps graph geometry and its closed pose
+// together by value. Boxing only to shrink this private enum would add a heap
+// allocation to the graph path without changing its retained representation.
+#[allow(clippy::large_enum_variant)]
 enum ReconstructedRefinedTargetPoseV1 {
     Tree(MaterialTreePose),
     Graph {

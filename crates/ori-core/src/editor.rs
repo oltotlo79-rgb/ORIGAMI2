@@ -3357,6 +3357,9 @@ impl EditorState {
 
     /// Plans one new vertex and its connecting edge on an explicit unlocked
     /// crease layer as a single normalized history operation.
+    // The public command boundary intentionally keeps these exact identifiers
+    // separate so callers cannot mix the new vertex, edge, start, and layer.
+    #[allow(clippy::too_many_arguments)]
     pub fn plan_add_connected_vertex_for_layer(
         &self,
         expected_revision: Revision,

@@ -1,21 +1,23 @@
 use super::*;
 
 fn beginner_profile_with_test_generation_provenance() -> BeginnerDesignProfileV1 {
-    let mut profile = BeginnerDesignProfileV1::default();
-    profile.generation_provenance = Some(ori_domain::BeginnerGenerationProvenanceV1 {
-        schema_version: 1,
-        topology_authority_sha256: [17; 32],
-        fold_path_certificate_sha256: Some([19; 32]),
-        document_authority_sha256: None,
-        confidence_score: 90,
-        confidence_reasons: vec!["core_history_test_v1".to_owned()],
-        explicit_override: false,
-        source_asset_fingerprint: "core-history-test-source-v1".to_owned(),
-        semantic_landmark_provenance: None,
-        generic_tree: None,
-        reference_consensus: None,
-        reference_consensus_summary: None,
-    });
+    let profile = BeginnerDesignProfileV1 {
+        generation_provenance: Some(ori_domain::BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [17; 32],
+            fold_path_certificate_sha256: Some([19; 32]),
+            document_authority_sha256: None,
+            confidence_score: 90,
+            confidence_reasons: vec!["core_history_test_v1".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint: "core-history-test-source-v1".to_owned(),
+            semantic_landmark_provenance: None,
+            generic_tree: None,
+            reference_consensus: None,
+            reference_consensus_summary: None,
+        }),
+        ..Default::default()
+    };
     assert!(validate_beginner_design_profile_v1(&profile));
     profile
 }

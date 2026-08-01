@@ -371,21 +371,23 @@ fn provenance_invalidating_move_history(vertex_count: usize) -> EditorHistoryV1 
         .collect();
     let moved = pattern.vertices[0].clone();
     let mut editor = EditorState::new(pattern);
-    let mut profile = BeginnerDesignProfileV1::default();
-    profile.generation_provenance = Some(BeginnerGenerationProvenanceV1 {
-        schema_version: 1,
-        topology_authority_sha256: [0x71; 32],
-        fold_path_certificate_sha256: Some([0x72; 32]),
-        document_authority_sha256: None,
-        confidence_score: 90,
-        confidence_reasons: vec!["bounded_history_regression_v1".to_owned()],
-        explicit_override: false,
-        source_asset_fingerprint: "bounded-history-regression-source-v1".to_owned(),
-        semantic_landmark_provenance: None,
-        generic_tree: None,
-        reference_consensus: None,
-        reference_consensus_summary: None,
-    });
+    let profile = BeginnerDesignProfileV1 {
+        generation_provenance: Some(BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [0x71; 32],
+            fold_path_certificate_sha256: Some([0x72; 32]),
+            document_authority_sha256: None,
+            confidence_score: 90,
+            confidence_reasons: vec!["bounded_history_regression_v1".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint: "bounded-history-regression-source-v1".to_owned(),
+            semantic_landmark_provenance: None,
+            generic_tree: None,
+            reference_consensus: None,
+            reference_consensus_summary: None,
+        }),
+        ..Default::default()
+    };
     assert!(validate_beginner_design_profile_v1(&profile));
     editor
         .restore_beginner_design_profile(profile)

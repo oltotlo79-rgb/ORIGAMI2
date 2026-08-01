@@ -53,7 +53,7 @@ pub(super) fn authority_revalidates_v1(
         && authority.source.fixed_face() == tree_pose.fixed_face()
         && authority.source.fixed_face() == Some(graph_pose.fixed_face())
         && authority.target.identity_namespace() == project_id
-        && authority.target.target_revision() == revision.checked_add(1).unwrap_or(u64::MAX)
+        && authority.target.target_revision() == revision.saturating_add(1)
         && authority.target.target_fingerprint().0 == source_fingerprint
         && authority.target.fixed_face() == authority.source.fixed_face()
         && authority

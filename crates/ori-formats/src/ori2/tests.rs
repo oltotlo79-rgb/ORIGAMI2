@@ -282,21 +282,23 @@ fn version_matrix_archive_fixture() -> Ori2ProjectArchive {
     let (pattern, paper) = sheet.into_parts();
     let mut document = ProjectDocument::new("ORI2 version matrix", pattern.clone());
     document.paper = paper.clone();
-    let mut profile = ori_domain::BeginnerDesignProfileV1::default();
-    profile.generation_provenance = Some(ori_domain::BeginnerGenerationProvenanceV1 {
-        schema_version: 1,
-        topology_authority_sha256: [0x31; 32],
-        fold_path_certificate_sha256: Some([0x62; 32]),
-        document_authority_sha256: None,
-        confidence_score: 93,
-        confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
-        explicit_override: false,
-        source_asset_fingerprint: "asset:version-matrix".to_owned(),
-        semantic_landmark_provenance: None,
-        generic_tree: None,
-        reference_consensus: None,
-        reference_consensus_summary: None,
-    });
+    let profile = ori_domain::BeginnerDesignProfileV1 {
+        generation_provenance: Some(ori_domain::BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [0x31; 32],
+            fold_path_certificate_sha256: Some([0x62; 32]),
+            document_authority_sha256: None,
+            confidence_score: 93,
+            confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint: "asset:version-matrix".to_owned(),
+            semantic_landmark_provenance: None,
+            generic_tree: None,
+            reference_consensus: None,
+            reference_consensus_summary: None,
+        }),
+        ..Default::default()
+    };
     let mut editor = EditorState::with_paper(pattern, paper);
     editor.set_history_entry_limit(17).unwrap();
     let mut instruction_timeline = editor.instruction_timeline().clone();

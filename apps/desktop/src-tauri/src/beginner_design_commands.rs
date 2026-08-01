@@ -1978,11 +1978,10 @@ pub(super) fn certify_beginner_fold_path_with_control_v1(
                 )
                     .then_some(ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
             } else if paper.thickness_mm == 0.0 {
-                let model = ori_collision::diagnose_scheduled_cycle_path_v1(
+                ori_collision::diagnose_scheduled_cycle_path_v1(
                     &geometry, &audit, fixed_face, &generated, &closure, 32,
                 )
-                .continuous_certificate_model_id();
-                model
+                .continuous_certificate_model_id()
             } else { None }
         })?;
         if control.checkpoint().is_err() {

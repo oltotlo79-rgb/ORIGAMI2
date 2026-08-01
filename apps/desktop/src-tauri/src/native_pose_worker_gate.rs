@@ -428,6 +428,9 @@ mod tests {
         dropped_after_unlock: Arc<AtomicBool>,
     }
 
+    // This waker exists only to verify that dropping its Arc happens after the
+    // gate mutex is released; Waker::noop() cannot carry that Drop probe.
+    #[allow(clippy::manual_noop_waker)]
     impl Wake for GateLockProbeWake {
         fn wake(self: Arc<Self>) {}
 

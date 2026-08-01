@@ -2084,7 +2084,8 @@
         "2e24e479421ff7ef4f0958407ead862a8c846013",
         "e6c442d929cf3ea470c5f7070e66f1686653cac8",
         "7ae9c951c2369a8f0451c2a90d27eea962dcd912",
-        "a0b65655285e9b66e33cdb1c182cde433afc5034"
+        "a0b65655285e9b66e33cdb1c182cde433afc5034",
+        "45986496df5eb889a88fc32d56273f131e6e12c0"
       ],
       "evidence": [
         {
@@ -2356,6 +2357,56 @@
           "kind": "test",
           "path": "apps/desktop/tests/globalFlatFoldabilityPanel.dom.test.tsx",
           "selector": "labels the XZ schematic honestly and keeps SVG shapes non-interactive"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "pub struct CommonArticulationPoseExtensionLimitsV1"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "pub struct CommonArticulationPoseExtensionAuthorityV1"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "pub fn prove_common_articulation_pose_extension_authority_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "pub fn issue_common_articulation_pose_extension_authority_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn legacy_two_through_ten_binding_and_revalidation_bytes_remain_frozen()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_eleven_and_twelve_bind_actual_and_configured_caps_in_order()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_foreign_pose_instance_fails_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_exact_resource_envelope_and_invalid_or_overflow_limits_fail_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_hard_thirty_two_boundary_is_inclusive_and_fails_closed_above()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_issuance_and_revalidation_honor_cancel_and_deadline()"
         }
       ],
       "limitations": [
@@ -2364,6 +2415,7 @@
         "Commit e6c442d929cf3ea470c5f7070e66f1686653cac8 adds a separate exact-ten lower scope: canonical closure depth/leaves/work 4/10/10 and each one-short, plus common-articulation pose hard cap 10 and each face/hinge/work/retained-byte one-short.",
         "Commit 7ae9c951c2369a8f0451c2a90d27eea962dcd912 raises only the library clearance hard cap to 10 while preserving its Default at 8, fixes exact-ten clearance resource and every one-short boundary, rejects an actual eleven-block decomposition, and carries exact-ten prerequisites through staged/final exact revalidation with tamper/cancel/deadline rejection. The resulting final path remains outside project mutation, Apply, viewer, and desktop transport authority.",
         "Commit a0b65655285e9b66e33cdb1c182cde433afc5034 preserves generic 2..=8/exact-nine/exact-ten binding bytes; non-authorizing 11..=configured (max 32) binds [11, cap, actual] u64LE in closure/positive/complete and rejects invalid cap/count, replay, tamper. Pose/clearance hard caps 10, Defaults 8; Apply 3..=9 (E2E 4..=9).",
+        "Commit 45986496df5eb889a88fc32d56273f131e6e12c0 adds only a separately typed, non-authorizing 11..=32 pose authority. Its [11, configured cap, actual] u64LE binding, 2..=10 frozen legacy corpus, resource/foreign-pose/cancel/deadline failures do not raise pose/clearance caps or authorize clearance, staged/final transport, project mutation, Apply, or viewer.",
         "PreparedSupportingLine prioritizes globally supporting lines with canonical-ordinal ties and allocation-free unstable sorting; canonical overlap-cell and final ExactStorage signatures remain compatible with the unprioritized and independent classifiers."
       ],
       "missingAcceptance": [

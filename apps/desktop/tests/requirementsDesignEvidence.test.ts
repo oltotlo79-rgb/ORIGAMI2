@@ -6,6 +6,7 @@ import { readDesktopRustUnitTestSources } from './testRustSource.ts'
 
 const status = readFileSync('../../docs/requirements-status.md', 'utf8')
 const progress = readFileSync('../../docs/progress.md', 'utf8')
+const reassessment = readFileSync('../../docs/progress-reassessment-pending-ci-2026-07-22.md', 'utf8')
 const evidenceManifest = JSON.parse(
   readFileSync('../../docs/requirements-evidence.v1.json', 'utf8'),
 )
@@ -27,6 +28,9 @@ const EDT_009_LIMITATION
   = 'Semantic MUS v4 covers 24 variants. Detached SAT partitions 2..16 records by residual vertices. Two-record components may use pair templates. Exactly three records may use one unique ordinary pair plus a singleton leaf sharing one articulation across four translations; larger components require bit-compatible singletons. Component and document residuals are recertified. Exhaustion is Unknown, never UNSAT. At 17+ detached SAT is skipped. Coordinates stay private; mutation is never authorized.'
 const EDT_009_MISSING_ACCEPTANCE
   = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, unsupported connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies.'
+const SIM_010_POSE_EXTENSION_COMMIT = '45986496df5eb889a88fc32d56273f131e6e12c0'
+const SIM_010_POSE_EXTENSION_LIMITATION
+  = 'Commit 45986496df5eb889a88fc32d56273f131e6e12c0 adds only a separately typed, non-authorizing 11..=32 pose authority. Its [11, configured cap, actual] u64LE binding, 2..=10 frozen legacy corpus, resource/foreign-pose/cancel/deadline failures do not raise pose/clearance caps or authorize clearance, staged/final transport, project mutation, Apply, or viewer.'
 
 test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]
@@ -58,6 +62,48 @@ test('INS-007 design evidence is connected to every production boundary', () => 
 test('the evidence audit does not promote the remaining SIM-010 proof boundary', () => {
   assert.match(evidence, /初版MUST全体が完成したとは扱わない/u)
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
+})
+
+test('SIM-010 keeps pose extension evidence separately typed, bounded, and non-promoting', () => {
+  const simEvidence = evidenceManifest.requirements.find(
+    (entry: { id: string }) => entry.id === 'SIM-010',
+  )
+  assert.ok(simEvidence)
+  assert.equal(simEvidence.status, '部分実装')
+  assert.ok(simEvidence.commits.includes(SIM_010_POSE_EXTENSION_COMMIT))
+  assert.equal(simEvidence.evidence.length, 64)
+  assert.ok(simEvidence.limitations.includes(SIM_010_POSE_EXTENSION_LIMITATION))
+
+  const posePath = 'crates/ori-kinematics/src/graph/common_articulation_pose.rs'
+  const collisionPath = 'crates/ori-collision/src/block_composition.rs'
+  const expectedEvidence = [
+    ['production-symbol', posePath, 'pub struct CommonArticulationPoseExtensionLimitsV1'],
+    ['production-symbol', posePath, 'pub struct CommonArticulationPoseExtensionAuthorityV1'],
+    ['production-symbol', posePath, 'pub fn prove_common_articulation_pose_extension_authority_v1('],
+    ['production-symbol', collisionPath, 'pub fn issue_common_articulation_pose_extension_authority_v1('],
+    ['test', posePath, 'fn legacy_two_through_ten_binding_and_revalidation_bytes_remain_frozen()'],
+    ['test', posePath, 'fn extension_eleven_and_twelve_bind_actual_and_configured_caps_in_order()'],
+    ['test', posePath, 'fn extension_foreign_pose_instance_fails_closed()'],
+    ['test', posePath, 'fn extension_exact_resource_envelope_and_invalid_or_overflow_limits_fail_closed()'],
+    ['test', posePath, 'fn extension_hard_thirty_two_boundary_is_inclusive_and_fails_closed_above()'],
+    ['test', posePath, 'fn extension_issuance_and_revalidation_honor_cancel_and_deadline()'],
+  ]
+  for (const [kind, path, selector] of expectedEvidence) {
+    assert.ok(simEvidence.evidence.some(
+      (item: { kind: string, path: string, selector: string }) =>
+        item.kind === kind && item.path === path && item.selector === selector,
+    ))
+  }
+
+  assert.ok(progress.includes('a0b65655285e9b66e33cdb1c182cde433afc5034'))
+  assert.ok(progress.includes(SIM_010_POSE_EXTENSION_COMMIT))
+  assert.ok(progress.includes('2..=10のlegacy binding/revalidation golden corpus'))
+  assert.ok(status.includes(SIM_010_POSE_EXTENSION_COMMIT))
+  assert.ok(status.includes('legacy 2..=10 fixed golden'))
+  assert.ok(reassessment.includes(SIM_010_POSE_EXTENSION_COMMIT))
+  assert.ok(reassessment.includes('証拠密度の回帰'))
+  assert.ok(status.includes('MUST集計85 / 2 / 0'))
+  assert.ok(reassessment.includes('全体81.96%（表示82.0%）を増額しない'))
 })
 
 test('EDT-009 retains its wire tags and tracks twenty-four sound proof families', () => {

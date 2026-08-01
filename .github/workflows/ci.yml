@@ -450,6 +450,22 @@ jobs:
         run: |
           set -o pipefail
           test_status=0
+          last_component_status=0
+          : > cargo-test.log
+          : > cargo-test-failed-package.txt
+          run_component() {
+            local component="$1"
+            shift
+            local component_status=0
+            printf '::ORIGAMI2_CARGO_PACKAGE_BEGIN::%s\n' "$component" | tee -a cargo-test.log
+            "$@" 2>&1 | tee -a cargo-test.log || component_status=$?
+            printf '::ORIGAMI2_CARGO_PACKAGE_END::%s::status=%s\n' "$component" "$component_status" | tee -a cargo-test.log
+            if [ "$component_status" -ne 0 ] && [ "$test_status" -eq 0 ]; then
+              printf '%s\n' "$component" > cargo-test-failed-package.txt
+              test_status="$component_status"
+            fi
+            last_component_status="$component_status"
+          }
           if [ "$RUNNER_OS" = "Windows" ]; then
             packages=(
               ori-numeric
@@ -462,27 +478,29 @@ jobs:
               ori-core
               ori-formats
               ori-instructions
-              origami2-desktop
             )
-            : > cargo-test.log
+            core_failed=0
             for package in "${packages[@]}"; do
-              package_status=0
-              printf '::ORIGAMI2_CARGO_PACKAGE_BEGIN::%s\n' "$package" | tee -a cargo-test.log
-              cargo test -p "$package" --locked --all-targets --no-fail-fast 2>&1 \
-                | tee -a cargo-test.log || package_status=$?
-              printf '::ORIGAMI2_CARGO_PACKAGE_END::%s::status=%s\n' "$package" "$package_status" | tee -a cargo-test.log
-              if [ "$package_status" -ne 0 ]; then
-                printf '%s\n' "$package" > cargo-test-failed-package.txt
-                test_status="$package_status"
+              run_component "$package" \
+                cargo test -p "$package" --locked --all-targets --no-fail-fast
+              if [ "$last_component_status" -ne 0 ]; then
+                core_failed=1
                 break
               fi
             done
+            if [ "$core_failed" -eq 0 ]; then
+              run_component origami2-desktop-release-lib \
+                cargo test -p origami2-desktop --release --locked --lib --no-fail-fast
+              run_component origami2-desktop-event-schema-debug \
+                cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
+            fi
           else
-            printf '%s\n' workspace > cargo-test-failed-package.txt
-            printf '::ORIGAMI2_CARGO_PACKAGE_BEGIN::workspace\n' | tee cargo-test.log
-            cargo test --workspace --locked --all-targets --no-fail-fast 2>&1 \
-              | tee -a cargo-test.log || test_status=$?
-            printf '::ORIGAMI2_CARGO_PACKAGE_END::workspace::status=%s\n' "$test_status" | tee -a cargo-test.log
+            run_component workspace-core-debug \
+              cargo test --workspace --exclude origami2-desktop --locked --all-targets --no-fail-fast
+            run_component origami2-desktop-release-lib \
+              cargo test -p origami2-desktop --release --locked --lib --no-fail-fast
+            run_component origami2-desktop-event-schema-debug \
+              cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
           fi
           if [ "$test_status" -ne 0 ]; then
             failed_package="$(cat cargo-test-failed-package.txt)"

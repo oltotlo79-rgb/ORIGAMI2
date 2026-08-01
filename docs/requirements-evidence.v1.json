@@ -2079,7 +2079,8 @@
         "3470a8debf63f78d28a6f5be5c64d5a1883554a8",
         "c3ed1bddf1dda7e213c0687068c3338f3a3f6c51",
         "f1e8b460fe73be88372851fa86fe5ca656c76463",
-        "5132cf7966195a4e8055ea63114fad03948ea47e"
+        "5132cf7966195a4e8055ea63114fad03948ea47e",
+        "a743fa74b7c82a5a683a6b9c9a6054ab619fd56a"
       ],
       "evidence": [
         {
@@ -2105,7 +2106,22 @@
         {
           "kind": "test",
           "path": "crates/ori-collision/src/block_composition.rs",
-          "selector": "fn complete_live_three_four_and_eight_block_authorities_are_sealed_and_non_authorizing()"
+          "selector": "fn representative_generic_complete_authorities_preserve_legacy_fingerprints()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "pub fn issue_exact_nine_block_closure_authority_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "pub fn diagnose_exact_nine_block_union_completeness_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "fn exact_nine_complete_live_authority_is_explicitly_scoped_and_non_authorizing()"
         },
         {
           "kind": "production-symbol",
@@ -2131,6 +2147,11 @@
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/stacked_fold_read/tests/read_suite_02_generation_fixtures.rs",
           "selector": "fn bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/stacked_fold_read/tests/read_suite_02_generation_fixtures.rs",
+          "selector": "fn nine_block_opposite_bifold_preview_apply_and_reopen_history()"
         },
         {
           "kind": "test",
@@ -2164,6 +2185,11 @@
         },
         {
           "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
+          "selector": "fn exact_nine_extended_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable()"
+        },
+        {
+          "kind": "test",
           "path": "crates/ori-kinematics/src/graph.rs",
           "selector": "fn opposite_pair_closure_rejects_mixed_assignment_hidden_at_three_zero_samples()"
         },
@@ -2181,6 +2207,16 @@
           "kind": "production-symbol",
           "path": "crates/ori-foldability/src/facewise.rs",
           "selector": "fn split_owned_convex_polygon_by_line<"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-foldability/src/facewise.rs",
+          "selector": "fn build_overlap_cells_with_supporting_line_deduplication_inner<"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-foldability/src/facewise/tests.rs",
+          "selector": "fn propagated_face_candidates_exactly_classify_multiway_and_contact_regions()"
         },
         {
           "kind": "test",
@@ -2219,11 +2255,12 @@
         }
       ],
       "limitations": [
-        "Certified radial-bifold Apply is only 3..=8 blocks (E2E 4..8). At 8, one whole plus eight restricted proofs/sources bind under exact depth/leaves/work 3/8/8; each one-short fails closed.",
-        "Separate bounded 2..=8 canonical-union authority is unchanged and non-authorizing; exact AABB/split paths preserve cells and fail closed."
+        "Certified radial-bifold Apply is only 3..=9 blocks (E2E 4..=9). The 8-block depth/leaves/work 3/8/8 boundary is retained; exact nine binds one whole plus nine restricted proofs/sources (ten each) under fixture closure depth/leaves/work 4/9/9, and every one-short fails closed. Pose and clearance Defaults remain 8; production current-cycle explicitly opts into 9.",
+        "Generic bounded 2..=8 canonical-union authority and its fingerprints remain unchanged and non-authorizing. Exact nine uses a separate scoped companion and binding domain; complete-union evidence alone is also non-authorizing.",
+        "PreparedSupportingLine prioritizes globally supporting lines with canonical-ordinal ties and allocation-free unstable sorting; canonical overlap-cell and final ExactStorage signatures remain compatible with the unprioritized and independent classifiers."
       ],
       "missingAcceptance": [
-        "Nine-plus or arbitrary multi-block Apply; arbitrary positive-thickness multi-hinge proof/transport; 3D crease insertion; general non-flat viewer."
+        "Ten-plus or arbitrary multi-block Apply; arbitrary positive-thickness multi-hinge proof/transport; 3D crease insertion; general non-flat viewer."
       ]
     },
     {

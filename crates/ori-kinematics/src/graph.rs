@@ -2113,11 +2113,15 @@ fn collective_flat_stack_cycle_closure_premises_v1(
         })
 }
 
+const MAX_EVEN_SINGLE_VERTEX_SECTORS_V1: usize = 24;
+const MAX_EVEN_SINGLE_VERTEX_PAIR_TESTS_V1: usize =
+    MAX_EVEN_SINGLE_VERTEX_SECTORS_V1 * (MAX_EVEN_SINGLE_VERTEX_SECTORS_V1 - 1) / 2;
+
 // Exact identity for a straight fold through one bounded even-degree vertex. The two
 // moving material hinges leave the common pivot in opposite directions and
 // share one canonical angle profile. Their rotations therefore cancel around
-// the six-face loop for the complete parameter domain. Solved midpoint and
-// endpoint poses revalidate the admitted assignment/orientation branch.
+// the complete even-face loop for the full parameter domain. Solved midpoint
+// and endpoint poses revalidate the admitted assignment/orientation branch.
 fn even_single_vertex_opposite_pair_cycle_closure_premises_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -2205,7 +2209,9 @@ fn even_single_vertex_opposite_pair_cycle_closure_premises_v1(
 }
 
 /// Enumerates only bounded, same-assignment, geometrically opposite hinge
-/// pairs for the analytic even single-vertex cycle family.
+/// pairs for the analytic even single-vertex cycle family. V1 admits at most
+/// 24 sectors, so the complete pair scan is intrinsically bounded by 276
+/// tests in addition to the caller-supplied limit.
 pub fn enumerate_even_single_vertex_opposite_pairs_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -2228,6 +2234,7 @@ pub fn enumerate_even_single_vertex_opposite_pairs_v1(
         .checked_mul(count.saturating_sub(1))
         .and_then(|v| v.checked_div(2))
         .ok_or(KinematicsError::ResourceLimitExceeded)?;
+    debug_assert!(work <= MAX_EVEN_SINGLE_VERTEX_PAIR_TESTS_V1);
     if work > max_pair_tests {
         return Err(KinematicsError::ResourceLimitExceeded);
     }
@@ -2277,7 +2284,9 @@ pub fn enumerate_even_single_vertex_opposite_pairs_v1(
 }
 
 fn bounded_even_single_vertex_sector_count_v1(face_count: usize, hinge_count: usize) -> bool {
-    (4..=16).contains(&face_count) && face_count.is_multiple_of(2) && hinge_count == face_count
+    (4..=MAX_EVEN_SINGLE_VERTEX_SECTORS_V1).contains(&face_count)
+        && face_count.is_multiple_of(2)
+        && hinge_count == face_count
 }
 
 // Narrow non-collinear identity R(a)R(b)R(b)^-1R(a)^-1.  The four hinges
@@ -3498,7 +3507,13 @@ mod tests {
 
     #[test]
     fn bounded_rational_symmetric_sectors_close_exactly() {
-        for (numerator, denominator, leg) in [(3, 5, 4), (6, 10, 8), (5, 13, 12), (8, 17, 15)] {
+        for (numerator, denominator, leg) in [
+            (3, 5, 4),
+            (6, 10, 8),
+            (5, 13, 12),
+            (8, 17, 15),
+            (33, 65, 56),
+        ] {
             let (geometry, audit, schedule) =
                 rational_symmetric_cycle_fixture(numerator, denominator, leg, 0.0, 1).unwrap();
             let closure = geometry
@@ -3547,7 +3562,7 @@ mod tests {
             );
         }
         let (large_geometry, large_audit, large_schedule) =
-            rational_symmetric_cycle_fixture(65, 97, 72, 0.0, 1).unwrap();
+            rational_symmetric_cycle_fixture(5_460, 9_181, 7_381, 0.0, 1).unwrap();
         assert!(
             large_schedule
                 .bounded_symmetric_kawasaki_profile_v1()
@@ -4331,14 +4346,86 @@ mod tests {
         assert!(!basis.is_for_geometry(&foreign));
     }
 
+    fn opposite_pair_cycle_fixture(
+        count: usize,
+    ) -> (MaterialHingeGraphGeometry, MaterialHingeGraphAudit) {
+        let namespace = ProjectId::new();
+        let faces = (0..count)
+            .map(|index| FaceId::derive_v5(namespace, &[0x61, index as u8]))
+            .collect::<Vec<_>>();
+        let edges = (0..count)
+            .map(|index| EdgeId::derive_v5(namespace, &[0x62, index as u8]))
+            .collect::<Vec<_>>();
+        let adjacency = (0..count)
+            .map(|index| (edges[index], faces[index], faces[(index + 1) % count]))
+            .collect::<Vec<_>>();
+        let topology = topology(&faces, &adjacency);
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let hinges = (0..count)
+            .map(|index| {
+                let axis = if index < count / 2 {
+                    Point3::new(1.0, 0.0, 0.0).unwrap()
+                } else {
+                    Point3::new(-1.0, 0.0, 0.0).unwrap()
+                };
+                TreeHinge::new_for_test(
+                    edges[index],
+                    FoldAssignment::Mountain,
+                    faces[index],
+                    faces[(index + 1) % count],
+                    origin,
+                    axis,
+                    axis,
+                )
+            })
+            .collect();
+        (
+            MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), hinges),
+            audit,
+        )
+    }
+
     #[test]
-    fn opposite_pair_sector_bound_rejects_odd_mismatched_and_over_limit_graphs() {
+    fn opposite_pair_sector_bound_admits_24_and_rejects_25() {
+        assert_eq!(MAX_EVEN_SINGLE_VERTEX_SECTORS_V1, 24);
+        assert_eq!(MAX_EVEN_SINGLE_VERTEX_PAIR_TESTS_V1, 276);
         assert!(bounded_even_single_vertex_sector_count_v1(4, 4));
         assert!(bounded_even_single_vertex_sector_count_v1(16, 16));
+        assert!(bounded_even_single_vertex_sector_count_v1(18, 18));
+        assert!(bounded_even_single_vertex_sector_count_v1(24, 24));
         assert!(!bounded_even_single_vertex_sector_count_v1(5, 5));
         assert!(!bounded_even_single_vertex_sector_count_v1(17, 17));
-        assert!(!bounded_even_single_vertex_sector_count_v1(18, 18));
-        assert!(!bounded_even_single_vertex_sector_count_v1(16, 15));
+        assert!(!bounded_even_single_vertex_sector_count_v1(25, 25));
+        assert!(!bounded_even_single_vertex_sector_count_v1(26, 26));
+        assert!(!bounded_even_single_vertex_sector_count_v1(24, 23));
+    }
+
+    #[test]
+    fn opposite_pair_enumeration_preserves_16_and_admits_exact_24_pair_work() {
+        for count in [16_usize, 24] {
+            let (geometry, audit) = opposite_pair_cycle_fixture(count);
+            let pair_tests = count * (count - 1) / 2;
+            let pairs =
+                enumerate_even_single_vertex_opposite_pairs_v1(&geometry, &audit, pair_tests)
+                    .unwrap();
+            assert_eq!(pairs.len(), (count / 2) * (count / 2));
+            assert!(matches!(
+                enumerate_even_single_vertex_opposite_pairs_v1(&geometry, &audit, pair_tests - 1),
+                Err(KinematicsError::ResourceLimitExceeded)
+            ));
+        }
+
+        let (over_limit_geometry, over_limit_audit) = opposite_pair_cycle_fixture(25);
+        assert!(matches!(
+            enumerate_even_single_vertex_opposite_pairs_v1(
+                &over_limit_geometry,
+                &over_limit_audit,
+                25 * 24 / 2,
+            ),
+            Err(KinematicsError::UnsupportedTopology)
+        ));
     }
 
     #[test]

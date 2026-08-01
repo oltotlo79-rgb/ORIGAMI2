@@ -698,49 +698,93 @@ fn validate_decomposition_v1(
     {
         return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
     }
-    if !block_intersection_is_tree_with_checkpoint_v1(decomposition, checkpoint)? {
+    if !block_articulation_incidence_is_tree_with_checkpoint_v1(decomposition, checkpoint)? {
         return Err(CommonArticulationPoseErrorV1::InvalidDecomposition);
     }
     Ok(())
 }
 
-fn block_intersection_is_tree_with_checkpoint_v1(
+/// Validates the canonical block-cut incidence graph, rather than the
+/// pairwise block-intersection projection.
+///
+/// A single articulation face may legitimately belong to three or more
+/// blocks.  Its incidence graph is one star, while the pairwise projection is
+/// a clique and therefore must not be mistaken for a cycle.
+fn block_articulation_incidence_is_tree_with_checkpoint_v1(
     decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
     checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV1>,
 ) -> Result<bool, CommonArticulationPoseErrorV1> {
     let blocks = decomposition.blocks();
-    let mut adjacency = vec![Vec::new(); blocks.len()];
-    let mut edge_count = 0usize;
-    for first in 0..blocks.len() {
-        common_articulation_checkpoint_v1(checkpoint)?;
-        for second in first + 1..blocks.len() {
-            common_articulation_checkpoint_v1(checkpoint)?;
-            let mut shared = 0usize;
-            for face in blocks[first].geometry().face_ids() {
-                common_articulation_checkpoint_v1(checkpoint)?;
-                if blocks[second].geometry().face_ids().contains(face) {
-                    shared += 1;
-                }
-            }
-            if shared > 1 {
-                return Ok(false);
-            }
-            if shared == 1 {
-                adjacency[first].push(second);
-                adjacency[second].push(first);
-                edge_count += 1;
-            }
-        }
-    }
-    if edge_count != blocks.len().saturating_sub(1) {
+    if blocks.len() < COMMON_ARTICULATION_POSE_MIN_BLOCKS_V1 {
         return Ok(false);
     }
-    let mut visited = vec![false; blocks.len()];
+    let mut occurrences = Vec::new();
+    for (block_index, block) in blocks.iter().enumerate() {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        for face in block.geometry().face_ids().iter().copied() {
+            common_articulation_checkpoint_v1(checkpoint)?;
+            occurrences.push((face, block_index));
+        }
+    }
+    occurrences.sort_unstable_by_key(|(face, block)| (face.canonical_bytes(), *block));
+
+    let mut articulation_memberships = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < occurrences.len() {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        let face = occurrences[cursor].0;
+        let mut end = cursor + 1;
+        while end < occurrences.len() && occurrences[end].0 == face {
+            common_articulation_checkpoint_v1(checkpoint)?;
+            end += 1;
+        }
+        if end - cursor > 1 {
+            let mut memberships = Vec::new();
+            for (_, block_index) in &occurrences[cursor..end] {
+                common_articulation_checkpoint_v1(checkpoint)?;
+                if memberships.last() == Some(block_index) {
+                    return Ok(false);
+                }
+                memberships.push(*block_index);
+            }
+            articulation_memberships.push(memberships);
+        }
+        cursor = end;
+    }
+    if articulation_memberships.is_empty() {
+        return Ok(false);
+    }
+
+    let node_count = blocks
+        .len()
+        .checked_add(articulation_memberships.len())
+        .ok_or(CommonArticulationPoseErrorV1::ResourceLimit)?;
+    let edge_count = articulation_memberships
+        .iter()
+        .try_fold(0usize, |sum, memberships| {
+            sum.checked_add(memberships.len())
+        })
+        .ok_or(CommonArticulationPoseErrorV1::ResourceLimit)?;
+    if edge_count != node_count.saturating_sub(1) {
+        return Ok(false);
+    }
+    let mut adjacency = vec![Vec::new(); node_count];
+    for (articulation_index, memberships) in articulation_memberships.iter().enumerate() {
+        common_articulation_checkpoint_v1(checkpoint)?;
+        let articulation_node = blocks.len() + articulation_index;
+        for &block in memberships {
+            common_articulation_checkpoint_v1(checkpoint)?;
+            adjacency[block].push(articulation_node);
+            adjacency[articulation_node].push(block);
+        }
+    }
+
+    let mut visited = vec![false; node_count];
     let mut queue = VecDeque::from([0usize]);
     visited[0] = true;
-    while let Some(block) = queue.pop_front() {
+    while let Some(node) = queue.pop_front() {
         common_articulation_checkpoint_v1(checkpoint)?;
-        for &next in &adjacency[block] {
+        for &next in &adjacency[node] {
             common_articulation_checkpoint_v1(checkpoint)?;
             if !visited[next] {
                 visited[next] = true;
@@ -1002,9 +1046,72 @@ mod tests {
         }
     }
 
+    fn shared_face_star_fixture_v1(block_count: usize) -> ChainFixtureV1 {
+        let articulation = FaceId::new();
+        let exclusive_faces = (0..block_count)
+            .map(|_| std::array::from_fn::<_, 5, _>(|_| FaceId::new()))
+            .collect::<Vec<_>>();
+        let mut faces = vec![articulation];
+        faces.extend(exclusive_faces.iter().flatten().copied());
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        let start = Point3::new(0.0, 0.0, 0.0).expect("finite start");
+        let end = Point3::new(1.0, 0.0, 0.0).expect("finite end");
+        let axis = Point3::new(1.0, 0.0, 0.0).expect("unit axis");
+        let mut hinges = Vec::new();
+        for exclusive in &exclusive_faces {
+            let cycle = [
+                articulation,
+                exclusive[0],
+                exclusive[1],
+                exclusive[2],
+                exclusive[3],
+                exclusive[4],
+            ];
+            for index in 0..cycle.len() {
+                hinges.push(TreeHinge::new_for_test(
+                    EdgeId::new(),
+                    FoldAssignment::Mountain,
+                    cycle[index],
+                    cycle[(index + 1) % cycle.len()],
+                    start,
+                    end,
+                    axis,
+                ));
+            }
+        }
+        let geometry = MaterialHingeGraphGeometry::new_for_test(faces.clone(), hinges.clone());
+        let audit = super::super::MaterialHingeGraphAudit::from_block(&faces, &hinges)
+            .expect("connected shared-face star audit");
+        let mut angles = geometry
+            .hinges()
+            .iter()
+            .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).expect("zero angle"))
+            .collect::<Vec<_>>();
+        angles.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+        let angles = CanonicalHingeAngles::new(angles).expect("canonical angles");
+        let pose = geometry
+            .solve_closed(&audit, articulation, &angles, 0.0)
+            .expect("closed shared-face star pose");
+        let decomposition = geometry
+            .decompose_canonical_edge_blocks_v1(
+                &audit,
+                CanonicalEdgeBlockLimitsV1 {
+                    max_blocks: block_count,
+                    max_faces_per_block: 6,
+                    max_hinges_per_block: 6,
+                },
+            )
+            .expect("canonical shared-face star decomposition");
+        ChainFixtureV1 {
+            geometry,
+            pose,
+            decomposition,
+        }
+    }
+
     #[test]
-    fn two_three_and_eight_block_chains_issue_exact_parent_pose_restrictions() {
-        for block_count in [2, 3, 8] {
+    fn two_three_five_and_eight_block_chains_issue_exact_parent_pose_restrictions() {
+        for block_count in [2, 3, 5, 8] {
             let fixture = chain_fixture_v1(block_count);
             let authority = prove_common_articulation_pose_authority_v1(
                 fixture.input(0.1, CommonArticulationPoseLimitsV1::default()),
@@ -1047,6 +1154,28 @@ mod tests {
                 .revalidate_v1(fixture.input(0.1, CommonArticulationPoseLimitsV1::default()))
                 .expect("exact live revalidation");
         }
+    }
+
+    #[test]
+    fn four_blocks_sharing_one_articulation_face_form_one_incidence_tree() {
+        let fixture = shared_face_star_fixture_v1(4);
+        assert_eq!(fixture.decomposition.blocks().len(), 4);
+        assert_eq!(fixture.decomposition.articulation_faces().len(), 1);
+        assert!(fixture.decomposition.blocks().iter().all(|block| {
+            block
+                .geometry()
+                .face_ids()
+                .contains(&fixture.pose.fixed_face())
+        }));
+        let authority = prove_common_articulation_pose_authority_v1(
+            fixture.input(0.1, CommonArticulationPoseLimitsV1::default()),
+        )
+        .expect("shared-face star is a block-articulation incidence tree");
+        assert_eq!(authority.block_count_v1(), 4);
+        assert_eq!(
+            authority.articulation_faces_v1(),
+            fixture.decomposition.articulation_faces()
+        );
     }
 
     #[test]

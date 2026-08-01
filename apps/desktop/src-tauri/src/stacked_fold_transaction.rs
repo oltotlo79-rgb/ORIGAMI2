@@ -190,12 +190,13 @@ pub(super) enum PendingStackedFoldRequestedPose {
         layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
         target_angles: Vec<(ori_domain::EdgeId, f64)>,
     },
-    ThreeBlockCurrentCycle {
+    BoundedMultiBlockCurrentCycle {
         geometry: ori_kinematics::MaterialHingeGraphGeometry,
         audit: ori_kinematics::MaterialHingeGraphAudit,
         pose: ori_kinematics::ClosedMaterialHingeGraphPose,
         decomposition: ori_kinematics::CanonicalMaterialEdgeBlockDecompositionV1,
         authority: ori_collision::CommonArticulationContinuousLayerPathAuthorityV1,
+        certified_path: ori_collision::CertifiedPoseGraphPathCertificateV1,
         common_pose_limits: ori_kinematics::CommonArticulationPoseLimitsV1,
         schedule: ori_kinematics::CanonicalCycleScheduleV1,
         schedule_limits: ori_kinematics::CycleScheduleLimitsV1,
@@ -219,7 +220,7 @@ pub(super) struct PendingCertifiedPathEdgeV1 {
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
-fn canonical_three_block_layer_summary_v1(
+fn canonical_bounded_multi_block_layer_summary_v1(
     closure: &ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
     source: &LayerOrderSnapshot,
 ) -> Option<(Vec<(ori_domain::FaceId, ori_domain::FaceId)>, usize)> {
@@ -240,15 +241,15 @@ fn canonical_three_block_layer_summary_v1(
     (pairs.len() == source_pair_count).then_some((pairs, transition_count))
 }
 
-fn three_block_layer_summary_matches_v1(
+fn bounded_multi_block_layer_summary_matches_v1(
     closure: &ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
     source: &LayerOrderSnapshot,
     layer_order_pairs: &[(ori_domain::FaceId, ori_domain::FaceId)],
     transition_count: usize,
 ) -> bool {
-    canonical_three_block_layer_summary_v1(closure, source).is_some_and(
+    canonical_bounded_multi_block_layer_summary_v1(closure, source).is_some_and(
         |(expected_pairs, expected_transition_count)| {
-            exact_three_block_summary_fields_match_v1(
+            exact_bounded_multi_block_summary_fields_match_v1(
                 &expected_pairs,
                 expected_transition_count,
                 layer_order_pairs,
@@ -258,7 +259,7 @@ fn three_block_layer_summary_matches_v1(
     )
 }
 
-fn exact_three_block_summary_fields_match_v1(
+fn exact_bounded_multi_block_summary_fields_match_v1(
     expected_pairs: &[(ori_domain::FaceId, ori_domain::FaceId)],
     expected_transition_count: usize,
     layer_order_pairs: &[(ori_domain::FaceId, ori_domain::FaceId)],
@@ -268,7 +269,7 @@ fn exact_three_block_summary_fields_match_v1(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn revalidate_three_block_current_cycle_authority_v1(
+fn reissue_bounded_multi_block_current_cycle_path_v1(
     geometry: &ori_kinematics::MaterialHingeGraphGeometry,
     audit: &ori_kinematics::MaterialHingeGraphAudit,
     pose: &ori_kinematics::ClosedMaterialHingeGraphPose,
@@ -287,40 +288,41 @@ fn revalidate_three_block_current_cycle_authority_v1(
     target_angles: &[(ori_domain::EdgeId, f64)],
     layer_order_pairs: &[(ori_domain::FaceId, ori_domain::FaceId)],
     transition_count: usize,
-) -> bool {
-    let [first, second, third] = block_sources else {
-        return false;
-    };
-    let block_sources = [first, second, third];
-    authority.block_count_v1() == 3
-        && decomposition.blocks().len() == 3
-        && three_block_layer_summary_matches_v1(
+) -> Option<ori_collision::CertifiedPoseGraphPathCertificateV1> {
+    let block_count = decomposition.blocks().len();
+    if !super::stacked_fold_read::bounded_multi_block_current_cycle_arity_supported_v1(block_count)
+        || block_sources.len() != block_count
+        || authority.block_count_v1() != block_count
+        || !bounded_multi_block_layer_summary_matches_v1(
             closure,
             source,
             layer_order_pairs,
             transition_count,
         )
-        && authority
-            .revalidate_v1(
-                ori_collision::CommonArticulationContinuousLayerPathRevalidationInputV1 {
-                    geometry,
-                    audit,
-                    pose,
-                    decomposition,
-                    common_pose_limits,
-                    schedule,
-                    schedule_limits,
-                    closure,
-                    paper_thickness_mm: thickness,
-                    clearance_limits,
-                    block_sources: &block_sources,
-                    issuer_context,
-                    articulation_layer_fingerprint,
-                    target_angles,
-                    source,
-                },
-            )
-            .is_ok()
+    {
+        return None;
+    }
+    let block_source_refs = block_sources.iter().collect::<Vec<_>>();
+    ori_collision::issue_common_articulation_single_transition_path_v1(
+        authority,
+        ori_collision::CommonArticulationContinuousLayerPathRevalidationInputV1 {
+            geometry,
+            audit,
+            pose,
+            decomposition,
+            common_pose_limits,
+            schedule,
+            schedule_limits,
+            closure,
+            paper_thickness_mm: thickness,
+            clearance_limits,
+            block_sources: &block_source_refs,
+            issuer_context,
+            articulation_layer_fingerprint,
+            target_angles,
+            source,
+        },
+    )
 }
 
 impl PendingStackedFoldRequestedPose {
@@ -330,7 +332,7 @@ impl PendingStackedFoldRequestedPose {
             Self::Graph { .. }
                 | Self::CurrentCycle { .. }
                 | Self::BlockwiseCurrentCycle { .. }
-                | Self::ThreeBlockCurrentCycle { .. }
+                | Self::BoundedMultiBlockCurrentCycle { .. }
         )
     }
     fn geometry(&self) -> Option<&PreparedStackedFoldGeometryV1> {
@@ -339,7 +341,7 @@ impl PendingStackedFoldRequestedPose {
             Self::Graph { requested, .. } => Some(requested.initial().target().geometry()),
             Self::CurrentCycle { .. }
             | Self::BlockwiseCurrentCycle { .. }
-            | Self::ThreeBlockCurrentCycle { .. } => None,
+            | Self::BoundedMultiBlockCurrentCycle { .. } => None,
         }
     }
     fn continuous_certified(&self) -> bool {
@@ -398,8 +400,6 @@ impl PendingStackedFoldRequestedPose {
                                 &edge.generated,
                                 &edge.closure,
                                 8,
-                                expected.source(),
-                                expected.target(),
                             )
                             .is_some_and(|actual| actual == edge.expected && actual == *expected)
                         })
@@ -451,8 +451,6 @@ impl PendingStackedFoldRequestedPose {
                         generated,
                         closure,
                         32,
-                        expected.source(),
-                        expected.target(),
                     )
                     .is_some_and(|actual| actual == *expected)
             }
@@ -475,12 +473,13 @@ impl PendingStackedFoldRequestedPose {
                         *articulation_layer_fingerprint,
                     )
             }
-            Self::ThreeBlockCurrentCycle {
+            Self::BoundedMultiBlockCurrentCycle {
                 geometry,
                 audit,
                 pose,
                 decomposition,
                 authority,
+                certified_path,
                 common_pose_limits,
                 schedule,
                 schedule_limits,
@@ -495,26 +494,30 @@ impl PendingStackedFoldRequestedPose {
                 layer_order_pairs,
                 transition_count,
                 ..
-            } => revalidate_three_block_current_cycle_authority_v1(
-                geometry,
-                audit,
-                pose,
-                decomposition,
-                authority,
-                *common_pose_limits,
-                schedule,
-                *schedule_limits,
-                closure,
-                *clearance_limits,
-                block_sources,
-                source,
-                *thickness,
-                *issuer_context,
-                *articulation_layer_fingerprint,
-                target_angles,
-                layer_order_pairs,
-                *transition_count,
-            ),
+            } => {
+                reissue_bounded_multi_block_current_cycle_path_v1(
+                    geometry,
+                    audit,
+                    pose,
+                    decomposition,
+                    authority,
+                    *common_pose_limits,
+                    schedule,
+                    *schedule_limits,
+                    closure,
+                    *clearance_limits,
+                    block_sources,
+                    source,
+                    *thickness,
+                    *issuer_context,
+                    *articulation_layer_fingerprint,
+                    target_angles,
+                    layer_order_pairs,
+                    *transition_count,
+                )
+                .as_ref()
+                    == Some(certified_path)
+            }
         }
     }
 
@@ -554,7 +557,7 @@ impl PendingStackedFoldRequestedPose {
                     pairs,
                 });
             }
-            if let Self::ThreeBlockCurrentCycle {
+            if let Self::BoundedMultiBlockCurrentCycle {
                 authority,
                 layer_order_pairs,
                 transition_count,
@@ -564,7 +567,7 @@ impl PendingStackedFoldRequestedPose {
             } = self
             {
                 let (canonical_pairs, expected_transition_count) =
-                    canonical_three_block_layer_summary_v1(closure, source)?;
+                    canonical_bounded_multi_block_layer_summary_v1(closure, source)?;
                 if canonical_pairs.as_slice() != layer_order_pairs
                     || expected_transition_count != *transition_count
                 {
@@ -680,7 +683,7 @@ impl PendingStackedFoldRequestedPose {
                 Some(*fixed_face),
                 target_angles.clone(),
             ),
-            Self::ThreeBlockCurrentCycle {
+            Self::BoundedMultiBlockCurrentCycle {
                 geometry,
                 pose,
                 target_angles,
@@ -706,7 +709,9 @@ impl PendingStackedFoldRequestedPose {
                 .collect(),
             Self::CurrentCycle { target_angles, .. }
             | Self::BlockwiseCurrentCycle { target_angles, .. }
-            | Self::ThreeBlockCurrentCycle { target_angles, .. } => vec![target_angles.clone()],
+            | Self::BoundedMultiBlockCurrentCycle { target_angles, .. } => {
+                vec![target_angles.clone()]
+            }
             _ => vec![self.pose_components().3],
         }
     }
@@ -717,31 +722,32 @@ impl PendingStackedFoldRequestedPose {
                 certified_path: Some(path),
                 ..
             } => Some(path),
+            Self::BoundedMultiBlockCurrentCycle { certified_path, .. } => Some(certified_path),
             _ => None,
         }
     }
 
     fn certified_graph_source_angles(&self) -> Option<Vec<(ori_domain::EdgeId, f64)>> {
-        let Self::Graph {
-            certified_path: Some(_),
-            certified_edges,
-            ..
-        } = self
-        else {
-            return None;
+        let angles = match self {
+            Self::Graph {
+                certified_path: Some(_),
+                certified_edges,
+                ..
+            } => certified_edges
+                .first()?
+                .generated
+                .schedule()
+                .evaluate(0.0)?,
+            Self::BoundedMultiBlockCurrentCycle { schedule, .. } => schedule.evaluate(0.0)?,
+            _ => return None,
         };
-        certified_edges
-            .first()?
-            .generated
-            .schedule()
-            .evaluate(0.0)
-            .map(|angles| {
-                angles
-                    .as_slice()
-                    .iter()
-                    .map(|angle| (angle.edge(), angle.angle_degrees()))
-                    .collect()
-            })
+        Some(
+            angles
+                .as_slice()
+                .iter()
+                .map(|angle| (angle.edge(), angle.angle_degrees()))
+                .collect(),
+        )
     }
 }
 
@@ -843,7 +849,7 @@ pub(super) struct PendingBlockwiseCurrentCyclePremisesV1 {
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
-pub(super) struct PendingThreeBlockCurrentCyclePremisesV1 {
+pub(super) struct PendingBoundedMultiBlockCurrentCyclePremisesV1 {
     pub expected_instance_id: ProjectId,
     pub expected_project_id: ProjectId,
     pub expected_revision: u64,
@@ -1186,10 +1192,10 @@ pub(super) fn install_pending_blockwise_current_cycle_pose_with_token_v1(
     )
 }
 
-pub(super) fn install_pending_three_block_current_cycle_pose_with_token_v1(
+pub(super) fn install_pending_bounded_multi_block_current_cycle_pose_with_token_v1(
     state: &StackedFoldTransactionState,
     token: ProjectId,
-    premises: PendingThreeBlockCurrentCyclePremisesV1,
+    premises: PendingBoundedMultiBlockCurrentCyclePremisesV1,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
 ) -> Result<ProjectId, String> {
@@ -1198,29 +1204,30 @@ pub(super) fn install_pending_three_block_current_cycle_pose_with_token_v1(
         || premises.expected_layer_generation != layer_capability.generation()
         || premises.source.as_ref() != layer_capability.snapshot()
         || premises.transition_count == 0
-        || !revalidate_three_block_current_cycle_authority_v1(
-            &premises.geometry,
-            &premises.audit,
-            &premises.pose,
-            &premises.decomposition,
-            &premises.authority,
-            premises.common_pose_limits,
-            &premises.schedule,
-            premises.schedule_limits,
-            &premises.closure,
-            premises.clearance_limits,
-            &premises.block_sources,
-            &premises.source,
-            premises.thickness,
-            premises.issuer_context,
-            premises.articulation_layer_fingerprint,
-            &premises.target_angles,
-            &premises.layer_order_pairs,
-            premises.transition_count,
-        )
     {
-        return Err("The three-block current-cycle premises are inconsistent.".to_owned());
+        return Err("The bounded multi-block current-cycle premises are inconsistent.".to_owned());
     }
+    let certified_path = reissue_bounded_multi_block_current_cycle_path_v1(
+        &premises.geometry,
+        &premises.audit,
+        &premises.pose,
+        &premises.decomposition,
+        &premises.authority,
+        premises.common_pose_limits,
+        &premises.schedule,
+        premises.schedule_limits,
+        &premises.closure,
+        premises.clearance_limits,
+        &premises.block_sources,
+        &premises.source,
+        premises.thickness,
+        premises.issuer_context,
+        premises.articulation_layer_fingerprint,
+        &premises.target_angles,
+        &premises.layer_order_pairs,
+        premises.transition_count,
+    )
+    .ok_or_else(|| "The bounded multi-block current-cycle premises are inconsistent.".to_owned())?;
     let pending = PendingStackedFoldTransaction {
         token,
         expected_instance_id: premises.expected_instance_id,
@@ -1229,12 +1236,13 @@ pub(super) fn install_pending_three_block_current_cycle_pose_with_token_v1(
         expected_source_fingerprint: premises.expected_source_fingerprint,
         expected_pose_generation: premises.expected_pose_generation,
         expected_layer_generation: premises.expected_layer_generation,
-        requested: PendingStackedFoldRequestedPose::ThreeBlockCurrentCycle {
+        requested: PendingStackedFoldRequestedPose::BoundedMultiBlockCurrentCycle {
             geometry: premises.geometry,
             audit: premises.audit,
             pose: premises.pose,
             decomposition: premises.decomposition,
             authority: premises.authority,
+            certified_path,
             common_pose_limits: premises.common_pose_limits,
             schedule: premises.schedule,
             schedule_limits: premises.schedule_limits,
@@ -1261,7 +1269,7 @@ pub(super) fn install_pending_three_block_current_cycle_pose_with_token_v1(
         pending.expected_pose_generation,
         pending.expected_layer_generation,
     ) {
-        return Err("The three-block current-cycle premises are inconsistent.".to_owned());
+        return Err("The bounded multi-block current-cycle premises are inconsistent.".to_owned());
     }
     with_project_guarded_current_cycle_install_slots_v1(
         state,
@@ -1362,6 +1370,57 @@ pub(super) fn preview_named_basic_fold_timeline(
     )
 }
 
+fn issue_instruction_bound_timeline_path_v1(
+    raw_path: &ori_collision::CertifiedPoseGraphPathCertificateV1,
+    source_model_fingerprint: &str,
+    fixed_face: ori_domain::FaceId,
+    source_angles: &[(ori_domain::EdgeId, f64)],
+    ordered_target_angles: &[Vec<(ori_domain::EdgeId, f64)>],
+) -> Result<ori_collision::CertifiedPoseGraphPathCertificateV1, String> {
+    if raw_path.edges().len() != ordered_target_angles.len() {
+        return Err("The certified path timeline is inconsistent.".to_owned());
+    }
+    let state_count = raw_path
+        .edges()
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| "The certified path timeline exceeded its resource limit.".to_owned())?;
+    let mut canonical_states = Vec::new();
+    canonical_states
+        .try_reserve_exact(state_count)
+        .map_err(|_| "The certified path timeline exceeded its resource limit.".to_owned())?;
+    for angles in std::iter::once(source_angles)
+        .chain(ordered_target_angles.iter().map(std::vec::Vec::as_slice))
+    {
+        let mut canonical_angles = Vec::new();
+        canonical_angles
+            .try_reserve_exact(angles.len())
+            .map_err(|_| "The certified path timeline exceeded its resource limit.".to_owned())?;
+        for (edge, angle_degrees) in angles {
+            canonical_angles.push(
+                ori_kinematics::HingeAngle::new(*edge, *angle_degrees)
+                    .map_err(|_| "The certified path timeline is inconsistent.".to_owned())?,
+            );
+        }
+        canonical_states.push(
+            ori_kinematics::CanonicalHingeAngles::new(canonical_angles)
+                .map_err(|_| "The certified path timeline is inconsistent.".to_owned())?,
+        );
+    }
+    let mut state_refs = Vec::new();
+    state_refs
+        .try_reserve_exact(canonical_states.len())
+        .map_err(|_| "The certified path timeline exceeded its resource limit.".to_owned())?;
+    state_refs.extend(canonical_states.iter());
+    ori_collision::issue_instruction_bound_path_v1(
+        raw_path,
+        source_model_fingerprint,
+        fixed_face,
+        &state_refs,
+    )
+    .ok_or_else(|| "The certified path could not be instruction-bound.".to_owned())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile_named_basic_fold_preview(
     app_state: &AppState,
@@ -1435,10 +1494,21 @@ fn compile_named_basic_fold_preview(
         .certified_graph_source_angles()
         .ok_or_else(|| "The basic-fold path certificate is unavailable.".to_owned())?;
     let targets = pending.requested.ordered_timeline_angles();
-    let certificate = pending
+    let raw_certificate = pending
         .requested
         .certified_graph_path()
         .ok_or_else(|| "The basic-fold path certificate is unavailable.".to_owned())?;
+    let timeline_model_fingerprint = pending.requested.geometry().map_or_else(
+        || fingerprint.to_hex(),
+        |target| target.proof().lineage().target_fingerprint().to_hex(),
+    );
+    let certificate = issue_instruction_bound_timeline_path_v1(
+        raw_certificate,
+        &timeline_model_fingerprint,
+        fixed_face,
+        &source_angles,
+        &targets,
+    )?;
     if hinge_ids.first() != Some(&fold_edge)
         || targets.is_empty()
         || !project.editor.pattern().edges.iter().any(|edge| {
@@ -1482,12 +1552,12 @@ fn compile_named_basic_fold_preview(
     let straight_fold = || ori_instructions::BookFoldMotionRequestV1 {
         technique_file: &technique,
         technique_id: &technique_id,
-        source_model_fingerprint: &expected_source_model_fingerprint,
+        source_model_fingerprint: &timeline_model_fingerprint,
         fixed_face,
         fold_edge,
         source_hinge_angles: &source_hinge_angles,
         target_angle_microdegrees: (target_angle * 1_000_000.0) as i64,
-        path_certificate: certificate,
+        path_certificate: &certificate,
     };
     let mut timeline = if let Some(kind) = basic_kind {
         if certificate.edges().len() != 1 || targets.len() != 1 || hinge_ids.len() != 1 {
@@ -1553,7 +1623,7 @@ fn compile_named_basic_fold_preview(
             ori_instructions::AccordionFoldMotionRequestV1 {
                 technique_file: &technique,
                 technique_id: &technique_id,
-                source_model_fingerprint: &expected_source_model_fingerprint,
+                source_model_fingerprint: &timeline_model_fingerprint,
                 fixed_face,
                 source_hinge_angles: &source_hinge_angles,
                 ordered_edges: &hinge_ids,
@@ -1584,7 +1654,7 @@ fn compile_named_basic_fold_preview(
         let request = ori_instructions::SinkFoldMotionRequestV1 {
             technique_file: &technique,
             technique_id: &technique_id,
-            source_model_fingerprint: &expected_source_model_fingerprint,
+            source_model_fingerprint: &timeline_model_fingerprint,
             fixed_face,
             first_edge: hinge_ids[0],
             second_edge: hinge_ids[1],
@@ -2167,12 +2237,13 @@ fn apply_stacked_fold_transaction_with_title(
             return Err("The current-cycle layer transport preview is stale.".to_owned());
         }
     }
-    if let PendingStackedFoldRequestedPose::ThreeBlockCurrentCycle {
+    if let PendingStackedFoldRequestedPose::BoundedMultiBlockCurrentCycle {
         geometry,
         audit,
         pose,
         decomposition,
         authority,
+        certified_path,
         common_pose_limits,
         schedule,
         schedule_limits,
@@ -2190,11 +2261,11 @@ fn apply_stacked_fold_transaction_with_title(
     } = &pending.requested
     {
         let capability = pending.layer_capability.as_ref().ok_or_else(|| {
-            "The three-block current-cycle layer-order authority is unavailable.".to_owned()
+            "The bounded multi-block current-cycle layer-order authority is unavailable.".to_owned()
         })?;
         if layer_guard.is_none()
             || source.as_ref() != capability.snapshot()
-            || !revalidate_three_block_current_cycle_authority_v1(
+            || reissue_bounded_multi_block_current_cycle_path_v1(
                 geometry,
                 audit,
                 pose,
@@ -2214,9 +2285,12 @@ fn apply_stacked_fold_transaction_with_title(
                 layer_order_pairs,
                 *transition_count,
             )
+            .as_ref()
+                != Some(certified_path)
         {
             return Err(
-                "The three-block current-cycle layer transport preview is stale.".to_owned(),
+                "The bounded multi-block current-cycle layer transport preview is stale."
+                    .to_owned(),
             );
         }
     }
@@ -2268,7 +2342,28 @@ fn apply_stacked_fold_transaction_with_title(
     {
         return Err("The certified path timeline is inconsistent.".to_owned());
     }
-    // SIM-010 is one user operation and therefore exactly one timeline step.
+    let source_model_fingerprint = target.map_or_else(
+        || project.editor.fold_model_fingerprint_v1(),
+        |target| target.proof().lineage().target_fingerprint().to_hex(),
+    );
+    let raw_certified_graph_path = requested.certified_graph_path();
+    let certified_graph_source_angles = requested.certified_graph_source_angles();
+    let instruction_bound_graph_path = if let Some(raw_path) = raw_certified_graph_path {
+        let source_angles = certified_graph_source_angles
+            .as_ref()
+            .ok_or_else(|| "The certified path source pose is unavailable.".to_owned())?;
+        Some(issue_instruction_bound_timeline_path_v1(
+            raw_path,
+            &source_model_fingerprint,
+            fixed_face.ok_or_else(|| "The certified path fixed face is unavailable.".to_owned())?,
+            source_angles,
+            &certified_path_angles,
+        )?)
+    } else {
+        None
+    };
+    // SIM-010 retains one target step for the user operation. A proof-bearing
+    // path additionally records its unreferenced source anchor below.
     // Named multi-stage techniques retain their separately validated segments.
     let ordered_timeline_angles = if named_title.is_none() {
         vec![
@@ -2280,19 +2375,14 @@ fn apply_stacked_fold_transaction_with_title(
     } else {
         certified_path_angles
     };
-    let source_model_fingerprint = target.map_or_else(
-        || project.editor.fold_model_fingerprint_v1(),
-        |target| target.proof().lineage().target_fingerprint().to_hex(),
-    );
-    let certified_graph_path = requested.certified_graph_path();
-    if let (Some(title), Some(source_angles), Some(_)) = (
-        named_title,
-        requested.certified_graph_source_angles(),
-        certified_graph_path,
-    ) {
+    let certified_graph_path = instruction_bound_graph_path.as_ref();
+    if let (Some(source_angles), Some(_)) = (certified_graph_source_angles, certified_graph_path) {
         timeline.steps.push(InstructionStep {
             id: InstructionStepId::new(),
-            title: format!("「{title}」の開始姿勢"),
+            title: named_title.map_or_else(
+                || "Stacked fold start pose".to_owned(),
+                |title| format!("「{title}」の開始姿勢"),
+            ),
             description: "構造化証明の始点姿勢です。".to_owned(),
             caution: String::new(),
             duration_ms: MIN_INSTRUCTION_DURATION_MS,
@@ -2313,7 +2403,12 @@ fn apply_stacked_fold_transaction_with_title(
     }
     for (index, step_angles) in ordered_timeline_angles.into_iter().enumerate() {
         let path_reference = certified_graph_path.and_then(|path| {
-            let edge = path.edges().get(index)?;
+            let (source_pose_sha256, target_pose_sha256) = if named_title.is_none() {
+                (!path.edges().is_empty()).then_some((path.source(), path.target()))?
+            } else {
+                let edge = path.edges().get(index)?;
+                (edge.source(), edge.target())
+            };
             let mut model_hash = Sha256::new();
             model_hash.update(b"path_certificate_source_model_binding_v1");
             model_hash.update(source_model_fingerprint.as_bytes());
@@ -2321,8 +2416,8 @@ fn apply_stacked_fold_transaction_with_title(
                 version: 1,
                 model_id: ori_domain::PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
                 binding_sha256: path.binding_fingerprint_v1(),
-                source_pose_sha256: edge.source(),
-                target_pose_sha256: edge.target(),
+                source_pose_sha256,
+                target_pose_sha256,
                 source_model_binding_sha256: model_hash.finalize().into(),
                 transition_count: path.edges().len(),
             })
@@ -2335,7 +2430,11 @@ fn apply_stacked_fold_transaction_with_title(
             (Some(title), None) => format!(
                 "証明参照のない名前付き技法「{title}」の姿勢です。連続折り経路は未証明です。"
             ),
-            (None, _) => String::new(),
+            (None, Some(reference)) => format!(
+                "認証済みの連続折り経路で積層折りを適用します。経路証明 SHA-256: {} / 元モデル SHA-256: {source_model_fingerprint}",
+                lowercase_hex(reference.binding_sha256),
+            ),
+            (None, None) => String::new(),
         };
         timeline.steps.push(InstructionStep {
             id: InstructionStepId::new(),
@@ -2370,6 +2469,25 @@ fn apply_stacked_fold_transaction_with_title(
         timeline.steps.truncate(existing_timeline_step_count);
         timeline.steps.extend(compiled_timeline.steps);
     }
+    let trusted_path_entries =
+        super::path_certificate_registry::TrustedPathCertificateRegistryV1::
+            prepare_entries_for_timeline_suffix_v1(
+                project.instance_id,
+                project.project_id,
+                &timeline,
+                existing_timeline_step_count,
+                certified_graph_path,
+            )
+            .map_err(|_| "The certified path reference could not be trusted.".to_owned())?;
+    let trusted_path_certificates = project
+        .trusted_path_certificates
+        .with_registered_timeline_v1(
+            project.instance_id,
+            project.project_id,
+            &timeline,
+            trusted_path_entries,
+        )
+        .map_err(|_| "The certified path reference registry is inconsistent.".to_owned())?;
     let layers = project.editor.project_layers().clone();
     let applied_layer_order = pending.layer_order.clone();
     let (candidate_pattern, candidate_paper) = target.map_or_else(
@@ -2474,6 +2592,7 @@ fn apply_stacked_fold_transaction_with_title(
         _ if target.is_none() => applied_layer_order.clone(),
         _ => None,
     };
+    project.trusted_path_certificates = trusted_path_certificates;
     pose_rollback.disarm();
     drop(project);
     transaction_slot.pending = None;
@@ -2738,19 +2857,19 @@ mod tests {
     }
 
     #[test]
-    fn three_block_persisted_summary_rejects_count_pair_and_empty_list_tampering() {
+    fn bounded_multi_block_persisted_summary_rejects_count_pair_and_empty_list_tampering() {
         let expected = [
             (ori_domain::FaceId::new(), ori_domain::FaceId::new()),
             (ori_domain::FaceId::new(), ori_domain::FaceId::new()),
         ];
         let transition_count = 9;
-        assert!(exact_three_block_summary_fields_match_v1(
+        assert!(exact_bounded_multi_block_summary_fields_match_v1(
             &expected,
             transition_count,
             &expected,
             transition_count,
         ));
-        assert!(!exact_three_block_summary_fields_match_v1(
+        assert!(!exact_bounded_multi_block_summary_fields_match_v1(
             &expected,
             transition_count,
             &expected,
@@ -2759,13 +2878,13 @@ mod tests {
 
         let mut changed_pair = expected;
         changed_pair[0].1 = ori_domain::FaceId::new();
-        assert!(!exact_three_block_summary_fields_match_v1(
+        assert!(!exact_bounded_multi_block_summary_fields_match_v1(
             &expected,
             transition_count,
             &changed_pair,
             transition_count,
         ));
-        assert!(!exact_three_block_summary_fields_match_v1(
+        assert!(!exact_bounded_multi_block_summary_fields_match_v1(
             &expected,
             transition_count,
             &[],
@@ -3061,6 +3180,9 @@ mod tests {
         assert!(!accordion_assignments_alternate_v1(&vec!["mountain"; 32]));
     }
 }
+
+#[cfg(test)]
+mod instruction_bound_path_tests;
 
 #[cfg(test)]
 mod rollback_tests;

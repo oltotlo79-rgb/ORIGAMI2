@@ -223,7 +223,7 @@ pub fn diagnose_block_union_completeness_v1(
     let complete = face_union == live_faces
         && submitted_hinges == live_hinges
         && !hinge_duplicates
-        && block_intersection_is_tree_v1(&canonical_blocks);
+        && block_articulation_incidence_is_tree_v1(&canonical_blocks);
     Some(BlockUnionCompletenessGapReportV1 {
         issuer: geometry.clone(),
         live_faces,
@@ -940,42 +940,74 @@ struct CanonicalBlockBindingV1 {
     faces: Vec<FaceId>,
 }
 
-fn block_intersection_is_tree_v1(blocks: &[CanonicalBlockBindingV1]) -> bool {
+/// Validates the bipartite block-articulation incidence graph.
+///
+/// A face shared by three or more blocks is one articulation node with a
+/// star of incidences.  The pairwise block projection would turn that valid
+/// star into a clique and falsely reject it as cyclic.
+fn block_articulation_incidence_is_tree_v1(blocks: &[CanonicalBlockBindingV1]) -> bool {
     if blocks.len() < 2 {
         return false;
     }
-    let mut adjacency = vec![Vec::new(); blocks.len()];
-    let mut edge_count = 0usize;
-    for first in 0..blocks.len() {
-        for second in first + 1..blocks.len() {
-            let shared = blocks[first]
-                .faces
-                .iter()
-                .filter(|face| {
-                    blocks[second]
-                        .faces
-                        .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
-                        .is_ok()
-                })
-                .count();
-            if shared > 1 {
-                return false;
-            }
-            if shared == 1 {
-                adjacency[first].push(second);
-                adjacency[second].push(first);
-                edge_count += 1;
-            }
+    let mut occurrences = blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(block, binding)| binding.faces.iter().copied().map(move |face| (face, block)))
+        .collect::<Vec<_>>();
+    occurrences.sort_unstable_by_key(|(face, block)| (face.canonical_bytes(), *block));
+    let mut articulation_memberships = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < occurrences.len() {
+        let face = occurrences[cursor].0;
+        let mut end = cursor + 1;
+        while end < occurrences.len() && occurrences[end].0 == face {
+            end += 1;
         }
+        if end - cursor > 1 {
+            let mut memberships = Vec::new();
+            for (_, block) in &occurrences[cursor..end] {
+                if memberships.last() == Some(block) {
+                    return false;
+                }
+                memberships.push(*block);
+            }
+            articulation_memberships.push(memberships);
+        }
+        cursor = end;
     }
-    if edge_count != blocks.len() - 1 {
+    if articulation_memberships.is_empty() {
         return false;
     }
-    let mut visited = vec![false; blocks.len()];
+    let Some(node_count) = blocks.len().checked_add(articulation_memberships.len()) else {
+        return false;
+    };
+    let Some(edge_count) = articulation_memberships
+        .iter()
+        .try_fold(0usize, |sum, memberships| {
+            sum.checked_add(memberships.len())
+        })
+    else {
+        return false;
+    };
+    if edge_count != node_count.saturating_sub(1) {
+        return false;
+    }
+    let mut adjacency = vec![Vec::new(); node_count];
+    for (articulation_index, memberships) in articulation_memberships.iter().enumerate() {
+        let articulation_node = blocks.len() + articulation_index;
+        for &block in memberships {
+            if block >= blocks.len() {
+                return false;
+            }
+            adjacency[block].push(articulation_node);
+            adjacency[articulation_node].push(block);
+        }
+    }
+    let mut visited = vec![false; node_count];
     let mut pending = vec![0usize];
     visited[0] = true;
-    while let Some(block) = pending.pop() {
-        for &neighbor in &adjacency[block] {
+    while let Some(node) = pending.pop() {
+        for &neighbor in &adjacency[node] {
             if !visited[neighbor] {
                 visited[neighbor] = true;
                 pending.push(neighbor);
@@ -985,49 +1017,81 @@ fn block_intersection_is_tree_v1(blocks: &[CanonicalBlockBindingV1]) -> bool {
     visited.into_iter().all(|seen| seen)
 }
 
-fn block_intersection_is_tree_with_checkpoint_v1(
+fn block_articulation_incidence_is_tree_with_checkpoint_v1(
     blocks: &[CanonicalBlockBindingV1],
     checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationContinuousLayerPathErrorV1>,
 ) -> Result<bool, CommonArticulationContinuousLayerPathErrorV1> {
     if blocks.len() < 2 {
         return Ok(false);
     }
-    let mut adjacency = vec![Vec::new(); blocks.len()];
-    let mut edge_count = 0usize;
-    for first in 0..blocks.len() {
+    let mut occurrences = Vec::new();
+    for (block_index, block) in blocks.iter().enumerate() {
         checkpoint()?;
-        for second in first + 1..blocks.len() {
+        for face in &block.faces {
             checkpoint()?;
-            let mut shared = 0usize;
-            for face in &blocks[first].faces {
-                checkpoint()?;
-                if blocks[second]
-                    .faces
-                    .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
-                    .is_ok()
-                {
-                    shared += 1;
-                }
-            }
-            if shared > 1 {
-                return Ok(false);
-            }
-            if shared == 1 {
-                adjacency[first].push(second);
-                adjacency[second].push(first);
-                edge_count += 1;
-            }
+            occurrences.push((*face, block_index));
         }
     }
-    if edge_count != blocks.len() - 1 {
+    occurrences.sort_unstable_by_key(|(face, block)| (face.canonical_bytes(), *block));
+    let mut articulation_memberships = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < occurrences.len() {
+        checkpoint()?;
+        let face = occurrences[cursor].0;
+        let mut end = cursor + 1;
+        while end < occurrences.len() && occurrences[end].0 == face {
+            checkpoint()?;
+            end += 1;
+        }
+        if end - cursor > 1 {
+            let mut memberships = Vec::new();
+            for (_, block) in &occurrences[cursor..end] {
+                checkpoint()?;
+                if memberships.last() == Some(block) {
+                    return Ok(false);
+                }
+                memberships.push(*block);
+            }
+            articulation_memberships.push(memberships);
+        }
+        cursor = end;
+    }
+    if articulation_memberships.is_empty() {
         return Ok(false);
     }
-    let mut visited = vec![false; blocks.len()];
+    let Some(node_count) = blocks.len().checked_add(articulation_memberships.len()) else {
+        return Ok(false);
+    };
+    let Some(edge_count) = articulation_memberships
+        .iter()
+        .try_fold(0usize, |sum, memberships| {
+            sum.checked_add(memberships.len())
+        })
+    else {
+        return Ok(false);
+    };
+    if edge_count != node_count.saturating_sub(1) {
+        return Ok(false);
+    }
+    let mut adjacency = vec![Vec::new(); node_count];
+    for (articulation_index, memberships) in articulation_memberships.iter().enumerate() {
+        checkpoint()?;
+        let articulation_node = blocks.len() + articulation_index;
+        for &block in memberships {
+            checkpoint()?;
+            if block >= blocks.len() {
+                return Ok(false);
+            }
+            adjacency[block].push(articulation_node);
+            adjacency[articulation_node].push(block);
+        }
+    }
+    let mut visited = vec![false; node_count];
     let mut pending = vec![0usize];
     visited[0] = true;
-    while let Some(block) = pending.pop() {
+    while let Some(node) = pending.pop() {
         checkpoint()?;
-        for &neighbor in &adjacency[block] {
+        for &neighbor in &adjacency[node] {
             checkpoint()?;
             if !visited[neighbor] {
                 visited[neighbor] = true;
@@ -1109,7 +1173,7 @@ pub fn issue_multi_block_closure_authority_v1(
             faces: block.faces.clone(),
         })
         .collect::<Vec<_>>();
-    if !block_intersection_is_tree_v1(&canonical) {
+    if !block_articulation_incidence_is_tree_v1(&canonical) {
         return None;
     }
     for (index, block) in blocks.iter().enumerate() {
@@ -1356,7 +1420,7 @@ fn complete_block_union_matches_live_v1(
                     .windows(2)
                     .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
         })
-        || !block_intersection_is_tree_v1(blocks)
+        || !block_articulation_incidence_is_tree_v1(blocks)
     {
         return false;
     }
@@ -1403,7 +1467,7 @@ fn complete_block_union_matches_live_with_checkpoint_v1(
             }
         }
     }
-    if !block_intersection_is_tree_with_checkpoint_v1(blocks, checkpoint)? {
+    if !block_articulation_incidence_is_tree_with_checkpoint_v1(blocks, checkpoint)? {
         return Ok(false);
     }
     let mut face_union = Vec::new();
@@ -1723,7 +1787,7 @@ pub fn issue_block_composed_path_authority_v1(
         return None;
     }
     canonical.sort_unstable_by_key(|block| block.edges[0].canonical_bytes());
-    if !block_intersection_is_tree_v1(&canonical) {
+    if !block_articulation_incidence_is_tree_v1(&canonical) {
         return None;
     }
     let binding = block_binding_v1(
@@ -2094,7 +2158,7 @@ fn canonical_block_partition_for_staged_v1(
         return Err(CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch);
     }
     canonical.sort_unstable_by_key(|block| block.edges[0].canonical_bytes());
-    if !block_intersection_is_tree_v1(&canonical) {
+    if !block_articulation_incidence_is_tree_v1(&canonical) {
         return Err(CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch);
     }
     Ok(canonical)
@@ -2141,7 +2205,7 @@ fn canonical_decomposition_block_bindings_v1(
         canonical.push(CanonicalBlockBindingV1 { edges, faces });
     }
     canonical.sort_unstable_by_key(|block| block.edges[0].canonical_bytes());
-    if !block_intersection_is_tree_v1(&canonical) {
+    if !block_articulation_incidence_is_tree_v1(&canonical) {
         return Err(CommonArticulationBlockComposedPathErrorV1::CanonicalBlockPartitionMismatch);
     }
     Ok(canonical)
@@ -3056,8 +3120,8 @@ mod tests {
         COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1, CanonicalBlockBindingV1,
         CommonArticulationPoseErrorV1, CommonArticulationPoseInputV1,
         CommonArticulationPoseLimitsV1, MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1,
-        MultiBlockClosureInputV1, MultiBlockPositiveLayerInputV1, block_intersection_is_tree_v1,
-        issue_common_articulation_pose_authority_v1,
+        MultiBlockClosureInputV1, MultiBlockPositiveLayerInputV1,
+        block_articulation_incidence_is_tree_v1, issue_common_articulation_pose_authority_v1,
         issue_common_articulation_pose_authority_with_control_v1,
         issue_complete_multi_block_positive_layer_authority_v1,
         issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
@@ -3440,19 +3504,25 @@ mod tests {
     }
 
     #[test]
-    fn block_intersection_requires_one_connected_articulation_tree() {
+    fn block_articulation_incidence_accepts_chain_and_shared_face_star() {
         let [a, b, c, d] = std::array::from_fn(|_| FaceId::new());
-        assert!(block_intersection_is_tree_v1(&[
+        assert!(block_articulation_incidence_is_tree_v1(&[
             block(&[a, b]),
             block(&[b, c]),
             block(&[c, d]),
+        ]));
+        assert!(block_articulation_incidence_is_tree_v1(&[
+            block(&[a, b]),
+            block(&[a, c]),
+            block(&[a, d]),
+            block(&[a, FaceId::new()]),
         ]));
     }
 
     #[test]
     fn block_intersection_rejects_an_isolated_block() {
         let [a, b, c, d] = std::array::from_fn(|_| FaceId::new());
-        assert!(!block_intersection_is_tree_v1(&[
+        assert!(!block_articulation_incidence_is_tree_v1(&[
             block(&[a, b]),
             block(&[b, c]),
             block(&[d]),
@@ -3462,7 +3532,7 @@ mod tests {
     #[test]
     fn block_intersection_rejects_an_articulation_cycle() {
         let [a, b, c] = std::array::from_fn(|_| FaceId::new());
-        assert!(!block_intersection_is_tree_v1(&[
+        assert!(!block_articulation_incidence_is_tree_v1(&[
             block(&[a, b]),
             block(&[b, c]),
             block(&[c, a]),
@@ -4378,7 +4448,7 @@ mod tests {
 
     #[test]
     fn complete_live_three_four_and_eight_block_authorities_are_sealed_and_non_authorizing() {
-        for block_count in [3_usize, 4, 8] {
+        for block_count in [3_usize, 4, 5, 8] {
             assert_complete_live_multi_block_authority_v1(block_count);
         }
     }

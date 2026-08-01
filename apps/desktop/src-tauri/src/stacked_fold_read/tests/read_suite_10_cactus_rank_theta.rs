@@ -453,7 +453,7 @@ fn rank4_cycle_transports_layer_order_and_applies_atomically() {
 }
 
 #[test]
-fn theta_positive_thickness_preview_applies_and_round_trips_history() {
+fn theta_positive_thickness_preview_fails_closed_without_continuous_authority() {
     let _generation_guard = lock_stacked_fold_read_generation_test();
     for (fixture_index, thickness_mm) in [0.1, 1.0, 3.0].into_iter().enumerate() {
         let (pattern, mut paper, hinges, moving) =
@@ -478,64 +478,47 @@ fn theta_positive_thickness_preview_applies_and_round_trips_history() {
         let app_state = AppState::new(project);
         let transactions =
             super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let request = || CurrentCyclePosePreviewRequestV1 {
-            progress_request_id: None,
-            expected_project_instance_id: instance,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            cycle_schedule_v1: theta_cycle_schedule(&hinges, &moving),
-        };
-        let mut broken = request();
-        broken.cycle_schedule_v1.entries[0].requested_angle_degrees += 1.0;
-        assert!(propose_current_cycle_pose_inner(None, &app_state, &transactions, broken).is_err());
-        assert_eq!(
-            super::super::lock_project(&app_state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision
-        );
-        let replaced = propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
-            .expect("theta preview");
-        let cancelled =
-            propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
-                .expect("theta replacement preview");
         assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            crate::applied_pose::certify_current_static_collision(
                 &app_state,
-                &GlobalFlatFoldabilityState::default(),
-                &transactions,
-                replaced.transaction_token,
+                ori_collision::StaticCollisionLimits::default(),
             )
-            .is_err()
+            .expect("flat theta current collision diagnosis")
+            .is_some(),
+            "theta at thickness {thickness_mm} retains its independent static certificate",
         );
-        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-            &transactions,
-            cancelled.transaction_token,
-        )
-        .unwrap();
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &app_state,
-                &GlobalFlatFoldabilityState::default(),
-                &transactions,
-                cancelled.transaction_token,
-            )
-            .is_err()
-        );
-        let response = propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
-            .expect("theta retry");
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+        let error = propose_current_cycle_pose_inner(
+            None,
             &app_state,
-            &GlobalFlatFoldabilityState::default(),
             &transactions,
-            response.transaction_token,
-        )
-        .unwrap();
-        let mut project = super::super::lock_project(&app_state).unwrap();
-        project.editor.undo(applied).unwrap();
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: theta_cycle_schedule(&hinges, &moving),
+            },
+        );
+        assert_eq!(
+            error.unwrap_err(),
+            CYCLE_PATH_UNCERTIFIED_MESSAGE,
+            "theta at thickness {thickness_mm} must fail closed without swept-solid authority",
+        );
+        let project = super::super::lock_project(&app_state).unwrap();
+        assert_eq!(
+            project.editor.revision(),
+            revision,
+            "theta at thickness {thickness_mm} must not advance revision",
+        );
+        assert!(
+            project.editor.instruction_timeline().steps.is_empty(),
+            "theta at thickness {thickness_mm} must not mutate history",
+        );
+        drop(project);
+        assert_eq!(
+            transactions.pending_token_for_test_v1(),
+            None,
+            "theta at thickness {thickness_mm} must not publish a transaction token",
+        );
     }
 }

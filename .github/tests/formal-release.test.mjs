@@ -895,7 +895,7 @@ test('Windows CI executes native recovery close and diagnostics persistence cont
   assert.doesNotMatch(step, /continue-on-error|\|\| true/u)
 })
 
-test('CI requires the production C6 dyadic browser and exact native lifecycle', () => {
+test('CI requires the production C6 dyadic browser, exact native lifecycle, and fail-closed theta rejection', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const desktopPackage = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'))
   const nativeReadTestsDirectory = join(
@@ -984,9 +984,10 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
   }
   assert.match(nativeRead, /fn revalidates_private_proofs_v1\(/u)
   for (const lifecycle of [
+    'four_and_five_block_opposite_bifolds_preview_apply_and_reopen_history',
     'balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history',
     'coupled_cactus_previews_fail_closed_without_continuous_authority',
-    'theta_positive_thickness_preview_applies_and_round_trips_history',
+    'theta_positive_thickness_preview_fails_closed_without_continuous_authority',
   ]) {
     const filter = `stacked_fold_read::tests::${lifecycle}`
     assert.equal(workflow.match(new RegExp(filter, 'gu'))?.length, 1)

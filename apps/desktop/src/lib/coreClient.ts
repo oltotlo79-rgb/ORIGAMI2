@@ -152,6 +152,7 @@ export type CurrentCyclePosePreviewResponseV1 = Readonly<{
   continuousLayerTransportModelId:
     | 'general_multi_face_positive_thickness_cell_transport_v1'
     | 'blockwise_positive_layer_authority_v1'
+    | 'common_articulation_continuous_layer_path_authority_v1'
     | null
   continuousLayerTransitionCount: number
   continuousLayerPairOrderCount: number
@@ -5991,7 +5992,8 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
       value.continuousPathCertified !== true ||
       (value.continuousLayerTransportModelId !== null &&
         value.continuousLayerTransportModelId !== 'general_multi_face_positive_thickness_cell_transport_v1' &&
-        value.continuousLayerTransportModelId !== 'blockwise_positive_layer_authority_v1') ||
+        value.continuousLayerTransportModelId !== 'blockwise_positive_layer_authority_v1' &&
+        value.continuousLayerTransportModelId !== 'common_articulation_continuous_layer_path_authority_v1') ||
       typeof continuousLayerTransitionCount !== 'number' ||
       !Number.isSafeInteger(continuousLayerTransitionCount) ||
       continuousLayerTransitionCount < 0 ||

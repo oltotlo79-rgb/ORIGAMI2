@@ -124,12 +124,31 @@ fn prepare_schedule_v1(
     CanonicalCycleScheduleV1,
     DyadicMaterialHingeIntervalClosureCertificateV1,
 ) {
+    prepare_schedule_with_domain_v1(
+        geometry,
+        audit,
+        fixed_face,
+        [coefficient_v1(0, 1), coefficient_v1(1, 1)],
+        numerator_power_coefficients,
+    )
+}
+
+fn prepare_schedule_with_domain_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    u_domain: [RationalCoefficientV1; 2],
+    numerator_power_coefficients: Vec<RationalCoefficientV1>,
+) -> (
+    CanonicalCycleScheduleV1,
+    DyadicMaterialHingeIntervalClosureCertificateV1,
+) {
     let entries = geometry
         .hinges()
         .iter()
         .map(|hinge| HalfAngleRationalEntryInputV1 {
             edge: hinge.edge(),
-            u_domain: [coefficient_v1(0, 1), coefficient_v1(1, 1)],
+            u_domain: u_domain.clone(),
             numerator_power_coefficients: numerator_power_coefficients.clone(),
             denominator_power_coefficients: vec![coefficient_v1(64, 1)],
         })
@@ -699,6 +718,18 @@ fn prepare_final_path_fixture_with_variants_v1(
     block_count: usize,
 ) -> FinalPathFixtureV1 {
     let fixture = prepare_cactus_fixture_v1(block_count);
+    prepare_final_path_fixture_from_clearance_v1(
+        fixture,
+        noncanonical_block_schedules,
+        foreign_block_source,
+    )
+}
+
+fn prepare_final_path_fixture_from_clearance_v1(
+    fixture: ClearanceFixtureV1,
+    noncanonical_block_schedules: bool,
+    foreign_block_source: bool,
+) -> FinalPathFixtureV1 {
     let clearance_pair_count = fixture.pairs.len();
     let clearance_limits = CommonArticulationClearanceLimitsV1::default();
     let clearance = issue_fixture_clearance_v1(&fixture, clearance_limits);
@@ -1115,8 +1146,8 @@ fn hard_limits_cannot_be_relaxed_v1() {
 }
 
 #[test]
-fn cross_block_clearance_proves_three_and_eight_block_positive_thickness_v1() {
-    for block_count in [3, 8] {
+fn cross_block_clearance_proves_three_five_and_eight_block_positive_thickness_v1() {
+    for block_count in [3, 5, 8] {
         let fixture = prepare_strip_fixture_v1(block_count);
         let outcome = issue_common_articulation_clearance_prerequisite_v1(fixture.input(
             &fixture.pairs,
@@ -1902,8 +1933,8 @@ fn final_continuous_layer_path_is_positive_and_stops_at_permission_boundary_v1()
 }
 
 #[test]
-fn final_continuous_layer_path_accepts_three_four_and_eight_blocks_v1() {
-    for block_count in [3, 4, 8] {
+fn final_continuous_layer_path_accepts_three_four_five_and_eight_blocks_v1() {
+    for block_count in [3, 4, 5, 8] {
         let fixture = prepare_final_path_fixture_with_variants_v1(false, false, block_count)
             .issue_for_revalidation();
         let block_sources = fixture.block_sources.iter().collect::<Vec<_>>();

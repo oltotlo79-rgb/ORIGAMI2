@@ -50,9 +50,7 @@ fn recognize_bridge_edges_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
 ) -> Option<Vec<bool>> {
-    if !bounded_bridge_motion_counts_v1(geometry.face_ids().len(), geometry.hinges().len())
-        || audit.closure_hinges().is_empty()
-    {
+    if !bounded_bridge_motion_counts_v1(geometry.face_ids().len(), geometry.hinges().len()) {
         return None;
     }
 
@@ -161,13 +159,14 @@ fn recognize_bridge_edges_v1(
     discovery.iter().all(|time| *time != 0).then_some(bridges)
 }
 
-/// Exact closure identity for arbitrary cyclic cores connected only by moving
-/// graph bridges.
+/// Exact closure identity for pure trees or arbitrary cyclic cores connected
+/// only by moving graph bridges.
 ///
 /// A bridge belongs to no closed walk. Requiring every non-bridge edge to be
 /// exact-zero therefore makes every cycle transform the identity for the
-/// complete schedule domain. Contracting the zero components leaves a tree,
-/// so each arbitrary bridge transform is composed exactly once and requires
+/// complete schedule domain. This includes the vacuous pure-tree case, where
+/// every edge is a bridge. Contracting the zero components leaves a tree, so
+/// each arbitrary bridge transform is composed exactly once and requires
 /// neither commutation nor a sampled closure check.
 pub(super) fn bridge_only_motion_cycle_closure_premises_v1(
     geometry: &MaterialHingeGraphGeometry,

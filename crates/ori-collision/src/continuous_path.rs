@@ -13,10 +13,10 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use ori_domain::{EdgeId, FaceId};
 use ori_foldability::LayerOrderSnapshot;
 use ori_kinematics::{
-    CanonicalHingeAngles, DyadicMaterialHingeIntervalClosureCertificateV1,
-    GeneratedMultiHingePathCandidateV1, HingeAngle, MaterialHingeGraphAudit,
-    MaterialHingeGraphGeometry, MaterialHingeGraphInstanceV1, MaterialTreeKinematicsModel,
-    MaterialTreePose,
+    CanonicalEdgeBlockLimitsV1, CanonicalHingeAngles,
+    DyadicMaterialHingeIntervalClosureCertificateV1, GeneratedMultiHingePathCandidateV1,
+    HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry, MaterialHingeGraphInstanceV1,
+    MaterialTreeKinematicsModel, MaterialTreePose,
 };
 use thiserror::Error;
 
@@ -5061,14 +5061,39 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             positive_thickness_bits: None,
         };
     }
-    if scheduled_opposite_radial_bifold_premises_v1(geometry, audit, fixed_face, schedule, closure)
-    {
+    if scheduled_opposite_radial_bifold_premises_v1(
+        geometry,
+        audit,
+        fixed_face,
+        schedule,
+        closure,
+        paper_thickness_mm,
+    ) {
         return StackedFoldCyclePathDiagnosticV1 {
             certified: true,
             first_closure_failure_angle_degrees: None,
             leaf_count: closure.leaves().len(),
             pair_work: 0,
             positive_thickness_bits: paper_thickness_mm.map(f64::to_bits),
+        };
+    }
+    if let Some(thickness) = paper_thickness_mm
+        && scheduled_separated_common_articulation_bifolds_premises_v1(
+            geometry,
+            audit,
+            fixed_face,
+            schedule,
+            closure,
+            thickness,
+            operation_control,
+        )
+    {
+        return StackedFoldCyclePathDiagnosticV1 {
+            certified: true,
+            first_closure_failure_angle_degrees: None,
+            leaf_count: closure.leaves().len(),
+            pair_work: 0,
+            positive_thickness_bits: Some(thickness.to_bits()),
         };
     }
     let mut maximum_radius = 0.0_f64;
@@ -5328,38 +5353,6 @@ fn closure_every_leaf_covers_graph_with_control_v1(
         }
     }
     Ok(closure.every_leaf_covers_graph_v1(geometry))
-}
-
-fn equal_endpoint_moving_edges_v1(
-    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
-) -> Option<Vec<EdgeId>> {
-    let initial = schedule.evaluate(0.0)?;
-    let target = schedule.evaluate(1.0)?;
-    if initial.as_slice().len() != target.as_slice().len() {
-        return None;
-    }
-    let mut moving = Vec::new();
-    moving.try_reserve_exact(target.as_slice().len()).ok()?;
-    for target_angle in target.as_slice() {
-        let initial_angle = initial
-            .as_slice()
-            .iter()
-            .find(|angle| angle.edge() == target_angle.edge())?;
-        if initial_angle.angle_degrees().to_bits() != target_angle.angle_degrees().to_bits() {
-            moving.push(target_angle.edge());
-        }
-    }
-    let common = target
-        .as_slice()
-        .iter()
-        .find(|angle| moving.contains(&angle.edge()))?
-        .angle_degrees()
-        .to_bits();
-    (!moving.is_empty()
-        && target.as_slice().iter().all(|angle| {
-            !moving.contains(&angle.edge()) || angle.angle_degrees().to_bits() == common
-        }))
-    .then_some(moving)
 }
 
 fn theta_collective_axis_continuous_premises_v1(
@@ -6091,9 +6084,7 @@ pub fn diagnose_shared_vertex_continuous_corridor_gaps_v1(
             .iter()
             .copied()
             .filter(|vertex| second.contains(vertex));
-        let Some(vertex) = shared.next() else {
-            return None;
-        };
+        let vertex = shared.next()?;
         if shared.next().is_some() {
             return None;
         }
@@ -6446,33 +6437,113 @@ fn scheduled_kawasaki_120_120_60_60_premises_v1(
     })
 }
 
-// A convex radial fan folded on two opposite rays is a bifold about one
-// infinite line. Exact profile equality keeps each half of the sheet rigid;
-// the two halves can meet only on that fold line. This theorem is deliberately
-// narrower than the generic swept-AABB classifier, whose boxes cannot separate
-// non-adjacent triangles that share the fan pivot.
+// A radial fan split by two opposite, equally assigned rays is a bifold about
+// one infinite line. Exact profile equality plus the exact half-plane checks
+// below keep each side of the sheet rigid. A complete-domain outward angle
+// enclosure bounds the full motion below ninety degrees. For a fixed-side
+// material distance `y`, moving-side distance `s`, half thickness `h`, and
+// fold angle `theta`, intersecting transverse fibres require
+//
+//   (y + s*cos(theta))/sin(theta) <= h
+//   (s + y*cos(theta))/sin(theta) <= h.
+//
+// Hence `y <= h`, `s <= h`, and the complete solid intersection stays less
+// than one thickness from the fold line. The structural proof additionally
+// checks every cross-side face pair's exact axial projection against its
+// authenticated shared hinge/vertex. A six-thickness axial margin plus the
+// transverse bound fits strictly inside the graph policy's eight-thickness
+// shared-feature corridor. This theorem is deliberately narrower than the
+// generic swept-AABB classifier, whose boxes cannot separate non-adjacent
+// triangles that share the fan pivot.
 pub(crate) fn scheduled_opposite_radial_bifold_premises_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
     fixed_face: FaceId,
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
     closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: Option<f64>,
 ) -> bool {
+    closure.fixed_face() == fixed_face
+        && closure.every_leaf_covers_graph_v1(geometry)
+        && opposite_radial_bifold_group_bounds_v1(
+            geometry,
+            audit,
+            fixed_face,
+            schedule,
+            paper_thickness_mm,
+        )
+        .is_some()
+}
+
+/// The spatial carrier retained for one independently rigid radial-bifold
+/// block.  All non-articulation faces remain inside this ball for the complete
+/// schedule because every point is transformed only by rigid rotations about
+/// `pivot`.
+#[derive(Clone)]
+struct OppositeRadialBifoldGroupBoundsV1 {
+    pivot: [BigRational; 3],
+    exclusive_radius_squared: BigRational,
+}
+
+/// Structural half of the radial-bifold theorem.
+///
+/// A standalone fan requires every exclusive face to be triangular.  A
+/// canonical common-articulation restriction may retain one larger fixed
+/// face, but exact half-plane classification prevents that face from crossing
+/// the fold line.  Moving hinges must have the same assignment and separate
+/// the two sides; every inactive hinge must stay within one side.  The parent
+/// composition below separately proves that exclusive carriers belonging to
+/// different blocks have disjoint thickness-expanded swept balls.
+fn opposite_radial_bifold_group_bounds_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    paper_thickness_mm: Option<f64>,
+) -> Option<OppositeRadialBifoldGroupBoundsV1> {
     let hinge_count = geometry.hinges().len();
-    if hinge_count < 6
+    if !(6..=32).contains(&hinge_count)
         || !hinge_count.is_multiple_of(2)
         || geometry.face_ids().len() != hinge_count
         || audit.closure_hinges().len() != 1
-        || closure.fixed_face() != fixed_face
-        || !closure.every_leaf_covers_graph_v1(geometry)
+        || !geometry.face_ids().contains(&fixed_face)
+        || !schedule.matches_binding(geometry, audit, fixed_face)
     {
-        return false;
+        return None;
     }
-    let Some(moving) = equal_endpoint_moving_edges_v1(schedule) else {
-        return false;
-    };
+    let moving = schedule.collective_profile_edges_v1()?;
     if moving.len() != 2 {
-        return false;
+        return None;
+    }
+    let first_moving_hinge = geometry
+        .hinges()
+        .iter()
+        .find(|hinge| hinge.edge() == moving[0])?;
+    let second_moving_hinge = geometry
+        .hinges()
+        .iter()
+        .find(|hinge| hinge.edge() == moving[1])?;
+    if first_moving_hinge.assignment() != second_moving_hinge.assignment() {
+        return None;
+    }
+    let derivative_bound = schedule.derivative_bound(moving[0])?;
+    if !derivative_bound.is_finite() || derivative_bound <= 0.0 {
+        return None;
+    }
+    let full_domain_angles = schedule
+        .evaluate_angle_box_dyadic(0, 0, ori_kinematics::CycleScheduleLimitsV1::default())
+        .ok()?;
+    if full_domain_angles.len() != hinge_count
+        || full_domain_angles.iter().any(|(edge, angle)| {
+            if moving.contains(edge) {
+                angle.lower() < 0.0 || angle.upper() >= 90.0
+            } else {
+                angle.lower().to_bits() != 0.0_f64.to_bits()
+                    || angle.upper().to_bits() != 0.0_f64.to_bits()
+            }
+        })
+    {
+        return None;
     }
     let first = &geometry.hinges()[0];
     let pivot = [first.start(), first.end()].into_iter().find(|candidate| {
@@ -6480,57 +6551,484 @@ pub(crate) fn scheduled_opposite_radial_bifold_premises_v1(
             .hinges()
             .iter()
             .all(|hinge| hinge.start() == *candidate || hinge.end() == *candidate)
-    });
-    let Some(pivot) = pivot else { return false };
-    if geometry.face_ids().iter().any(|face| {
-        geometry
-            .face_boundary_vertices(*face)
-            .is_none_or(|boundary| {
-                boundary.len() != 3
-                    || !boundary
-                        .iter()
-                        .any(|vertex| geometry.vertex_position(*vertex) == Some(pivot))
-            })
-    }) {
-        return false;
-    }
-    let outer = |edge: EdgeId| {
-        let hinge = geometry
-            .hinges()
-            .iter()
-            .find(|hinge| hinge.edge() == edge)?;
+    })?;
+    let outer = |hinge: &ori_kinematics::TreeHinge| {
         Some(if hinge.start() == pivot {
             hinge.end()
         } else {
             hinge.start()
         })
     };
-    let (Some(a), Some(b)) = (outer(moving[0]), outer(moving[1])) else {
-        return false;
+    let (a, b) = (outer(first_moving_hinge)?, outer(second_moving_hinge)?);
+    let exact_point = |point: ori_kinematics::Point3| {
+        Some([
+            BigRational::from_f64(point.x())?,
+            BigRational::from_f64(point.y())?,
+            BigRational::from_f64(point.z())?,
+        ])
     };
-    let av = [a.x() - pivot.x(), a.y() - pivot.y(), a.z() - pivot.z()];
-    let bv = [b.x() - pivot.x(), b.y() - pivot.y(), b.z() - pivot.z()];
-    let cross = [
-        av[1] * bv[2] - av[2] * bv[1],
-        av[2] * bv[0] - av[0] * bv[2],
-        av[0] * bv[1] - av[1] * bv[0],
-    ];
-    if cross.iter().any(|value| *value != 0.0)
-        || av.into_iter().zip(bv).map(|(a, b)| a * b).sum::<f64>() >= 0.0
-    {
-        return false;
+    let subtract = |left: &[BigRational; 3], right: &[BigRational; 3]| {
+        [
+            &left[0] - &right[0],
+            &left[1] - &right[1],
+            &left[2] - &right[2],
+        ]
+    };
+    let cross = |left: &[BigRational; 3], right: &[BigRational; 3]| {
+        [
+            &left[1] * &right[2] - &left[2] * &right[1],
+            &left[2] * &right[0] - &left[0] * &right[2],
+            &left[0] * &right[1] - &left[1] * &right[0],
+        ]
+    };
+    let dot = |left: &[BigRational; 3], right: &[BigRational; 3]| {
+        &left[0] * &right[0] + &left[1] * &right[1] + &left[2] * &right[2]
+    };
+    let zero = BigRational::from_integer(0.into());
+    let pivot_exact = exact_point(pivot)?;
+    let av = subtract(&exact_point(a)?, &pivot_exact);
+    let bv = subtract(&exact_point(b)?, &pivot_exact);
+    if cross(&av, &bv).iter().any(|value| value != &zero) || dot(&av, &bv) >= zero {
+        return None;
     }
-    let (Some(initial), Some(target)) = (schedule.evaluate(0.0), schedule.evaluate(1.0)) else {
-        return false;
-    };
-    initial
+
+    let mut pivot_vertex = None;
+    for face in geometry.face_ids() {
+        for vertex in geometry.face_boundary_vertices(*face)? {
+            if geometry.vertex_position(*vertex) == Some(pivot) {
+                if pivot_vertex.is_some_and(|candidate| candidate != *vertex) {
+                    return None;
+                }
+                pivot_vertex = Some(*vertex);
+            }
+        }
+    }
+    let pivot_vertex = pivot_vertex?;
+
+    let mut reference_normal = None;
+    for face in geometry.face_ids() {
+        let boundary = geometry.face_boundary_vertices(*face)?;
+        if boundary.len() < 3 || boundary.len() > 64 || *face != fixed_face && boundary.len() != 3 {
+            return None;
+        }
+        for vertex in boundary {
+            let point = geometry.vertex_position(*vertex)?;
+            if point == pivot {
+                continue;
+            }
+            let radial = subtract(&exact_point(point)?, &pivot_exact);
+            let normal = cross(&av, &radial);
+            if normal.iter().any(|value| value != &zero) {
+                reference_normal = Some(normal);
+                break;
+            }
+        }
+        if reference_normal.is_some() {
+            break;
+        }
+    }
+    let reference_normal = reference_normal?;
+    let mut face_sides = HashMap::new();
+    face_sides.try_reserve(hinge_count).ok()?;
+    let mut face_axis_projections = HashMap::new();
+    face_axis_projections.try_reserve(hinge_count).ok()?;
+    for face in geometry.face_ids().iter().copied() {
+        let boundary = geometry.face_boundary_vertices(face)?;
+        if boundary
+            .iter()
+            .filter(|vertex| **vertex == pivot_vertex)
+            .count()
+            != 1
+        {
+            return None;
+        }
+        let mut face_side = 0_i8;
+        let mut minimum_axis_projection = None::<BigRational>;
+        let mut maximum_axis_projection = None::<BigRational>;
+        for vertex in boundary {
+            let radial = subtract(
+                &exact_point(geometry.vertex_position(*vertex)?)?,
+                &pivot_exact,
+            );
+            let axis_projection = dot(&av, &radial);
+            minimum_axis_projection = Some(minimum_axis_projection.map_or_else(
+                || axis_projection.clone(),
+                |value| value.min(axis_projection.clone()),
+            ));
+            maximum_axis_projection = Some(maximum_axis_projection.map_or_else(
+                || axis_projection.clone(),
+                |value| value.max(axis_projection.clone()),
+            ));
+            let normal = cross(&av, &radial);
+            if normal.iter().all(|value| value == &zero) {
+                continue;
+            }
+            if cross(&reference_normal, &normal)
+                .iter()
+                .any(|value| value != &zero)
+            {
+                return None;
+            }
+            let orientation = dot(&reference_normal, &normal);
+            let side = if orientation > zero {
+                1
+            } else if orientation < zero {
+                -1
+            } else {
+                return None;
+            };
+            if face_side != 0 && face_side != side {
+                return None;
+            }
+            face_side = side;
+        }
+        if face_side == 0
+            || face_sides.insert(face, face_side).is_some()
+            || face_axis_projections
+                .insert(face, (minimum_axis_projection?, maximum_axis_projection?))
+                .is_some()
+        {
+            return None;
+        }
+    }
+    for hinge in geometry.hinges() {
+        let left = *face_sides.get(&hinge.left_face())?;
+        let right = *face_sides.get(&hinge.right_face())?;
+        if moving.contains(&hinge.edge()) {
+            if left == right {
+                return None;
+            }
+        } else if left != right {
+            return None;
+        }
+    }
+    let mut visited = HashSet::new();
+    visited.try_reserve(hinge_count).ok()?;
+    let mut stationary_component_sides = HashSet::new();
+    stationary_component_sides.try_reserve(2).ok()?;
+    for root in geometry.face_ids().iter().copied() {
+        if visited.contains(&root) {
+            continue;
+        }
+        let component_side = *face_sides.get(&root)?;
+        let mut pending = VecDeque::new();
+        pending.try_reserve(hinge_count).ok()?;
+        pending.push_back(root);
+        visited.insert(root);
+        while let Some(face) = pending.pop_front() {
+            if face_sides.get(&face) != Some(&component_side) {
+                return None;
+            }
+            for hinge in geometry
+                .hinges()
+                .iter()
+                .filter(|hinge| !moving.contains(&hinge.edge()))
+            {
+                let neighbor = if hinge.left_face() == face {
+                    Some(hinge.right_face())
+                } else if hinge.right_face() == face {
+                    Some(hinge.left_face())
+                } else {
+                    None
+                };
+                if let Some(neighbor) = neighbor
+                    && visited.insert(neighbor)
+                {
+                    pending.push_back(neighbor);
+                }
+            }
+        }
+        if !stationary_component_sides.insert(component_side) {
+            return None;
+        }
+    }
+    if stationary_component_sides.len() != 2 || visited.len() != geometry.face_ids().len() {
+        return None;
+    }
+    let (initial, target) = (schedule.evaluate(0.0)?, schedule.evaluate(1.0)?);
+    if !initial
         .as_slice()
         .iter()
         .all(|angle| angle.angle_degrees() == 0.0)
-        && target
+        || !target
             .as_slice()
             .iter()
             .all(|angle| moving.contains(&angle.edge()) || angle.angle_degrees() == 0.0)
+    {
+        return None;
+    }
+
+    let mut exclusive_radius_squared = zero.clone();
+    for face in geometry
+        .face_ids()
+        .iter()
+        .copied()
+        .filter(|face| *face != fixed_face)
+    {
+        for vertex in geometry.face_boundary_vertices(face)? {
+            let radial = subtract(
+                &exact_point(geometry.vertex_position(*vertex)?)?,
+                &pivot_exact,
+            );
+            exclusive_radius_squared = exclusive_radius_squared.max(dot(&radial, &radial));
+        }
+    }
+    if exclusive_radius_squared <= zero {
+        return None;
+    }
+    if let Some(thickness) = paper_thickness_mm {
+        if !thickness.is_finite() || thickness <= 0.0 {
+            return None;
+        }
+        let thickness = BigRational::from_f64(thickness)?;
+        let axis_norm_squared = dot(&av, &av);
+        let (axis_norm_lower, _) = ori_numeric::rational_sqrt_bounds(
+            &axis_norm_squared,
+            ori_numeric::ExpressionLimits::default(),
+        )
+        .ok()?;
+        if axis_norm_lower <= zero {
+            return None;
+        }
+        // The graph policy admits an axis-aligned feature box expanded by
+        // eight thicknesses. The exact fibre lemma contributes less than one
+        // transverse thickness, while the checks below bound axial distance
+        // by six thicknesses.
+        let axial_margin = thickness * BigRational::from_integer(6.into()) * axis_norm_lower;
+        let within_vertex_corridor_cone = |face: FaceId| -> Option<bool> {
+            for vertex in geometry.face_boundary_vertices(face)?.iter().copied() {
+                let radial = subtract(
+                    &exact_point(geometry.vertex_position(vertex)?)?,
+                    &pivot_exact,
+                );
+                let axis_projection = dot(&av, &radial);
+                let perpendicular = cross(&av, &radial);
+                if &axis_projection * &axis_projection
+                    > dot(&perpendicular, &perpendicular) * BigRational::from_integer(144.into())
+                {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        };
+        for (first_index, first_face) in geometry.face_ids().iter().copied().enumerate() {
+            for second_face in geometry.face_ids()[first_index + 1..].iter().copied() {
+                if face_sides.get(&first_face) == face_sides.get(&second_face) {
+                    // Every intervening hinge is an exact zero profile, so
+                    // this pair is one rigid material-side invariant.
+                    continue;
+                }
+                let first_boundary = geometry.face_boundary_vertices(first_face)?;
+                let second_boundary = geometry.face_boundary_vertices(second_face)?;
+                let mut shared = [None::<ori_domain::VertexId>; 2];
+                let mut shared_count = 0usize;
+                for vertex in first_boundary
+                    .iter()
+                    .copied()
+                    .filter(|vertex| second_boundary.contains(vertex))
+                {
+                    if shared_count == shared.len() {
+                        return None;
+                    }
+                    shared[shared_count] = Some(vertex);
+                    shared_count += 1;
+                }
+                if shared_count == 0 || !shared[..shared_count].contains(&Some(pivot_vertex)) {
+                    return None;
+                }
+                if shared_count == 2
+                    && !geometry.hinges().iter().any(|hinge| {
+                        moving.contains(&hinge.edge())
+                            && ((hinge.left_face() == first_face
+                                && hinge.right_face() == second_face)
+                                || (hinge.left_face() == second_face
+                                    && hinge.right_face() == first_face))
+                            && shared[..shared_count].iter().all(|vertex| {
+                                vertex
+                                    .and_then(|vertex| geometry.vertex_position(vertex))
+                                    .is_some_and(|point| {
+                                        point == hinge.start() || point == hinge.end()
+                                    })
+                            })
+                    })
+                {
+                    return None;
+                }
+                let mut feature_minimum = None::<BigRational>;
+                let mut feature_maximum = None::<BigRational>;
+                for vertex in shared[..shared_count].iter().copied().flatten() {
+                    let radial = subtract(
+                        &exact_point(geometry.vertex_position(vertex)?)?,
+                        &pivot_exact,
+                    );
+                    let projection = dot(&av, &radial);
+                    feature_minimum =
+                        Some(feature_minimum.map_or_else(
+                            || projection.clone(),
+                            |value| value.min(projection.clone()),
+                        ));
+                    feature_maximum =
+                        Some(feature_maximum.map_or_else(
+                            || projection.clone(),
+                            |value| value.max(projection.clone()),
+                        ));
+                }
+                let (first_minimum, first_maximum) = face_axis_projections.get(&first_face)?;
+                let (second_minimum, second_maximum) = face_axis_projections.get(&second_face)?;
+                let overlap_minimum = first_minimum.max(second_minimum);
+                let overlap_maximum = first_maximum.min(second_maximum);
+                let feature_minimum = feature_minimum?;
+                let feature_maximum = feature_maximum?;
+                if overlap_minimum > overlap_maximum
+                    || (overlap_minimum >= &(&feature_minimum - &axial_margin)
+                        && overlap_maximum <= &(&feature_maximum + &axial_margin))
+                {
+                    continue;
+                }
+                if shared_count == 1
+                    && (within_vertex_corridor_cone(first_face)?
+                        || within_vertex_corridor_cone(second_face)?)
+                {
+                    continue;
+                }
+                return None;
+            }
+        }
+    }
+    Some(OppositeRadialBifoldGroupBoundsV1 {
+        pivot: pivot_exact,
+        exclusive_radius_squared,
+    })
+}
+
+/// Narrow positive-thickness composition for separated radial bifolds sharing
+/// one exact fixed articulation face.
+///
+/// Each canonical edge block independently satisfies the two-opposite-ray
+/// bifold theorem.  The only face shared by blocks is the fixed exterior face,
+/// and every exclusive carrier remains in its block's rigid swept ball.
+/// Strict separation of those balls after adding both half-thickness shells
+/// proves all cross-block pairs for the full open interval; the already
+/// validated parent closure binds the local restrictions to one schedule.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the theorem binds the exact parent graph, schedule, closure, thickness, and cooperative operation"
+)]
+pub(crate) fn scheduled_separated_common_articulation_bifolds_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+    operation_control: Option<&CooperativeOperationControlV1<'_>>,
+) -> bool {
+    let operation_is_current =
+        || operation_control.is_none_or(|control| control.checkpoint().is_ok());
+    if !operation_is_current()
+        || !paper_thickness_mm.is_finite()
+        || paper_thickness_mm <= 0.0
+        || closure.fixed_face() != fixed_face
+        || !closure.every_leaf_covers_graph_v1(geometry)
+    {
+        return false;
+    }
+    let Ok(decomposition) = geometry.decompose_canonical_edge_blocks_v1(
+        audit,
+        CanonicalEdgeBlockLimitsV1 {
+            max_blocks: 32,
+            max_faces_per_block: 32,
+            max_hinges_per_block: 32,
+        },
+    ) else {
+        return false;
+    };
+    if !(2..=32).contains(&decomposition.blocks().len())
+        || decomposition.articulation_faces() != [fixed_face]
+        || decomposition
+            .blocks()
+            .iter()
+            .any(|block| !block.geometry().face_ids().contains(&fixed_face))
+    {
+        return false;
+    }
+
+    let mut groups = Vec::new();
+    if groups
+        .try_reserve_exact(decomposition.blocks().len())
+        .is_err()
+    {
+        return false;
+    }
+    for block in decomposition.blocks() {
+        if !operation_is_current() {
+            return false;
+        }
+        let Ok(block_schedule) = schedule.restrict_to_edge_block_with_fixed_face_v1(
+            geometry,
+            audit,
+            block.geometry(),
+            block.audit(),
+            fixed_face,
+        ) else {
+            return false;
+        };
+        let Some(bounds) = opposite_radial_bifold_group_bounds_v1(
+            block.geometry(),
+            block.audit(),
+            fixed_face,
+            &block_schedule,
+            Some(paper_thickness_mm),
+        ) else {
+            return false;
+        };
+        groups.push(bounds);
+    }
+
+    for first in 0..groups.len() {
+        for second in first + 1..groups.len() {
+            if !operation_is_current() {
+                return false;
+            }
+            let a = &groups[first];
+            let b = &groups[second];
+            let distance_squared = (0..3)
+                .map(|axis| {
+                    let delta = &a.pivot[axis] - &b.pivot[axis];
+                    &delta * &delta
+                })
+                .sum::<BigRational>();
+            let Ok((distance_lower, _)) = ori_numeric::rational_sqrt_bounds(
+                &distance_squared,
+                ori_numeric::ExpressionLimits::default(),
+            ) else {
+                return false;
+            };
+            let Ok((_, first_radius_upper)) = ori_numeric::rational_sqrt_bounds(
+                &a.exclusive_radius_squared,
+                ori_numeric::ExpressionLimits::default(),
+            ) else {
+                return false;
+            };
+            let Ok((_, second_radius_upper)) = ori_numeric::rational_sqrt_bounds(
+                &b.exclusive_radius_squared,
+                ori_numeric::ExpressionLimits::default(),
+            ) else {
+                return false;
+            };
+            let Some(thickness) = BigRational::from_f64(paper_thickness_mm) else {
+                return false;
+            };
+            let required = first_radius_upper + second_radius_upper + thickness;
+            if distance_lower <= required {
+                return false;
+            }
+        }
+    }
+    if !operation_is_current() {
+        return false;
+    }
+    true
 }
 
 // Narrow zero-thickness theorem for folding an already flat stack. Exact

@@ -178,7 +178,7 @@ test('possible, impossible and unknown presentations retain only public summarie
   assert.equal(possible.label, '可')
   assert.deepEqual(
     possible.resultEntries.map(({ label }) => label),
-    ['層順序モデル', '層数', '最大重なり', '基準面', '層順3D表示'],
+    ['層順序モデル', '層数', '最大重なり', '基準面', '平坦セル層順模式図'],
   )
   assert.ok(possible.resultEntries.some(({ value }) => value === '利用できます'))
 
@@ -511,7 +511,7 @@ test('English presentations cover idle, progress and every terminal result', () 
       { label: 'Layer count', value: '1,234 layers' },
       { label: 'Maximum overlap', value: '14 ply' },
       { label: 'Reference face', value: 'Face 3' },
-      { label: '3D layer-order view', value: 'Available' },
+      { label: 'Flat-cell layer schematic', value: 'Available' },
     ],
   )
 

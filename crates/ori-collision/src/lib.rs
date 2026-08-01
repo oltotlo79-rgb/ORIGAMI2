@@ -143,6 +143,9 @@ pub use cell_order_transport::{
     revalidate_two_face_non_flat_cell_order_transport_v1,
 };
 pub use certified_path_graph::issue_private_three_segment_path_v1;
+#[cfg(feature = "private-petal-e2e")]
+#[doc(hidden)]
+pub use certified_path_graph::private_petal_e2e_transition_fixture_v1;
 pub use certified_path_graph::{
     CERTIFIED_PATH_GRAPH_MODEL_ID_V1, CertifiedPathGraphIndeterminateReasonV1,
     CertifiedPathGraphProgressV1, CertifiedPathGraphSearchResultV1,
@@ -150,7 +153,9 @@ pub use certified_path_graph::{
     CertifiedPoseGraphPathCertificateV1, MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1,
     MAX_CERTIFIED_PATH_GRAPH_OVERLAY_EDGES_V1, MAX_CERTIFIED_PATH_GRAPH_STATES_V1,
     MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1, PoseFingerprintV1,
-    certify_scheduled_cycle_transition_v1, search_certified_pose_graph_v1,
+    certify_positive_thickness_tree_scheduled_transition_v1, certify_scheduled_cycle_transition_v1,
+    issue_common_articulation_single_transition_path_v1, issue_instruction_bound_path_v1,
+    issue_instruction_bound_single_transition_path_v1, search_certified_pose_graph_v1,
     search_certified_pose_graph_with_checkpoint_v1, search_certified_pose_graph_with_progress_v1,
 };
 pub use common_articulation_clearance::{

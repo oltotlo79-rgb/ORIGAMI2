@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { CurrentNonFlatLayerOrderViewer } from './CurrentNonFlatLayerOrderViewer.tsx'
+import { LayerOrderViewer } from './LayerOrderViewer.tsx'
 import { ProofProgressPanel } from './ProofProgressPanel.tsx'
 import {
   SpeculativeStackedFoldApplyControl,
@@ -53,7 +54,6 @@ import type {
   StackedFoldRotationDirection,
 } from '../lib/stackedFoldRead'
 import { isCycleScheduleRequestV1 } from '../lib/stackedFoldRead'
-import type { LayerOrderViewerCell } from '../lib/currentLayerOrderView'
 import type { FoldTechniqueFileDocumentV1 } from '../lib/foldTechniqueEditor'
 import {
   createStackedFoldProofProgressModel,
@@ -74,6 +74,8 @@ import {
   createPostApplyProofSchedulerCoordinatorV1,
   type PostApplyProofSchedulerViewStateV1,
 } from '../lib/postApplyProofSchedulerCoordinator.ts'
+
+export { LayerOrderViewer }
 
 type SelectedLine = Readonly<{
   id: string
@@ -1918,6 +1920,7 @@ export function StackedFoldPanel({
           <p>{text(TEXT.thisCertificateCoversOnlyTheDisplayedThicknessTwoTriangularFaces)}</p>
           <LayerOrderViewer
             locale={locale}
+            scope="stacked-fold-proposal"
             cells={view.response.crossedCells}
             selectedCell={selectedCell}
             selectedFace={selectedFace}
@@ -2065,89 +2068,6 @@ export function StackedFoldPanel({
       />
     </section>
   )
-}
-
-export function LayerOrderViewer({
-  locale,
-  cells,
-  selectedCell,
-  selectedFace,
-  hoveredFace,
-  onSelectCell,
-  onSelectFace,
-  onHoverFace,
-}: Readonly<{
-  locale: Locale
-  cells: readonly LayerOrderViewerCell[]
-  selectedCell: string | null
-  selectedFace: string | null
-  hoveredFace: string | null
-  onSelectCell(value: string): void
-  onSelectFace(value: string): void
-  onHoverFace(value: string | null): void
-}>) {
-  const text = (localized: LocalizedText) =>
-    selectLocalizedText(locale, localized)
-  const formattedText = (
-    localized: LocalizedText,
-    variables: MessageVariables,
-  ) => formatLocalizedText(locale, localized, variables)
-  const active = cells.find((cell) => cell.cellKeySha256 === selectedCell) ?? cells[0]
-  if (!active) return null
-  const xs = active.boundaryWorld.map((point) => point[0])
-  const zs = active.boundaryWorld.map((point) => point[2])
-  const minX = Math.min(...xs); const maxX = Math.max(...xs)
-  const minZ = Math.min(...zs); const maxZ = Math.max(...zs)
-  const spanX = Math.max(maxX - minX, 1)
-  const spanZ = Math.max(maxZ - minZ, 1)
-  const polygon = active.boundaryWorld.map((point) =>
-    `${20 + ((point[0] - minX) / spanX) * 180},${20 + ((point[2] - minZ) / spanZ) * 110}`,
-  ).join(' ')
-  return <section className="stacked-fold-layer-viewer" aria-label={text(TEXT.text3dLayerOrderViewer)}>
-    <h3>{text(TEXT.overlapCellsAndLayerOrder)}</h3>
-    <p className="muted">{text(TEXT.readOnlyViewOfTheAuthenticatedCurrentPoseAndLayer)}</p>
-    <div className="stacked-fold-cell-tabs" role="list">
-      {cells.map((cell, index) => <button type="button" role="listitem"
-        aria-pressed={cell.cellKeySha256 === active.cellKeySha256}
-        key={cell.cellKeySha256} onClick={() => onSelectCell(cell.cellKeySha256)}>
-        {text(TEXT.cell)} {index + 1}
-      </button>)}
-    </div>
-    <svg viewBox="0 0 240 180" role="img"
-      aria-label={text(TEXT.explodedFrontBackLayerStack)}>
-      {active.bottomToTopFaces.map((face, index) => {
-        const offset = (active.bottomToTopFaces.length - 1 - index) * 9
-        const highlighted = face === selectedFace || face === hoveredFace
-        return <polygon key={`${face}:${index}`} points={polygon} transform={`translate(${offset} ${-offset})`}
-          fill={highlighted ? '#f6b73c' : `hsl(${205 + index * 22} 55% 62%)`}
-          fillOpacity="0.72" stroke={highlighted ? '#6b3e00' : '#29465b'}
-          tabIndex={0} onClick={() => onSelectFace(face)}
-          onMouseEnter={() => onHoverFace(face)} onMouseLeave={() => onHoverFace(null)}
-          onFocus={() => onHoverFace(face)} onBlur={() => onHoverFace(null)}>
-          <title>{formattedText(
-            index === 0
-              ? TEXT.backBottomFaceIndex
-              : index === active.bottomToTopFaces.length - 1
-                ? TEXT.frontTopFaceIndex
-                : TEXT.middleLayerFaceIndex,
-            { index: index + 1 },
-          )}</title>
-        </polygon>
-      })}
-    </svg>
-    <ol className="stacked-fold-layer-list">
-      {active.bottomToTopFaces.map((face, index) => <li key={`${face}:${index}`}>
-        <button type="button" aria-pressed={face === selectedFace}
-          onMouseEnter={() => onHoverFace(face)} onMouseLeave={() => onHoverFace(null)}
-          onClick={() => onSelectFace(face)}>
-          {index === 0 ? text(TEXT.backBottom)
-            : index === active.bottomToTopFaces.length - 1
-              ? text(TEXT.frontTop)
-              : text(TEXT.middle)} · {text(TEXT.face)} {index + 1}
-        </button>
-      </li>)}
-    </ol>
-  </section>
 }
 
 function describeCertificateModel(

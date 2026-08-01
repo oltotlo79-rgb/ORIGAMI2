@@ -56,7 +56,8 @@ function Harness() {
     <h2>{t('一直線の折り重ね', 'Straight-line stacked fold')}</h2>
     <p role="status">{t('経路証明を待機中', 'Waiting for path certificate')}</p>
     <LayerOrderViewer
-      locale={locale} cells={cells} selectedCell={null} selectedFace={null}
+      locale={locale} scope="stacked-fold-proposal" cells={cells}
+      selectedCell={null} selectedFace={null}
       hoveredFace={null} onSelectCell={() => undefined} onSelectFace={() => undefined}
       onHoverFace={() => undefined}
     />

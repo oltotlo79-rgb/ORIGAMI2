@@ -10,7 +10,7 @@ import {
 } from '../src/lib/stackedFoldPanelText.ts'
 
 test('stacked-fold panel catalog is complete and deeply frozen', () => {
-  assert.equal(Object.keys(TEXT).length, 162)
+  assert.equal(Object.keys(TEXT).length, 164)
   assert.equal(Object.isFrozen(TEXT), true)
 
   for (const entry of Object.values(TEXT)) {
@@ -84,14 +84,16 @@ test('stacked-fold formatted copy keeps equivalent bounded placeholders', () => 
   )
 })
 
-test('StackedFoldPanel has no inline localized pair left', () => {
-  const path = new URL(
+test('stacked-fold components have no inline localized pair left', () => {
+  const paths = [
     '../src/components/StackedFoldPanel.tsx',
-    import.meta.url,
-  )
-  const source = readFileSync(path, 'utf8')
+    '../src/components/LayerOrderViewer.tsx',
+  ].map((path) => new URL(path, import.meta.url))
+  const source = paths
+    .map((path) => readFileSync(path, 'utf8'))
+    .join('\n')
   const sourceFile = ts.createSourceFile(
-    path.pathname,
+    'stacked-fold-components.tsx',
     source,
     ts.ScriptTarget.Latest,
     true,
@@ -127,6 +129,6 @@ test('StackedFoldPanel has no inline localized pair left', () => {
   assert.doesNotMatch(source, /\bconst t\s*=/u)
   assert.equal(
     source.match(/TEXT\.[A-Za-z_$][A-Za-z0-9_$]*/gu)?.length,
-    179,
+    183,
   )
 })

@@ -659,6 +659,7 @@ fn capture_beginner_candidate_analysis_snapshot_with_control_v1(
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             current_layer_evidence: None,
+            trusted_path_certificates: Default::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets,
             reference_model_assets,

@@ -167,6 +167,31 @@ fn four_hinge_tree_level_three_proof_applies_and_persists_atomically() {
         revision,
         "tampered Tree proof is an atomic no-op"
     );
+    let registry_len_before = super::super::lock_project(&state)
+        .unwrap()
+        .trusted_path_certificates
+        .len_v1();
+    let _failure_guard =
+        super::stacked_fold_dyadic_preview::fail_next_dyadic_apply_after_pose_reissue_for_test_v1();
+    assert!(
+        apply_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &layer_state,
+            &preview_state,
+            apply_request(preview.path_binding_sha256.clone()),
+        )
+        .is_err(),
+        "a post-pose failure must roll back before registry publication"
+    );
+    {
+        let project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.revision(), revision);
+        assert_eq!(
+            project.trusted_path_certificates.len_v1(),
+            registry_len_before,
+            "failed dyadic Apply must retain the old registry image"
+        );
+    }
     let applied = apply_dyadic_pose_path_preview_inner_v1(
         &state,
         &layer_state,
@@ -192,11 +217,47 @@ fn four_hinge_tree_level_three_proof_applies_and_persists_atomically() {
             .iter()
             .all(|step| step.visual.path_certificate_reference_v1.is_some())
     );
+    assert!(
+        project
+            .trusted_path_certificates
+            .export_attestation_v1(
+                project.instance_id,
+                project.project_id,
+                project.editor.instruction_timeline(),
+            )
+            .expect("live dyadic path registry")
+            .is_some(),
+        "a successful dyadic Apply must be immediately export-attestable"
+    );
     project.editor.undo(applied).unwrap();
     assert!(project.editor.instruction_timeline().steps.is_empty());
+    assert!(
+        project
+            .trusted_path_certificates
+            .export_attestation_v1(
+                project.instance_id,
+                project.project_id,
+                project.editor.instruction_timeline(),
+            )
+            .expect("undone dyadic path registry")
+            .is_none(),
+        "Undo must not attest a path absent from the live timeline"
+    );
     let undone = project.editor.revision();
     project.editor.redo(undone).unwrap();
     assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+    assert!(
+        project
+            .trusted_path_certificates
+            .export_attestation_v1(
+                project.instance_id,
+                project.project_id,
+                project.editor.instruction_timeline(),
+            )
+            .expect("redone dyadic path registry")
+            .is_some(),
+        "Redo must restore the exact live attestation binding"
+    );
     let archive = project.project_archive().unwrap();
     let reopened = super::super::ProjectState::from_project_archive(
         archive,

@@ -14,6 +14,7 @@ const EXTRACTED_MODULES = [
   '../src/components/ElementMetadataForm.tsx',
   '../src/components/FoldTechniqueInspectorSection.tsx',
   '../src/components/HistoryLimitInspectorSection.tsx',
+  '../src/components/LayerOrderViewer.tsx',
   '../src/components/MirrorSelectionPanel.tsx',
   '../src/components/PaperInspectorSection.tsx',
   '../src/components/ProjectMemoAndCandidateSection.tsx',
@@ -22,6 +23,15 @@ const EXTRACTED_MODULES = [
   '../src/components/SelectedVertexInspector.tsx',
   '../src/components/SnapInspectorSection.tsx',
   '../src/components/ValidationInspectorSections.tsx',
+  '../src/lib/beginnerGeneratedPlanContract.ts',
+  '../src/lib/beginnerCandidateScoreContract.ts',
+  '../src/lib/beginnerGeneratedPlanInstructionContract.ts',
+  '../src/lib/beginnerGeneratedPlanSnapshot.ts',
+  '../src/lib/beginnerGeneratedPlanTopologyContract.ts',
+  '../src/lib/beginnerGeneratedPlanTypes.ts',
+  '../src/lib/beginnerGenericFeatureBindingContract.ts',
+  '../src/lib/beginnerProtrusionKinds.ts',
+  '../src/lib/sha256Bytes.ts',
   '../src/lib/snapInspectorOptions.ts',
 ] as const
 
@@ -36,6 +46,21 @@ test('each extracted responsibility remains below 500 physical lines', () => {
       `${path} must remain below 500 physical lines`,
     )
   }
+})
+
+test('the shared layer-order viewer stays decoupled from the stacked-fold panel', () => {
+  const globalPanel = source(
+    '../src/components/GlobalFlatFoldabilityPanel.tsx',
+  )
+  const stackedPanel = source(
+    '../src/components/StackedFoldPanel.tsx',
+  )
+  assert.match(
+    globalPanel,
+    /from '\.\/LayerOrderViewer\.tsx'/u,
+  )
+  assert.doesNotMatch(globalPanel, /from '\.\/StackedFoldPanel\.tsx'/u)
+  assert.match(stackedPanel, /export \{ LayerOrderViewer \}/u)
 })
 
 test('extraction boundaries remain on natural JSX lines', () => {

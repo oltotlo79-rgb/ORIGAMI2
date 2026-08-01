@@ -87,7 +87,7 @@ test('the wire DTO remains snake-case and the native snapshot carries timeline p
   )
   assert.match(
     snapshotBuilder,
-    /instruction_timeline: project\.editor\.instruction_timeline\(\)\.clone\(\)/u,
+    /let mut instruction_timeline = project\.editor\.instruction_timeline\(\)\.clone\(\);\s*project\s*\.trusted_path_certificates\s*\.downgrade_untrusted_references_v1\(\s*project\.instance_id,\s*project\.project_id,\s*&mut instruction_timeline,\s*\);\s*ProjectSnapshot \{[\s\S]*?\binstruction_timeline,/u,
   )
   assert.match(
     snapshotBuilder,

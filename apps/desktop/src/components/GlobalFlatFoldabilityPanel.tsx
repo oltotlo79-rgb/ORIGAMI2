@@ -4,7 +4,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { LayerOrderViewer } from './StackedFoldPanel.tsx'
+import { LayerOrderViewer } from './LayerOrderViewer.tsx'
 import { ProofScopeSummary } from './ProofScopeSummary.tsx'
 import {
   getCurrentLayerOrderView,
@@ -52,6 +52,13 @@ export type GlobalFlatFoldabilityPanelProps = Readonly<{
   }): Promise<CurrentLayerOrderView>
 }>
 
+type LayerViewLoadState = Readonly<{
+  terminalResultToken: unknown
+  authorityKey: string | null
+  status: 'idle' | 'loading' | 'ready' | 'failed'
+  view: CurrentLayerOrderView | null
+}>
+
 export function GlobalFlatFoldabilityPanel({
   job,
   timeLimitSeconds,
@@ -80,15 +87,50 @@ export function GlobalFlatFoldabilityPanel({
   const startButtonRef = useRef<HTMLButtonElement>(null)
   const cancelButtonRef = useRef<HTMLButtonElement>(null)
   const previousKindRef = useRef(presentation.kind)
-  const [layerView, setLayerView] = useState<CurrentLayerOrderView | null>(null)
-  const [layerViewStatus, setLayerViewStatus] =
-    useState<'idle' | 'loading' | 'ready' | 'failed'>('idle')
+  const [layerViewLoad, setLayerViewLoad] = useState<LayerViewLoadState>({
+    terminalResultToken: null,
+    authorityKey: null,
+    status: 'idle',
+    view: null,
+  })
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
   const [hoveredFace, setHoveredFace] = useState<string | null>(null)
   const selectedViewerFaceRef = useRef<string | null>(null)
+  const selectedFaceIdRef = useRef(selectedFaceId)
+  const onSelectFaceRef = useRef(onSelectFace)
+  const onHoverFaceRef = useRef(onHoverFace)
+  onSelectFaceRef.current = onSelectFace
+  onHoverFaceRef.current = onHoverFace
+  selectedFaceIdRef.current = selectedFaceId
   const authorityInstanceId = authority?.projectInstanceId
   const authorityProjectId = authority?.projectId
   const authorityRevision = authority?.revision
+  const terminalResultToken = presentation.kind === 'possible'
+    && presentation.layerViewAvailable
+    ? job
+    : null
+  const authorityKey = authorityInstanceId === undefined
+    || authorityProjectId === undefined
+    || authorityRevision === undefined
+    ? null
+    : `${authorityInstanceId}:${authorityProjectId}:${authorityRevision}`
+  const canLoadLayerView =
+    terminalResultToken !== null
+    && presentation.layerViewAvailable
+    && authorityKey !== null
+  const layerLoadMatchesCurrentResult = canLoadLayerView
+    && layerViewLoad.terminalResultToken === terminalResultToken
+    && layerViewLoad.authorityKey === authorityKey
+  const layerView = layerLoadMatchesCurrentResult
+    ? layerViewLoad.view
+    : null
+  const layerViewStatus = presentation.kind !== 'possible'
+    ? 'idle'
+    : !canLoadLayerView
+      ? 'failed'
+      : layerLoadMatchesCurrentResult
+        ? layerViewLoad.status
+        : 'loading'
   const hasTerminalResult = !presentation.active
     && presentation.kind !== 'idle'
 
@@ -107,14 +149,29 @@ export function GlobalFlatFoldabilityPanel({
 
   useEffect(() => {
     let current = true
-    setLayerView(null); setSelectedCell(null); setHoveredFace(null); onHoverFace?.(null)
+    setSelectedCell(null)
+    setHoveredFace(null)
+    onHoverFaceRef.current?.(null)
     if (selectedViewerFaceRef.current !== null) {
+      const viewerFace = selectedViewerFaceRef.current
       selectedViewerFaceRef.current = null
-      onSelectFace?.(null)
+      if (selectedFaceIdRef.current === viewerFace) {
+        onSelectFaceRef.current?.(null)
+      }
     }
-    setLayerViewStatus('idle')
-    if (authorityInstanceId === undefined || authorityProjectId === undefined
-      || authorityRevision === undefined || presentation.kind !== 'possible') {
+    if (
+      terminalResultToken === null
+      || authorityKey === null
+      || authorityInstanceId === undefined
+      || authorityProjectId === undefined
+      || authorityRevision === undefined
+    ) {
+      setLayerViewLoad({
+        terminalResultToken: null,
+        authorityKey: null,
+        status: 'idle',
+        view: null,
+      })
       return () => { current = false }
     }
     const expected = {
@@ -122,27 +179,49 @@ export function GlobalFlatFoldabilityPanel({
       projectId: authorityProjectId,
       revision: authorityRevision,
     }
-    setLayerViewStatus('loading')
+    setLayerViewLoad({
+      terminalResultToken,
+      authorityKey,
+      status: 'loading',
+      view: null,
+    })
     void loadLayerOrderView(expected).then((result) => {
       if (current
         && result.projectInstanceId === expected.projectInstanceId
         && result.projectId === expected.projectId
         && result.revision === expected.revision) {
-        setLayerView(result)
-        setLayerViewStatus('ready')
+        setLayerViewLoad({
+          terminalResultToken,
+          authorityKey,
+          status: 'ready',
+          view: result,
+        })
       } else if (current) {
-        setLayerViewStatus('failed')
+        setLayerViewLoad({
+          terminalResultToken,
+          authorityKey,
+          status: 'failed',
+          view: null,
+        })
       }
     }).catch(() => {
-      if (current) setLayerViewStatus('failed')
+      if (current) {
+        setLayerViewLoad({
+          terminalResultToken,
+          authorityKey,
+          status: 'failed',
+          view: null,
+        })
+      }
     })
     return () => { current = false }
   }, [
     authorityInstanceId,
+    authorityKey,
     authorityProjectId,
     authorityRevision,
-    presentation.kind,
     loadLayerOrderView,
+    terminalResultToken,
   ])
 
   return (
@@ -265,6 +344,7 @@ export function GlobalFlatFoldabilityPanel({
       {layerView && layerView.cells.length > 0 && (
         <LayerOrderViewer
           locale={locale}
+          scope="global-flat-result"
           cells={layerView.cells}
           selectedCell={selectedCell}
           selectedFace={selectedFaceId}
@@ -279,6 +359,18 @@ export function GlobalFlatFoldabilityPanel({
             onHoverFace?.(face)
           }}
         />
+      )}
+      {presentation.kind === 'possible' && layerViewStatus === 'loading' && (
+        <p role="status" className="global-flat-foldability-layer-loading">
+          {selectLocalizedText(locale, TEXT.layerLoading)}
+        </p>
+      )}
+      {presentation.kind === 'possible'
+        && layerViewStatus === 'ready'
+        && layerView?.cells.length === 0 && (
+        <p role="status" className="global-flat-foldability-layer-empty">
+          {selectLocalizedText(locale, TEXT.layerEmpty)}
+        </p>
       )}
       {presentation.kind === 'possible' && layerViewStatus === 'failed' && (
         <p role="alert" className="global-flat-foldability-layer-unavailable">

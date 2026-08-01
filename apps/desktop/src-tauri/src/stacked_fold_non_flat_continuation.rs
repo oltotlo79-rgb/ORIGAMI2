@@ -14,9 +14,10 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc};
 
 use ori_collision::{
     CertifiedPathGraphSearchResultV1, CertifiedPathTransitionCandidateV1,
-    CertifiedPathTransitionEvidenceV1, NonFlatCellTransportLimitsV1, NonFlatCellTransportProofV1,
+    NonFlatCellTransportLimitsV1, NonFlatCellTransportProofV1,
     PositiveThicknessTreeContinuousCertificateV1, certify_non_flat_cell_transport_with_limits_v1,
-    certify_positive_thickness_tree_continuous_path_v1, search_certified_pose_graph_v1,
+    certify_positive_thickness_tree_continuous_path_v1,
+    certify_positive_thickness_tree_scheduled_transition_v1, search_certified_pose_graph_v1,
 };
 use ori_core::{
     AppliedPoseLimitsV1, StackedFoldNonFlatLayerOrderV1, analyze_global_flat_foldability,
@@ -56,6 +57,7 @@ use super::super::{
         GlobalFlatFoldabilityState, lock_current_layer_order_for_history_mutation,
     },
     lock_project,
+    path_certificate_registry::TrustedPathCertificateRegistryV1,
     stacked_fold_transaction::{
         CurrentLayerEvidence, StackedFoldProjectRollbackSnapshotV1, rollback_stacked_fold_apply_v1,
     },
@@ -412,13 +414,19 @@ fn mint_non_flat_cycle_continuation_inner_v1(
 
     let source_pose = pose_state_fingerprint_v1(&schedule_source);
     let target_pose = pose_state_fingerprint_v1(&target);
-    let transition = CertifiedPathTransitionEvidenceV1::from_native_oracle(
-        source_pose,
-        target_pose,
-        schedule.certificate_binding_fingerprint_v2(),
-        positive.binding_fingerprint_v1(),
-        closure.partition_binding_fingerprint_v2(),
-    );
+    let transition = certify_positive_thickness_tree_scheduled_transition_v1(
+        geometry,
+        audit,
+        graph_pose.fixed_face(),
+        &generated,
+        &closure,
+        tree_model,
+        tree_pose,
+        &target,
+        paper_thickness_mm,
+        &positive,
+    )
+    .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let path = match search_certified_pose_graph_v1(
         &[source_pose, target_pose],
         &[CertifiedPathTransitionCandidateV1 {
@@ -659,33 +667,29 @@ fn apply_non_flat_cycle_continuation_inner_v1(
         AppliedPoseLimitsV1::default(),
     )
     .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-    let source_angles = source_pose
-        .hinge_angles()
-        .as_slice()
-        .iter()
-        .map(|angle| InstructionHingeAngle {
-            edge: angle.edge(),
-            angle_degrees: angle.angle_degrees(),
-        })
-        .collect::<Vec<_>>();
-    let transition_targets = vec![
-        target_angles
-            .as_slice()
-            .iter()
-            .map(|angle| InstructionHingeAngle {
-                edge: angle.edge(),
-                angle_degrees: angle.angle_degrees(),
-            })
-            .collect::<Vec<_>>(),
-    ];
+    let source_model_fingerprint = project.editor.fold_model_fingerprint_v1();
+    let instruction_bound_path = ori_collision::issue_instruction_bound_path_v1(
+        &record.authority.path,
+        &source_model_fingerprint,
+        source_pose.fixed_face(),
+        &[source_pose.hinge_angles(), &target_angles],
+    )
+    .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let source_angles = try_retain_instruction_angles_v1(source_pose.hinge_angles())?;
+    let mut transition_targets = Vec::new();
+    transition_targets
+        .try_reserve_exact(1)
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    transition_targets.push(try_retain_instruction_angles_v1(&target_angles)?);
+    let existing_timeline_step_count = project.editor.instruction_timeline().steps.len();
     let timeline = ori_instructions::append_certified_dyadic_path_timeline_v1(
         project.editor.instruction_timeline(),
         "Certified non-flat cycle continuation",
-        &project.editor.fold_model_fingerprint_v1(),
+        &source_model_fingerprint,
         source_pose.fixed_face(),
         &source_angles,
         &transition_targets,
-        &record.authority.path,
+        &instruction_bound_path,
     )
     .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let persisted_pose = timeline
@@ -693,6 +697,24 @@ fn apply_non_flat_cycle_continuation_inner_v1(
         .last()
         .map(|step| step.pose.clone())
         .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let trusted_path_entries =
+        TrustedPathCertificateRegistryV1::prepare_entries_for_timeline_suffix_v1(
+            project.instance_id,
+            project.project_id,
+            &timeline,
+            existing_timeline_step_count,
+            Some(&instruction_bound_path),
+        )
+        .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let trusted_path_certificates = project
+        .trusted_path_certificates
+        .with_registered_timeline_v1(
+            project.instance_id,
+            project.project_id,
+            &timeline,
+            trusted_path_entries,
+        )
+        .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let mut project_before = StackedFoldProjectRollbackSnapshotV1::capture(&project);
     let layer_before = layer_guard.capture_rollback_snapshot_v1();
     let next_pattern = project.editor.pattern().clone();
@@ -760,9 +782,27 @@ fn apply_non_flat_cycle_continuation_inner_v1(
         record.authority.target.clone(),
     ));
     layer_guard.invalidate_after_project_mutation();
+    // Registry publication is the final authority transition. The candidate
+    // was prepared before mutation, and every rollback branch above retains
+    // the prior process-local registry unchanged.
+    project.trusted_path_certificates = trusted_path_certificates;
     pose_rollback.disarm();
     drop(layer_guard);
     Ok(result.revision)
+}
+
+fn try_retain_instruction_angles_v1(
+    angles: &CanonicalHingeAngles,
+) -> Result<Vec<InstructionHingeAngle>, String> {
+    let mut retained = Vec::new();
+    retained
+        .try_reserve_exact(angles.as_slice().len())
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    retained.extend(angles.as_slice().iter().map(|angle| InstructionHingeAngle {
+        edge: angle.edge(),
+        angle_degrees: angle.angle_degrees(),
+    }));
+    Ok(retained)
 }
 
 #[tauri::command]

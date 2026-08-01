@@ -531,7 +531,8 @@ fn three_block_strip_flat_layer_anchor_mismatch_fails_closed() {
         super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
 
     let resource_guard =
-        super::stacked_fold_blockwise_cycle::override_three_block_layer_peak_limit_for_test_v1(0);
+        super::stacked_fold_blockwise_cycle::
+            override_bounded_multi_block_layer_peak_limit_for_test_v1(0);
     let resource_error = propose_current_cycle_pose_inner_with_layers(
         None,
         &app_state,

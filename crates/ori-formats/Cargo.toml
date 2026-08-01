@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 ori-core = { path = "../ori-core" }
+ori-collision = { path = "../ori-collision" }
 ori-domain = { path = "../ori-domain" }
 ori-geometry = { path = "../ori-geometry" }
 ori-instructions = { path = "../ori-instructions" }

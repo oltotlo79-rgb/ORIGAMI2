@@ -123,7 +123,7 @@ const ready = {
   support: 'bit_exact_flat_endpoint_tree',
   crossedCells: [{
     cellKeySha256: 'c'.repeat(64),
-    bottomToTopFaces: [project, project],
+    bottomToTopFaces: [project, token],
     boundaryWorld: [[0, 0, 0], [20, 0, 0], [20, 0, -10], [0, 0, -10]],
   }],
   targetFaces: [project],
@@ -933,7 +933,18 @@ describe('StackedFoldPanel', () => {
     expect((await screen.findAllByText('Certified')).length).toBe(2)
     expect(screen.getByText('Positive-thickness continuous-path certificate')).toBeTruthy()
     expect(screen.queryByText('stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v2')).toBeNull()
-    expect(screen.getByRole('img', { name: 'Exploded front/back layer stack' })).toBeTruthy()
+    expect(screen.getByRole('region', {
+      name: 'Flat-endpoint proposal cell layer schematic',
+    })).toBeTruthy()
+    expect(screen.getByRole('heading', {
+      level: 3,
+      name: 'Flat-endpoint proposal cell layer schematic',
+    })).toBeTruthy()
+    expect(screen.getByText(
+      /XZ schematic of overlap cells in the unapplied flat-endpoint proposal/u,
+    )).toBeTruthy()
+    expect(document.querySelector('.layer-stack-schematic svg')
+      ?.getAttribute('aria-hidden')).toBe('true')
     expect(screen.getByRole('button', { name: /Back \/ bottom/ })).toBeTruthy()
     const front = screen.getByRole('button', { name: /Front \/ top/ })
     fireEvent.mouseEnter(front)

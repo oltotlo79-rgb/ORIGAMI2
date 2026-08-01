@@ -509,6 +509,7 @@ const MAX_CURRENT_LAYER_ORDER_VIEW_PAIRS: usize = 32_768;
 const MAX_CURRENT_LAYER_ORDER_VIEW_PAIR_SUPPORTS: usize = 131_072;
 const MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL: usize = 4_096;
 const MAX_CURRENT_LAYER_ORDER_VIEW_TOTAL_VERTICES: usize = 16_384;
+const MAX_CURRENT_LAYER_ORDER_VIEW_RENDER_VERTEX_INSTANCES_PER_CELL: usize = 32_768;
 const MAX_CURRENT_LAYER_ORDER_VIEW_EXACT_MAGNITUDE_BYTES: usize = 64 * 1024;
 const MAX_CURRENT_LAYER_ORDER_VIEW_ESTIMATED_SERIALIZED_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CURRENT_LAYER_ORDER_VIEW_DTO_RETAINED_BYTES: usize = 4 * 1024 * 1024;
@@ -614,6 +615,13 @@ fn preflight_current_layer_order_view(
             || cell.bottom_to_top_faces.len() > MAX_CURRENT_LAYER_ORDER_VIEW_FACES
             || !(3..=MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL)
                 .contains(&cell.exact_boundary.len())
+            || cell
+                .bottom_to_top_faces
+                .len()
+                .checked_mul(cell.exact_boundary.len())
+                .is_none_or(|product| {
+                    product > MAX_CURRENT_LAYER_ORDER_VIEW_RENDER_VERTEX_INSTANCES_PER_CELL
+                })
         {
             return Err(());
         }
@@ -2234,9 +2242,9 @@ fn layer_order_summary(
         layer_count,
         max_ply,
         reference_face_number,
-        // The verified snapshot is available internally for SIM-010, but the
-        // dedicated layer-order 3D viewer is not part of the UI yet.
-        layer_view_available: false,
+        // A Possible result always retains its native certificate, but very
+        // large certificates remain intentionally outside the bounded viewer.
+        layer_view_available: preflight_current_layer_order_view(layer_order).is_ok(),
     })
 }
 
@@ -2846,7 +2854,8 @@ pub(super) mod tests {
             finish_completion(&mut slot, project, completion);
             assert!(
                 slot.current_layer_order.is_some(),
-                "fixture must install native layer authority"
+                "fixture must install native layer authority; terminal={:?}",
+                slot.terminal.as_ref().map(|terminal| &terminal.dto),
             );
         }
     }
@@ -3003,6 +3012,18 @@ pub(super) mod tests {
             MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL,
         )];
         assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.overlap_cells[0].bottom_to_top_faces = vec![
+                face;
+                MAX_CURRENT_LAYER_ORDER_VIEW_RENDER_VERTEX_INSTANCES_PER_CELL
+                    / MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL
+            ];
+        assert!(preflight_current_layer_order_view(&snapshot).is_ok());
+        snapshot.overlap_cells[0].bottom_to_top_faces.push(face);
+        assert!(
+            preflight_current_layer_order_view(&snapshot).is_err(),
+            "one SVG vertex instance over the per-cell render budget is rejected"
+        );
+        snapshot.overlap_cells[0].bottom_to_top_faces = vec![face];
         snapshot.overlap_cells[0]
             .exact_boundary
             .push(ExactPointValue {
@@ -4363,9 +4384,33 @@ pub(super) mod tests {
 
         assert_eq!(summary.layer_count, 1);
         assert_eq!(summary.max_ply, 1);
-        assert!(!summary.layer_view_available);
+        assert!(summary.layer_view_available);
         assert_eq!(layer_order.folded_faces.len(), 1);
         assert!(layer_order.proof_summary.is_some());
+    }
+
+    #[test]
+    fn possible_summary_marks_a_certificate_outside_the_view_budget_unavailable() {
+        let mut layer_order = current_layer_order_view_test_snapshot();
+        let canonical_faces = layer_order.material_faces.clone();
+        let face = canonical_faces[0].face_id;
+        layer_order.overlap_cells = vec![view_test_cell(
+            face,
+            MAX_CURRENT_LAYER_ORDER_VIEW_VERTICES_PER_CELL + 1,
+        )];
+        let proof = layer_order.proof_summary.expect("native proof summary");
+        let mut work = proof_work_counts(
+            proof.material_faces,
+            proof.overlap_face_pairs,
+            proof.constraints,
+        );
+        work.overlap_cells = proof.overlap_cells;
+        work.search_nodes = proof.search_nodes;
+        work.certificate_bytes = proof.certificate_bytes;
+
+        let summary = layer_order_summary(&layer_order, &canonical_faces, work)
+            .expect("proof remains Possible outside the optional viewer budget");
+        assert!(!summary.layer_view_available);
     }
 
     #[test]
@@ -4749,7 +4794,7 @@ pub(super) mod tests {
 
         assert_eq!(summary.layer_count, 2);
         assert_eq!(summary.max_ply, 2);
-        assert!(!summary.layer_view_available);
+        assert!(summary.layer_view_available);
         assert_eq!(layer_order.folded_faces.len(), 2);
         assert_eq!(
             layer_order

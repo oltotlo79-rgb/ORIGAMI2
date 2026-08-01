@@ -6,6 +6,37 @@ pub fn four_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) 
     rational_cycle_bay_pattern(4)
 }
 
+/// Four spatially separated six-sector bays sharing one convex central
+/// material face.  In every bay the two returned spokes are exact opposite
+/// rays; all other spokes may remain flat, so each canonical edge block is
+/// the narrow radial-bifold family used by the positive-thickness continuous
+/// theorem.
+///
+/// The six rational directions satisfy Kawasaki's alternating-sector
+/// equality (45 + 45 + 90 degrees on both sides) and the 4M/2V assignment
+/// satisfies Maekawa.  The bay centres are the corners of a forty-unit square,
+/// while every exclusive bay face stays within sqrt(2) of its centre.  The
+/// skipped ninety-degree sector of each fan faces the square interior, making
+/// the shared face convex and admissible to native flat-layer analysis.
+#[allow(dead_code)]
+pub fn four_bay_opposite_bifold_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    opposite_bifold_corner_pattern(4)
+}
+
+/// Five separated radial-bifold bays sharing one convex central material
+/// face. It reuses the four-bay fixture's first four centres and identifiers;
+/// the fifth extends the paper boundary on the west, while the two adjacent
+/// fan directions expose the required 135-degree pentagon corners. Boundary
+/// and non-moving rays remain at least one unit long. Only the authenticated
+/// moving pair at those two corners is shorter (`sqrt(5) / 4`), keeping it
+/// between five and six paper thicknesses for the 0.1 mm proof fixture. Each
+/// bay assigns the exact opposite moving pair Valley and all four stationary
+/// rays Mountain, the layer-consistent 4M/2V Maekawa orientation.
+#[allow(dead_code)]
+pub fn five_bay_opposite_bifold_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    opposite_bifold_corner_pattern(5)
+}
+
 #[allow(dead_code)]
 pub fn two_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     rational_cycle_bay_pattern(2)
@@ -121,6 +152,171 @@ fn rational_cycle_bay_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<
         ..Paper::default()
     };
     (CreasePattern { vertices, edges }, paper, hinges)
+}
+
+fn opposite_bifold_corner_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<EdgeId>) {
+    assert!(matches!(group_count, 4 | 5));
+    let namespace: ProjectId =
+        serde_json::from_str("\"00000000-0000-4000-b000-000000000006\"").unwrap();
+    let mut vertices = Vec::new();
+    let mut boundary = Vec::new();
+    let mut hinge_endpoints = Vec::new();
+    let mut centers = Vec::new();
+    let directions = [
+        [
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ],
+        [
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+        ],
+        [
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+        ],
+        [
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+        ],
+        [
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+        ],
+    ];
+    // A convex pentagonal shared face needs the two west square corners to
+    // expose a 135-degree interior sector.  The boundary rays and the other
+    // fan rays retain unit-or-greater length.  Only the supporting-line inner
+    // opposite pair is kept inside the theorem's six-thickness vertex
+    // corridor (sqrt(0.3125) at 0.1 mm thickness).
+    let five_first_directions = [
+        (-1.0, 1.0),
+        (-0.5, 0.25),
+        (-1.0, 0.0),
+        (1.0, -1.0),
+        (0.5, -0.25),
+        (1.0, 0.0),
+    ];
+    let five_fourth_directions = [
+        (1.0, 0.0),
+        (0.5, 0.25),
+        (1.0, 1.0),
+        (-1.0, 0.0),
+        (-0.5, -0.25),
+        (-1.0, -1.0),
+    ];
+    for (group, ((center_x, center_y), group_directions)) in [
+        (-20.0, -20.0),
+        (20.0, -20.0),
+        (20.0, 20.0),
+        (-20.0, 20.0),
+        (-40.0, 0.0),
+    ]
+    .into_iter()
+    .zip(directions)
+    .take(group_count)
+    .enumerate()
+    {
+        let group_directions = match (group_count, group) {
+            (5, 0) => five_first_directions,
+            (5, 3) => five_fourth_directions,
+            _ => group_directions,
+        };
+        let center = Vertex {
+            id: VertexId::derive_v5(namespace, &[0x10, group as u8]),
+            position: Point2::new(center_x, center_y),
+        };
+        centers.push(center.id);
+        vertices.push(center);
+        // Counter-clockwise exterior fan walk. The first four groups rotate
+        // ninety degrees around the square and the optional fifth extends the
+        // paper boundary on the west. All three ray pairs are exact opposites;
+        // the skipped ray-five-to-ray-zero sector belongs to the common
+        // articulation face. The two 135-degree corners return pair one/four
+        // as moving, while every other bay returns pair zero/three.
+        for (local, (x, y)) in group_directions.into_iter().enumerate() {
+            let vertex = Vertex {
+                id: VertexId::derive_v5(namespace, &[0x20, group as u8, local as u8]),
+                position: Point2::new(center_x + x, center_y + y),
+            };
+            boundary.push(vertex.id);
+            hinge_endpoints.push(vertex.id);
+            vertices.push(vertex);
+        }
+    }
+
+    let mut edges = (0..boundary.len())
+        .map(|index| Edge {
+            id: EdgeId::derive_v5(namespace, &[0x50, index as u8]),
+            start: boundary[index],
+            end: boundary[(index + 1) % boundary.len()],
+            kind: EdgeKind::Boundary,
+        })
+        .collect::<Vec<_>>();
+    let hinges = (0..group_count * 6)
+        .map(|index| EdgeId::derive_v5(namespace, &[0x60, index as u8]))
+        .collect::<Vec<_>>();
+    edges.extend((0..group_count * 6).map(|index| {
+        let group = index / 6;
+        let local = index % 6;
+        let kind = if group_count == 5 {
+            let moving_pair = if matches!(group, 0 | 3) {
+                [1, 4]
+            } else {
+                [0, 3]
+            };
+            if moving_pair.contains(&local) {
+                EdgeKind::Valley
+            } else {
+                EdgeKind::Mountain
+            }
+        } else if matches!(local, 0 | 1 | 3 | 4) {
+            EdgeKind::Mountain
+        } else {
+            EdgeKind::Valley
+        };
+        Edge {
+            id: hinges[index],
+            start: centers[group],
+            end: hinge_endpoints[index],
+            kind,
+        }
+    }));
+    let moving = (0..group_count)
+        .flat_map(|group| {
+            let (first, opposite) = if group_count == 5 && matches!(group, 0 | 3) {
+                (1, 4)
+            } else {
+                (0, 3)
+            };
+            [hinges[group * 6 + first], hinges[group * 6 + opposite]]
+        })
+        .collect();
+    let paper = Paper {
+        boundary_vertices: boundary,
+        ..Paper::default()
+    };
+    (CreasePattern { vertices, edges }, paper, moving)
 }
 
 #[allow(dead_code)]

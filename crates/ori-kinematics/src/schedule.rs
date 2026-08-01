@@ -14,7 +14,11 @@ use crate::{
     MaterialHingeGraphGeometry, OutwardIntervalV1,
 };
 
-const MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1: u64 = 64;
+// The bound is deliberately below the 53-bit exact-coefficient budget. At the
+// largest supported dyadic endpoint the generated denominator is
+// 8_192 * 16 = 131_072, and the largest derivative-certificate square remains
+// below 2^35. The fixed 8_192-step search also keeps admission work bounded.
+const MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1: u64 = 8_192;
 pub const CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2: &str =
     "canonical_cycle_schedule_deterministic_transcendental_v2";
 
@@ -76,6 +80,34 @@ fn coprime_u64_v1(mut left: u64, mut right: u64) -> bool {
         (left, right) = (right, left % right);
     }
     left == 1
+}
+
+fn bounded_kawasaki_sector_ratio_v1(magnitude: f64) -> Option<(i64, u64)> {
+    magnitude.is_finite().then_some(())?;
+    (1_u64..=MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1)
+        .filter_map(|denominator| {
+            let numerator = (magnitude * denominator as f64).round() as i64;
+            (numerator > 0
+                && numerator < denominator as i64
+                && coprime_u64_v1(numerator as u64, denominator))
+            .then_some((
+                numerator,
+                denominator,
+                (magnitude - numerator as f64 / denominator as f64).abs(),
+            ))
+        })
+        .min_by(|first, second| {
+            first
+                .2
+                .total_cmp(&second.2)
+                .then_with(|| first.1.cmp(&second.1))
+        })
+        .filter(|(numerator, denominator, error)| {
+            *error <= 1.0e-9
+                && numerator * 8 >= *denominator as i64
+                && numerator * 8 <= *denominator as i64 * 7
+        })
+        .map(|(numerator, denominator, _)| (numerator, denominator))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1803,10 +1835,10 @@ fn multi_hinge_evaluation_error_v1(error: KinematicsError) -> MultiHingePathCand
     }
 }
 
-/// Generates an exact rational half-angle mode for the bounded symmetric
-/// Kawasaki degree-four class. The historic name is retained for API
-/// compatibility; 120/120/60/60 is the ratio 1/2 member of the admitted
-/// denominator-at-most-64 family. Geometry closure remains mandatory.
+/// Generates an exact rational half-angle schedule candidate for the bounded
+/// symmetric Kawasaki degree-four class. The historic name is retained for API
+/// compatibility; 120/120/60/60 is the ratio 1/2 member of the recognized
+/// denominator-at-most-8192 family. Geometry closure remains mandatory.
 pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -1817,10 +1849,10 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
         .map(|(candidate, _)| candidate)
 }
 
-/// Generates the same exact Kawasaki mode over a shorter dyadic endpoint.
-/// `endpoint_denominator` must be one of 1, 2, 4, 8 or 16. The returned
-/// candidate is mathematical closure evidence only; collision certification
-/// remains mandatory before a caller exposes an Apply operation.
+/// Generates the same exact rational schedule candidate over a shorter dyadic
+/// endpoint. `endpoint_denominator` must be one of 1, 2, 4, 8 or 16. The
+/// returned value grants no closure or collision authority; both must be
+/// certified independently before a caller exposes an Apply operation.
 pub fn generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -1897,31 +1929,7 @@ fn generate_kawasaki_path_candidate_at_scale_v1(
         let second = rays[(index + 1) % 4];
         (first.1 * second.1 + first.2 * second.2) / (first.3.sqrt() * second.3.sqrt())
     });
-    let magnitude = sector_cosines[0].abs();
-    let ratio = (1_u64..=MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1)
-        .filter_map(|denominator| {
-            let numerator = (magnitude * denominator as f64).round() as i64;
-            (numerator > 0
-                && numerator < denominator as i64
-                && coprime_u64_v1(numerator as u64, denominator))
-            .then_some((
-                numerator,
-                denominator,
-                (magnitude - numerator as f64 / denominator as f64).abs(),
-            ))
-        })
-        .min_by(|first, second| {
-            first
-                .2
-                .total_cmp(&second.2)
-                .then_with(|| first.1.cmp(&second.1))
-        })
-        .filter(|(numerator, denominator, error)| {
-            *error <= 1.0e-9
-                && numerator * 8 >= *denominator as i64
-                && numerator * 8 <= *denominator as i64 * 7
-        })
-        .map(|(numerator, denominator, _)| (numerator, denominator))
+    let ratio = bounded_kawasaki_sector_ratio_v1(sector_cosines[0].abs())
         .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
     let expected = [
         -(ratio.0 as f64 / ratio.1 as f64),
@@ -1939,6 +1947,11 @@ fn generate_kawasaki_path_candidate_at_scale_v1(
     rays.rotate_left(rotation);
     let unit_edges = [rays[0].0, rays[2].0];
     let scaled_edges = [rays[1].0, rays[3].0];
+    let scaled_endpoint_denominator = ratio
+        .1
+        .checked_mul(endpoint_denominator)
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or(MultiHingePathCandidateErrorV1::ResourceLimit)?;
     let mut hinges = try_multi_hinge_vec_with_capacity_v1(rays.len())?;
     hinges.extend(rays.iter().map(|ray| ray.0));
     hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
@@ -1962,7 +1975,7 @@ fn generate_kawasaki_path_candidate_at_scale_v1(
             numerator: if unit_edges.contains(edge) {
                 endpoint_denominator as i64
             } else {
-                (ratio.1 * endpoint_denominator) as i64
+                scaled_endpoint_denominator
             },
             denominator: 1,
         });
@@ -1996,12 +2009,14 @@ fn generate_kawasaki_path_candidate_at_scale_v1(
         .map(|candidate| (candidate, scaled_edges))
 }
 
-/// Automatically admits the bounded degree-four Kawasaki spherical-linkage
-/// mode from material geometry and its physical mountain/valley assignment.
-/// Primitive rational sector-cosine profiles through denominator 64 are
-/// admitted; this includes the exact 1/2, 3/5, 5/13 and 7/25 families. All
-/// four hinges move and the unique mountain must belong to the scaled
-/// opposite pair required by the closure theorem.
+/// Recognizes a bounded degree-four Kawasaki spherical-linkage profile from
+/// material geometry and its physical mountain/valley assignment, then emits
+/// its exact rational half-angle schedule candidate. Primitive rational
+/// sector-cosine profiles through denominator 8192 are recognized; examples
+/// include 1/2, 3/5, 5/13, 7/25 and 2945/4993. All four hinges move and the
+/// unique mountain must belong to the scaled opposite pair required by the
+/// independent closure theorem. Candidate recognition itself grants no
+/// closure authority.
 pub fn generate_bounded_degree_four_kawasaki_path_candidate_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -2879,10 +2894,10 @@ impl CanonicalCycleScheduleV1 {
         (unit.len() == 2 && scaled.len() == 2).then_some((unit, scaled))
     }
 
-    /// Extracts the only bounded rational symmetric degree-4 profile admitted
-    /// by the generic closure theorem. The reduced ratio is intentionally
-    /// capped and kept away from zero and one so near-degenerate sectors and
-    /// oversized exact coefficients fail closed.
+    /// Extracts the only bounded rational symmetric degree-4 profile eligible
+    /// for the independent generic closure theorem. The reduced ratio is
+    /// intentionally capped and kept away from zero and one so near-degenerate
+    /// sectors and oversized exact coefficients fail closed.
     #[must_use]
     pub fn bounded_symmetric_kawasaki_profile_v1(
         &self,
@@ -2897,7 +2912,6 @@ impl CanonicalCycleScheduleV1 {
         &self,
         edges: &[EdgeId],
     ) -> Option<(Vec<EdgeId>, Vec<EdgeId>, i64, u64)> {
-        const MAX_TERM: i64 = 64;
         if edges.len() != 4 {
             return None;
         }
@@ -2962,20 +2976,19 @@ impl CanonicalCycleScheduleV1 {
         scaled.sort_unstable_by_key(EdgeId::canonical_bytes);
         let ratio = ratio?;
         let numerator = ratio.numer().to_i64()?;
-        let denominator = ratio.denom().to_i64()?;
+        let denominator = ratio.denom().to_u64()?;
         if unit.len() + scaled.len() != 4
             || unit.len() != 2
             || scaled.len() != 2
             || numerator <= 0
-            || denominator <= 0
-            || numerator > MAX_TERM
-            || denominator > MAX_TERM
-            || numerator * 8 < denominator
-            || numerator * 8 > denominator * 7
+            || numerator as u64 > MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1
+            || denominator > MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1
+            || numerator as u64 * 8 < denominator
+            || numerator as u64 * 8 > denominator * 7
         {
             return None;
         }
-        Some((unit, scaled, numerator, u64::try_from(denominator).ok()?))
+        Some((unit, scaled, numerator, denominator))
     }
 
     #[must_use]

@@ -80,6 +80,7 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
     rerender(panelElement({
       job: terminalJob('possible'),
       authority: { projectInstanceId: instance, projectId: project, revision: 4 },
+      selectedFaceId: project,
       onSelectFace,
       onHoverFace,
       loadLayerOrderView,
@@ -87,6 +88,195 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
     }))
     await waitFor(() => expect(onHoverFace).toHaveBeenLastCalledWith(null))
     expect(onSelectFace).toHaveBeenLastCalledWith(null)
+  })
+
+  it('does not clear a newer face selection made outside the layer viewer', async () => {
+    const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
+    const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
+    const job = terminalJob('possible')
+    const authority = { projectInstanceId: instance, projectId: project, revision: 3 }
+    const onSelectFace = vi.fn()
+    const loadLayerOrderView = vi.fn(async (expected) => ({
+      ...expected,
+      layerOrderGeneration: 1,
+      cells: [{
+        cellKeySha256: 'a'.repeat(64),
+        bottomToTopFaces: [instance, project],
+        boundaryWorld: [[0, 0, 0], [1, 0, 0], [0, 0, -1]],
+      }],
+      readOnly: true,
+    }))
+    const { rerender } = renderPanel({
+      job,
+      authority,
+      onSelectFace,
+      loadLayerOrderView,
+      localeStore: localeFixture('en'),
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /Front \/ top/u }))
+    expect(onSelectFace).toHaveBeenLastCalledWith(project)
+
+    rerender(panelElement({
+      job,
+      authority: { ...authority, revision: 4 },
+      selectedFaceId: instance,
+      onSelectFace,
+      loadLayerOrderView,
+      localeStore: localeFixture('en'),
+    }))
+    await waitFor(() => expect(loadLayerOrderView).toHaveBeenCalledTimes(2))
+    expect(onSelectFace).toHaveBeenCalledTimes(1)
+  })
+
+  it('labels the XZ schematic honestly and keeps SVG shapes non-interactive', async () => {
+    const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
+    const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
+    const onHoverFace = vi.fn()
+    renderPanel({
+      job: terminalJob('possible'),
+      authority: { projectInstanceId: instance, projectId: project, revision: 3 },
+      loadLayerOrderView: async (authority) => ({
+        ...authority,
+        layerOrderGeneration: 1,
+        cells: [{
+          cellKeySha256: 'a'.repeat(64),
+          bottomToTopFaces: [instance, project],
+          boundaryWorld: [[0, 0, 0], [2, 0, 0], [0, 0, -1]],
+        }],
+        readOnly: true,
+      }),
+      onHoverFace,
+      localeStore: localeFixture('en'),
+    })
+
+    const region = await screen.findByRole('region', {
+      name: 'Flat-result cell layer schematic',
+    })
+    expect(region).toBeTruthy()
+    expect(screen.getByRole('heading', {
+      level: 4,
+      name: 'Flat-result cell layer schematic',
+    })).toBeTruthy()
+    expect(screen.getByText(/Non-authoritative XZ schematic/u)).toBeTruthy()
+    expect(region.textContent).not.toContain(instance)
+    expect(region.textContent).not.toContain(project)
+    expect(region.textContent).not.toContain('a'.repeat(64))
+    expect(screen.getByRole('button', { name: 'Cell 1' })
+      .getAttribute('aria-pressed')).toBe('true')
+    const face = screen.getByRole('button', {
+      name: /Back \/ bottom.*Layer 1/u,
+    })
+    fireEvent.focus(face)
+    expect(onHoverFace).toHaveBeenLastCalledWith(instance)
+    expect(document.querySelector('.layer-stack-schematic svg')
+      ?.getAttribute('aria-hidden')).toBe('true')
+    expect(document.querySelector('.layer-stack-schematic polygon')
+      ?.hasAttribute('tabindex')).toBe(false)
+  })
+
+  it('does not request a layer view when the terminal DTO marks it unavailable', () => {
+    const loadLayerOrderView = vi.fn()
+    renderPanel({
+      job: terminalJob('possible', false),
+      authority: {
+        projectInstanceId: '018f47a2-4b7a-7cc1-8abc-112233445566',
+        projectId: '018f47a2-4b7a-7cc1-8abc-665544332211',
+        revision: 3,
+      },
+      loadLayerOrderView,
+      localeStore: localeFixture('en'),
+    })
+
+    expect(loadLayerOrderView).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toContain(
+      'The layer schematic requested for this terminal result is unavailable.',
+    )
+  })
+
+  it('shows explicit loading and empty-result states', async () => {
+    const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
+    const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
+    let resolve: ((value: CurrentLayerOrderViewFixture) => void) | undefined
+    const loadLayerOrderView = vi.fn(() =>
+      new Promise<CurrentLayerOrderViewFixture>((accept) => {
+        resolve = accept
+      }))
+    renderPanel({
+      job: terminalJob('possible'),
+      authority: { projectInstanceId: instance, projectId: project, revision: 3 },
+      loadLayerOrderView,
+      localeStore: localeFixture('en'),
+    })
+    expect(screen.getByText(
+      'Loading the layer schematic only while this terminal result remains current…',
+    )).toBeTruthy()
+
+    await act(async () => {
+      resolve?.({
+        projectInstanceId: instance,
+        projectId: project,
+        revision: 3,
+        layerOrderGeneration: 1,
+        cells: [],
+        readOnly: true,
+      })
+    })
+    expect(await screen.findByText(
+      'This terminal-result schematic contains no overlap cells.',
+    )).toBeTruthy()
+    expect(screen.queryByRole('region', {
+      name: 'Flat-result cell layer schematic',
+    })).toBeNull()
+  })
+
+  it('drops old schematic pixels synchronously when a same-kind result is replaced', async () => {
+    const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
+    const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
+    const firstFace = '018f47a2-4b7a-7cc1-8abc-010101010101'
+    const secondFace = '018f47a2-4b7a-7cc1-8abc-020202020202'
+    let call = 0
+    let resolveSecond: ((value: CurrentLayerOrderViewFixture) => void) | undefined
+    const loadLayerOrderView = vi.fn(async (authority) => {
+      call += 1
+      if (call === 1) {
+        return layerViewFixture(authority, firstFace)
+      }
+      return new Promise<CurrentLayerOrderViewFixture>((accept) => {
+        resolveSecond = accept
+      })
+    })
+    const authority = {
+      projectInstanceId: instance,
+      projectId: project,
+      revision: 3,
+    }
+    const firstResult = terminalJob('possible')
+    const { rerender } = renderPanel({
+      job: firstResult,
+      authority,
+      loadLayerOrderView,
+      localeStore: localeFixture('en'),
+    })
+    const firstLayer = await screen.findByRole('button', { name: /Only layer/u })
+    fireEvent.click(firstLayer)
+
+    rerender(panelElement({
+      job: terminalJob('possible'),
+      authority,
+      loadLayerOrderView,
+      localeStore: localeFixture('en'),
+    }))
+    expect(screen.queryByRole('button', { name: /Only layer/u })).toBeNull()
+    expect(screen.getByText(
+      'Loading the layer schematic only while this terminal result remains current…',
+    )).toBeTruthy()
+
+    await act(async () => {
+      resolveSecond?.(layerViewFixture(authority, secondFace))
+    })
+    const secondLayer = await screen.findByRole('button', { name: /Only layer/u })
+    fireEvent.click(secondLayer)
+    expect(loadLayerOrderView).toHaveBeenCalledTimes(2)
   })
 
   it('starts idle with the three time presets and the permanent scope caution', () => {
@@ -479,6 +669,32 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
   })
 })
 
+type CurrentLayerOrderViewFixture = Awaited<
+  ReturnType<NonNullable<GlobalFlatFoldabilityPanelProps['loadLayerOrderView']>>
+>
+
+function layerViewFixture(
+  authority: {
+    projectInstanceId: string
+    projectId: string
+    revision: number
+  },
+  face: string,
+): CurrentLayerOrderViewFixture {
+  return {
+    ...authority,
+    layerOrderGeneration: 1,
+    cells: [{
+      cellKeySha256: face.endsWith('010101010101')
+        ? 'a'.repeat(64)
+        : 'b'.repeat(64),
+      bottomToTopFaces: [face],
+      boundaryWorld: [[0, 0, 0], [1, 0, 0], [0, 0, -1]],
+    }],
+    readOnly: true,
+  }
+}
+
 function renderPanel(overrides: Partial<GlobalFlatFoldabilityPanelProps> = {}) {
   return render(panelElement(overrides))
 }
@@ -512,6 +728,7 @@ function terminalJob(
     | 'cancelled'
     | 'failed'
     | 'stale',
+  layerViewAvailable = true,
 ) {
   switch (kind) {
     case 'possible':
@@ -525,7 +742,7 @@ function terminalJob(
             layer_count: 6,
             max_ply: 4,
             reference_face_number: 1,
-            layer_view_available: true,
+            layer_view_available: layerViewAvailable,
           },
         },
       }

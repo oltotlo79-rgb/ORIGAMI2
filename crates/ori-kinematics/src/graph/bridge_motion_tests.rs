@@ -5,8 +5,8 @@ use ori_topology::{BoundaryWalk, Face, FaceAdjacency, FaceKey, FoldAssignment, T
 
 use super::*;
 use crate::{
-    CycleScheduleEntryInputV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1, Point3,
-    RationalCoefficientV1, TreeKinematicsLimits,
+    CycleScheduleEntryInputV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
+    HalfAngleRationalEntryInputV1, Point3, RationalCoefficientV1, TreeKinematicsLimits,
 };
 
 fn face(id: FaceId) -> Face {
@@ -368,6 +368,145 @@ fn bridge_motion_certifies_non_cactus_cores_with_independent_noncommuting_profil
         )
         .expect("bridge-only motion must bypass interval fallback");
     assert_eq!(certificate.leaves().len(), 1);
+}
+
+#[test]
+fn pure_tree_projective_motion_is_exact_bridge_closure_without_interval_fallback() {
+    let namespace = ProjectId::new();
+    let mut faces = (0..5)
+        .map(|index| FaceId::derive_v5(namespace, format!("pure-tree-face:{index}").as_bytes()))
+        .collect::<Vec<_>>();
+    faces.sort_unstable_by_key(FaceId::canonical_bytes);
+    let mut hinges = faces
+        .windows(2)
+        .enumerate()
+        .map(|(index, pair)| {
+            TreeHinge::new_for_test(
+                EdgeId::derive_v5(namespace, format!("pure-tree-edge:{index}").as_bytes()),
+                FoldAssignment::Mountain,
+                pair[0],
+                pair[1],
+                Point3::new(0.0, index as f64, 0.0).unwrap(),
+                Point3::new(1.0, index as f64, 0.0).unwrap(),
+                Point3::new(1.0, 0.0, 0.0).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    hinges.sort_unstable_by_key(|hinge| hinge.edge().canonical_bytes());
+    let source = topology(&faces, &hinges);
+    let audit = MaterialHingeGraphAudit::prepare(&source, TreeKinematicsLimits::default()).unwrap();
+    assert!(audit.closure_hinges().is_empty());
+    let geometry = MaterialHingeGraphGeometry::new_for_test(faces.clone(), hinges);
+    let fixed_face = faces[0];
+    let projective_inputs = |geometry: &MaterialHingeGraphGeometry| {
+        let mut inputs = geometry
+            .hinges()
+            .iter()
+            .map(|hinge| HalfAngleRationalEntryInputV1 {
+                edge: hinge.edge(),
+                u_domain: [
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+                denominator_power_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+            })
+            .collect::<Vec<_>>();
+        inputs.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        inputs
+    };
+    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        &geometry,
+        &audit,
+        fixed_face,
+        projective_inputs(&geometry),
+        CycleScheduleLimitsV1::default(),
+    )
+    .expect("exact 180-to-90 projective tree schedule");
+    assert!(
+        recognize_bridge_edges_v1(&geometry, &audit)
+            .is_some_and(|bridges| bridges.into_iter().all(|bridge| bridge))
+    );
+    assert!(bridge_only_motion_cycle_closure_premises_v1(
+        &geometry, &audit, fixed_face, &schedule, 0.0,
+    ));
+    let certificate = geometry
+        .prove_dyadic_schedule_closure_v1(
+            &audit,
+            fixed_face,
+            &schedule,
+            0.0,
+            DyadicIntervalClosureLimitsV1 {
+                max_depth: 0,
+                max_leaves: 1,
+                max_work: 1,
+                schedule_limits: CycleScheduleLimitsV1 {
+                    max_hinges: 0,
+                    max_degree: 0,
+                    max_coefficient_bits: 1,
+                    max_work: 0,
+                },
+            },
+        )
+        .expect("pure-tree bridge proof bypasses interval subdivision");
+    assert_eq!(certificate.leaves().len(), 1);
+
+    let mut invalid_hinges = geometry.hinges().to_vec();
+    let first = invalid_hinges[0].clone();
+    invalid_hinges[0] = TreeHinge::new_for_test(
+        first.edge(),
+        first.assignment(),
+        first.left_face(),
+        first.right_face(),
+        first.start(),
+        first.end(),
+        Point3::new(0.0, 1.0, 0.0).unwrap(),
+    );
+    let invalid_source = topology(&faces, &invalid_hinges);
+    let invalid_audit =
+        MaterialHingeGraphAudit::prepare(&invalid_source, TreeKinematicsLimits::default()).unwrap();
+    assert!(invalid_audit.closure_hinges().is_empty());
+    let invalid_geometry = MaterialHingeGraphGeometry::new_for_test(faces, invalid_hinges);
+    let invalid_schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        &invalid_geometry,
+        &invalid_audit,
+        fixed_face,
+        projective_inputs(&invalid_geometry),
+        CycleScheduleLimitsV1::default(),
+    )
+    .expect("malformed-axis schedule remains structurally preparable");
+    assert!(
+        recognize_bridge_edges_v1(&invalid_geometry, &invalid_audit)
+            .is_some_and(|bridges| bridges.into_iter().all(|bridge| bridge))
+    );
+    assert!(
+        !bridge_only_motion_cycle_closure_premises_v1(
+            &invalid_geometry,
+            &invalid_audit,
+            fixed_face,
+            &invalid_schedule,
+            0.0,
+        ),
+        "pure-tree closure still requires every moving bridge to retain its authenticated native axis",
+    );
 }
 
 #[test]

@@ -378,7 +378,7 @@ fn four_non_crossing_rational_bays_admit_closure_but_not_sampled_clearance_autho
     }
     assert!(
         crate::certify_scheduled_cycle_transition_v1(
-            &geometry, &audit, fixed, &candidate, &closure, 32, [0x41; 32], [0x42; 32],
+            &geometry, &audit, fixed, &candidate, &closure, 32,
         )
         .is_none(),
         "an uncertified all-pair path cannot issue a transition"
@@ -415,8 +415,6 @@ fn four_non_crossing_rational_bays_admit_closure_but_not_sampled_clearance_autho
             &reversed_candidate,
             &reversed_closure,
             32,
-            [0x41; 32],
-            [0x42; 32],
         )
         .is_none(),
         "edge reversal cannot turn sampled evidence into authority"
@@ -2159,7 +2157,7 @@ fn eight_bay_real_geometry_admits_closure_but_not_sampled_clearance_authority() 
     }
     assert!(
         crate::certify_scheduled_cycle_transition_v1(
-            &geometry, &audit, fixed, &candidate, &closure, 32, [0x51; 32], [0x52; 32],
+            &geometry, &audit, fixed, &candidate, &closure, 32,
         )
         .is_none()
     );
@@ -2179,8 +2177,6 @@ fn eight_bay_real_geometry_admits_closure_but_not_sampled_clearance_authority() 
             &reversed_candidate,
             &rc,
             32,
-            [0x51; 32],
-            [0x52; 32],
         )
         .is_none()
     );
@@ -2268,7 +2264,7 @@ fn sixteen_bay_geometry_closes_at_exact_caps_without_sampled_clearance_authority
     }
     assert!(
         crate::certify_scheduled_cycle_transition_v1(
-            &geometry, &audit, fixed, &candidate, &closure, 32, [0x61; 32], [0x62; 32],
+            &geometry, &audit, fixed, &candidate, &closure, 32,
         )
         .is_none()
     );
@@ -2288,8 +2284,6 @@ fn sixteen_bay_geometry_closes_at_exact_caps_without_sampled_clearance_authority
             &reversed_candidate,
             &rc,
             32,
-            [0x61; 32],
-            [0x62; 32],
         )
         .is_none()
     );
@@ -2452,7 +2446,7 @@ fn genuine_two_hinge_tree_half_angle_schedule_has_closure_and_bounded_ccd() {
     }
     assert!(
         crate::certify_scheduled_cycle_transition_v1(
-            &geometry, &audit, fixed, &candidate, &closure, 8, [0x11; 32], [0x22; 32],
+            &geometry, &audit, fixed, &candidate, &closure, 8,
         )
         .is_some()
     );
@@ -2758,7 +2752,7 @@ fn kawasaki_120_120_60_60_vertex_obeys_signed_half_angle_ratio() {
     assert!(diagnostic.continuous_certificate_model_id().is_some());
     assert!(
         crate::certify_scheduled_cycle_transition_v1(
-            &geometry, &audit, fixed, &candidate, &closure, 32, [0x31; 32], [0x32; 32],
+            &geometry, &audit, fixed, &candidate, &closure, 32,
         )
         .is_some()
     );

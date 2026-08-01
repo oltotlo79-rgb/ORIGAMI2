@@ -1316,7 +1316,7 @@ impl Drop for PoseAuthorityInvalidation<'_> {
 /// to the same monotonic value before the final, infallible assignment.
 pub(super) fn commit_project_replacement(
     current: &mut ProjectState,
-    replacement: ProjectState,
+    mut replacement: ProjectState,
 ) -> Result<(), PoseAuthorityError> {
     let old_authority = current.applied_pose_authority.clone();
     let new_authority = replacement.applied_pose_authority.clone();
@@ -1348,6 +1348,7 @@ pub(super) fn commit_project_replacement(
     new_slot.generation = next_generation;
     drop(new_slot);
     drop(old_slot);
+    replacement.trusted_path_certificates = Default::default();
     *current = replacement;
     Ok(())
 }
@@ -2013,9 +2014,10 @@ pub(super) mod tests {
 
     pub(crate) fn install_pose_authority_with_angles(
         project: &mut ProjectState,
-        angles: Vec<(EdgeId, f64)>,
+        mut angles: Vec<(EdgeId, f64)>,
         fixed_face: FaceId,
     ) -> Result<(), PoseAuthorityError> {
+        angles.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
         let request = NativePoseRequest {
             expected_project_instance_id: project.instance_id,
             expected_project_id: project.project_id,

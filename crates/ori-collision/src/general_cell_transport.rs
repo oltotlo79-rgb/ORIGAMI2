@@ -1139,13 +1139,22 @@ fn certify_general_multi_face_cell_transport_with_peak_limit_v1(
     {
         return Err(GeneralCellTransportErrorV1::BindingMismatch);
     }
-    let opposite_radial_bifold =
-        crate::continuous_path::scheduled_opposite_radial_bifold_premises_v1(
+    let radial_bifold_family = crate::continuous_path::scheduled_opposite_radial_bifold_premises_v1(
+        input.geometry,
+        input.audit,
+        input.closure.fixed_face(),
+        input.schedule,
+        input.closure,
+        Some(input.paper_thickness_mm),
+    )
+        || crate::continuous_path::scheduled_separated_common_articulation_bifolds_premises_v1(
             input.geometry,
             input.audit,
             input.closure.fixed_face(),
             input.schedule,
             input.closure,
+            input.paper_thickness_mm,
+            None,
         );
     let transition_count = input
         .closure
@@ -1360,7 +1369,7 @@ fn certify_general_multi_face_cell_transport_with_peak_limit_v1(
                             + (offset_world[2] - lower[2]).powi(2))
                         .sqrt();
                         if separation + input.tolerance < input.paper_thickness_mm
-                            && !opposite_radial_bifold
+                            && !radial_bifold_family
                         {
                             return Err(GeneralCellTransportErrorV1::Crossing);
                         }

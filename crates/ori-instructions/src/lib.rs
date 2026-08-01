@@ -52,14 +52,19 @@ use ori_domain::{
     VertexId, validate_instruction_timeline,
 };
 use ori_kinematics::{
-    CanonicalHingeAngles, HingeAngle, KinematicsError, ObservationTreeKinematicsModel, Point3,
-    TreeKinematicsLimits, VertexPosition3,
+    CanonicalHingeAngles, ClosedMaterialHingeGraphPose, HingeAngle, KinematicsError,
+    MaterialHingeGraphAudit, MaterialHingeGraphGeometry, ObservationTreeKinematicsModel,
+    ObservationTreePose, Point3, RigidTransform, TreeHinge, TreeKinematicsLimits, VertexPosition3,
 };
 use ori_topology::{FoldAssignment, TopologySnapshot};
 use thiserror::Error;
 
 const PREVIEW_WORLD_SIZE: f64 = 4.4;
 const PROJECTION_QUANTIZATION: f64 = 1_000_000_000.0;
+// Keep endpoint observation aligned with the native cyclic-path closure
+// boundary. This grants drawing authority only; continuous-path claims remain
+// gated separately by the non-persisted export attestation.
+const CLOSED_GRAPH_DIAGRAM_CLOSURE_TOLERANCE_V1: f64 = 1.0e-9;
 
 // Fixed orthographic camera looking from the same general quadrant as the
 // interactive preview's default camera. Precomputed unit vectors avoid
@@ -181,12 +186,104 @@ pub enum InstructionDiagramError {
 
 struct PreparedModel {
     faces: Vec<PreparedFace>,
-    kinematics: ObservationTreeKinematicsModel,
+    kinematics: PreparedKinematics,
 }
 
 struct PreparedFace {
     id: FaceId,
     points: Vec<Point3>,
+}
+
+// Keep the resource-prepared closed-graph authority inline instead of adding
+// an unchecked heap allocation after its bounded, fallible preparation.
+#[allow(clippy::large_enum_variant)]
+enum PreparedKinematics {
+    Tree(ObservationTreeKinematicsModel),
+    ClosedGraph {
+        geometry: MaterialHingeGraphGeometry,
+        audit: MaterialHingeGraphAudit,
+        display_frame: ProjectionFrame,
+    },
+}
+
+enum PreparedPose {
+    Tree(ObservationTreePose),
+    ClosedGraph(ClosedMaterialHingeGraphPose),
+}
+
+impl PreparedKinematics {
+    fn hinges(&self) -> &[TreeHinge] {
+        match self {
+            Self::Tree(model) => model.hinges(),
+            Self::ClosedGraph { geometry, .. } => geometry.hinges(),
+        }
+    }
+
+    fn vertex_position(&self, vertex: VertexId) -> Option<Point3> {
+        match self {
+            Self::Tree(model) => model.vertex_position(vertex),
+            Self::ClosedGraph { geometry, .. } => geometry.vertex_position(vertex),
+        }
+    }
+
+    fn solve(
+        &self,
+        fixed_face: Option<FaceId>,
+        angles: &CanonicalHingeAngles,
+    ) -> Result<PreparedPose, KinematicsError> {
+        match self {
+            Self::Tree(model) => model.solve(fixed_face, angles).map(PreparedPose::Tree),
+            Self::ClosedGraph {
+                geometry, audit, ..
+            } => {
+                let fixed_face = fixed_face.ok_or(KinematicsError::MissingFixedFace)?;
+                geometry
+                    .solve_closed(
+                        audit,
+                        fixed_face,
+                        angles,
+                        CLOSED_GRAPH_DIAGRAM_CLOSURE_TOLERANCE_V1,
+                    )
+                    .map(PreparedPose::ClosedGraph)
+            }
+        }
+    }
+
+    fn to_display_world(&self, point: Point3) -> Result<Point3, KinematicsError> {
+        match self {
+            Self::Tree(_) => Ok(point),
+            Self::ClosedGraph { display_frame, .. } => display_frame.project_material_point(point),
+        }
+    }
+}
+
+impl PreparedPose {
+    fn face_transform(&self, face: FaceId) -> Option<RigidTransform> {
+        match self {
+            Self::Tree(pose) => pose.face_transform(face),
+            Self::ClosedGraph(pose) => pose.face_transform(face),
+        }
+    }
+
+    fn hinge_transform(&self, hinge: &TreeHinge) -> Option<RigidTransform> {
+        match self {
+            Self::Tree(pose) => pose.hinge_parent_transform(hinge.edge()),
+            Self::ClosedGraph(pose) => {
+                // A successfully closed graph maps either incident copy of the
+                // material axis to the same world hinge within the checked
+                // tolerance. Selecting by canonical face ID makes the drawing
+                // independent of source-edge direction and storage order.
+                let face = if hinge.left_face().canonical_bytes()
+                    <= hinge.right_face().canonical_bytes()
+                {
+                    hinge.left_face()
+                } else {
+                    hinge.right_face()
+                };
+                pose.face_transform(face)
+            }
+        }
+    }
 }
 
 /// Builds a fixed-camera vector plan for every current instruction step.
@@ -291,8 +388,13 @@ pub fn build_instruction_diagram_plan_with_limits(
             let mut depth_total = 0.0;
             let mut points = Vec::with_capacity(face.points.len());
             for point in &face.points {
-                let transformed = transform
-                    .apply_point(*point)
+                let transformed = model
+                    .kinematics
+                    .to_display_world(
+                        transform
+                            .apply_point(*point)
+                            .map_err(map_kinematics_error)?,
+                    )
                     .map_err(map_kinematics_error)?;
                 let (projected, depth) = project(transformed)?;
                 bounds = Some(expand_bounds(bounds, projected));
@@ -320,16 +422,26 @@ pub fn build_instruction_diagram_plan_with_limits(
         let mut changed_hinge_count = 0;
         for hinge in model.kinematics.hinges() {
             let parent_transform = pose
-                .hinge_parent_transform(hinge.edge())
+                .hinge_transform(hinge)
                 .ok_or(InstructionDiagramError::UnsupportedTopology)?;
             let (start, _) = project(
-                parent_transform
-                    .apply_point(hinge.start())
+                model
+                    .kinematics
+                    .to_display_world(
+                        parent_transform
+                            .apply_point(hinge.start())
+                            .map_err(map_kinematics_error)?,
+                    )
                     .map_err(map_kinematics_error)?,
             )?;
             let (end, _) = project(
-                parent_transform
-                    .apply_point(hinge.end())
+                model
+                    .kinematics
+                    .to_display_world(
+                        parent_transform
+                            .apply_point(hinge.end())
+                            .map_err(map_kinematics_error)?,
+                    )
                     .map_err(map_kinematics_error)?,
             )?;
             bounds = Some(expand_bounds(bounds, start));
@@ -364,7 +476,11 @@ pub fn build_instruction_diagram_plan_with_limits(
     if bounds.is_none() {
         for face in &model.faces {
             for point in &face.points {
-                let (projected, _) = project(*point)?;
+                let point = model
+                    .kinematics
+                    .to_display_world(*point)
+                    .map_err(map_kinematics_error)?;
+                let (projected, _) = project(point)?;
                 bounds = Some(expand_bounds(bounds, projected));
             }
         }
@@ -433,25 +549,49 @@ fn prepare_model(
             .get(&vertex.id)
             .copied()
             .ok_or(InstructionDiagramError::UnsupportedTopology)?;
-        embedded_positions.push(VertexPosition3::new(vertex.id, frame.to_world(position)?));
+        embedded_positions.push(VertexPosition3::new(
+            vertex.id,
+            frame.project_paper_point(position)?,
+        ));
     }
-    let kinematics = ObservationTreeKinematicsModel::prepare_with_positions(
+    let kinematics_limits = TreeKinematicsLimits {
+        max_source_vertices: limits.max_source_vertices,
+        max_source_edges: limits.max_source_edges,
+        max_paper_boundary_vertices: limits.max_source_vertices,
+        max_faces: limits.max_faces_per_step,
+        max_edge_incidences: limits.max_source_edges,
+        max_hinges: limits.max_hinges_per_step,
+        max_face_boundary_vertices: limits.max_projected_vertex_visits,
+        max_adjacency_entries: limits.max_hinges_per_step.saturating_mul(2),
+    };
+    let kinematics = match ObservationTreeKinematicsModel::prepare_with_positions(
         pattern,
         paper,
         topology,
         &embedded_positions,
-        TreeKinematicsLimits {
-            max_source_vertices: limits.max_source_vertices,
-            max_source_edges: limits.max_source_edges,
-            max_paper_boundary_vertices: limits.max_source_vertices,
-            max_faces: limits.max_faces_per_step,
-            max_edge_incidences: limits.max_source_edges,
-            max_hinges: limits.max_hinges_per_step,
-            max_face_boundary_vertices: limits.max_projected_vertex_visits,
-            max_adjacency_entries: limits.max_hinges_per_step.saturating_mul(2),
-        },
-    )
-    .map_err(map_kinematics_error)?;
+        kinematics_limits,
+    ) {
+        Ok(model) => PreparedKinematics::Tree(model),
+        Err(KinematicsError::UnsupportedTopology) => {
+            let audit = MaterialHingeGraphAudit::prepare(topology, kinematics_limits)
+                .map_err(map_kinematics_error)?;
+            // Preserve every existing tree rejection and byte-for-byte tree
+            // drawing path. This fallback exists only when at least one
+            // retained hinge is a genuine loop-closure constraint.
+            if audit.is_tree() {
+                return Err(InstructionDiagramError::UnsupportedTopology);
+            }
+            let geometry =
+                MaterialHingeGraphGeometry::prepare(pattern, paper, topology, kinematics_limits)
+                    .map_err(map_kinematics_error)?;
+            PreparedKinematics::ClosedGraph {
+                geometry,
+                audit,
+                display_frame: frame,
+            }
+        }
+        Err(error) => return Err(map_kinematics_error(error)),
+    };
     let mut faces = Vec::with_capacity(topology.faces.len());
     for face in &topology.faces {
         let mut points = Vec::with_capacity(face.outer.half_edges.len());
@@ -487,6 +627,7 @@ fn checked_model_resource_counts(
     }
 }
 
+#[derive(Clone, Copy)]
 struct ProjectionFrame {
     min_x: f64,
     min_y: f64,
@@ -496,12 +637,26 @@ struct ProjectionFrame {
 }
 
 impl ProjectionFrame {
-    fn to_world(&self, point: ori_domain::Point2) -> Result<Point3, InstructionDiagramError> {
+    fn project_paper_point(
+        &self,
+        point: ori_domain::Point2,
+    ) -> Result<Point3, InstructionDiagramError> {
         let x = ((point.x - self.min_x) / self.largest - self.normalized_width / 2.0)
             * PREVIEW_WORLD_SIZE;
         let z = -((point.y - self.min_y) / self.largest - self.normalized_height / 2.0)
             * PREVIEW_WORLD_SIZE;
         Point3::new(x, 0.0, z).map_err(map_kinematics_error)
+    }
+
+    fn project_material_point(&self, point: Point3) -> Result<Point3, KinematicsError> {
+        let scale = PREVIEW_WORLD_SIZE / self.largest;
+        Point3::new(
+            ((point.x() - self.min_x) / self.largest - self.normalized_width / 2.0)
+                * PREVIEW_WORLD_SIZE,
+            point.y() * scale,
+            ((point.z() + self.min_y) / self.largest + self.normalized_height / 2.0)
+                * PREVIEW_WORLD_SIZE,
+        )
     }
 }
 
@@ -697,6 +852,11 @@ fn quantize(value: f64) -> Result<f64, InstructionDiagramError> {
 }
 
 #[cfg(test)]
+#[path = "../../../test-support/four_bay_cycle.rs"]
+#[allow(dead_code)]
+mod four_bay_cycle_test_support;
+
+#[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
 
@@ -718,6 +878,15 @@ mod tests {
         paper: Paper,
         topology: TopologySnapshot,
         fold: EdgeId,
+    }
+
+    struct ClosedGraphFixture {
+        pattern: CreasePattern,
+        paper: Paper,
+        topology: TopologySnapshot,
+        hinges: Vec<EdgeId>,
+        moving: Vec<EdgeId>,
+        fixed_face: FaceId,
     }
 
     fn fixture_vertex_id(index: u64) -> VertexId {
@@ -790,6 +959,79 @@ mod tests {
             paper,
             topology: report.snapshot.expect("single-fold topology"),
             fold: fold_id,
+        }
+    }
+
+    fn four_bay_closed_graph_fixture() -> ClosedGraphFixture {
+        let (pattern, paper, moving) =
+            super::four_bay_cycle_test_support::four_bay_opposite_bifold_pattern();
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixture_project_id(),
+            source_revision: 8,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        let topology = report.snapshot.expect("four-bay graph topology");
+        let mut hinges = topology
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let fixed_face = topology
+            .faces
+            .iter()
+            .max_by_key(|face| face.outer.half_edges.len())
+            .expect("shared articulation face")
+            .id;
+        assert_eq!(topology.faces.len(), 21);
+        assert_eq!(hinges.len(), 24);
+        assert_eq!(moving.len(), 8);
+        ClosedGraphFixture {
+            pattern,
+            paper,
+            topology,
+            hinges,
+            moving,
+            fixed_face,
+        }
+    }
+
+    fn four_bay_closed_graph_timeline(fixture: &ClosedGraphFixture) -> InstructionTimeline {
+        let target_angle = ori_kinematics::deterministic_half_angle_ratio_degrees_v1(1.0, 100.0)
+            .expect("finite exact schedule endpoint");
+        let step = |title: &str, target: bool| InstructionStep {
+            id: InstructionStepId::new(),
+            title: title.to_owned(),
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: 1_000,
+            visual: Default::default(),
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: FINGERPRINT.to_owned(),
+                fixed_face: Some(fixture.fixed_face),
+                hinge_angles: fixture
+                    .hinges
+                    .iter()
+                    .copied()
+                    .map(|edge| InstructionHingeAngle {
+                        edge,
+                        angle_degrees: if target && fixture.moving.contains(&edge) {
+                            target_angle
+                        } else {
+                            0.0
+                        },
+                    })
+                    .collect(),
+            },
+        };
+        InstructionTimeline {
+            steps: vec![
+                step("Four-bay source", false),
+                step("Four-bay target", true),
+            ],
         }
     }
 
@@ -873,6 +1115,86 @@ mod tests {
                 && face.depth.is_finite()
         }));
         assert_ne!(first.steps[0].faces, first.steps[1].faces);
+    }
+
+    #[test]
+    fn closed_four_bay_graph_projects_source_and_target_deterministically() {
+        let fixture = four_bay_closed_graph_fixture();
+        let timeline = four_bay_closed_graph_timeline(&fixture);
+        let first = build_instruction_diagram_plan(
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &timeline,
+            &fixture.topology,
+        )
+        .expect("closed four-bay diagram");
+        let second = build_instruction_diagram_plan(
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &timeline,
+            &fixture.topology,
+        )
+        .expect("deterministic closed four-bay diagram");
+
+        assert_eq!(first, second);
+        assert_eq!(first.steps.len(), 2);
+        assert!(first.steps.iter().all(|step| step.faces.len() == 21));
+        assert!(first.steps.iter().all(|step| step.hinges.len() == 24));
+        assert_eq!(first.steps[0].changed_hinge_count, 0);
+        assert_eq!(first.steps[1].changed_hinge_count, 8);
+        assert!(first.bounds.max_x > first.bounds.min_x);
+        assert!(first.bounds.max_y > first.bounds.min_y);
+        assert!(first.steps.iter().flat_map(|step| &step.faces).all(|face| {
+            face.depth.is_finite()
+                && face
+                    .points
+                    .iter()
+                    .all(|point| point.x.is_finite() && point.y.is_finite())
+        }));
+    }
+
+    #[test]
+    fn closed_four_bay_graph_rejects_a_nonclosing_endpoint() {
+        let fixture = four_bay_closed_graph_fixture();
+        let mut timeline = four_bay_closed_graph_timeline(&fixture);
+        timeline.steps[1]
+            .pose
+            .hinge_angles
+            .iter_mut()
+            .find(|angle| angle.angle_degrees != 0.0)
+            .expect("four-bay target has one moving hinge")
+            .angle_degrees += 0.000_001;
+
+        assert_eq!(
+            build_instruction_diagram_plan(
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &timeline,
+                &fixture.topology,
+            ),
+            Err(InstructionDiagramError::UnsupportedTopology)
+        );
+    }
+
+    #[test]
+    fn closed_four_bay_graph_requires_an_explicit_fixed_face() {
+        let fixture = four_bay_closed_graph_fixture();
+        let mut timeline = four_bay_closed_graph_timeline(&fixture);
+        timeline.steps[1].pose.fixed_face = None;
+
+        assert_eq!(
+            build_instruction_diagram_plan(
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &timeline,
+                &fixture.topology,
+            ),
+            Err(InstructionDiagramError::UnsupportedTopology)
+        );
     }
 
     #[test]

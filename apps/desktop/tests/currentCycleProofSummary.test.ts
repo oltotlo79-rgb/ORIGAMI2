@@ -43,6 +43,14 @@ test('current-cycle proof summary accepts the production blockwise layer authori
   assert.deepEqual(normalizeCurrentCyclePosePreviewResponseV1(blockwise, 3), blockwise)
 })
 
+test('current-cycle proof summary accepts the production common-articulation authority', () => {
+  const commonArticulation = {
+    ...valid,
+    continuousLayerTransportModelId: 'common_articulation_continuous_layer_path_authority_v1',
+  }
+  assert.deepEqual(normalizeCurrentCyclePosePreviewResponseV1(commonArticulation, 3), commonArticulation)
+})
+
 test('current-cycle proof summary rejects tampering, bounds, and partial coverage', () => {
   const invalid = [
     { ...valid, injected: true },
@@ -57,6 +65,7 @@ test('current-cycle proof summary rejects tampering, bounds, and partial coverag
     { ...valid, targetLayerOrder: [{ lowerFace: 'stale', upperFace: valid.targetLayerOrder[0].upperFace }] },
     { ...valid, continuousLayerTransportModelId: null },
     { ...valid, continuousLayerTransportModelId: 'blockwise_positive_layer_authority_v2' },
+    { ...valid, continuousLayerTransportModelId: 'common_articulation_continuous_layer_path_authority_v2' },
     { ...valid, targetRevision: 5 },
   ]
   for (const value of invalid) {

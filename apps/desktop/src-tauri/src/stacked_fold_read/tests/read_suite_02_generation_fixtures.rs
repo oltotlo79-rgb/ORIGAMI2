@@ -1,9 +1,445 @@
+fn bounded_multi_block_projective_unfold_schedule_v1(
+    hinges: &[ori_domain::EdgeId],
+    active_hinges: &[ori_domain::EdgeId],
+) -> CycleScheduleRequestV1 {
+    let source_numerator = 1_i64;
+    let numerator_slope = 1_i64;
+    let denominator = 64_i64;
+    let requested_angle_degrees = ori_kinematics::deterministic_half_angle_ratio_degrees_v1(
+        (source_numerator + numerator_slope) as f64,
+        denominator as f64,
+    )
+    .expect("the projective small-angle endpoint is finite");
+    let mut entries = hinges
+        .iter()
+        .copied()
+        .map(|edge| {
+            let active = active_hinges.contains(&edge);
+            CycleScheduleEntryRequestV1 {
+                edge,
+                u_domain: [
+                    RationalCoefficientRequestV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientRequestV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                // Active collinear cuts use P(u)=1+u, Q(u)=64. Both
+                // endpoints are reconstructed by the same deterministic
+                // half-angle evaluator as the live pose. Every other hinge
+                // is the exact constant P(u)=0, Q(u)=1 schedule.
+                numerator_power_coefficients: if active {
+                    vec![
+                        RationalCoefficientRequestV1 {
+                            numerator: source_numerator,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: numerator_slope,
+                            denominator: 1,
+                        },
+                    ]
+                } else {
+                    vec![RationalCoefficientRequestV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    }]
+                },
+                denominator_power_coefficients: vec![RationalCoefficientRequestV1 {
+                    numerator: if active { denominator } else { 1 },
+                    denominator: 1,
+                }],
+                requested_angle_degrees: if active { requested_angle_degrees } else { 0.0 },
+            }
+        })
+        .collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+    CycleScheduleRequestV1 {
+        version: 1,
+        entries,
+        endpoint_denominator: None,
+    }
+}
+
+fn bounded_multi_block_projective_active_source_angle_v1() -> f64 {
+    ori_kinematics::deterministic_half_angle_ratio_degrees_v1(1.0, 64.0)
+        .expect("the projective small-angle source is finite")
+}
+
 #[test]
-fn four_block_strip_current_cycle_fails_closed_without_a_token() {
+fn four_and_five_block_opposite_bifolds_preview_apply_and_reopen_history() {
+    let _generation_guard = lock_stacked_fold_read_generation_test();
+    for block_count in [4, 5] {
+        assert_opposite_bifold_lifecycle_v1(block_count);
+    }
+}
+
+fn assert_opposite_bifold_lifecycle_v1(block_count: usize) {
+    let (pattern, paper, moving) = match block_count {
+        4 => super::four_bay_cycle_test_support::four_bay_opposite_bifold_pattern(),
+        5 => super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern(),
+        _ => unreachable!(),
+    };
+    assert_eq!(moving.len(), block_count * 2);
+    assert!(paper.thickness_mm > 0.0);
+    let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+    let topology = project
+        .editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let document = topology
+        .simulation_snapshot()
+        .expect("bounded opposite-bifold topology");
+    assert_eq!(document.faces.len(), block_count * 5 + 1);
+    assert_eq!(document.hinge_adjacency.len(), block_count * 6);
+    let hinges = document
+        .hinge_adjacency
+        .iter()
+        .map(|hinge| hinge.edge)
+        .collect::<Vec<_>>();
+    let fixed_face = document
+        .faces
+        .iter()
+        .max_by_key(|face| face.outer.half_edges.len())
+        .expect("the exterior articulation face")
+        .id;
+    super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+        &mut project,
+        hinges.clone(),
+        fixed_face,
+    );
+    let layer_state = GlobalFlatFoldabilityState::default();
+    super::super::global_flat_foldability::tests::install_possible_layer_order(
+        &layer_state,
+        &project,
+    );
+    let instance = project.instance_id;
+    let project_id = project.project_id;
+    let revision = project.editor.revision();
+    let schedule_request = dense_grid_schedule(&hinges, &moving, 100);
+    let app_state = AppState::new(project);
+    let transactions =
+        super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+    let preview = propose_current_cycle_pose_inner_with_layers(
+        None,
+        &app_state,
+        Some(&layer_state),
+        &transactions,
+        CurrentCyclePosePreviewRequestV1 {
+            progress_request_id: None,
+            expected_project_instance_id: instance,
+            expected_project_id: project_id,
+            expected_revision: revision,
+            cycle_schedule_v1: schedule_request,
+        },
+    )
+    .expect("four/five separated radial-bifold blocks certify");
+    assert_eq!(preview.source_revision, revision);
+    assert_eq!(preview.target_revision, revision + 1);
+    assert!(preview.continuous_path_certified);
+    assert_eq!(
+        preview.continuous_layer_transport_model_id,
+        Some(ori_collision::COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_MODEL_ID_V1)
+    );
+    assert!(preview.continuous_layer_transition_count > 0);
+    assert_eq!(
+        preview.continuous_layer_pair_order_count,
+        preview.source_layer_order.len()
+    );
+    assert_eq!(preview.source_layer_order, preview.target_layer_order);
+    assert!(!preview.authorizes_project_mutation);
+    assert_eq!(
+        transactions.pending_token_for_test_v1(),
+        Some(preview.transaction_token)
+    );
+    let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+        &app_state,
+        &layer_state,
+        &transactions,
+        preview.transaction_token,
+    )
+    .expect("bounded positive-thickness preview applies atomically");
+    assert!(
+        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &app_state,
+            &layer_state,
+            &transactions,
+            preview.transaction_token,
+        )
+        .is_err(),
+        "a consumed bounded multi-block preview is one-shot",
+    );
+
+    let mut project = super::super::lock_project(&app_state)
+        .unwrap_or_else(|_| panic!("project after {block_count}-block Apply"));
+    assert_eq!(applied, revision + 1);
+    assert_eq!(project.editor.revision(), applied);
+    assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+    assert!(
+        project.editor.instruction_timeline().steps[0]
+            .visual
+            .path_certificate_reference_v1
+            .is_none()
+    );
+    assert!(
+        project.editor.instruction_timeline().steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .is_some()
+    );
+    project
+        .editor
+        .undo(applied)
+        .unwrap_or_else(|_| panic!("undo {block_count}-block Apply"));
+    assert!(project.editor.instruction_timeline().steps.is_empty());
+    let undone = project.editor.revision();
+    project
+        .editor
+        .redo(undone)
+        .unwrap_or_else(|_| panic!("redo {block_count}-block Apply"));
+    assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+    assert!(
+        project.editor.instruction_timeline().steps[0]
+            .visual
+            .path_certificate_reference_v1
+            .is_none()
+    );
+    assert!(
+        project.editor.instruction_timeline().steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .is_some()
+    );
+    {
+        let timeline = project.editor.instruction_timeline();
+        let attestation = project
+            .trusted_path_certificates
+            .export_attestation_v1(project.instance_id, project.project_id, timeline)
+            .unwrap_or_else(|_| {
+                panic!("live {block_count}-block registry remains internally consistent")
+            })
+            .unwrap_or_else(|| {
+                panic!("real {block_count}-block certificate attests the target timeline step")
+            });
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology
+            .simulation_snapshot()
+            .unwrap_or_else(|| panic!("applied {block_count}-block topology remains exportable"));
+        let model = project.editor.fold_model_fingerprint_v1();
+        let mut one_ulp_tampered = timeline.clone();
+        let tampered_angle = one_ulp_tampered.steps[1]
+            .pose
+            .hinge_angles
+            .iter_mut()
+            .find(|angle| angle.angle_degrees != 0.0)
+            .unwrap_or_else(|| panic!("{block_count}-block target has one moving hinge"));
+        tampered_angle.angle_degrees =
+            f64::from_bits(tampered_angle.angle_degrees.to_bits().wrapping_add(1));
+        for format in [
+            ori_formats::InstructionExportFormat::Pdf17,
+            ori_formats::InstructionExportFormat::SvgPageZip,
+        ] {
+            assert!(matches!(
+                ori_formats::export_instruction_document(
+                    format,
+                    &project.name,
+                    &model,
+                    project.editor.pattern(),
+                    project.editor.paper(),
+                    timeline,
+                    snapshot,
+                ),
+                Err(ori_formats::InstructionExportError::InvalidPathCertificateReference { .. })
+            ));
+            let artifact =
+                ori_formats::export_instruction_document_with_path_certificate_attestation_v1(
+                    format,
+                    &project.name,
+                    &model,
+                    project.editor.pattern(),
+                    project.editor.paper(),
+                    timeline,
+                    snapshot,
+                    &attestation,
+                )
+                .unwrap_or_else(|_| {
+                    panic!("the attested closed {block_count}-block graph renders natively")
+                });
+            assert_eq!(artifact.format, format);
+            assert_eq!(artifact.step_count, 2);
+            assert!(artifact.page_count >= artifact.step_count);
+            assert!(!artifact.bytes.is_empty());
+            assert!(matches!(
+                ori_formats::export_instruction_document_with_path_certificate_attestation_v1(
+                    format,
+                    &project.name,
+                    &model,
+                    project.editor.pattern(),
+                    project.editor.paper(),
+                    &one_ulp_tampered,
+                    snapshot,
+                    &attestation,
+                ),
+                Err(ori_formats::InstructionExportError::InvalidPathCertificateReference { .. })
+            ), "one-ULP endpoint drift cannot reuse the exact native path attestation");
+        }
+    }
+    let archive = project
+        .project_archive()
+        .unwrap_or_else(|_| panic!("archive the redone {block_count}-block Apply"));
+    drop(project);
+
+    let mut reopened = super::super::ProjectState::from_project_archive(
+        archive,
+        std::path::PathBuf::from(format!("{block_count}-block-opposite-bifold.ori2")),
+    )
+    .unwrap_or_else(|_| panic!("reopen the {block_count}-block archive"));
+    assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
+    assert!(
+        reopened.editor.instruction_timeline().steps[0]
+            .visual
+            .path_certificate_reference_v1
+            .is_none()
+    );
+    assert!(
+        reopened.editor.instruction_timeline().steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .is_some()
+    );
+    assert!(
+        reopened
+            .applied_pose_authority
+            .capture_capability(&reopened)
+            .expect("reopened pose authority")
+            .is_some()
+    );
+    let reopened_revision = reopened.editor.revision();
+    reopened
+        .editor
+        .undo(reopened_revision)
+        .expect("undo after reopen");
+    assert!(reopened.editor.instruction_timeline().steps.is_empty());
+    let reopened_undone = reopened.editor.revision();
+    reopened
+        .editor
+        .redo(reopened_undone)
+        .expect("redo after reopen");
+    assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
+    assert!(
+        reopened.editor.instruction_timeline().steps[0]
+            .visual
+            .path_certificate_reference_v1
+            .is_none()
+    );
+    assert!(
+        reopened.editor.instruction_timeline().steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .is_some()
+    );
+
+    let project = super::super::lock_project(&app_state)
+        .unwrap_or_else(|_| panic!("project after {block_count}-block lifecycle"));
+    assert!(project.editor.revision() > applied);
+    assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+}
+
+#[test]
+fn five_block_radial_bifold_tamper_fails_closed_without_transaction() {
+    let _generation_guard = lock_stacked_fold_read_generation_test();
+    let (pattern, paper, moving) =
+        super::four_bay_cycle_test_support::five_bay_opposite_bifold_pattern();
+    let first_center = pattern
+        .edges
+        .iter()
+        .find(|edge| edge.id == moving[0])
+        .expect("first genuine active radial hinge")
+        .start;
+    let adjacent_nonopposite = pattern
+        .edges
+        .iter()
+        .find(|edge| edge.start == first_center && !moving.contains(&edge.id))
+        .expect("adjacent non-opposite radial hinge")
+        .id;
+    let mut tampered_moving = moving.clone();
+    tampered_moving[1] = adjacent_nonopposite;
+
+    let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+    let topology = project
+        .editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let document = topology
+        .simulation_snapshot()
+        .expect("five-block opposite-bifold topology");
+    assert_eq!(
+        (document.faces.len(), document.hinge_adjacency.len()),
+        (26, 30)
+    );
+    let hinges = document
+        .hinge_adjacency
+        .iter()
+        .map(|hinge| hinge.edge)
+        .collect::<Vec<_>>();
+    let fixed_face = document
+        .faces
+        .iter()
+        .max_by_key(|face| face.outer.half_edges.len())
+        .expect("five-block exterior articulation face")
+        .id;
+    super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+        &mut project,
+        hinges.clone(),
+        fixed_face,
+    );
+    let layer_state = GlobalFlatFoldabilityState::default();
+    super::super::global_flat_foldability::tests::install_possible_layer_order(
+        &layer_state,
+        &project,
+    );
+    let instance = project.instance_id;
+    let project_id = project.project_id;
+    let revision = project.editor.revision();
+    let app_state = AppState::new(project);
+    let transactions =
+        super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+    assert!(
+        propose_current_cycle_pose_inner_with_layers(
+            None,
+            &app_state,
+            Some(&layer_state),
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: dense_grid_schedule(&hinges, &tampered_moving, 100),
+            },
+        )
+        .is_err(),
+        "a non-opposite active pair must not impersonate a radial bifold",
+    );
+    assert_eq!(transactions.pending_token_for_test_v1(), None);
+    let project = super::super::lock_project(&app_state)
+        .expect("project after five-block radial-bifold rejection");
+    assert_eq!(project.editor.revision(), revision);
+    assert!(project.editor.instruction_timeline().steps.is_empty());
+}
+
+#[test]
+fn six_block_strip_remains_outside_bounded_multi_block_current_cycle_authority() {
     let _generation_guard = lock_stacked_fold_read_generation_test();
     let namespace = ProjectId::new();
-    let (pattern, paper, hinges) = common_articulation_strip_fixture_v1(5);
-    assert_eq!(hinges.len(), 4);
+    let (pattern, paper, hinges) = common_articulation_strip_fixture_v1(7);
+    assert_eq!(hinges.len(), 6);
     let document = analyze_faces(FaceExtractionInput {
         identity_namespace: namespace,
         source_revision: 1,
@@ -11,16 +447,17 @@ fn four_block_strip_current_cycle_fails_closed_without_a_token() {
         pattern: &pattern,
     })
     .snapshot
-    .expect("four-block strip topology");
-    assert_eq!(document.faces.len(), 5);
-    assert_eq!(document.hinge_adjacency.len(), 4);
+    .expect("six-block strip topology");
+    assert_eq!(document.faces.len(), 7);
+    assert_eq!(document.hinge_adjacency.len(), 6);
 
     let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
     project.project_id = namespace;
-    super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+    super::super::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
         &mut project,
         hinges.clone(),
         document.faces[0].id,
+        bounded_multi_block_projective_active_source_angle_v1(),
     );
     let layer_state = GlobalFlatFoldabilityState::default();
     super::super::global_flat_foldability::tests::install_possible_layer_order(
@@ -43,14 +480,14 @@ fn four_block_strip_current_cycle_fails_closed_without_a_token() {
             expected_project_instance_id: instance,
             expected_project_id: project_id,
             expected_revision: revision,
-            cycle_schedule_v1: dense_grid_schedule(&hinges, &hinges, 64),
+            cycle_schedule_v1: bounded_multi_block_projective_unfold_schedule_v1(&hinges, &hinges),
         },
     )
-    .expect_err("four canonical blocks remain outside the exact-three production boundary");
+    .expect_err("six canonical blocks remain outside the exact 3..=5 production boundary");
     assert_eq!(error, CYCLE_PATH_UNCERTIFIED_MESSAGE);
     assert_eq!(transactions.pending_token_for_test_v1(), None);
     let project =
-        super::super::lock_project(&app_state).expect("project after four-block rejection");
+        super::super::lock_project(&app_state).expect("project after six-block rejection");
     assert_eq!(project.editor.revision(), revision);
     assert!(project.editor.instruction_timeline().steps.is_empty());
 }

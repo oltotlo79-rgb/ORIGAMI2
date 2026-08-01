@@ -82,6 +82,10 @@ pub fn three_three_by_three_miura_blocks_with_document() -> ThreeMiuraBlocksWith
     )
 }
 
+#[allow(
+    dead_code,
+    reason = "the shared fixture module is included by test targets with different case subsets"
+)]
 pub fn miura_block_chain_with_document(block_count: usize) -> MiuraPatternFixture {
     assert!((3..=8).contains(&block_count));
     let namespace = ProjectId::new();

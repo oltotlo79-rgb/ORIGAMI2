@@ -17,9 +17,17 @@ export const GLOBAL_FLAT_FOLDABILITY_PANEL_TEXT = Object.freeze({
   start: localized('判定を開始', 'Start check'),
   cancelRequested: localized('中止（要求済み）', 'Cancel requested'),
   cancel: localized('判定を中止', 'Cancel check'),
+  layerLoading: localized(
+    'この終端判定結果が表示中の間だけ層順模式図を読み込んでいます…',
+    'Loading the layer schematic only while this terminal result remains current…',
+  ),
+  layerEmpty: localized(
+    'この終端判定結果の模式図には重なりセルがありません。',
+    'This terminal-result schematic contains no overlap cells.',
+  ),
   layerUnavailable: localized(
-    '認証済みの層順序表示を取得できませんでした。この状態を「重なりなし」と解釈しないでください。',
-    'The certified layer-order view is unavailable. Do not interpret this as having no overlaps.',
+    'この終端判定結果の表示中に層順模式図を取得できませんでした。この状態を「重なりなし」と解釈しないでください。',
+    'The layer schematic requested for this terminal result is unavailable. Do not interpret this as having no overlaps.',
   ),
   limitationsLabel: localized(
     '判定結果の重要な制約',

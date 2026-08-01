@@ -60,8 +60,10 @@ pub use instruction_export::{
     InstructionExportError, InstructionExportFormat, InstructionExportLimits,
     InstructionExportWarning, MAX_INSTRUCTION_EXPORT_BYTES, MAX_INSTRUCTION_EXPORT_GLYPHS,
     MAX_INSTRUCTION_EXPORT_PAGE_BYTES, MAX_INSTRUCTION_EXPORT_PAGES,
-    MAX_INSTRUCTION_EXPORT_TITLE_CHARS, export_instruction_document,
-    export_instruction_document_with_limits,
+    MAX_INSTRUCTION_EXPORT_TITLE_CHARS, PathCertificateExportAttestationV1,
+    export_instruction_document, export_instruction_document_with_limits,
+    export_instruction_document_with_limits_and_path_certificate_attestation_v1,
+    export_instruction_document_with_path_certificate_attestation_v1,
 };
 pub use mesh_animation_export::{
     INDEXED_TRIANGLE_MESH_ANIMATION_SCHEMA_VERSION_V1, IndexedTriangleMeshAnimationV1,

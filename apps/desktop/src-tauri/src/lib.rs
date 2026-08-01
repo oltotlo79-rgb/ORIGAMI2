@@ -34,6 +34,7 @@ mod mesh_animation_export;
 mod mesh_export;
 mod native_pose_worker_gate;
 mod numeric_expression;
+mod path_certificate_registry;
 mod pattern_edit_commands;
 mod project_folder_io;
 mod project_lifecycle_commands;
@@ -458,6 +459,7 @@ struct ProjectState {
     /// `project -> pose -> layer order`. It is never persisted.
     applied_pose_authority: CurrentAppliedPoseAuthority,
     current_layer_evidence: Option<stacked_fold_transaction::CurrentLayerEvidence>,
+    trusted_path_certificates: path_certificate_registry::TrustedPathCertificateRegistryV1,
     numeric_expressions: ProjectNumericExpressions,
     texture_assets: Vec<ori_formats::ProjectTextureAssetV1>,
     reference_model_assets: Vec<ori_formats::ProjectReferenceModelAssetV1>,
@@ -483,6 +485,7 @@ impl ProjectState {
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             current_layer_evidence: None,
+            trusted_path_certificates: Default::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets: Vec::new(),
             reference_model_assets: Vec::new(),
@@ -510,6 +513,7 @@ impl ProjectState {
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             current_layer_evidence: None,
+            trusted_path_certificates: Default::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets: Vec::new(),
             reference_model_assets: Vec::new(),
@@ -557,6 +561,7 @@ impl ProjectState {
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             current_layer_evidence: None,
+            trusted_path_certificates: Default::default(),
             numeric_expressions,
             texture_assets,
             reference_model_assets,
@@ -613,6 +618,7 @@ impl ProjectState {
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             current_layer_evidence: None,
+            trusted_path_certificates: Default::default(),
             numeric_expressions: document.numeric_expressions,
             texture_assets,
             reference_model_assets,
@@ -661,6 +667,7 @@ impl ProjectState {
             saved_revision: None,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             current_layer_evidence: None,
+            trusted_path_certificates: Default::default(),
             numeric_expressions: document.numeric_expressions,
             texture_assets,
             reference_model_assets,
@@ -4752,6 +4759,14 @@ fn finish_topology_response(
 }
 
 fn snapshot(project: &ProjectState) -> ProjectSnapshot {
+    let mut instruction_timeline = project.editor.instruction_timeline().clone();
+    project
+        .trusted_path_certificates
+        .downgrade_untrusted_references_v1(
+            project.instance_id,
+            project.project_id,
+            &mut instruction_timeline,
+        );
     ProjectSnapshot {
         project_instance_id: project.instance_id,
         project_id: project.project_id,
@@ -4767,7 +4782,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         is_dirty: project.is_dirty(),
         paper: project.editor.paper().clone(),
         crease_pattern: project.editor.pattern().clone(),
-        instruction_timeline: project.editor.instruction_timeline().clone(),
+        instruction_timeline,
         numeric_expressions: project.numeric_expressions.clone(),
         geometric_constraints: project.editor.geometric_constraints().clone(),
         project_layers: project.editor.project_layers().clone(),

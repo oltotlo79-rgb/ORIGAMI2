@@ -445,6 +445,7 @@ impl MaterialTreeDyadicFaceIntervalRegistryV1 {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterialHingeGraphGeometry {
     issuer: Arc<()>,
+    fold_model_fingerprint_v1: Option<[u8; 32]>,
     face_ids: Vec<FaceId>,
     hinges: Vec<TreeHinge>,
     positions: HashMap<VertexId, Point3>,
@@ -854,6 +855,7 @@ impl MaterialHingeGraphGeometry {
         let face_set = face_ids.iter().copied().collect::<HashSet<_>>();
         Self {
             issuer: Arc::new(()),
+            fold_model_fingerprint_v1: self.fold_model_fingerprint_v1,
             face_ids,
             hinges,
             positions: self.positions.clone(),
@@ -870,6 +872,7 @@ impl MaterialHingeGraphGeometry {
     pub(crate) fn new_for_test(face_ids: Vec<FaceId>, hinges: Vec<TreeHinge>) -> Self {
         Self {
             issuer: Arc::new(()),
+            fold_model_fingerprint_v1: None,
             face_ids,
             hinges,
             positions: HashMap::new(),
@@ -898,6 +901,9 @@ impl MaterialHingeGraphGeometry {
         let prepared = prepare_material_graph(pattern, paper, topology, &positions, limits)?;
         Ok(Self {
             issuer: Arc::new(()),
+            fold_model_fingerprint_v1: Some(
+                ori_foldability::fold_model_fingerprint_v1(pattern, paper).0,
+            ),
             face_ids: prepared.face_ids,
             hinges: prepared.hinges,
             positions: prepared.positions,
@@ -908,6 +914,14 @@ impl MaterialHingeGraphGeometry {
     #[must_use]
     pub fn face_ids(&self) -> &[FaceId] {
         &self.face_ids
+    }
+
+    /// Canonical fold-model identity retained only by geometry prepared from
+    /// an exact crease pattern and paper. Synthetic test geometry returns
+    /// `None` and cannot mint a model-bound path certificate.
+    #[must_use]
+    pub const fn fold_model_fingerprint_v1(&self) -> Option<[u8; 32]> {
+        self.fold_model_fingerprint_v1
     }
 
     #[must_use]
@@ -3124,6 +3138,12 @@ mod tests {
             points,
             &mut SimpleBoundaryValidationBudget::production(),
         )
+    }
+
+    #[test]
+    fn synthetic_graph_geometry_has_no_fold_model_binding_v1() {
+        let geometry = MaterialHingeGraphGeometry::new_for_test(Vec::new(), Vec::new());
+        assert_eq!(geometry.fold_model_fingerprint_v1(), None);
     }
 
     fn interval_test_angles_v1(edges: [EdgeId; 2], values: [f64; 2]) -> CanonicalHingeAngles {

@@ -3,15 +3,23 @@
 //! This module is observation-only. Its result never authorizes project
 //! mutation: an oracle must independently certify every admitted transition.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
-use ori_domain::FaceId;
+use ori_domain::{
+    FaceId, MAX_PATH_CERTIFICATE_REFERENCE_TRANSITIONS_V1, PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1,
+    PathCertificateReferenceV1,
+};
 use ori_kinematics::{
-    DyadicMaterialHingeIntervalClosureCertificateV1, GeneratedMultiHingePathCandidateV1,
-    MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+    CanonicalHingeAngles, DyadicMaterialHingeIntervalClosureCertificateV1,
+    GeneratedMultiHingePathCandidateV1, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+    MaterialTreeKinematicsModel, MaterialTreePose,
 };
 use sha2::{Digest, Sha256};
 
+use crate::block_composition::{
+    CommonArticulationContinuousLayerPathAuthorityV1,
+    CommonArticulationContinuousLayerPathRevalidationInputV1,
+};
 use crate::continuous_path::diagnose_scheduled_cycle_path_v1;
 
 pub const CERTIFIED_PATH_GRAPH_MODEL_ID_V1: &str = "bounded_certified_pose_graph_path_v1";
@@ -33,27 +41,50 @@ pub struct CertifiedPathTransitionCandidateV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Opaque evidence issued only after an `ori-collision` native oracle has
+/// revalidated the exact transition endpoints.
+///
+/// External crates cannot manufacture evidence from detached digests:
+///
+/// ```compile_fail
+/// use ori_collision::CertifiedPathTransitionEvidenceV1;
+/// let _ = CertifiedPathTransitionEvidenceV1::from_native_oracle(
+///     [1; 32], [2; 32], [3; 32], [4; 32], [5; 32], None, None,
+/// );
+/// ```
 pub struct CertifiedPathTransitionEvidenceV1 {
     source: PoseFingerprintV1,
     target: PoseFingerprintV1,
     schedule_certificate: [u8; 32],
     collision_certificate: [u8; 32],
     closure_certificate: [u8; 32],
+    issuer_seal: CertifiedPathTransitionIssuerSealV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CertifiedPathTransitionIssuerSealV1 {
+    NativeGraph {
+        fixed_face: Option<FaceId>,
+        fold_model_fingerprint_v1: Option<[u8; 32]>,
+    },
+    InstructionBoundNative {
+        fixed_face: FaceId,
+        source_model_binding_sha256: [u8; 32],
+    },
+    #[cfg(feature = "private-petal-e2e")]
+    UntrustedPrivatePetalE2eFixture,
 }
 
 impl CertifiedPathTransitionEvidenceV1 {
-    /// Creates the detached evidence returned by a native edge oracle.
-    ///
-    /// Construction alone is not authority. The graph certificate remains
-    /// read-only and records exactly which three edge certificates the oracle
-    /// bound to the source and target.
     #[must_use]
-    pub const fn from_native_oracle(
+    pub(crate) const fn from_native_oracle(
         source: PoseFingerprintV1,
         target: PoseFingerprintV1,
         schedule_certificate: [u8; 32],
         collision_certificate: [u8; 32],
         closure_certificate: [u8; 32],
+        fixed_face: Option<FaceId>,
+        fold_model_fingerprint_v1: Option<[u8; 32]>,
     ) -> Self {
         Self {
             source,
@@ -61,6 +92,32 @@ impl CertifiedPathTransitionEvidenceV1 {
             schedule_certificate,
             collision_certificate,
             closure_certificate,
+            issuer_seal: CertifiedPathTransitionIssuerSealV1::NativeGraph {
+                fixed_face,
+                fold_model_fingerprint_v1,
+            },
+        }
+    }
+
+    const fn from_instruction_bound_native_oracle(
+        source: PoseFingerprintV1,
+        target: PoseFingerprintV1,
+        schedule_certificate: [u8; 32],
+        collision_certificate: [u8; 32],
+        closure_certificate: [u8; 32],
+        fixed_face: FaceId,
+        source_model_binding_sha256: [u8; 32],
+    ) -> Self {
+        Self {
+            source,
+            target,
+            schedule_certificate,
+            collision_certificate,
+            closure_certificate,
+            issuer_seal: CertifiedPathTransitionIssuerSealV1::InstructionBoundNative {
+                fixed_face,
+                source_model_binding_sha256,
+            },
         }
     }
 
@@ -86,6 +143,30 @@ impl CertifiedPathTransitionEvidenceV1 {
     }
 }
 
+/// Untrusted fixture boundary for cross-crate private-petal integration tests.
+/// Cargo features are not a trust boundary: any external caller may enable
+/// this function, so its private seal is always non-native and both registry
+/// registration and export attestation reject every certificate containing it.
+#[cfg(feature = "private-petal-e2e")]
+#[doc(hidden)]
+#[must_use]
+pub const fn private_petal_e2e_transition_fixture_v1(
+    source: PoseFingerprintV1,
+    target: PoseFingerprintV1,
+    schedule_certificate: [u8; 32],
+    collision_certificate: [u8; 32],
+    closure_certificate: [u8; 32],
+) -> CertifiedPathTransitionEvidenceV1 {
+    CertifiedPathTransitionEvidenceV1 {
+        source,
+        target,
+        schedule_certificate,
+        collision_certificate,
+        closure_certificate,
+        issuer_seal: CertifiedPathTransitionIssuerSealV1::UntrustedPrivatePetalE2eFixture,
+    }
+}
+
 /// Adapts the existing schedule, full-domain closure and bounded CCD oracles
 /// into one graph edge. Any missing or mismatched certificate rejects the
 /// edge; an unresolved CCD result is never interpreted as collision-free.
@@ -98,10 +179,10 @@ pub fn certify_scheduled_cycle_transition_v1(
     candidate: &GeneratedMultiHingePathCandidateV1,
     closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
     interval_count: usize,
-    source: PoseFingerprintV1,
-    target: PoseFingerprintV1,
 ) -> Option<CertifiedPathTransitionEvidenceV1> {
     let schedule = candidate.schedule();
+    let schedule_source = schedule.evaluate(0.0)?;
+    let schedule_target = schedule.evaluate(1.0)?;
     if closure.fixed_face() != fixed_face
         || !closure.every_leaf_covers_graph_v1(geometry)
         || closure.schedule_binding_fingerprint_v2()
@@ -109,6 +190,11 @@ pub fn certify_scheduled_cycle_transition_v1(
         || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
         || !schedule.matches_binding(geometry, audit, fixed_face)
     {
+        return None;
+    }
+    let source = canonical_pose_fingerprint_v1(&schedule_source);
+    let target = canonical_pose_fingerprint_v1(&schedule_target);
+    if source == target {
         return None;
     }
     let collision = diagnose_scheduled_cycle_path_v1(
@@ -144,6 +230,61 @@ pub fn certify_scheduled_cycle_transition_v1(
         schedule_certificate,
         collision_certificate,
         closure_certificate,
+        Some(fixed_face),
+        geometry.fold_model_fingerprint_v1(),
+    ))
+}
+
+/// Adapts exact full-domain closure and positive-thickness Tree certificates
+/// into a scheduled graph edge. The endpoints are derived inside this crate
+/// from the revalidated schedule; callers cannot bind the native proof to
+/// arbitrary fingerprints.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn certify_positive_thickness_tree_scheduled_transition_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    candidate: &GeneratedMultiHingePathCandidateV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+    target: &CanonicalHingeAngles,
+    paper_thickness_mm: f64,
+    positive: &crate::PositiveThicknessTreeContinuousCertificateV1,
+) -> Option<CertifiedPathTransitionEvidenceV1> {
+    let schedule = candidate.schedule();
+    let schedule_source = schedule.evaluate(0.0)?;
+    let schedule_target = schedule.evaluate(1.0)?;
+    if closure.fixed_face() != fixed_face
+        || !closure.every_leaf_covers_graph_v1(geometry)
+        || closure.schedule_binding_fingerprint_v2()
+            != schedule.certificate_binding_fingerprint_v2()
+        || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
+        || source_pose.fixed_face() != Some(fixed_face)
+        || !schedule.matches_binding(geometry, audit, fixed_face)
+        || !bit_exact_pose_angles_match_v1(&schedule_source, source_pose)
+        || !bit_exact_canonical_angles_match_v1(&schedule_target, target)
+        || !positive.is_for(model, source_pose, target, paper_thickness_mm)
+    {
+        return None;
+    }
+    let source = canonical_pose_fingerprint_v1(&schedule_source);
+    let target = canonical_pose_fingerprint_v1(&schedule_target);
+    if source == target {
+        return None;
+    }
+    let schedule_certificate = schedule.certificate_binding_fingerprint_v2();
+    let collision_certificate = positive.binding_fingerprint_v1();
+    let closure_certificate = closure.partition_binding_fingerprint_v2();
+    Some(CertifiedPathTransitionEvidenceV1::from_native_oracle(
+        source,
+        target,
+        schedule_certificate,
+        collision_certificate,
+        closure_certificate,
+        Some(fixed_face),
+        geometry.fold_model_fingerprint_v1(),
     ))
 }
 
@@ -187,15 +328,33 @@ impl CertifiedPoseGraphPathCertificateV1 {
     pub fn edges(&self) -> &[CertifiedPathTransitionEvidenceV1] {
         &self.edges
     }
+    /// Fallibly copies this bounded certificate without using an unchecked
+    /// `Vec` clone at a fail-closed registry boundary.
+    #[must_use]
+    pub fn try_clone_v1(&self) -> Option<Self> {
+        let mut edges = Vec::new();
+        edges.try_reserve_exact(self.edges.len()).ok()?;
+        edges.extend_from_slice(&self.edges);
+        Some(Self {
+            source: self.source,
+            target: self.target,
+            edges,
+            explored_state_count: self.explored_state_count,
+            evaluated_transition_count: self.evaluated_transition_count,
+        })
+    }
     /// Derives a non-authorizing single-transition view for compilers that
     /// verify an ordered multi-segment motion one transition at a time.
     #[must_use]
     pub fn segment_certificate_v1(&self, index: usize) -> Option<Self> {
         let edge = *self.edges.get(index)?;
+        let mut edges = Vec::new();
+        edges.try_reserve_exact(1).ok()?;
+        edges.push(edge);
         Some(Self {
             source: edge.source(),
             target: edge.target(),
-            edges: vec![edge],
+            edges,
             explored_state_count: self.explored_state_count,
             evaluated_transition_count: self.evaluated_transition_count,
         })
@@ -213,6 +372,94 @@ impl CertifiedPoseGraphPathCertificateV1 {
         false
     }
 
+    /// Returns whether every edge came from a production native issuer. Test
+    /// fixtures deliberately return `false` and cannot cross an export or
+    /// registry trust boundary.
+    #[must_use]
+    pub fn is_native_attestable_v1(&self) -> bool {
+        match self.edges.first().map(|edge| edge.issuer_seal) {
+            Some(CertifiedPathTransitionIssuerSealV1::NativeGraph {
+                fixed_face: Some(fixed_face),
+                fold_model_fingerprint_v1: Some(fold_model_fingerprint_v1),
+            }) => self.edges.iter().all(|edge| {
+                matches!(
+                    edge.issuer_seal,
+                    CertifiedPathTransitionIssuerSealV1::NativeGraph {
+                        fixed_face: Some(edge_fixed_face),
+                        fold_model_fingerprint_v1: Some(edge_fold_model),
+                    } if edge_fixed_face == fixed_face
+                        && edge_fold_model == fold_model_fingerprint_v1
+                )
+            }),
+            Some(CertifiedPathTransitionIssuerSealV1::InstructionBoundNative {
+                fixed_face,
+                source_model_binding_sha256,
+            }) => self.edges.iter().all(|edge| {
+                matches!(
+                    edge.issuer_seal,
+                    CertifiedPathTransitionIssuerSealV1::InstructionBoundNative {
+                        fixed_face: edge_fixed_face,
+                        source_model_binding_sha256: edge_model_binding,
+                    } if edge_fixed_face == fixed_face
+                        && edge_model_binding == source_model_binding_sha256
+                )
+            }),
+            _ => false,
+        }
+    }
+
+    /// Fixed material face retained by every native issuer edge. Mixed,
+    /// unbound, and test-fixture paths return `None`.
+    #[must_use]
+    pub fn native_fixed_face_v1(&self) -> Option<FaceId> {
+        if !self.is_native_attestable_v1() {
+            return None;
+        }
+        match self.edges.first()?.issuer_seal {
+            CertifiedPathTransitionIssuerSealV1::NativeGraph {
+                fixed_face: Some(fixed_face),
+                ..
+            } => Some(fixed_face),
+            CertifiedPathTransitionIssuerSealV1::NativeGraph {
+                fixed_face: None, ..
+            } => None,
+            CertifiedPathTransitionIssuerSealV1::InstructionBoundNative { fixed_face, .. } => {
+                Some(fixed_face)
+            }
+            #[cfg(feature = "private-petal-e2e")]
+            CertifiedPathTransitionIssuerSealV1::UntrustedPrivatePetalE2eFixture => None,
+        }
+    }
+
+    /// Returns the exact source-model binding only when every native edge was
+    /// issued by the instruction-domain adapter for the same model. Raw graph
+    /// certificates deliberately return `None`.
+    #[must_use]
+    pub fn native_source_model_binding_v1(&self) -> Option<[u8; 32]> {
+        if !self.is_native_attestable_v1() {
+            return None;
+        }
+        let CertifiedPathTransitionIssuerSealV1::InstructionBoundNative {
+            source_model_binding_sha256,
+            ..
+        } = self.edges.first()?.issuer_seal
+        else {
+            return None;
+        };
+        self.edges
+            .iter()
+            .all(|edge| {
+                matches!(
+                    edge.issuer_seal,
+                    CertifiedPathTransitionIssuerSealV1::InstructionBoundNative {
+                        source_model_binding_sha256: edge_binding,
+                        ..
+                    } if edge_binding == source_model_binding_sha256
+                )
+            })
+            .then_some(source_model_binding_sha256)
+    }
+
     /// Canonical digest binding every endpoint, transition proof and search count.
     #[must_use]
     pub fn binding_fingerprint_v1(&self) -> [u8; 32] {
@@ -227,11 +474,337 @@ impl CertifiedPoseGraphPathCertificateV1 {
             hash.update(edge.schedule_certificate());
             hash.update(edge.collision_certificate());
             hash.update(edge.closure_certificate());
+            match edge.issuer_seal {
+                CertifiedPathTransitionIssuerSealV1::NativeGraph {
+                    fixed_face,
+                    fold_model_fingerprint_v1,
+                } => {
+                    hash.update([1]);
+                    match fixed_face {
+                        Some(fixed_face) => {
+                            hash.update([1]);
+                            hash.update(fixed_face.canonical_bytes());
+                        }
+                        None => hash.update([0]),
+                    }
+                    match fold_model_fingerprint_v1 {
+                        Some(fold_model_fingerprint_v1) => {
+                            hash.update([1]);
+                            hash.update(fold_model_fingerprint_v1);
+                        }
+                        None => hash.update([0]),
+                    }
+                }
+                CertifiedPathTransitionIssuerSealV1::InstructionBoundNative {
+                    fixed_face,
+                    source_model_binding_sha256,
+                } => {
+                    hash.update([2]);
+                    hash.update(fixed_face.canonical_bytes());
+                    hash.update(source_model_binding_sha256);
+                }
+                #[cfg(feature = "private-petal-e2e")]
+                CertifiedPathTransitionIssuerSealV1::UntrustedPrivatePetalE2eFixture => {
+                    hash.update([0]);
+                }
+            }
         }
         hash.update((self.explored_state_count as u64).to_be_bytes());
         hash.update((self.evaluated_transition_count as u64).to_be_bytes());
         hash.finalize().into()
     }
+
+    /// Matches a persisted non-authorizing DTO to this exact native
+    /// certificate. Segment endpoint references may retain the whole-path
+    /// transition count and binding, so an exact edge endpoint is accepted in
+    /// addition to the whole path endpoints.
+    #[must_use]
+    pub fn matches_path_certificate_reference_v1(
+        &self,
+        reference: &PathCertificateReferenceV1,
+    ) -> bool {
+        reference.version == 1
+            && reference.model_id == PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1
+            && !self.edges.is_empty()
+            && self.edges.len() <= MAX_PATH_CERTIFICATE_REFERENCE_TRANSITIONS_V1
+            && !self.authorizes_project_mutation()
+            && self.binding_fingerprint_v1() == reference.binding_sha256
+            && self.edges.len() == reference.transition_count
+            && ((self.source == reference.source_pose_sha256
+                && self.target == reference.target_pose_sha256)
+                || self.edges.iter().any(|edge| {
+                    edge.source() == reference.source_pose_sha256
+                        && edge.target() == reference.target_pose_sha256
+                }))
+    }
+}
+
+/// Adapts an exactly revalidated common-articulation path authority into one
+/// native pose-graph transition for instruction persistence.
+///
+/// The retained authority is revalidated against every live premise before an
+/// edge is issued. The schedule endpoints must also match the current closed
+/// pose and requested target bit-for-bit. The resulting graph certificate is
+/// observation-only and never authorizes project mutation.
+#[must_use]
+pub fn issue_common_articulation_single_transition_path_v1(
+    authority: &CommonArticulationContinuousLayerPathAuthorityV1,
+    input: CommonArticulationContinuousLayerPathRevalidationInputV1<'_>,
+) -> Option<CertifiedPoseGraphPathCertificateV1> {
+    let source_angles = input.schedule.evaluate(0.0)?;
+    let target_angles = input.schedule.evaluate(1.0)?;
+    if !bit_exact_canonical_angles_match_v1(&source_angles, input.pose.hinge_angles())
+        || !bit_exact_target_angles_match_v1(&target_angles, input.target_angles)
+        || authority.revalidate_v1(input).is_err()
+    {
+        return None;
+    }
+
+    let source = canonical_pose_fingerprint_v1(&source_angles);
+    let target = canonical_pose_fingerprint_v1(&target_angles);
+    if source == target {
+        return None;
+    }
+    let schedule_certificate = input.schedule.certificate_binding_fingerprint_v2();
+    let authority_certificate = authority.binding_fingerprint_v1();
+    let partition_certificate = input.closure.partition_binding_fingerprint_v2();
+    let closure_certificate = hash_certificate_binding(
+        b"common_articulation_single_transition_closure_certificate_v1",
+        &[
+            &schedule_certificate,
+            &partition_certificate,
+            &authority_certificate,
+        ],
+    );
+    let evidence = CertifiedPathTransitionEvidenceV1::from_native_oracle(
+        source,
+        target,
+        schedule_certificate,
+        authority_certificate,
+        closure_certificate,
+        Some(input.pose.fixed_face()),
+        input.geometry.fold_model_fingerprint_v1(),
+    );
+    let candidate = CertifiedPathTransitionCandidateV1 {
+        source,
+        target,
+        candidate_key: authority_certificate,
+    };
+    match search_certified_pose_graph_v1(&[source, target], &[candidate], source, target, |_| {
+        Some(evidence)
+    }) {
+        CertifiedPathGraphSearchResultV1::Certified(path) => Some(path),
+        CertifiedPathGraphSearchResultV1::Indeterminate { .. } => None,
+    }
+}
+
+fn bit_exact_canonical_angles_match_v1(
+    expected: &CanonicalHingeAngles,
+    actual: &CanonicalHingeAngles,
+) -> bool {
+    expected.as_slice().len() == actual.as_slice().len()
+        && expected
+            .as_slice()
+            .iter()
+            .zip(actual.as_slice())
+            .all(|(expected, actual)| {
+                expected.edge() == actual.edge()
+                    && expected.angle_degrees().to_bits() == actual.angle_degrees().to_bits()
+            })
+}
+
+fn bit_exact_pose_angles_match_v1(
+    expected: &CanonicalHingeAngles,
+    actual: &MaterialTreePose,
+) -> bool {
+    expected.as_slice().len() == actual.hinge_angles().len()
+        && expected
+            .as_slice()
+            .iter()
+            .zip(actual.hinge_angles())
+            .all(|(expected, actual)| {
+                expected.edge() == actual.edge()
+                    && expected.angle_degrees().to_bits() == actual.angle_degrees().to_bits()
+            })
+}
+
+fn bit_exact_target_angles_match_v1(
+    expected: &CanonicalHingeAngles,
+    actual: &[(ori_domain::EdgeId, f64)],
+) -> bool {
+    if expected.as_slice().len() != actual.len() {
+        return false;
+    }
+    let mut canonical = Vec::new();
+    if canonical.try_reserve_exact(actual.len()).is_err() {
+        return false;
+    }
+    canonical.extend_from_slice(actual);
+    canonical.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+    canonical
+        .iter()
+        .zip(expected.as_slice())
+        .all(|((edge, angle), expected)| {
+            *edge == expected.edge() && angle.to_bits() == expected.angle_degrees().to_bits()
+        })
+}
+
+fn canonical_pose_fingerprint_v1(angles: &CanonicalHingeAngles) -> PoseFingerprintV1 {
+    let mut hash = Sha256::new();
+    hash.update(b"stacked_fold_certified_path_graph_state_v1");
+    hash.update((angles.as_slice().len() as u64).to_be_bytes());
+    for angle in angles.as_slice() {
+        hash.update(angle.edge().canonical_bytes());
+        hash.update(angle.angle_degrees().to_bits().to_be_bytes());
+    }
+    hash.finalize().into()
+}
+
+/// Rebinds one already native-issued graph transition to the exact persisted
+/// instruction-pose fingerprint domain. The physical endpoints must match the
+/// native graph certificate bit-for-bit, so this adapter cannot manufacture a
+/// transition for unrelated angles, model text, or a different fixed face.
+#[must_use]
+pub fn issue_instruction_bound_single_transition_path_v1(
+    native: &CertifiedPoseGraphPathCertificateV1,
+    source_model_fingerprint: &str,
+    fixed_face: FaceId,
+    source_angles: &CanonicalHingeAngles,
+    target_angles: &CanonicalHingeAngles,
+) -> Option<CertifiedPoseGraphPathCertificateV1> {
+    issue_instruction_bound_path_v1(
+        native,
+        source_model_fingerprint,
+        fixed_face,
+        &[source_angles, target_angles],
+    )
+}
+
+/// Rebinds every edge of one raw native graph path to an exact ordered series
+/// of persisted instruction poses. The ordered state count must be exactly one
+/// greater than the edge count, and every raw graph endpoint is rechecked
+/// before an instruction-domain edge is issued.
+#[must_use]
+pub fn issue_instruction_bound_path_v1(
+    native: &CertifiedPoseGraphPathCertificateV1,
+    source_model_fingerprint: &str,
+    fixed_face: FaceId,
+    ordered_states: &[&CanonicalHingeAngles],
+) -> Option<CertifiedPoseGraphPathCertificateV1> {
+    if source_model_fingerprint.len() != 64
+        || !source_model_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let fold_model_fingerprint_v1 = decode_lower_hex_32_v1(source_model_fingerprint)?;
+    if !native.is_native_attestable_v1()
+        || native.edges.len().checked_add(1)? != ordered_states.len()
+        || native.edges.iter().any(|edge| {
+            !matches!(
+                edge.issuer_seal,
+                CertifiedPathTransitionIssuerSealV1::NativeGraph {
+                    fixed_face: Some(edge_fixed_face),
+                    fold_model_fingerprint_v1: Some(edge_fold_model),
+                } if edge_fixed_face == fixed_face
+                    && edge_fold_model == fold_model_fingerprint_v1
+            )
+        })
+    {
+        return None;
+    }
+    let native_binding = native.binding_fingerprint_v1();
+    let mut source_model_binding = Sha256::new();
+    source_model_binding.update(b"path_certificate_source_model_binding_v1");
+    source_model_binding.update(source_model_fingerprint.as_bytes());
+    let source_model_binding_sha256 = source_model_binding.finalize().into();
+    let mut edges = Vec::new();
+    edges.try_reserve_exact(native.edges.len()).ok()?;
+    for (index, (native_edge, state_pair)) in native
+        .edges
+        .iter()
+        .copied()
+        .zip(ordered_states.windows(2))
+        .enumerate()
+    {
+        let [source_angles, target_angles] = state_pair else {
+            return None;
+        };
+        if native_edge.source() != canonical_pose_fingerprint_v1(source_angles)
+            || native_edge.target() != canonical_pose_fingerprint_v1(target_angles)
+        {
+            return None;
+        }
+        let source =
+            instruction_pose_fingerprint_v1(source_model_fingerprint, fixed_face, source_angles);
+        let target =
+            instruction_pose_fingerprint_v1(source_model_fingerprint, fixed_face, target_angles);
+        if source == target {
+            return None;
+        }
+        let closure_certificate = hash_certificate_binding(
+            b"instruction_bound_native_transition_v2",
+            &[
+                &native_binding,
+                &(index as u64).to_be_bytes(),
+                source_model_fingerprint.as_bytes(),
+                &fixed_face.canonical_bytes(),
+            ],
+        );
+        edges.push(
+            CertifiedPathTransitionEvidenceV1::from_instruction_bound_native_oracle(
+                source,
+                target,
+                native_edge.schedule_certificate,
+                native_edge.collision_certificate,
+                closure_certificate,
+                fixed_face,
+                source_model_binding_sha256,
+            ),
+        );
+    }
+    let source = edges.first()?.source();
+    let target = edges.last()?.target();
+    Some(CertifiedPoseGraphPathCertificateV1 {
+        source,
+        target,
+        edges,
+        explored_state_count: native.explored_state_count,
+        evaluated_transition_count: native.evaluated_transition_count,
+    })
+}
+
+fn decode_lower_hex_32_v1(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 {
+        return None;
+    }
+    let mut decoded = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        decoded[index] = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+    }
+    Some(decoded)
+}
+
+fn instruction_pose_fingerprint_v1(
+    source_model_fingerprint: &str,
+    fixed_face: FaceId,
+    angles: &CanonicalHingeAngles,
+) -> PoseFingerprintV1 {
+    let mut hash = Sha256::new();
+    hash.update(b"origami2_instruction_pose_fingerprint_v1");
+    hash.update(source_model_fingerprint.as_bytes());
+    hash.update(fixed_face.canonical_bytes());
+    for angle in angles.as_slice() {
+        hash.update(angle.edge().canonical_bytes());
+        hash.update(angle.angle_degrees().to_bits().to_be_bytes());
+    }
+    hash.finalize().into()
 }
 
 /// Native issuer for a private three-stage petal transaction. Each input must
@@ -240,8 +813,17 @@ impl CertifiedPoseGraphPathCertificateV1 {
 pub fn issue_private_three_segment_path_v1(
     segments: [CertifiedPoseGraphPathCertificateV1; 3],
 ) -> Option<CertifiedPoseGraphPathCertificateV1> {
-    if segments.iter().any(|segment| segment.edges.len() != 1)
-        || segments[0].target != segments[1].source
+    let fixed_face = segments[0].native_fixed_face_v1()?;
+    let issuer_seal = segments[0].edges.first()?.issuer_seal;
+    if segments.iter().any(|segment| {
+        segment.edges.len() != 1
+            || !segment.is_native_attestable_v1()
+            || segment.native_fixed_face_v1() != Some(fixed_face)
+            || segment
+                .edges
+                .first()
+                .is_none_or(|edge| edge.issuer_seal != issuer_seal)
+    }) || segments[0].target != segments[1].source
         || segments[1].target != segments[2].source
     {
         return None;
@@ -252,13 +834,17 @@ pub fn issue_private_three_segment_path_v1(
     let evaluated_transition_count = segments.iter().try_fold(0usize, |sum, segment| {
         sum.checked_add(segment.evaluated_transition_count)
     })?;
+    let source = segments[0].source;
+    let target = segments[2].target;
+    let mut edges = Vec::new();
+    edges.try_reserve_exact(3).ok()?;
+    for segment in segments {
+        edges.push(segment.edges.into_iter().next()?);
+    }
     Some(CertifiedPoseGraphPathCertificateV1 {
-        source: segments[0].source,
-        target: segments[2].target,
-        edges: segments
-            .into_iter()
-            .flat_map(|segment| segment.edges)
-            .collect(),
+        source,
+        target,
+        edges,
         explored_state_count,
         evaluated_transition_count,
     })
@@ -292,9 +878,11 @@ pub struct CertifiedPathGraphProgressV1 {
     pub transition_limit: usize,
 }
 
-/// Runs canonical breadth-first search over at most 32 states and 64 candidate
-/// transitions. The oracle is called once per reachable canonical candidate;
-/// only exact source/target-bound evidence is admitted.
+/// Runs canonical breadth-first search within
+/// [`MAX_CERTIFIED_PATH_GRAPH_STATES_V1`] states and
+/// [`MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1`] candidate transitions. The
+/// oracle is called once per reachable canonical candidate; only exact
+/// source/target-bound evidence is admitted.
 pub fn search_certified_pose_graph_v1(
     states: &[PoseFingerprintV1],
     transitions: &[CertifiedPathTransitionCandidateV1],
@@ -368,7 +956,11 @@ pub fn search_certified_pose_graph_with_progress_v1(
     {
         return indeterminate(CertifiedPathGraphIndeterminateReasonV1::ResourceLimit, 0, 0);
     }
-    let mut canonical_states = states.to_vec();
+    let mut canonical_states = Vec::new();
+    if canonical_states.try_reserve_exact(states.len()).is_err() {
+        return indeterminate(CertifiedPathGraphIndeterminateReasonV1::ResourceLimit, 0, 0);
+    }
+    canonical_states.extend_from_slice(states);
     canonical_states.sort_unstable();
     canonical_states.dedup();
     if canonical_states.len() != states.len()
@@ -391,20 +983,51 @@ pub fn search_certified_pose_graph_with_progress_v1(
         });
     }
 
-    let mut canonical_transitions = transitions.to_vec();
+    let mut canonical_transitions = Vec::new();
+    if canonical_transitions
+        .try_reserve_exact(transitions.len())
+        .is_err()
+    {
+        return indeterminate(CertifiedPathGraphIndeterminateReasonV1::ResourceLimit, 0, 0);
+    }
+    canonical_transitions.extend_from_slice(transitions);
     canonical_transitions
         .sort_unstable_by_key(|edge| (edge.source, edge.target, edge.candidate_key));
     canonical_transitions.dedup();
-    let adjacency = canonical_transition_adjacency_v1(&canonical_transitions);
-    let mut queue = VecDeque::from([source]);
-    let mut parents =
-        BTreeMap::<PoseFingerprintV1, (PoseFingerprintV1, CertifiedPathTransitionEvidenceV1)>::new(
+    let Ok(source_index) = canonical_states.binary_search(&source) else {
+        return indeterminate(
+            CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+            0,
+            0,
         );
-    let mut visited = BTreeMap::from([(source, ())]);
+    };
+    let Ok(target_index) = canonical_states.binary_search(&target) else {
+        return indeterminate(
+            CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+            0,
+            0,
+        );
+    };
+    let mut queue = VecDeque::new();
+    if queue.try_reserve_exact(canonical_states.len()).is_err() {
+        return indeterminate(CertifiedPathGraphIndeterminateReasonV1::ResourceLimit, 0, 0);
+    }
+    queue.push_back(source_index);
+    let mut parents = Vec::new();
+    if parents.try_reserve_exact(canonical_states.len()).is_err() {
+        return indeterminate(CertifiedPathGraphIndeterminateReasonV1::ResourceLimit, 0, 0);
+    }
+    parents.resize(canonical_states.len(), None);
+    let mut visited = Vec::new();
+    if visited.try_reserve_exact(canonical_states.len()).is_err() {
+        return indeterminate(CertifiedPathGraphIndeterminateReasonV1::ResourceLimit, 0, 0);
+    }
+    visited.resize(canonical_states.len(), false);
+    visited[source_index] = true;
     let mut evaluated = 0usize;
     let mut explored = 0usize;
 
-    while let Some(current) = queue.pop_front() {
+    while let Some(current_index) = queue.pop_front() {
         if !checkpoint() {
             return indeterminate(
                 CertifiedPathGraphIndeterminateReasonV1::Cancelled,
@@ -414,11 +1037,9 @@ pub fn search_certified_pose_graph_with_progress_v1(
         }
         explored += 1;
         publish_progress(&mut progress, explored, evaluated);
-        for candidate in adjacency
-            .get(&current)
-            .into_iter()
-            .flat_map(|range| &canonical_transitions[range.clone()])
-        {
+        let current = canonical_states[current_index];
+        let range = canonical_transition_range_v1(&canonical_transitions, current);
+        for candidate in &canonical_transitions[range] {
             if !checkpoint() {
                 return indeterminate(
                     CertifiedPathGraphIndeterminateReasonV1::Cancelled,
@@ -426,9 +1047,10 @@ pub fn search_certified_pose_graph_with_progress_v1(
                     evaluated,
                 );
             }
-            if canonical_states.binary_search(&candidate.target).is_err() {
+            let Ok(candidate_target_index) = canonical_states.binary_search(&candidate.target)
+            else {
                 continue;
-            }
+            };
             evaluated += 1;
             publish_progress(&mut progress, explored, evaluated);
             let Some(evidence) = oracle(candidate) else {
@@ -437,16 +1059,23 @@ pub fn search_certified_pose_graph_with_progress_v1(
             if evidence.source != candidate.source || evidence.target != candidate.target {
                 continue;
             }
-            if visited.contains_key(&candidate.target) {
+            if visited[candidate_target_index] {
                 continue;
             }
-            visited.insert(candidate.target, ());
-            parents.insert(candidate.target, (current, evidence));
-            if candidate.target == target {
+            visited[candidate_target_index] = true;
+            parents[candidate_target_index] = Some((current_index, evidence));
+            if candidate_target_index == target_index {
                 let mut edges = Vec::new();
-                let mut cursor = target;
-                while cursor != source {
-                    let Some((parent, edge)) = parents.get(&cursor).copied() else {
+                if edges.try_reserve_exact(canonical_states.len()).is_err() {
+                    return indeterminate(
+                        CertifiedPathGraphIndeterminateReasonV1::ResourceLimit,
+                        explored,
+                        evaluated,
+                    );
+                }
+                let mut cursor_index = target_index;
+                while cursor_index != source_index {
+                    let Some((parent_index, edge)) = parents[cursor_index] else {
                         return indeterminate(
                             CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
                             explored,
@@ -454,7 +1083,7 @@ pub fn search_certified_pose_graph_with_progress_v1(
                         );
                     };
                     edges.push(edge);
-                    cursor = parent;
+                    cursor_index = parent_index;
                 }
                 edges.reverse();
                 if !checkpoint() {
@@ -474,7 +1103,7 @@ pub fn search_certified_pose_graph_with_progress_v1(
                     },
                 );
             }
-            queue.push_back(candidate.target);
+            queue.push_back(candidate_target_index);
         }
     }
     indeterminate(
@@ -484,19 +1113,26 @@ pub fn search_certified_pose_graph_with_progress_v1(
     )
 }
 
+fn canonical_transition_range_v1(
+    transitions: &[CertifiedPathTransitionCandidateV1],
+    source: PoseFingerprintV1,
+) -> std::ops::Range<usize> {
+    let start = transitions.partition_point(|transition| transition.source < source);
+    let end = transitions.partition_point(|transition| transition.source <= source);
+    start..end
+}
+
+#[cfg(test)]
 fn canonical_transition_adjacency_v1(
     transitions: &[CertifiedPathTransitionCandidateV1],
-) -> BTreeMap<PoseFingerprintV1, std::ops::Range<usize>> {
-    let mut adjacency = BTreeMap::new();
+) -> std::collections::BTreeMap<PoseFingerprintV1, std::ops::Range<usize>> {
+    let mut adjacency = std::collections::BTreeMap::new();
     let mut start = 0;
     while start < transitions.len() {
         let source = transitions[start].source;
-        let mut end = start + 1;
-        while end < transitions.len() && transitions[end].source == source {
-            end += 1;
-        }
-        adjacency.insert(source, start..end);
-        start = end;
+        let range = canonical_transition_range_v1(transitions, source);
+        start = range.end;
+        adjacency.insert(source, range);
     }
     adjacency
 }
@@ -547,32 +1183,240 @@ mod tests {
             fingerprint(10),
             fingerprint(11),
             fingerprint(12),
+            None,
+            None,
         )
+    }
+
+    #[test]
+    fn common_articulation_adapter_endpoint_matching_is_canonical_and_bit_exact() {
+        let mut edges = [EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let expected = CanonicalHingeAngles::new(vec![
+            HingeAngle::new(edges[0], 0.0).unwrap(),
+            HingeAngle::new(edges[1], 45.0).unwrap(),
+        ])
+        .unwrap();
+        let reversed = vec![(edges[1], 45.0), (edges[0], 0.0)];
+        assert!(bit_exact_target_angles_match_v1(&expected, &reversed));
+        assert!(bit_exact_canonical_angles_match_v1(&expected, &expected));
+
+        let mut one_bit = reversed.clone();
+        one_bit[0].1 = f64::from_bits(one_bit[0].1.to_bits() ^ 1);
+        assert!(!bit_exact_target_angles_match_v1(&expected, &one_bit));
+        assert!(!bit_exact_target_angles_match_v1(
+            &expected,
+            &[(edges[0], 0.0), (edges[0], 45.0)],
+        ));
+
+        let drifted = CanonicalHingeAngles::new(vec![
+            HingeAngle::new(edges[0], f64::from_bits(1)).unwrap(),
+            HingeAngle::new(edges[1], 45.0).unwrap(),
+        ])
+        .unwrap();
+        assert!(!bit_exact_canonical_angles_match_v1(&expected, &drifted));
+        assert_ne!(
+            canonical_pose_fingerprint_v1(&expected),
+            canonical_pose_fingerprint_v1(&drifted),
+        );
+    }
+
+    #[test]
+    fn instruction_adapter_requires_geometry_model_binding_for_every_multi_edge_state_v1() {
+        let fixed_face = FaceId::new();
+        let edge = EdgeId::new();
+        let state = |angle_degrees| {
+            CanonicalHingeAngles::new(vec![
+                HingeAngle::new(edge, angle_degrees).expect("finite test angle"),
+            ])
+            .expect("canonical test state")
+        };
+        let source_state = state(5.0);
+        let middle_state = state(25.0);
+        let target_state = state(45.0);
+        let graph_states = [
+            canonical_pose_fingerprint_v1(&source_state),
+            canonical_pose_fingerprint_v1(&middle_state),
+            canonical_pose_fingerprint_v1(&target_state),
+        ];
+        let fold_model_fingerprint_v1 = [0x77; 32];
+        let edge_evidence = |index: usize| {
+            CertifiedPathTransitionEvidenceV1::from_native_oracle(
+                graph_states[index],
+                graph_states[index + 1],
+                fingerprint(10 + index as u8),
+                fingerprint(20 + index as u8),
+                fingerprint(30 + index as u8),
+                Some(fixed_face),
+                Some(fold_model_fingerprint_v1),
+            )
+        };
+        let native = CertifiedPoseGraphPathCertificateV1 {
+            source: graph_states[0],
+            target: graph_states[2],
+            edges: vec![edge_evidence(0), edge_evidence(1)],
+            explored_state_count: 3,
+            evaluated_transition_count: 2,
+        };
+        assert!(native.is_native_attestable_v1());
+        assert_eq!(native.native_source_model_binding_v1(), None);
+        let model = "77".repeat(32);
+        let ordered_states = [&source_state, &middle_state, &target_state];
+        let bound = issue_instruction_bound_path_v1(&native, &model, fixed_face, &ordered_states)
+            .expect("the geometry-derived model and every exact state agree");
+        assert_eq!(bound.edges().len(), 2);
+        assert_eq!(
+            bound.source(),
+            instruction_pose_fingerprint_v1(&model, fixed_face, &source_state)
+        );
+        assert_eq!(
+            bound.target(),
+            instruction_pose_fingerprint_v1(&model, fixed_face, &target_state)
+        );
+        assert!(bound.native_source_model_binding_v1().is_some());
+
+        assert!(
+            issue_instruction_bound_path_v1(
+                &native,
+                &"88".repeat(32),
+                fixed_face,
+                &ordered_states,
+            )
+            .is_none(),
+            "caller-selected model text cannot relabel native geometry evidence"
+        );
+        assert!(
+            issue_instruction_bound_path_v1(
+                &native,
+                &model,
+                fixed_face,
+                &[&source_state, &target_state, &middle_state],
+            )
+            .is_none(),
+            "every multi-edge endpoint must match in exact order"
+        );
     }
 
     #[cfg(feature = "private-petal-e2e")]
     #[test]
     fn private_three_segment_issuer_accepts_only_contiguous_native_single_edges() {
-        let segment = |source: u8, target: u8| CertifiedPoseGraphPathCertificateV1 {
+        let fixed_face = FaceId::new();
+        let segment_with_model =
+            |source: u8,
+             target: u8,
+             issuer_fixed_face: FaceId,
+             fold_model_fingerprint_v1: [u8; 32]| {
+                let candidate = candidate(source, target, source);
+                CertifiedPoseGraphPathCertificateV1 {
+                    source: fingerprint(source),
+                    target: fingerprint(target),
+                    edges: vec![CertifiedPathTransitionEvidenceV1::from_native_oracle(
+                        candidate.source,
+                        candidate.target,
+                        fingerprint(10),
+                        fingerprint(11),
+                        fingerprint(12),
+                        Some(issuer_fixed_face),
+                        Some(fold_model_fingerprint_v1),
+                    )],
+                    explored_state_count: 2,
+                    evaluated_transition_count: 1,
+                }
+            };
+        let segment = |source: u8, target: u8, issuer_fixed_face: FaceId| {
+            segment_with_model(source, target, issuer_fixed_face, [0x77; 32])
+        };
+        let instruction_segment = |source: u8, target: u8| CertifiedPoseGraphPathCertificateV1 {
             source: fingerprint(source),
             target: fingerprint(target),
-            edges: vec![certify(&candidate(source, target, source))],
+            edges: vec![
+                CertifiedPathTransitionEvidenceV1::from_instruction_bound_native_oracle(
+                    fingerprint(source),
+                    fingerprint(target),
+                    fingerprint(10),
+                    fingerprint(11),
+                    fingerprint(12),
+                    fixed_face,
+                    [0x99; 32],
+                ),
+            ],
             explored_state_count: 2,
             evaluated_transition_count: 1,
         };
-        let parent =
-            issue_private_three_segment_path_v1([segment(1, 2), segment(2, 3), segment(3, 4)])
-                .unwrap();
+        let parent = issue_private_three_segment_path_v1([
+            segment(1, 2, fixed_face),
+            segment(2, 3, fixed_face),
+            segment(3, 4, fixed_face),
+        ])
+        .unwrap();
         assert_eq!(parent.edges().len(), 3);
         assert_eq!(parent.source(), fingerprint(1));
         assert_eq!(parent.target(), fingerprint(4));
         assert!(
-            issue_private_three_segment_path_v1([segment(2, 3), segment(1, 2), segment(3, 4),])
-                .is_none()
+            issue_private_three_segment_path_v1([
+                segment(2, 3, fixed_face),
+                segment(1, 2, fixed_face),
+                segment(3, 4, fixed_face),
+            ])
+            .is_none()
         );
         assert!(
-            issue_private_three_segment_path_v1([segment(1, 2), segment(2, 4), segment(3, 4),])
-                .is_none()
+            issue_private_three_segment_path_v1([
+                segment(1, 2, fixed_face),
+                segment(2, 4, fixed_face),
+                segment(3, 4, fixed_face),
+            ])
+            .is_none()
+        );
+        assert!(
+            issue_private_three_segment_path_v1([
+                segment(1, 2, fixed_face),
+                segment(2, 3, FaceId::new()),
+                segment(3, 4, fixed_face),
+            ])
+            .is_none(),
+            "mixed issuer fixed faces cannot form one native path"
+        );
+        assert!(
+            issue_private_three_segment_path_v1([
+                segment(1, 2, fixed_face),
+                segment_with_model(2, 3, fixed_face, [0x88; 32]),
+                segment(3, 4, fixed_face),
+            ])
+            .is_none(),
+            "mixed native fold-model bindings cannot form one private path"
+        );
+        assert!(
+            issue_private_three_segment_path_v1([
+                segment(1, 2, fixed_face),
+                instruction_segment(2, 3),
+                segment(3, 4, fixed_face),
+            ])
+            .is_none(),
+            "raw graph and instruction-bound seal kinds cannot be joined"
+        );
+        let untrusted_edge = private_petal_e2e_transition_fixture_v1(
+            fingerprint(2),
+            fingerprint(3),
+            fingerprint(10),
+            fingerprint(11),
+            fingerprint(12),
+        );
+        let untrusted_segment = CertifiedPoseGraphPathCertificateV1 {
+            source: fingerprint(2),
+            target: fingerprint(3),
+            edges: vec![untrusted_edge],
+            explored_state_count: 2,
+            evaluated_transition_count: 1,
+        };
+        assert!(
+            issue_private_three_segment_path_v1([
+                segment(1, 2, fixed_face),
+                untrusted_segment,
+                segment(3, 4, fixed_face),
+            ])
+            .is_none(),
+            "an untrusted feature fixture cannot enter the private native issuer"
         );
     }
 
@@ -716,6 +1560,28 @@ mod tests {
         }));
         let binding = certificate.binding_fingerprint_v1();
         assert_ne!(binding, [0; 32]);
+        let reference = PathCertificateReferenceV1 {
+            version: 1,
+            model_id: PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+            binding_sha256: binding,
+            source_pose_sha256: certificate.edges()[0].source(),
+            target_pose_sha256: certificate.edges()[0].target(),
+            source_model_binding_sha256: fingerprint(20),
+            transition_count: certificate.edges().len(),
+        };
+        assert!(certificate.matches_path_certificate_reference_v1(&reference));
+        let mut drifted = reference.clone();
+        drifted.binding_sha256[0] ^= 1;
+        assert!(!certificate.matches_path_certificate_reference_v1(&drifted));
+        drifted = reference.clone();
+        drifted.transition_count -= 1;
+        assert!(!certificate.matches_path_certificate_reference_v1(&drifted));
+        drifted = reference.clone();
+        drifted.source_pose_sha256[0] ^= 1;
+        assert!(!certificate.matches_path_certificate_reference_v1(&drifted));
+        drifted = reference.clone();
+        drifted.version = 2;
+        assert!(!certificate.matches_path_certificate_reference_v1(&drifted));
 
         let mut reversed = transitions;
         reversed.reverse();
@@ -752,6 +1618,8 @@ mod tests {
                         fingerprint(10),
                         fingerprint(11),
                         fingerprint(12),
+                        None,
+                        None,
                     )
                 })
             },

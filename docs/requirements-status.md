@@ -11,7 +11,9 @@
 
 EDT-009は一般11制約種の完全SAT/UNSAT決定、完全な一般矛盾原因、一般MUS探索をまだ提供しないため部分実装のままである。MUST集計は実装済み85 / 部分実装2 / 未着手0から変更しない。次期反映headのCI発効までは数式・幾何制約85%、全体81.96%（表示82.0%）を維持し、発効条件成立後だけ数式・幾何制約86%、全体82.29%（表示82.3%）を採用する。
 
-更新日: 2026-07-30
+正本表のEDT-009行にある24/24のfamily列挙は、行前半で先に示す`InconsistentLengthRatioGraphBetweenFixedLengths`を第1 familyとし、`DifferentFixedLengths`から`ParallelWithFixedNonParallelAngle`までの後続23 familyを合わせたものである。
+
+更新日: 2026-08-01
 
 現在の行単位集計は **実装済み85 / 部分実装2 / 未着手0**。
 
@@ -304,7 +306,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | SIM-007 | 実装済み | 3D紙面の表裏へ個別の色と組込み模様textureを反映し、設定変更時にscene resourceを安全に再生成・解放する |
 | SIM-008 | 実装済み | topology snapshotへ元紙ID付きの決定的material componentを追加し、境界間Cut、closed cut loop、紙内部または境界接続のopen/branched CutをDCEL walkから分類する。Faceは外周・時計回り穴・zero-area seamをversion互換表現で保持し、切断後の各pieceを同じsheet originへ束縛する。Cut incidenceは両岸faceを保持するがhinge adjacencyへ入れず、frontendは全face/component partition、穴・seam、面積を再検証し、穴を両面capと厚み壁へ反映して全pieceを静的3D表示する。切断禁止は従来どおり拒否する |
 | SIM-009 | 実装済み | nativeで10,000本の実edgeを生成・転送して2D Canvasへ表示し、空間索引による選択・snapと描画FPS/p95を計測できる。性能データ上で頂点drag（incident edge座標を一括更新）と線削除の基本編集を実行できる。10,000要素・faceのbroad-phase、snap、parallel/angle補助も専用回帰と資源上限で検証する |
-| SIM-010 | 部分実装 | 証明済みの単一hinge・厚さ0経路に加え、bounded dyadic 3/5/9 levelのgraph/cycle経路と、positive-thickness Treeの連続経路・shared-vertex layer transportをnative proofへ接続した。各transitionでschedule、closure、正厚連続性、層transport、source/target fingerprint、紙厚を再認証できる場合だけread-only previewをmintし、project instance/revision/fingerprint/generationへ結合した非直列化one-shot tokenと明示確認を経て、target pattern・paper・layers・完全hinge角timeline・applied poseを一つのeditor履歴entryへ原子的にApplyする。失敗、入力・選択・revision変更、取消、再入、stale/ABA、token再使用は無変更へ閉じ、Undo/Redo・再openでも一括履歴を維持する。17-face・二blockの保存済み適用後層順は日英のread-only viewerで確認できる。内部proofではbounded 2..=8 blockのcanonical face/hinge unionを同一live geometry、hinge一意性、block共有tree、親authorityへsealed再結合できるが、この完全被覆証拠単独ではApply・project mutation・viewerを認可しない。任意の一般姿勢・任意多hinge scheduleへ広げた正厚衝突、共有hinge admission、完全な連続経路/closure、一般複数層transport、一般三block以上・一般non-flat targetの専用層順viewerは未完成であり、証明を発行できないcaseはApplyを無効化するため部分実装とする |
+| SIM-010 | 部分実装 | 証明済みの単一hinge・厚さ0経路に加え、bounded dyadic 3/5/9 levelのgraph/cycle経路とpositive-thickness Treeの連続経路・shared-vertex layer transportをnative proofへ接続した。共通articulation cycleはproductionのarity・resource accounting・admissionを3..=5 blockへ拡張し、4/5 block分離radial-bifoldの21/26 material face、24/30 hinge、8/10 moving hingeという構造、局所平坦可折性、対向moving ray、および5-blockを含むpositive-thickness parentをfocused回帰で確認した。schedule、closure、正厚連続性、層transport、完全face/hinge union、source/target fingerprint、紙厚を再認証してpreview・one-shot token・原子的Applyへ進む実装も追加済みである。各bayを4 Mountain / 2 Valleyとし、5-blockではmoving pairをValleyとする最終採用fixtureで、4/5 blockのproduction Preview・明示Apply・one-shot token再利用拒否・一括Undo/Redo・archive保存・再open後のUndo/Redoまでのcombined lifecycleがexact PASSした。live registry attestation付きPDF 1.7/SVG ZIPは両形式で生成に成功し、attestationなしの同一timelineとtarget angleの1 ULP改変は両形式で拒否した。既存の17-face・二blockの保存済み適用後層順は日英の限定non-flat read-only viewerで確認でき、global Possible結果とflat target proposalは共有の日英XZ層順模式図で確認できる。閉じたgraphの証明付きtimelineは、production fixed-face seal、process-local live registry、source/target pose再照合を満たす場合だけPDF/SVGへ描画でき、feature test fixture、協調fixed-face差替え、archive単独の参照はexport authorityへ昇格しない。内部proofではbounded 2..=8 blockのcanonical face/hinge unionを同一live geometry、hinge一意性、block共有tree、親authorityへsealed再結合できるが、この完全被覆証拠単独ではApply・project mutation・viewerを認可しない。現行のbounded radial familyは既存hingeを動かすだけであり、現在の3D姿勢を横切る任意の新しい直線折りの指定と、重なる各層への対応crease line自動追加は未実装である。任意姿勢・任意multi-hinge scheduleへ広げた正厚衝突、共有hinge admission、完全な一般連続経路/closure、一般複数層transport、6 block以上または任意構成のmulti-block、一般non-flat targetの専用層順viewerも未完成であり、証明を発行できないcaseはApplyを無効化するため部分実装とする |
 
 ## 折り手順
 

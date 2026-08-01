@@ -136,11 +136,12 @@ jobs:
         run: npm run test:gltf-validator
       - name: Install headless Chromium for Khronos Sample Viewer
         run: npx --no-install playwright install --with-deps chromium
-      - name: Verify bounded general target and complete creature lifecycles in Chromium
-        run: |
-          npm run test:generic-target-browser
-          npm run test:complete-animal-browser
-          npm run test:complete-insect-browser
+      - name: Verify bounded general target lifecycle in Chromium
+        run: npm run test:generic-target-browser
+      - name: Verify complete animal lifecycle in Chromium
+        run: npm run test:complete-animal-browser
+      - name: Verify complete insect lifecycle in Chromium
+        run: npm run test:complete-insect-browser
       - name: Audit primary UI accessibility in Chromium
         id: accessibility-browser
         env:
@@ -500,7 +501,7 @@ jobs:
             echo "::error title=Rust tests failed::$failure_summary"
           fi
           exit "$test_status"
-      - name: Verify strict dyadic native lifecycle and unsupported-geometry no-op
+      - name: Verify strict dyadic native lifecycle, unsupported-geometry no-op, and unproven theta rejection
         shell: bash
         run: |
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read -- --exact --test-threads=1
@@ -520,9 +521,10 @@ jobs:
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::five_hinge_tree_level_three_proof_applies_and_persists_atomically -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::six_hinge_tree_level_three_proof_applies_and_persists_atomically -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::seven_hinge_generic_grid_proof_applies_and_persists_atomically -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::four_and_five_block_opposite_bifolds_preview_apply_and_reopen_history -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::coupled_cactus_previews_fail_closed_without_continuous_authority -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::theta_positive_thickness_preview_applies_and_round_trips_history -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::theta_positive_thickness_preview_fails_closed_without_continuous_authority -- --exact --test-threads=1
       - name: Verify all real named-technique compilers reach native exports
         shell: bash
         run: |

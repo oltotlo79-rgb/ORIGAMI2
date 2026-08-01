@@ -272,17 +272,28 @@ export const STACKED_FOLD_PANEL_TEXT = Object.freeze({
     '未証明のため適用は無効です。',
     'Apply is disabled because the case is not fully certified.',
   ),
-  text3dLayerOrderViewer: localized('3D層順ビューア', '3D layer-order viewer'),
-  overlapCellsAndLayerOrder: localized('重なりセルと層順', 'Overlap cells and layer order'),
-  readOnlyViewOfTheAuthenticatedCurrentPoseAndLayer: localized(
-    '認証済みの現在poseと層順を読み取り専用で表示します。',
-    'Read-only view of the authenticated current pose and layer order.',
+  flatResultLayerSchematic: localized(
+    '平坦判定セル層順模式図',
+    'Flat-result cell layer schematic',
+  ),
+  flatEndpointProposalLayerSchematic: localized(
+    '平坦終点提案セル層順模式図',
+    'Flat-endpoint proposal cell layer schematic',
+  ),
+  flatResultLayerSchematicDetail: localized(
+    'この終端判定結果がパネル入力である間に取得した重なりセルをXZ平面へ投影した非権威の模式図です。3D姿勢や各面の形状ではありません。',
+    'Non-authoritative XZ schematic of overlap cells requested while this terminal result remained the panel input. It is not a 3D pose or per-face geometry.',
+  ),
+  flatEndpointProposalLayerSchematicDetail: localized(
+    '適用前の平坦終点提案に含まれる重なりセルをXZ平面へ投影した模式図です。現在の3D姿勢や各面の形状ではありません。',
+    'XZ schematic of overlap cells in the unapplied flat-endpoint proposal. It is not the current 3D pose or per-face geometry.',
   ),
   cell: localized('セル', 'Cell'),
-  explodedFrontBackLayerStack: localized('front/back層の分解表示', 'Exploded front/back layer stack'),
   backBottom: localized('裏面 / 最下層', 'Back / bottom'),
   frontTop: localized('表面 / 最上層', 'Front / top'),
   middle: localized('中間層', 'Middle'),
+  onlyLayer: localized('唯一の層', 'Only layer'),
+  layer: localized('層', 'Layer'),
   face: localized('面', 'Face'),
   positiveThicknessContinuousPathCertificate: localized(
     '正厚の連続経路証明',

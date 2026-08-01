@@ -15,6 +15,8 @@ test('global flat-foldability panel catalog is exact and deeply frozen', () => {
     'start',
     'cancelRequested',
     'cancel',
+    'layerLoading',
+    'layerEmpty',
     'layerUnavailable',
     'limitationsLabel',
     'limitationsTitle',

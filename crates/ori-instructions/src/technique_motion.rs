@@ -8,7 +8,9 @@
 use ori_collision::CertifiedPoseGraphPathCertificateV1;
 use ori_domain::{
     EdgeId, FaceId, InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
-    InstructionStepId, InstructionTimeline, InstructionVisual, MIN_INSTRUCTION_DURATION_MS,
+    InstructionStepId, InstructionTimeline, InstructionVisual, MAX_INSTRUCTION_HINGE_RECORDS,
+    MAX_INSTRUCTION_HINGES_PER_STEP, MAX_INSTRUCTION_STEPS, MAX_INSTRUCTION_TITLE_CHARS,
+    MAX_PATH_CERTIFICATE_REFERENCE_TRANSITIONS_V1, MIN_INSTRUCTION_DURATION_MS,
     PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1, PathCertificateReferenceV1,
     validate_instruction_timeline,
 };
@@ -850,9 +852,41 @@ pub fn path_certificate_reference_from_native_v1(
     })
 }
 
-/// Atomically appends a certified dyadic pose-graph path to an instruction
-/// timeline. The caller installs the returned clone only after its project
-/// mutation succeeds, so every error leaves the original timeline untouched.
+fn source_model_binding_v1(source_model_fingerprint: &str) -> Option<[u8; 32]> {
+    if source_model_fingerprint.len() != 64
+        || !source_model_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"path_certificate_source_model_binding_v1");
+    hash.update(source_model_fingerprint.as_bytes());
+    Some(hash.finalize().into())
+}
+
+fn certificate_matches_instruction_scope_v1(
+    certificate: &CertifiedPoseGraphPathCertificateV1,
+    source_model_fingerprint: &str,
+    fixed_face: FaceId,
+) -> bool {
+    let Some(source_model_binding_sha256) = source_model_binding_v1(source_model_fingerprint)
+    else {
+        return false;
+    };
+    certificate.is_native_attestable_v1()
+        && certificate.native_fixed_face_v1() == Some(fixed_face)
+        && certificate.native_source_model_binding_v1() == Some(source_model_binding_sha256)
+}
+
+/// Atomically appends an instruction-bound native dyadic path to a timeline.
+///
+/// Raw graph-domain certificates and feature-enabled test fixtures are not
+/// accepted here. The native issuer must have rebound every endpoint to this
+/// exact source model, fixed face and ordered instruction pose. The caller
+/// installs the returned clone only after its project mutation succeeds, so
+/// every error leaves the original timeline untouched.
 pub fn append_certified_dyadic_path_timeline_v1(
     timeline: &InstructionTimeline,
     title: &str,
@@ -862,46 +896,101 @@ pub fn append_certified_dyadic_path_timeline_v1(
     target_hinge_angles: &[Vec<InstructionHingeAngle>],
     certificate: &CertifiedPoseGraphPathCertificateV1,
 ) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    validate_instruction_timeline(timeline).map_err(|_| ReverseFoldMotionError::InvalidTimeline)?;
     let reference =
         path_certificate_reference_from_native_v1(certificate, source_model_fingerprint)
             .ok_or(ReverseFoldMotionError::PathSegmentMismatch)?;
     if title.trim().is_empty()
+        || title.chars().count() > MAX_INSTRUCTION_TITLE_CHARS
+        || !certificate_matches_instruction_scope_v1(
+            certificate,
+            source_model_fingerprint,
+            fixed_face,
+        )
+        || reference.source_model_binding_sha256
+            != source_model_binding_v1(source_model_fingerprint)
+                .ok_or(ReverseFoldMotionError::PathSegmentMismatch)?
         || certificate.edges().len() != target_hinge_angles.len()
-        || graph_pose_fingerprint_v1(source_hinge_angles) != certificate.source()
+        || certificate.edges().len() > MAX_PATH_CERTIFICATE_REFERENCE_TRANSITIONS_V1
+        || source_hinge_angles.len() > MAX_INSTRUCTION_HINGES_PER_STEP
+        || target_hinge_angles
+            .iter()
+            .any(|angles| angles.len() > MAX_INSTRUCTION_HINGES_PER_STEP)
+        || instruction_pose_fingerprint_v1(
+            source_model_fingerprint,
+            fixed_face,
+            source_hinge_angles,
+        ) != certificate.source()
     {
         return Err(ReverseFoldMotionError::PathSegmentMismatch);
     }
     let mut previous = source_hinge_angles;
     for (edge, target) in certificate.edges().iter().zip(target_hinge_angles) {
-        if edge.source() != graph_pose_fingerprint_v1(previous)
-            || edge.target() != graph_pose_fingerprint_v1(target)
+        if edge.source()
+            != instruction_pose_fingerprint_v1(source_model_fingerprint, fixed_face, previous)
+            || edge.target()
+                != instruction_pose_fingerprint_v1(source_model_fingerprint, fixed_face, target)
         {
             return Err(ReverseFoldMotionError::PathSegmentMismatch);
         }
         previous = target;
     }
 
-    let mut candidate = timeline.clone();
-    candidate.steps.push(InstructionStep {
+    let appended_step_count = target_hinge_angles
+        .len()
+        .checked_add(1)
+        .ok_or(ReverseFoldMotionError::InvalidTimeline)?;
+    let final_step_count = timeline
+        .steps
+        .len()
+        .checked_add(appended_step_count)
+        .filter(|count| *count <= MAX_INSTRUCTION_STEPS)
+        .ok_or(ReverseFoldMotionError::InvalidTimeline)?;
+    let existing_hinge_records = timeline.steps.iter().try_fold(0usize, |total, step| {
+        total.checked_add(step.pose.hinge_angles.len())
+    });
+    let appended_hinge_records = target_hinge_angles
+        .iter()
+        .try_fold(source_hinge_angles.len(), |total, angles| {
+            total.checked_add(angles.len())
+        });
+    existing_hinge_records
+        .and_then(|existing| {
+            appended_hinge_records.and_then(|appended| existing.checked_add(appended))
+        })
+        .filter(|count| *count <= MAX_INSTRUCTION_HINGE_RECORDS)
+        .ok_or(ReverseFoldMotionError::InvalidTimeline)?;
+
+    let mut steps = Vec::new();
+    steps
+        .try_reserve_exact(final_step_count)
+        .map_err(|_| ReverseFoldMotionError::InvalidTimeline)?;
+    steps.extend(timeline.steps.iter().cloned());
+    steps.push(InstructionStep {
         id: InstructionStepId::new(),
         title: format!("「{title}」の開始姿勢 / Start pose"),
         description: "構造化証明の始点姿勢です。 / Start pose of the structured proof.".to_owned(),
         caution: String::new(),
         duration_ms: MIN_INSTRUCTION_DURATION_MS,
         visual: InstructionVisual::default(),
-        pose: pose_from_angles(source_model_fingerprint, fixed_face, source_hinge_angles),
+        pose: try_pose_from_angles(source_model_fingerprint, fixed_face, source_hinge_angles)
+            .ok_or(ReverseFoldMotionError::InvalidTimeline)?,
     });
-    let binding = reference
-        .binding_sha256
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let mut binding = String::new();
+    binding
+        .try_reserve_exact(reference.binding_sha256.len() * 2)
+        .map_err(|_| ReverseFoldMotionError::InvalidTimeline)?;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in reference.binding_sha256 {
+        binding.push(char::from(HEX[usize::from(byte >> 4)]));
+        binding.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
     for (index, target) in target_hinge_angles.iter().enumerate() {
         let edge = &certificate.edges()[index];
         let mut step_reference = reference.clone();
         step_reference.source_pose_sha256 = edge.source();
         step_reference.target_pose_sha256 = edge.target();
-        candidate.steps.push(InstructionStep {
+        steps.push(InstructionStep {
             id: InstructionStepId::new(),
             title: if index == 0 { title.to_owned() } else { format!("{title} {}", index + 1) },
             description: format!(
@@ -913,38 +1002,35 @@ pub fn append_certified_dyadic_path_timeline_v1(
                 path_certificate_reference_v1: Some(step_reference),
                 ..InstructionVisual::default()
             },
-            pose: pose_from_angles(source_model_fingerprint, fixed_face, target),
+            pose: try_pose_from_angles(source_model_fingerprint, fixed_face, target)
+                .ok_or(ReverseFoldMotionError::InvalidTimeline)?,
         });
     }
+    let candidate = InstructionTimeline { steps };
     validate_instruction_timeline(&candidate)
         .map_err(|_| ReverseFoldMotionError::InvalidTimeline)?;
     Ok(candidate)
 }
 
-fn pose_from_angles(
+fn try_pose_from_angles(
     model: &str,
     fixed_face: FaceId,
     angles: &[InstructionHingeAngle],
-) -> InstructionPose {
-    InstructionPose {
+) -> Option<InstructionPose> {
+    let mut source_model_fingerprint = String::new();
+    source_model_fingerprint
+        .try_reserve_exact(model.len())
+        .ok()?;
+    source_model_fingerprint.push_str(model);
+    let mut hinge_angles = Vec::new();
+    hinge_angles.try_reserve_exact(angles.len()).ok()?;
+    hinge_angles.extend_from_slice(angles);
+    Some(InstructionPose {
         model: InstructionPoseModel::AbsoluteHingeAnglesV1,
-        source_model_fingerprint: model.to_owned(),
+        source_model_fingerprint,
         fixed_face: Some(fixed_face),
-        hinge_angles: angles.to_vec(),
-    }
-}
-
-fn graph_pose_fingerprint_v1(angles: &[InstructionHingeAngle]) -> [u8; 32] {
-    let mut canonical = angles.to_vec();
-    canonical.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
-    let mut hash = Sha256::new();
-    hash.update(b"stacked_fold_certified_path_graph_state_v1");
-    hash.update((canonical.len() as u64).to_be_bytes());
-    for hinge in canonical {
-        hash.update(hinge.edge.canonical_bytes());
-        hash.update(hinge.angle_degrees.to_bits().to_be_bytes());
-    }
-    hash.finalize().into()
+        hinge_angles,
+    })
 }
 
 /// Compiles a validated named straight-line fold into a two-pose timeline.
@@ -1112,7 +1198,7 @@ pub fn instruction_pose_fingerprint_v1(
 mod tests {
     use ori_collision::{
         CertifiedPathGraphSearchResultV1, CertifiedPathTransitionCandidateV1,
-        CertifiedPathTransitionEvidenceV1, search_certified_pose_graph_v1,
+        private_petal_e2e_transition_fixture_v1, search_certified_pose_graph_v1,
     };
 
     use super::*;
@@ -1246,7 +1332,7 @@ mod tests {
             source,
             target,
             |edge| {
-                Some(CertifiedPathTransitionEvidenceV1::from_native_oracle(
+                Some(private_petal_e2e_transition_fixture_v1(
                     edge.source,
                     edge.target,
                     [1; 32],
@@ -1322,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn atomic_dyadic_timeline_append_is_proof_bearing_or_noop() {
+    fn atomic_dyadic_timeline_append_rejects_untrusted_fixture_as_noop() {
         let face = FaceId::new();
         let edge = EdgeId::new();
         let model = "5a".repeat(32);
@@ -1335,38 +1421,10 @@ mod tests {
             angle_degrees: 45.0,
         }];
         let certificate = certificate(
-            graph_pose_fingerprint_v1(&source),
-            graph_pose_fingerprint_v1(&target),
+            instruction_pose_fingerprint_v1(&model, face, &source),
+            instruction_pose_fingerprint_v1(&model, face, &target),
         );
         let original = InstructionTimeline::default();
-        let appended = append_certified_dyadic_path_timeline_v1(
-            &original,
-            "atomic dyadic fold",
-            &model,
-            face,
-            &source,
-            std::slice::from_ref(&target),
-            &certificate,
-        )
-        .expect("certified dyadic timeline");
-        assert!(original.steps.is_empty());
-        assert_eq!(appended.steps.len(), 2);
-        let persisted = appended.steps[1]
-            .visual
-            .path_certificate_reference_v1
-            .as_ref()
-            .expect("structured path reference");
-        assert_eq!(
-            persisted.binding_sha256,
-            certificate.binding_fingerprint_v1()
-        );
-        assert_eq!(persisted.source_pose_sha256, certificate.source());
-        assert_eq!(persisted.target_pose_sha256, certificate.target());
-
-        let tampered = vec![InstructionHingeAngle {
-            edge,
-            angle_degrees: 46.0,
-        }];
         assert_eq!(
             append_certified_dyadic_path_timeline_v1(
                 &original,
@@ -1374,7 +1432,7 @@ mod tests {
                 &model,
                 face,
                 &source,
-                &[tampered],
+                std::slice::from_ref(&target),
                 &certificate,
             ),
             Err(ReverseFoldMotionError::PathSegmentMismatch)

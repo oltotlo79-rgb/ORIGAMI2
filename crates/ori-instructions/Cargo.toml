@@ -20,4 +20,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+ori-collision = { path = "../ori-collision", features = ["private-petal-e2e"] }
 sha2 = "0.10.9"

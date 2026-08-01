@@ -24,7 +24,7 @@ const CURRENT_SEMANTIC_MUS_MODEL_ID
 const CURRENT_SEMANTIC_INVENTORY_HEADING
   = '## 2026-07-30 EDT-009 semantic MUS 現行正本訂正（v4・24/24）'
 const EDT_009_LIMITATION
-  = 'Semantic MUS v4 covers 24 wire variants in bounded shapes. Detached SAT handles one record via singleton construction and partitions 2..16 records by residual-referenced vertices. Size 2 may use pair templates; size 3+ requires bit-compatible singletons. Every component and whole document are recertified. Candidate exhaustion is unknown, never UNSAT. At 17+ detached SAT is skipped, but current-assignment and direct-conflict checks remain. Coordinates stay private; mutation is never authorized.'
+  = 'Semantic MUS v4 covers 24 variants in bounded shapes. Detached SAT handles one record via singleton construction and partitions 2..16 by residual-referenced vertices. A two-record component may use pair templates; a larger one requires bit-compatible singletons. Each component and the document are recertified. Exhaustion is unknown, never UNSAT. At 17+ detached SAT is skipped, but current-assignment and direct-conflict checks remain. Coordinates stay private; mutation is never authorized.'
 const EDT_009_MISSING_ACCEPTANCE
   = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, incompatible connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies.'
 

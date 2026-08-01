@@ -27,6 +27,7 @@ use super::super::{
         GlobalFlatFoldabilityState, lock_revalidated_current_layer_order_for_commit,
     },
     lock_project,
+    path_certificate_registry::TrustedPathCertificateRegistryV1,
 };
 use super::{
     CYCLE_PATH_RESOURCE_MESSAGE, CYCLE_PATH_UNCERTIFIED_MESSAGE, CycleScheduleRequestV1,
@@ -371,34 +372,44 @@ pub(super) fn apply_dyadic_pose_path_preview_inner_v1(
     )
     .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let source_model_fingerprint = project.editor.fold_model_fingerprint_v1();
-    let source_angles = pose
-        .hinge_angles()
-        .as_slice()
-        .iter()
-        .map(|angle| InstructionHingeAngle {
-            edge: angle.edge(),
-            angle_degrees: angle.angle_degrees(),
-        })
-        .collect::<Vec<_>>();
-    let transition_targets = authority
-        .edges
-        .iter()
-        .map(|edge| {
+    let mut transition_target_angles = Vec::new();
+    transition_target_angles
+        .try_reserve_exact(authority.edges.len())
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    for edge in &authority.edges {
+        transition_target_angles.push(
             edge.schedule
                 .evaluate(1.0)
-                .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
-                .map(|angles| {
-                    angles
-                        .as_slice()
-                        .iter()
-                        .map(|angle| InstructionHingeAngle {
-                            edge: angle.edge(),
-                            angle_degrees: angle.angle_degrees(),
-                        })
-                        .collect::<Vec<_>>()
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+                .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
+        );
+    }
+    let mut ordered_states = Vec::new();
+    ordered_states
+        .try_reserve_exact(
+            transition_target_angles
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
+        )
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    ordered_states.push(pose.hinge_angles());
+    ordered_states.extend(transition_target_angles.iter());
+    let instruction_bound_path = ori_collision::issue_instruction_bound_path_v1(
+        &authority.path,
+        &source_model_fingerprint,
+        pose.fixed_face(),
+        &ordered_states,
+    )
+    .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let source_angles = try_retain_instruction_angles_v1(pose.hinge_angles())?;
+    let mut transition_targets = Vec::new();
+    transition_targets
+        .try_reserve_exact(transition_target_angles.len())
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    for angles in &transition_target_angles {
+        transition_targets.push(try_retain_instruction_angles_v1(angles)?);
+    }
+    let existing_timeline_step_count = project.editor.instruction_timeline().steps.len();
     let timeline = ori_instructions::append_certified_dyadic_path_timeline_v1(
         project.editor.instruction_timeline(),
         "Certified dyadic pose path",
@@ -406,7 +417,7 @@ pub(super) fn apply_dyadic_pose_path_preview_inner_v1(
         pose.fixed_face(),
         &source_angles,
         &transition_targets,
-        &authority.path,
+        &instruction_bound_path,
     )
     .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let persisted_pose = timeline
@@ -414,6 +425,24 @@ pub(super) fn apply_dyadic_pose_path_preview_inner_v1(
         .last()
         .map(|step| step.pose.clone())
         .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let trusted_path_entries =
+        TrustedPathCertificateRegistryV1::prepare_entries_for_timeline_suffix_v1(
+            project.instance_id,
+            project.project_id,
+            &timeline,
+            existing_timeline_step_count,
+            Some(&instruction_bound_path),
+        )
+        .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let trusted_path_certificates = project
+        .trusted_path_certificates
+        .with_registered_timeline_v1(
+            project.instance_id,
+            project.project_id,
+            &timeline,
+            trusted_path_entries,
+        )
+        .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     // Keep the exact project/layer/pose-cache images armed until the target
     // pose has been reissued and the source layer authority is invalidated.
     // This matches the certified Tree Apply rollback boundary.
@@ -463,10 +492,28 @@ pub(super) fn apply_dyadic_pose_path_preview_inner_v1(
         return Err(UNAVAILABLE_MESSAGE.to_owned());
     }
     layer_guard.invalidate_after_project_mutation();
+    // Install process-local export trust only after the document, current
+    // pose and layer-authority transition have all succeeded. Every rollback
+    // above therefore leaves the old registry image untouched.
+    project.trusted_path_certificates = trusted_path_certificates;
     pose_rollback.disarm();
     drop(layer_guard);
     *slot = None;
     Ok(result.revision)
+}
+
+fn try_retain_instruction_angles_v1(
+    angles: &ori_kinematics::CanonicalHingeAngles,
+) -> Result<Vec<InstructionHingeAngle>, String> {
+    let mut retained = Vec::new();
+    retained
+        .try_reserve_exact(angles.as_slice().len())
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    retained.extend(angles.as_slice().iter().map(|angle| InstructionHingeAngle {
+        edge: angle.edge(),
+        angle_degrees: angle.angle_degrees(),
+    }));
+    Ok(retained)
 }
 
 #[tauri::command]

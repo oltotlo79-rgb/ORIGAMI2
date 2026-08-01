@@ -6,6 +6,11 @@
 
 #[path = "stacked_fold_blockwise_cycle.rs"]
 mod stacked_fold_blockwise_cycle;
+pub(super) const fn bounded_multi_block_current_cycle_arity_supported_v1(
+    block_count: usize,
+) -> bool {
+    stacked_fold_blockwise_cycle::bounded_multi_block_current_cycle_arity_supported_v1(block_count)
+}
 #[cfg(test)]
 #[path = "stacked_fold_blockwise_cycle_tests.rs"]
 mod stacked_fold_blockwise_cycle_tests;
@@ -25,7 +30,7 @@ pub(super) mod stacked_fold_non_flat_continuation;
 mod stacked_fold_read_wire;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -395,6 +400,55 @@ const MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1: usize = 9;
 // boundary aligned with the editor's bounded multi-step transaction admission.
 const MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1: usize = 31;
 const MAX_PRE_CANCELLED_STACKED_FOLD_READ_REQUESTS_V1: usize = 256;
+const MAX_STACKED_FOLD_RENDERED_CELLS_V1: usize = 2_048;
+const MAX_STACKED_FOLD_RENDERED_CELL_LAYERS_V1: usize = 2_048;
+const MAX_STACKED_FOLD_RENDERED_BOUNDARY_POINTS_V1: usize = 4_096;
+const MAX_STACKED_FOLD_RENDER_VERTEX_INSTANCES_V1: usize = 32_768;
+
+fn validate_stacked_fold_layer_view_cells_v1(
+    cells: &[StackedFoldReadCellDto],
+) -> Result<(), String> {
+    if cells.is_empty() || cells.len() > MAX_STACKED_FOLD_RENDERED_CELLS_V1 {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+    }
+    let mut total_render_vertex_instances = 0_usize;
+    let mut cell_keys = HashSet::with_capacity(cells.len());
+    for cell in cells {
+        if !cell_keys.insert(cell.cell_key_sha256.as_str())
+            || cell.bottom_to_top_faces.is_empty()
+            || cell.bottom_to_top_faces.len() > MAX_STACKED_FOLD_RENDERED_CELL_LAYERS_V1
+            || !(3..=MAX_STACKED_FOLD_RENDERED_BOUNDARY_POINTS_V1)
+                .contains(&cell.boundary_world.len())
+            || !cell
+                .boundary_world
+                .iter()
+                .flatten()
+                .all(|coordinate| coordinate.is_finite())
+        {
+            return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+        }
+        let unique_faces = cell
+            .bottom_to_top_faces
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        if unique_faces.len() != cell.bottom_to_top_faces.len() {
+            return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+        }
+        let render_vertex_instances = cell
+            .bottom_to_top_faces
+            .len()
+            .checked_mul(cell.boundary_world.len())
+            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+        total_render_vertex_instances = total_render_vertex_instances
+            .checked_add(render_vertex_instances)
+            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+        if total_render_vertex_instances > MAX_STACKED_FOLD_RENDER_VERTEX_INSTANCES_V1 {
+            return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+        }
+    }
+    Ok(())
+}
 static STACKED_FOLD_READ_GENERATION: AtomicU64 = AtomicU64::new(0);
 struct StackedFoldReadPublicationStateV1 {
     active_request_id: Option<String>,
@@ -868,14 +922,7 @@ fn issue_regular_quad_petal_preview_record_v1(
             )
             .map_err(|_| "invalid petal schedule".to_owned())?;
             let evidence = ori_collision::certify_scheduled_cycle_transition_v1(
-                geometry,
-                audit,
-                fixed_face,
-                &candidate,
-                &closure,
-                1,
-                source,
-                target_fingerprint,
+                geometry, audit, fixed_face, &candidate, &closure, 1,
             )
             .ok_or_else(|| "petal transition is uncertified".to_owned())?;
             let segment = ori_collision::search_certified_pose_graph_v1(
@@ -1478,8 +1525,6 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                     &generated,
                     &closure,
                     32,
-                    edge.source,
-                    edge.target,
                 )
             });
             let mut tree_positive_seed = None;
@@ -1487,6 +1532,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 if edge.source != pose_state_fingerprint_v1(pose.hinge_angles()) {
                     return None;
                 }
+                let closure = closure.as_ref()?;
                 let (tree_model, tree_source_pose) = capability.tree()?;
                 let target = generated.schedule().evaluate(1.0)?;
                 let positive = ori_collision::certify_positive_thickness_tree_continuous_path_v1(
@@ -1495,13 +1541,19 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                     &target,
                     paper_thickness_mm,
                 )?;
-                let evidence = ori_collision::CertifiedPathTransitionEvidenceV1::from_native_oracle(
-                    edge.source,
-                    edge.target,
-                    generated.schedule().certificate_binding_fingerprint_v2(),
-                    positive.binding_fingerprint_v1(),
-                    generated.schedule().graph_binding_fingerprint_v1(),
-                );
+                let evidence =
+                    ori_collision::certify_positive_thickness_tree_scheduled_transition_v1(
+                        geometry,
+                        audit,
+                        pose.fixed_face(),
+                        &generated,
+                        closure,
+                        tree_model,
+                        tree_source_pose,
+                        &target,
+                        paper_thickness_mm,
+                        &positive,
+                    )?;
                 tree_positive_seed = Some(positive);
                 Some(evidence)
             })?;
@@ -1649,7 +1701,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 .binding_fingerprint_v1()
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
-                .collect();
+                .collect::<String>();
             let aggregate = |select_layer: bool| {
                 let mut count = 0usize;
                 let mut hash = Sha256::new();
@@ -1936,8 +1988,6 @@ fn propose_current_cycle_pose_inner_with_layers(
         }
     };
     let closure = basis_closure.closure().clone();
-    let source = pose_state_fingerprint_v1(pose.hinge_angles());
-    let target = pose_state_fingerprint_v1(&requested);
     let continuous = match diagnose_scheduled_cycle_path_for_thickness_v1(
         paper_thickness_mm,
         || {
@@ -2009,8 +2059,6 @@ fn propose_current_cycle_pose_inner_with_layers(
         &generated,
         &closure,
         32,
-        source,
-        target,
     )
     .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let closure_leaf_count = closure.leaves().len();
@@ -2790,8 +2838,6 @@ async fn propose_current_stacked_fold_read_inner(
                             &generated,
                             &closure,
                             StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
-                            edge.source,
-                            edge.target,
                         )?;
                         oracle_edges.insert(
                             (edge.source, edge.target),
@@ -3212,7 +3258,8 @@ async fn propose_current_stacked_fold_read_inner(
                     bottom_to_top_faces: cell.bottom_to_top_faces().to_vec(),
                     boundary_world: cell.boundary_world().to_vec(),
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            validate_stacked_fold_layer_view_cells_v1(&crossed_cells)?;
             let work = proposal.work();
             let support = proposal.support();
             let target_faces = proposal.target_faces().to_vec();
@@ -3647,7 +3694,8 @@ async fn propose_current_stacked_fold_read_inner(
                 bottom_to_top_faces: cell.bottom_to_top_faces().to_vec(),
                 boundary_world: cell.boundary_world().to_vec(),
             })
-            .collect();
+            .collect::<Vec<_>>();
+        validate_stacked_fold_layer_view_cells_v1(&crossed_cells)?;
         let work = proposal.work();
         let support = proposal.support();
         let target_faces = proposal.target_faces().to_vec();

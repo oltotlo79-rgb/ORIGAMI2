@@ -13,7 +13,8 @@ use ori_formats::{
     INSTRUCTION_EXPORT_PROFILE, INSTRUCTION_EXPORT_WARNINGS,
     INSTRUCTION_PROJECTION_PROFILE as INSTRUCTION_EXPORT_PROJECTION_PROFILE,
     InstructionDiagramError, InstructionExportArtifact, InstructionExportError,
-    InstructionExportFormat, InstructionExportWarning, export_instruction_document,
+    InstructionExportFormat, InstructionExportWarning, PathCertificateExportAttestationV1,
+    export_instruction_document, export_instruction_document_with_path_certificate_attestation_v1,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
@@ -264,6 +265,7 @@ struct InstructionExportSource {
     pattern: ori_domain::CreasePattern,
     paper: ori_domain::Paper,
     timeline: ori_domain::InstructionTimeline,
+    path_certificate_attestation: Option<PathCertificateExportAttestationV1>,
     current_fold_model_fingerprint: String,
     cancellation: Arc<AtomicBool>,
     phase: Arc<AtomicU8>,
@@ -580,6 +582,10 @@ fn capture_export_source(
     if timeline.steps.is_empty() {
         return Err(InstructionExportErrorCategory::TimelineEmpty);
     }
+    let path_certificate_attestation = project
+        .trusted_path_certificates
+        .export_attestation_v1(project.instance_id, project.project_id, &timeline)
+        .map_err(|_| InstructionExportErrorCategory::DocumentInputInvalid)?;
     validate_source_counts(
         project.editor.pattern().vertices.len(),
         project.editor.pattern().edges.len(),
@@ -612,6 +618,7 @@ fn capture_export_source(
         pattern: project.editor.pattern().clone(),
         paper: project.editor.paper().clone(),
         timeline,
+        path_certificate_attestation,
         current_fold_model_fingerprint,
         cancellation,
         phase,
@@ -635,22 +642,38 @@ fn build_pending_export(
         .simulation_snapshot()
         .ok_or(InstructionExportErrorCategory::TopologyUnsupported)?;
     advance_generation_phase(&source.phase, PHASE_BUILDING_DOCUMENT)?;
-    let mut artifact = export_instruction_document(
-        source.format.exporter_format(),
-        &source.name,
-        &source.current_fold_model_fingerprint,
-        &source.pattern,
-        &source.paper,
-        &source.timeline,
-        snapshot,
-    )
+    let mut artifact = match source.path_certificate_attestation.as_ref() {
+        Some(attestation) => export_instruction_document_with_path_certificate_attestation_v1(
+            source.format.exporter_format(),
+            &source.name,
+            &source.current_fold_model_fingerprint,
+            &source.pattern,
+            &source.paper,
+            &source.timeline,
+            snapshot,
+            attestation,
+        ),
+        None => export_instruction_document(
+            source.format.exporter_format(),
+            &source.name,
+            &source.current_fold_model_fingerprint,
+            &source.pattern,
+            &source.paper,
+            &source.timeline,
+            snapshot,
+        ),
+    }
     .map_err(instruction_document_failure_category)?;
     ensure_not_cancelled(&source.cancellation)?;
     validate_artifact_contract(source.format, &source.timeline, &artifact)?;
     if let Some(summary) = &source.consensus_summary {
         embed_instruction_consensus_summary(&mut artifact, source.format, summary)?;
     }
-    let warnings = instruction_export_warning_snapshots(&artifact.warnings);
+    validate_instruction_export_output_size_v1(
+        artifact.bytes.len(),
+        ori_formats::InstructionExportLimits::default().max_output_bytes,
+    )?;
+    let warnings = instruction_export_warning_snapshots(&artifact.warnings)?;
     advance_generation_phase(&source.phase, PHASE_READY)?;
     Ok(PendingInstructionExport {
         export_id: source.export_id,
@@ -680,9 +703,26 @@ fn embed_instruction_consensus_summary(
         .map_err(|_| InstructionExportErrorCategory::DocumentContractInvalid)?;
     match format {
         InstructionExportFormatRequest::Pdf => {
+            const PREFIX: &[u8] = b"\n% ORIGAMI2_REFERENCE_CONSENSUS_SUMMARY ";
+            let additional_bytes = PREFIX
+                .len()
+                .checked_add(json.len())
+                .and_then(|bytes| bytes.checked_add(1))
+                .ok_or(InstructionExportErrorCategory::DocumentLimitExceeded)?;
+            let final_bytes = artifact
+                .bytes
+                .len()
+                .checked_add(additional_bytes)
+                .ok_or(InstructionExportErrorCategory::DocumentLimitExceeded)?;
+            validate_instruction_export_output_size_v1(
+                final_bytes,
+                ori_formats::InstructionExportLimits::default().max_output_bytes,
+            )?;
             artifact
                 .bytes
-                .extend_from_slice(b"\n% ORIGAMI2_REFERENCE_CONSENSUS_SUMMARY ");
+                .try_reserve_exact(additional_bytes)
+                .map_err(|_| InstructionExportErrorCategory::DocumentLimitExceeded)?;
+            artifact.bytes.extend_from_slice(PREFIX);
             artifact.bytes.extend_from_slice(&json);
             artifact.bytes.push(b'\n');
         }
@@ -704,7 +744,21 @@ fn embed_instruction_consensus_summary(
                 .finish()
                 .map_err(|_| InstructionExportErrorCategory::DocumentContractInvalid)?
                 .into_inner();
+            validate_instruction_export_output_size_v1(
+                artifact.bytes.len(),
+                ori_formats::InstructionExportLimits::default().max_output_bytes,
+            )?;
         }
+    }
+    Ok(())
+}
+
+fn validate_instruction_export_output_size_v1(
+    actual: usize,
+    maximum: usize,
+) -> InstructionExportResult<()> {
+    if actual > maximum {
+        return Err(InstructionExportErrorCategory::DocumentLimitExceeded);
     }
     Ok(())
 }
@@ -792,14 +846,20 @@ fn validate_artifact_contract(
 
 fn instruction_export_warning_snapshots(
     warnings: &[InstructionExportWarning],
-) -> Vec<InstructionExportWarningSnapshot> {
-    warnings
-        .iter()
-        .map(|warning| InstructionExportWarningSnapshot {
-            category: warning.category(),
-            message_ja: warning.message_ja(),
-        })
-        .collect()
+) -> InstructionExportResult<Vec<InstructionExportWarningSnapshot>> {
+    let mut snapshots = Vec::new();
+    snapshots
+        .try_reserve_exact(warnings.len())
+        .map_err(|_| InstructionExportErrorCategory::DocumentLimitExceeded)?;
+    snapshots.extend(
+        warnings
+            .iter()
+            .map(|warning| InstructionExportWarningSnapshot {
+                category: warning.category(),
+                message_ja: warning.message_ja(),
+            }),
+    );
+    Ok(snapshots)
 }
 
 fn preview_snapshot(pending: &PendingInstructionExport) -> InstructionExportPreviewSnapshot {
@@ -1021,8 +1081,6 @@ pub(crate) mod tests {
         EdgeId, EdgeKind, InstructionHingeAngle, InstructionPose, InstructionPoseModel,
         InstructionStep, InstructionStepId, Point2, VertexId,
     };
-    use sha2::{Digest, Sha256};
-
     use ori_instructions::{
         AccordionFoldMotionRequestV1, BasicFoldKindV1, BasicFoldMotionRequestV1,
         BookFoldMotionRequestV1, CrimpFoldMotionRequestV1, FOLD_TECHNIQUE_FILE_SCHEMA_V1,
@@ -1040,8 +1098,7 @@ pub(crate) mod tests {
         compile_certified_layer_selective_timeline_v1, compile_certified_petal_fold_timeline_v1,
         compile_certified_regular_quad_petal_fold_timeline_v1,
         compile_certified_reverse_fold_timeline_v1, compile_certified_sink_fold_timeline_v1,
-        compile_certified_squash_fold_timeline_v1, instruction_pose_fingerprint_v1,
-        validate_fold_technique_file_v1,
+        compile_certified_squash_fold_timeline_v1, validate_fold_technique_file_v1,
     };
 
     use super::*;
@@ -1134,54 +1191,16 @@ pub(crate) mod tests {
             edge: fold,
             angle_degrees: 90.0,
         }];
-        let graph_hash = |angles: &[InstructionHingeAngle]| {
-            let mut hash = Sha256::new();
-            hash.update(b"stacked_fold_certified_path_graph_state_v1");
-            hash.update((angles.len() as u64).to_be_bytes());
-            for angle in angles {
-                hash.update(angle.edge.canonical_bytes());
-                hash.update(angle.angle_degrees.to_bits().to_be_bytes());
-            }
-            <[u8; 32]>::from(hash.finalize())
-        };
-        let source_pose = graph_hash(&source_angles);
-        let middle_pose = graph_hash(&middle_angles);
-        let target_pose = graph_hash(&target_angles);
-        let candidates = [
-            ori_collision::CertifiedPathTransitionCandidateV1 {
-                source: source_pose,
-                target: middle_pose,
-                candidate_key: [7; 32],
-            },
-            ori_collision::CertifiedPathTransitionCandidateV1 {
-                source: middle_pose,
-                target: target_pose,
-                candidate_key: [8; 32],
-            },
-        ];
-        let certificate = match ori_collision::search_certified_pose_graph_v1(
-            &[source_pose, middle_pose, target_pose],
-            &candidates,
-            source_pose,
-            target_pose,
-            |edge| {
-                Some(
-                    ori_collision::CertifiedPathTransitionEvidenceV1::from_native_oracle(
-                        edge.source,
-                        edge.target,
-                        [1; 32],
-                        [2; 32],
-                        [3; 32],
-                    ),
-                )
-            },
-        ) {
-            ori_collision::CertifiedPathGraphSearchResultV1::Certified(certificate) => certificate,
-            other => panic!("expected native certificate, got {other:?}"),
-        };
+        let raw_certificate = native_graph_path_certificate(
+            &project,
+            fixed_face,
+            &[
+                source_angles.clone(),
+                middle_angles.clone(),
+                target_angles.clone(),
+            ],
+        );
         let original_timeline = ori_domain::InstructionTimeline::default();
-        let mut tampered_target = target_angles.clone();
-        tampered_target[0].angle_degrees = 91.0;
         assert!(
             ori_instructions::append_certified_dyadic_path_timeline_v1(
                 &original_timeline,
@@ -1189,10 +1208,52 @@ pub(crate) mod tests {
                 &model,
                 fixed_face,
                 &source_angles,
-                &[tampered_target],
+                &[middle_angles.clone(), target_angles.clone()],
+                &raw_certificate,
+            )
+            .is_err(),
+            "a raw graph-domain certificate is not instruction export authority"
+        );
+        let canonical_states = [
+            canonical_angles(&source_angles),
+            canonical_angles(&middle_angles),
+            canonical_angles(&target_angles),
+        ];
+        let state_refs = canonical_states.iter().collect::<Vec<_>>();
+        let certificate = ori_collision::issue_instruction_bound_path_v1(
+            &raw_certificate,
+            &model,
+            fixed_face,
+            &state_refs,
+        )
+        .expect("native instruction-bound path");
+        let mut tampered_target = target_angles.clone();
+        tampered_target[0].angle_degrees =
+            f64::from_bits(tampered_target[0].angle_degrees.to_bits() + 1);
+        assert!(
+            ori_instructions::append_certified_dyadic_path_timeline_v1(
+                &original_timeline,
+                "atomic dyadic fold",
+                &model,
+                fixed_face,
+                &source_angles,
+                &[middle_angles.clone(), tampered_target],
                 &certificate,
             )
             .is_err()
+        );
+        assert!(
+            ori_instructions::append_certified_dyadic_path_timeline_v1(
+                &original_timeline,
+                "atomic dyadic fold",
+                &"ab".repeat(32),
+                fixed_face,
+                &source_angles,
+                &[middle_angles.clone(), target_angles.clone()],
+                &certificate,
+            )
+            .is_err(),
+            "a coordinated source-model drift cannot relabel a bound path"
         );
         assert!(
             original_timeline.steps.is_empty(),
@@ -1214,6 +1275,26 @@ pub(crate) mod tests {
                 .execute(revision as u64 + 1, Command::AddInstructionStep { step })
                 .expect("add proof step");
         }
+        let timeline = project.editor.instruction_timeline().clone();
+        let entries =
+            super::super::path_certificate_registry::TrustedPathCertificateRegistryV1::
+                prepare_entries_for_timeline_suffix_v1(
+                    project.instance_id,
+                    project.project_id,
+                    &timeline,
+                    0,
+                    Some(&certificate),
+                )
+                .expect("test native certificate registry entries");
+        project.trusted_path_certificates = project
+            .trusted_path_certificates
+            .with_registered_timeline_v1(
+                project.instance_id,
+                project.project_id,
+                &timeline,
+                entries,
+            )
+            .expect("test native certificate registry");
         project
     }
 
@@ -1284,7 +1365,7 @@ pub(crate) mod tests {
         .expect("valid book-fold fixture")
     }
 
-    fn native_certificate(
+    fn untrusted_certificate(
         source: [u8; 32],
         target: [u8; 32],
     ) -> ori_collision::CertifiedPoseGraphPathCertificateV1 {
@@ -1299,20 +1380,160 @@ pub(crate) mod tests {
             source,
             target,
             |edge| {
-                Some(
-                    ori_collision::CertifiedPathTransitionEvidenceV1::from_native_oracle(
-                        edge.source,
-                        edge.target,
-                        [1; 32],
-                        [2; 32],
-                        [3; 32],
-                    ),
-                )
+                Some(ori_collision::private_petal_e2e_transition_fixture_v1(
+                    edge.source,
+                    edge.target,
+                    [1; 32],
+                    [2; 32],
+                    [3; 32],
+                ))
             },
         ) {
             ori_collision::CertifiedPathGraphSearchResultV1::Certified(certificate) => certificate,
             other => panic!("expected native certificate, got {other:?}"),
         }
+    }
+
+    fn canonical_angles(angles: &[InstructionHingeAngle]) -> ori_kinematics::CanonicalHingeAngles {
+        let mut angles = angles.to_vec();
+        angles.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+        ori_kinematics::CanonicalHingeAngles::new(
+            angles
+                .into_iter()
+                .map(|hinge| {
+                    ori_kinematics::HingeAngle::new(hinge.edge, hinge.angle_degrees)
+                        .expect("finite test hinge angle")
+                })
+                .collect(),
+        )
+        .expect("complete canonical test pose")
+    }
+
+    fn native_graph_path_certificate(
+        project: &ProjectState,
+        fixed_face: ori_domain::FaceId,
+        poses: &[Vec<InstructionHingeAngle>],
+    ) -> ori_collision::CertifiedPoseGraphPathCertificateV1 {
+        assert!(poses.len() >= 2);
+        let topology_analysis = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let topology = topology_analysis
+            .simulation_snapshot()
+            .expect("physical certificate topology");
+        let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
+            project.editor.pattern(),
+            project.editor.paper(),
+            topology,
+            ori_kinematics::TreeKinematicsLimits::default(),
+        )
+        .expect("physical certificate graph model");
+        let audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
+            topology,
+            ori_kinematics::TreeKinematicsLimits::default(),
+        )
+        .expect("physical certificate graph audit");
+        let canonical = poses
+            .iter()
+            .map(|pose| canonical_angles(pose))
+            .collect::<Vec<_>>();
+        let mut evidence = Vec::with_capacity(canonical.len() - 1);
+        for pair in canonical.windows(2) {
+            let generated = ori_kinematics::generate_linear_multi_hinge_path_candidate_v1(
+                &geometry,
+                &audit,
+                fixed_face,
+                &pair[0],
+                &pair[1],
+                ori_kinematics::MultiHingePathCandidateLimitsV1::default(),
+            )
+            .expect("physical certificate schedule");
+            let schedule_limits = ori_kinematics::CycleScheduleLimitsV1 {
+                max_work: 1_048_576,
+                ..ori_kinematics::CycleScheduleLimitsV1::default()
+            };
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    fixed_face,
+                    generated.schedule(),
+                    1.0e-9,
+                    ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                        max_depth: 8,
+                        max_leaves: 256,
+                        max_work: 1_048_576,
+                        schedule_limits,
+                    },
+                )
+                .expect("physical full-domain closure");
+            evidence.push(
+                ori_collision::certify_scheduled_cycle_transition_v1(
+                    &geometry, &audit, fixed_face, &generated, &closure, 32,
+                )
+                .expect("native scheduled transition"),
+            );
+        }
+        let mut states = Vec::with_capacity(evidence.len() + 1);
+        states.push(evidence[0].source());
+        states.extend(evidence.iter().map(|edge| edge.target()));
+        let candidates = evidence
+            .iter()
+            .map(|edge| ori_collision::CertifiedPathTransitionCandidateV1 {
+                source: edge.source(),
+                target: edge.target(),
+                candidate_key: edge.schedule_certificate(),
+            })
+            .collect::<Vec<_>>();
+        let result = ori_collision::search_certified_pose_graph_v1(
+            &states,
+            &candidates,
+            states[0],
+            *states.last().expect("path target"),
+            |candidate| {
+                evidence.iter().copied().find(|edge| {
+                    edge.source() == candidate.source && edge.target() == candidate.target
+                })
+            },
+        );
+        let ori_collision::CertifiedPathGraphSearchResultV1::Certified(certificate) = result else {
+            panic!("native evidence must form one contiguous path")
+        };
+        assert!(certificate.is_native_attestable_v1());
+        certificate
+    }
+
+    fn native_instruction_certificate(
+        project: &ProjectState,
+        fixed_face: ori_domain::FaceId,
+        source: &[InstructionHingeAngle],
+        target: &[InstructionHingeAngle],
+    ) -> ori_collision::CertifiedPoseGraphPathCertificateV1 {
+        native_instruction_path_certificate(
+            project,
+            fixed_face,
+            &[source.to_vec(), target.to_vec()],
+        )
+    }
+
+    fn native_instruction_path_certificate(
+        project: &ProjectState,
+        fixed_face: ori_domain::FaceId,
+        poses: &[Vec<InstructionHingeAngle>],
+    ) -> ori_collision::CertifiedPoseGraphPathCertificateV1 {
+        let native = native_graph_path_certificate(project, fixed_face, poses);
+        let canonical = poses
+            .iter()
+            .map(|pose| canonical_angles(pose))
+            .collect::<Vec<_>>();
+        let canonical_refs = canonical.iter().collect::<Vec<_>>();
+        ori_collision::issue_instruction_bound_path_v1(
+            &native,
+            &project.editor.fold_model_fingerprint_v1(),
+            fixed_face,
+            &canonical_refs,
+        )
+        .expect("native instruction-pose path binding")
     }
 
     fn basic_fold_file(title: &str) -> FoldTechniqueFileV1 {
@@ -1444,6 +1665,12 @@ pub(crate) mod tests {
         project: &ProjectState,
         format: InstructionExportFormatRequest,
     ) -> InstructionExportSource {
+        let timeline = project.editor.instruction_timeline().clone();
+        let path_certificate_attestation = project
+            .trusted_path_certificates
+            .export_attestation_v1(project.instance_id, project.project_id, &timeline)
+            .ok()
+            .flatten();
         InstructionExportSource {
             export_id: ProjectId::new(),
             expected_instance_id: project.instance_id,
@@ -1454,7 +1681,8 @@ pub(crate) mod tests {
             name: project.name.clone(),
             pattern: project.editor.pattern().clone(),
             paper: project.editor.paper().clone(),
-            timeline: project.editor.instruction_timeline().clone(),
+            timeline,
+            path_certificate_attestation,
             current_fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
             cancellation: Arc::new(AtomicBool::new(false)),
             phase: Arc::new(AtomicU8::new(PHASE_VALIDATING)),
@@ -1467,6 +1695,40 @@ pub(crate) mod tests {
         }
     }
 
+    fn attest_timeline_with_native_certificates_for_test(
+        source: &mut InstructionExportSource,
+        timeline: ori_domain::InstructionTimeline,
+        certificates: &[&ori_collision::CertifiedPoseGraphPathCertificateV1],
+    ) {
+        source.path_certificate_attestation = Some(
+            ori_formats::PathCertificateExportAttestationV1::from_native_path_certificates_v1(
+                &timeline,
+                certificates,
+            )
+            .expect("live native certificates attest this exact timeline"),
+        );
+        source.timeline = timeline;
+    }
+
+    fn replace_with_live_attested_timeline_for_test(
+        source: &mut InstructionExportSource,
+        timeline: ori_domain::InstructionTimeline,
+    ) {
+        assert!(
+            source.path_certificate_attestation.is_some(),
+            "the project registry must already attest this exact reference set"
+        );
+        source.timeline = timeline;
+    }
+
+    fn replace_with_uncertified_timeline_for_test(
+        source: &mut InstructionExportSource,
+        timeline: ori_domain::InstructionTimeline,
+    ) {
+        source.timeline = timeline;
+        source.path_certificate_attestation = None;
+    }
+
     fn pdf_utf16be_hex(text: &str) -> String {
         let mut encoded = String::from("FEFF");
         for unit in text.encode_utf16() {
@@ -1477,6 +1739,11 @@ pub(crate) mod tests {
 
     #[test]
     fn instruction_exports_embed_only_safe_consensus_summary() {
+        assert_eq!(validate_instruction_export_output_size_v1(17, 17), Ok(()));
+        assert_eq!(
+            validate_instruction_export_output_size_v1(17, 16),
+            Err(InstructionExportErrorCategory::DocumentLimitExceeded)
+        );
         let summary = ori_domain::BeginnerReferenceConsensusSummaryV1 {
             schema_version: 1,
             model: "component_extent_branch_v1".to_owned(),
@@ -1536,10 +1803,80 @@ pub(crate) mod tests {
         );
     }
 
+    fn assert_compiler_source_predecessors_register_v1(
+        project: &ProjectState,
+        timeline: &ori_domain::InstructionTimeline,
+        whole_path: &ori_collision::CertifiedPoseGraphPathCertificateV1,
+    ) {
+        assert_eq!(
+            timeline.steps.len(),
+            whole_path.edges().len() + 1,
+            "a compiler timeline retains exactly one source anchor"
+        );
+        assert!(
+            timeline.steps[0]
+                .visual
+                .path_certificate_reference_v1
+                .is_none(),
+            "the source anchor is not a transition proof"
+        );
+        for step_index in 1..timeline.steps.len() {
+            let source = &timeline.steps[step_index - 1].pose;
+            let target = &timeline.steps[step_index].pose;
+            let reference = timeline.steps[step_index]
+                .visual
+                .path_certificate_reference_v1
+                .as_ref()
+                .expect("every compiler target has a structured proof");
+            let source_fixed_face = source.fixed_face.expect("compiler source fixed face");
+            let target_fixed_face = target.fixed_face.expect("compiler target fixed face");
+            assert_eq!(source_fixed_face, target_fixed_face);
+            assert_eq!(
+                reference.source_pose_sha256,
+                ori_instructions::instruction_pose_fingerprint_v1(
+                    &source.source_model_fingerprint,
+                    source_fixed_face,
+                    &source.hinge_angles,
+                ),
+                "the immediately preceding compiler pose is the certified source"
+            );
+            assert_eq!(
+                reference.target_pose_sha256,
+                ori_instructions::instruction_pose_fingerprint_v1(
+                    &target.source_model_fingerprint,
+                    target_fixed_face,
+                    &target.hinge_angles,
+                ),
+                "the compiler target pose exactly matches its proof reference"
+            );
+        }
+        let entries =
+            super::super::path_certificate_registry::TrustedPathCertificateRegistryV1::
+                prepare_entries_for_timeline_suffix_v1(
+                    project.instance_id,
+                    project.project_id,
+                    timeline,
+                    0,
+                    Some(whole_path),
+                )
+                .expect("compiler references match whole-path registry candidates");
+        let registry =
+            super::super::path_certificate_registry::TrustedPathCertificateRegistryV1::default()
+                .with_registered_timeline_v1(
+                    project.instance_id,
+                    project.project_id,
+                    timeline,
+                    entries,
+                )
+                .expect("compiler timeline registers atomically");
+        assert_eq!(registry.len_v1(), whole_path.edges().len());
+    }
+
     fn assert_compiler_artifact_content(
         project: &ProjectState,
         technique_title: &str,
         timeline: &ori_domain::InstructionTimeline,
+        certificates: &[&ori_collision::CertifiedPoseGraphPathCertificateV1],
     ) {
         let proof_bindings = timeline.steps[1..]
             .iter()
@@ -1561,7 +1898,11 @@ pub(crate) mod tests {
 
         let mut pdf_source = source_for(project, InstructionExportFormatRequest::Pdf);
         pdf_source.name = technique_title.to_owned();
-        pdf_source.timeline = timeline.clone();
+        attest_timeline_with_native_certificates_for_test(
+            &mut pdf_source,
+            timeline.clone(),
+            certificates,
+        );
         let pdf = build_pending_export(pdf_source).expect("compiler PDF content");
         let body = std::str::from_utf8(&pdf.bytes[15..]).expect("ASCII PDF body");
         assert!(body.contains(&format!("/Title <{}>", pdf_utf16be_hex(technique_title))));
@@ -1575,13 +1916,17 @@ pub(crate) mod tests {
         }
         let mut stripped_source = source_for(project, InstructionExportFormatRequest::Pdf);
         stripped_source.name = technique_title.to_owned();
-        stripped_source.timeline = without_summary;
+        replace_with_uncertified_timeline_for_test(&mut stripped_source, without_summary);
         let stripped = build_pending_export(stripped_source).expect("stripped comparison PDF");
         assert_ne!(pdf.bytes.as_ref(), stripped.bytes.as_ref());
 
         let mut svg_source = source_for(project, InstructionExportFormatRequest::SvgZip);
         svg_source.name = technique_title.to_owned();
-        svg_source.timeline = timeline.clone();
+        attest_timeline_with_native_certificates_for_test(
+            &mut svg_source,
+            timeline.clone(),
+            certificates,
+        );
         let svg = build_pending_export(svg_source).expect("compiler SVG content");
         let mut archive = zip::ZipArchive::new(Cursor::new(svg.bytes.as_ref())).expect("SVG ZIP");
         let mut manifest = String::new();
@@ -1652,7 +1997,8 @@ pub(crate) mod tests {
             step_count: project.editor.instruction_timeline().steps.len(),
             page_count: project.editor.instruction_timeline().steps.len(),
             caution_count,
-            warnings: instruction_export_warning_snapshots(&INSTRUCTION_EXPORT_WARNINGS),
+            warnings: instruction_export_warning_snapshots(&INSTRUCTION_EXPORT_WARNINGS)
+                .expect("bounded instruction export warnings"),
         }
     }
 
@@ -1921,7 +2267,7 @@ pub(crate) mod tests {
             .expect("accordion topology")
             .faces[0]
             .id;
-        let targets = [45_000_000, 90_000_000, 135_000_000];
+        let targets = [15_000_000, 25_000_000, 35_000_000];
         let mut pose = edges
             .iter()
             .copied()
@@ -1931,27 +2277,22 @@ pub(crate) mod tests {
             })
             .collect::<Vec<_>>();
         let source = pose.clone();
-        let certificates = edges
-            .iter()
-            .copied()
-            .zip(targets)
-            .map(|(edge, target)| {
-                let source_hash = instruction_pose_fingerprint_v1(&model, fixed_face, &pose);
-                pose.iter_mut()
-                    .find(|hinge| hinge.edge == edge)
-                    .expect("accordion hinge")
-                    .angle_degrees = target as f64 / 1_000_000.0;
-                let target_hash = instruction_pose_fingerprint_v1(&model, fixed_face, &pose);
-                native_certificate(source_hash, target_hash)
+        let mut poses = vec![source.clone()];
+        for (edge, target) in edges.iter().copied().zip(targets) {
+            pose.iter_mut()
+                .find(|hinge| hinge.edge == edge)
+                .expect("accordion hinge")
+                .angle_degrees = target as f64 / 1_000_000.0;
+            poses.push(pose.clone());
+        }
+        let parent = native_instruction_path_certificate(&project, fixed_face, &poses);
+        let certificates = (0..3)
+            .map(|index| {
+                parent
+                    .segment_certificate_v1(index)
+                    .expect("three native instruction-bound segments")
             })
             .collect::<Vec<_>>();
-        let parent = ori_collision::issue_private_three_segment_path_v1(
-            certificates
-                .clone()
-                .try_into()
-                .expect("three native segments"),
-        )
-        .expect("same-issuer contiguous parent certificate");
         let preview_state =
             super::super::stacked_fold_read::RegularQuadPetalCertificatePreviewStateV1::new();
         let preview_token = ProjectId::new();
@@ -2053,6 +2394,7 @@ pub(crate) mod tests {
             ordered_path_certificates: &certificates,
         })
         .expect("compile real accordion");
+        assert_compiler_source_predecessors_register_v1(&project, &timeline, &parent);
         assert_eq!(timeline.steps.len(), 4);
         assert!(timeline.steps[3].title.contains("蛇腹折り"));
         for (index, certificate) in certificates.iter().enumerate() {
@@ -2081,13 +2423,18 @@ pub(crate) mod tests {
         let archived = serde_json::to_vec(&timeline).expect("archive compiled accordion");
         let reopened: ori_domain::InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen compiled accordion");
-        assert_compiler_artifact_content(&project, "蛇腹折り", &reopened);
+        let certificate_refs = certificates.iter().collect::<Vec<_>>();
+        assert_compiler_artifact_content(&project, "蛇腹折り", &reopened, &certificate_refs);
         for (format, magic) in [
             (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = reopened.clone();
+            attest_timeline_with_native_certificates_for_test(
+                &mut source,
+                reopened.clone(),
+                &certificate_refs,
+            );
             let artifact = build_pending_export(source).expect("export real accordion compiler");
             assert_eq!(artifact.step_count, 4);
             assert!(artifact.bytes.starts_with(magic));
@@ -2135,14 +2482,17 @@ pub(crate) mod tests {
                 angle_degrees: 90.0,
             },
         ];
-        let first = native_certificate(
-            instruction_pose_fingerprint_v1(&model, fixed_face, &source),
-            instruction_pose_fingerprint_v1(&model, fixed_face, &middle),
+        let whole_path = native_instruction_path_certificate(
+            &project,
+            fixed_face,
+            &[source.clone(), middle.clone(), target.clone()],
         );
-        let second = native_certificate(
-            instruction_pose_fingerprint_v1(&model, fixed_face, &middle),
-            instruction_pose_fingerprint_v1(&model, fixed_face, &target),
-        );
+        let first = whole_path
+            .segment_certificate_v1(0)
+            .expect("first instruction-bound segment");
+        let second = whole_path
+            .segment_certificate_v1(1)
+            .expect("second instruction-bound segment");
 
         let inside_file = two_segment_file(
             "中割り折り",
@@ -2280,6 +2630,7 @@ pub(crate) mod tests {
             ),
         ];
         for (title, timeline) in timelines {
+            assert_compiler_source_predecessors_register_v1(&project, &timeline, &whole_path);
             assert_eq!(timeline.steps.len(), 3);
             assert!(timeline.steps[2].title.contains(title));
             let first_reference = timeline.steps[1]
@@ -2310,13 +2661,17 @@ pub(crate) mod tests {
             let archived = serde_json::to_vec(&timeline).expect("archive compiler timeline");
             let reopened: ori_domain::InstructionTimeline =
                 serde_json::from_slice(&archived).expect("reopen compiler timeline");
-            assert_compiler_artifact_content(&project, title, &reopened);
+            assert_compiler_artifact_content(&project, title, &reopened, &[&first, &second]);
             for (format, magic) in [
                 (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
                 (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
             ] {
                 let mut export_source = source_for(&project, format);
-                export_source.timeline = reopened.clone();
+                attest_timeline_with_native_certificates_for_test(
+                    &mut export_source,
+                    reopened.clone(),
+                    &[&first, &second],
+                );
                 let artifact = build_pending_export(export_source)
                     .expect("export real two-segment compiler timeline");
                 assert_eq!(artifact.step_count, 3);
@@ -2356,10 +2711,8 @@ pub(crate) mod tests {
             edge: fold_edge,
             angle_degrees: 90.0,
         }];
-        let certificate = native_certificate(
-            instruction_pose_fingerprint_v1(&model, fixed_face, &source_angles),
-            instruction_pose_fingerprint_v1(&model, fixed_face, &target_angles),
-        );
+        let certificate =
+            native_instruction_certificate(&project, fixed_face, &source_angles, &target_angles);
         let compiled = compile_certified_book_fold_timeline_v1(BookFoldMotionRequestV1 {
             technique_file: &book_fold_file(),
             technique_id: "book-fold",
@@ -2371,6 +2724,7 @@ pub(crate) mod tests {
             path_certificate: &certificate,
         })
         .expect("compile real book-fold timeline");
+        assert_compiler_source_predecessors_register_v1(&project, &compiled, &certificate);
         assert_eq!(compiled.steps.len(), 2);
         assert!(compiled.steps[1].title.contains("二つ折り"));
         let reference = compiled.steps[1]
@@ -2390,7 +2744,7 @@ pub(crate) mod tests {
         let archived = serde_json::to_vec(&compiled).expect("archive compiled book fold");
         let reopened: ori_domain::InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen compiled book fold");
-        assert_compiler_artifact_content(&project, "二つ折り", &reopened);
+        assert_compiler_artifact_content(&project, "二つ折り", &reopened, &[&certificate]);
         for step in reopened.steps.clone() {
             let revision = project.editor.revision();
             project
@@ -2398,6 +2752,26 @@ pub(crate) mod tests {
                 .execute(revision, Command::AddInstructionStep { step })
                 .expect("persist compiler step");
         }
+        let timeline = project.editor.instruction_timeline().clone();
+        let entries =
+            super::super::path_certificate_registry::TrustedPathCertificateRegistryV1::
+                prepare_entries_for_timeline_suffix_v1(
+                    project.instance_id,
+                    project.project_id,
+                    &timeline,
+                    0,
+                    Some(&certificate),
+                )
+                .expect("live compiler certificate matches the persisted book-fold timeline");
+        project.trusted_path_certificates = project
+            .trusted_path_certificates
+            .with_registered_timeline_v1(
+                project.instance_id,
+                project.project_id,
+                &timeline,
+                entries,
+            )
+            .expect("register the live compiler certificate before certified export");
         for (format, magic) in [
             (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
@@ -2448,9 +2822,11 @@ pub(crate) mod tests {
                 edge: fold_edge,
                 angle_degrees: 90.0,
             }];
-            let certificate = native_certificate(
-                instruction_pose_fingerprint_v1(&model, fixed_face, &source_angles),
-                instruction_pose_fingerprint_v1(&model, fixed_face, &target_angles),
+            let certificate = native_instruction_certificate(
+                &project,
+                fixed_face,
+                &source_angles,
+                &target_angles,
             );
             let file = basic_fold_file(title);
             let compiled = compile_certified_basic_fold_timeline_v1(BasicFoldMotionRequestV1 {
@@ -2467,17 +2843,22 @@ pub(crate) mod tests {
                 },
             })
             .expect("compile assigned basic fold");
+            assert_compiler_source_predecessors_register_v1(&project, &compiled, &certificate);
             assert!(compiled.steps[1].title.contains(title));
             let archived = serde_json::to_vec(&compiled).expect("archive basic fold");
             let reopened: ori_domain::InstructionTimeline =
                 serde_json::from_slice(&archived).expect("reopen basic fold");
-            assert_compiler_artifact_content(&project, title, &reopened);
+            assert_compiler_artifact_content(&project, title, &reopened, &[&certificate]);
             for (format, magic) in [
                 (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
                 (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
             ] {
                 let mut source = source_for(&project, format);
-                source.timeline = reopened.clone();
+                attest_timeline_with_native_certificates_for_test(
+                    &mut source,
+                    reopened.clone(),
+                    &[&certificate],
+                );
                 let artifact = build_pending_export(source).expect("export assigned basic fold");
                 assert_eq!(artifact.step_count, 2);
                 assert!(artifact.bytes.starts_with(magic));
@@ -2494,7 +2875,7 @@ pub(crate) mod tests {
                     fold_edge: EdgeId::new(),
                     source_hinge_angles: &[],
                     target_angle_microdegrees: 90_000_000,
-                    path_certificate: &native_certificate([1; 32], [2; 32]),
+                    path_certificate: &untrusted_certificate([1; 32], [2; 32]),
                 },
             }),
             Err(ori_instructions::BookFoldMotionError::PathCertificateMismatch),
@@ -2535,7 +2916,10 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut reopened_source = source_for(&project, format);
-            reopened_source.timeline = reopened_timeline.clone();
+            replace_with_live_attested_timeline_for_test(
+                &mut reopened_source,
+                reopened_timeline.clone(),
+            );
             let reopened = build_pending_export(reopened_source)
                 .expect("native export after proof-bearing reopen");
             assert_eq!(reopened.step_count, 3);
@@ -2565,7 +2949,10 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut reverse_source = source_for(&project, format);
-            reverse_source.timeline = reopened_reverse.clone();
+            replace_with_live_attested_timeline_for_test(
+                &mut reverse_source,
+                reopened_reverse.clone(),
+            );
             let artifact =
                 build_pending_export(reverse_source).expect("native reverse-fold export");
             assert_eq!(artifact.step_count, 3);
@@ -2584,7 +2971,7 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut sink_source = source_for(&project, format);
-            sink_source.timeline = reopened_sink.clone();
+            replace_with_live_attested_timeline_for_test(&mut sink_source, reopened_sink.clone());
             let artifact = build_pending_export(sink_source).expect("native sink-fold export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
@@ -2602,7 +2989,7 @@ pub(crate) mod tests {
             InstructionExportFormatRequest::SvgZip,
         ] {
             let mut sink_source = source_for(&project, format);
-            sink_source.timeline = uncertified_sink.clone();
+            replace_with_uncertified_timeline_for_test(&mut sink_source, uncertified_sink.clone());
             let artifact = build_pending_export(sink_source)
                 .expect("uncertified sink keeps the non-proof export boundary");
             assert_eq!(artifact.step_count, 3);
@@ -2621,7 +3008,7 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = reopened_accordion.clone();
+            replace_with_live_attested_timeline_for_test(&mut source, reopened_accordion.clone());
             let artifact = build_pending_export(source).expect("native accordion-fold export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
@@ -2637,7 +3024,7 @@ pub(crate) mod tests {
             InstructionExportFormatRequest::SvgZip,
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = uncertified_accordion.clone();
+            replace_with_uncertified_timeline_for_test(&mut source, uncertified_accordion.clone());
             assert!(build_pending_export(source).is_ok());
         }
 
@@ -2654,7 +3041,10 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = reopened_layer_selective.clone();
+            replace_with_live_attested_timeline_for_test(
+                &mut source,
+                reopened_layer_selective.clone(),
+            );
             let artifact = build_pending_export(source).expect("native layer-selective export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
@@ -2670,7 +3060,10 @@ pub(crate) mod tests {
             InstructionExportFormatRequest::SvgZip,
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = uncertified_layer_selective.clone();
+            replace_with_uncertified_timeline_for_test(
+                &mut source,
+                uncertified_layer_selective.clone(),
+            );
             assert!(build_pending_export(source).is_ok());
         }
 
@@ -2686,7 +3079,7 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = reopened_book_fold.clone();
+            replace_with_live_attested_timeline_for_test(&mut source, reopened_book_fold.clone());
             let artifact = build_pending_export(source).expect("native book-fold export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
@@ -2702,7 +3095,7 @@ pub(crate) mod tests {
             InstructionExportFormatRequest::SvgZip,
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = uncertified_book_fold.clone();
+            replace_with_uncertified_timeline_for_test(&mut source, uncertified_book_fold.clone());
             assert!(build_pending_export(source).is_ok());
         }
 
@@ -2723,7 +3116,10 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = reopened_outside_reverse.clone();
+            replace_with_live_attested_timeline_for_test(
+                &mut source,
+                reopened_outside_reverse.clone(),
+            );
             let artifact = build_pending_export(source).expect("native outside-reverse export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
@@ -2739,7 +3135,10 @@ pub(crate) mod tests {
             InstructionExportFormatRequest::SvgZip,
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = uncertified_outside_reverse.clone();
+            replace_with_uncertified_timeline_for_test(
+                &mut source,
+                uncertified_outside_reverse.clone(),
+            );
             assert!(build_pending_export(source).is_ok());
         }
 
@@ -2755,7 +3154,7 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = reopened_squash.clone();
+            replace_with_live_attested_timeline_for_test(&mut source, reopened_squash.clone());
             let artifact = build_pending_export(source).expect("native squash-fold export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
@@ -2770,7 +3169,7 @@ pub(crate) mod tests {
             InstructionExportFormatRequest::SvgZip,
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = uncertified_squash.clone();
+            replace_with_uncertified_timeline_for_test(&mut source, uncertified_squash.clone());
             assert!(build_pending_export(source).is_ok());
         }
 
@@ -2790,7 +3189,7 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = reopened_petal.clone();
+            replace_with_uncertified_timeline_for_test(&mut source, reopened_petal.clone());
             let artifact = build_pending_export(source).expect("uncertified petal-fold export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
@@ -2807,7 +3206,7 @@ pub(crate) mod tests {
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = reopened_crimp.clone();
+            replace_with_live_attested_timeline_for_test(&mut source, reopened_crimp.clone());
             let artifact = build_pending_export(source).expect("native crimp-fold export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
@@ -2822,7 +3221,7 @@ pub(crate) mod tests {
             InstructionExportFormatRequest::SvgZip,
         ] {
             let mut source = source_for(&project, format);
-            source.timeline = uncertified_crimp.clone();
+            replace_with_uncertified_timeline_for_test(&mut source, uncertified_crimp.clone());
             assert!(build_pending_export(source).is_ok());
         }
 
@@ -2867,6 +3266,176 @@ pub(crate) mod tests {
         assert_eq!(
             build_pending_export(stale_revision).map(|_| ()),
             Err(InstructionExportErrorCategory::DocumentContractInvalid)
+        );
+    }
+
+    #[test]
+    fn archive_reopen_downgrades_structured_path_references_and_export_fails_closed_v1() {
+        let project = project_with_structured_proof_instruction();
+        let mut archive = project.project_archive().expect("proof-bearing archive");
+        archive.editor_history = None;
+        let segment_count = archive.document.instruction_timeline.steps.len();
+        for (segment_index, step) in archive
+            .document
+            .instruction_timeline
+            .steps
+            .iter_mut()
+            .enumerate()
+        {
+            step.visual.named_technique_compiler_v1 =
+                Some(ori_domain::NamedTechniqueCompilerMetadataV1 {
+                    version: 1,
+                    model_id: ori_domain::NAMED_TECHNIQUE_COMPILER_MODEL_ID_V1.to_owned(),
+                    technique_kind: "accordion".to_owned(),
+                    segment_index,
+                    segment_count,
+                    compiler_output_sha256: [1; 32],
+                });
+        }
+        let compiler_output_sha256 = ori_domain::named_technique_compiler_output_sha256_v1(
+            &archive.document.instruction_timeline.steps,
+        )
+        .expect("compiler timeline digest");
+        for step in &mut archive.document.instruction_timeline.steps {
+            step.visual
+                .named_technique_compiler_v1
+                .as_mut()
+                .expect("compiler metadata")
+                .compiler_output_sha256 = compiler_output_sha256;
+        }
+        ori_domain::validate_instruction_timeline(&archive.document.instruction_timeline)
+            .expect("proof-bearing compiler timeline is valid before reopen");
+        let reopened = ProjectState::from_project_archive(archive, PathBuf::new())
+            .expect("reopen proof-bearing archive");
+        assert!(
+            reopened
+                .editor
+                .instruction_timeline()
+                .steps
+                .iter()
+                .any(|step| step.visual.path_certificate_reference_v1.is_some()),
+            "the archive remains losslessly editable"
+        );
+        let visible = super::super::snapshot(&reopened);
+        ori_domain::validate_instruction_timeline(&visible.instruction_timeline)
+            .expect("downgraded projection remains a valid domain timeline");
+        assert!(
+            visible
+                .instruction_timeline
+                .steps
+                .iter()
+                .all(|step| step.visual.path_certificate_reference_v1.is_none()),
+            "untrusted reopened references are exposed to the UI only as text-only claims"
+        );
+        assert!(
+            visible
+                .instruction_timeline
+                .steps
+                .iter()
+                .all(|step| step.visual.named_technique_compiler_v1.is_none()),
+            "proof-bearing compiler provenance is downgraded as one complete group"
+        );
+
+        let project_id = reopened.project_id;
+        let revision = reopened.editor.revision();
+        let error = capture_export_source(
+            &AppState::new(reopened),
+            ProjectId::new(),
+            project_id,
+            revision,
+            InstructionExportFormatRequest::Pdf,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(PHASE_VALIDATING)),
+        )
+        .map(|_| ());
+        assert_eq!(
+            error,
+            Err(InstructionExportErrorCategory::DocumentInputInvalid)
+        );
+    }
+
+    #[test]
+    fn project_replacement_discards_even_a_populated_in_process_path_registry_v1() {
+        let mut current = project_with_structured_proof_instruction();
+        let replacement = project_with_structured_proof_instruction();
+        let replacement_instance = replacement.instance_id;
+        let replacement_project = replacement.project_id;
+        let replacement_timeline = replacement.editor.instruction_timeline().clone();
+        assert!(
+            replacement
+                .trusted_path_certificates
+                .export_attestation_v1(
+                    replacement_instance,
+                    replacement_project,
+                    &replacement_timeline,
+                )
+                .unwrap()
+                .is_some()
+        );
+
+        super::super::applied_pose::commit_project_replacement(&mut current, replacement)
+            .expect("replace project and invalidate every non-persisted trust token");
+
+        assert_eq!(current.instance_id, replacement_instance);
+        assert_eq!(current.project_id, replacement_project);
+        assert_eq!(current.trusted_path_certificates.len_v1(), 0);
+        assert!(
+            current
+                .trusted_path_certificates
+                .export_attestation_v1(
+                    current.instance_id,
+                    current.project_id,
+                    current.editor.instruction_timeline(),
+                )
+                .is_err()
+        );
+        assert!(
+            super::super::snapshot(&current)
+                .instruction_timeline
+                .steps
+                .iter()
+                .all(|step| step.visual.path_certificate_reference_v1.is_none())
+        );
+    }
+
+    #[test]
+    fn live_path_registry_tracks_exact_undo_and_redo_timelines_v1() {
+        let mut project = project_with_structured_proof_instruction();
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        assert_eq!(
+            super::super::snapshot(&project)
+                .instruction_timeline
+                .steps
+                .iter()
+                .filter(|step| step.visual.path_certificate_reference_v1.is_some())
+                .count(),
+            2
+        );
+
+        let undone =
+            super::super::execute_undo(&mut project, instance, project_id, revision).unwrap();
+        assert_eq!(
+            undone
+                .instruction_timeline
+                .steps
+                .iter()
+                .filter(|step| step.visual.path_certificate_reference_v1.is_some())
+                .count(),
+            1
+        );
+        let redone =
+            super::super::execute_redo(&mut project, instance, project_id, undone.revision)
+                .unwrap();
+        assert_eq!(
+            redone
+                .instruction_timeline
+                .steps
+                .iter()
+                .filter(|step| step.visual.path_certificate_reference_v1.is_some())
+                .count(),
+            2
         );
     }
 

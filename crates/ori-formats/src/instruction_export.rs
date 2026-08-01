@@ -5,7 +5,11 @@ mod layout;
 mod pdf;
 mod svg_zip;
 
-use ori_domain::{CreasePattern, InstructionTimeline, Paper};
+use ori_collision::CertifiedPoseGraphPathCertificateV1;
+use ori_domain::{
+    CreasePattern, InstructionStepId, InstructionTimeline, Paper, PathCertificateReferenceV1,
+    validate_instruction_timeline,
+};
 pub use ori_instructions::{InstructionDiagramError, InstructionDiagramLimits};
 use ori_instructions::{
     build_instruction_diagram_plan_with_limits, instruction_pose_fingerprint_v1,
@@ -235,6 +239,160 @@ pub enum InstructionExportError {
     Json(#[from] serde_json::Error),
 }
 
+/// One exact persisted reference that a trusted native caller has matched to
+/// an in-process path certificate.
+///
+/// This value is intentionally not serializable. Archive data alone must
+/// never be able to opt itself into the trusted export path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrustedPathCertificateReferenceV1 {
+    step_id: InstructionStepId,
+    source_step_id: Option<InstructionStepId>,
+    source_fixed_face: Option<ori_domain::FaceId>,
+    target_fixed_face: Option<ori_domain::FaceId>,
+    source_pose_binding_sha256: Option<[u8; 32]>,
+    target_pose_binding_sha256: Option<[u8; 32]>,
+    reference: PathCertificateReferenceV1,
+}
+
+impl TrustedPathCertificateReferenceV1 {
+    fn new(
+        source: Option<&ori_domain::InstructionStep>,
+        target: &ori_domain::InstructionStep,
+        reference: PathCertificateReferenceV1,
+    ) -> Self {
+        let source_fixed_face = source.and_then(|step| step.pose.fixed_face);
+        let target_fixed_face = target.pose.fixed_face;
+        let source_pose_binding_sha256 = source_fixed_face.and_then(|fixed_face| {
+            source.map(|step| {
+                instruction_pose_fingerprint_v1(
+                    &step.pose.source_model_fingerprint,
+                    fixed_face,
+                    &step.pose.hinge_angles,
+                )
+            })
+        });
+        let target_pose_binding_sha256 = target_fixed_face.map(|fixed_face| {
+            instruction_pose_fingerprint_v1(
+                &target.pose.source_model_fingerprint,
+                fixed_face,
+                &target.pose.hinge_angles,
+            )
+        });
+        Self {
+            step_id: target.id,
+            source_step_id: source.map(|step| step.id),
+            source_fixed_face,
+            target_fixed_face,
+            source_pose_binding_sha256,
+            target_pose_binding_sha256,
+            reference,
+        }
+    }
+}
+
+/// Opaque, non-persisted attestation binding every structured path reference
+/// in one exact timeline to a trusted caller-supplied reference set.
+///
+/// The ordinary export API never creates this value and therefore rejects
+/// every structured path-certificate claim. Applications may construct it
+/// only after matching the references to live native-issued certificates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathCertificateExportAttestationV1 {
+    references: Vec<TrustedPathCertificateReferenceV1>,
+}
+
+impl PathCertificateExportAttestationV1 {
+    pub fn from_native_path_certificates_v1(
+        timeline: &InstructionTimeline,
+        certificates_in_reference_order: &[&CertifiedPoseGraphPathCertificateV1],
+    ) -> Result<Self, InstructionExportError> {
+        validate_instruction_timeline(timeline).map_err(|_| {
+            InstructionExportError::InvalidPathCertificateReference {
+                step_index: first_path_certificate_reference_step_v1(timeline),
+            }
+        })?;
+        let expected = collect_path_certificate_references_v1(timeline)?;
+        if expected.len() != certificates_in_reference_order.len() {
+            return Err(InstructionExportError::InvalidPathCertificateReference {
+                step_index: first_path_certificate_reference_step_v1(timeline),
+            });
+        }
+        for (trusted, certificate) in expected
+            .iter()
+            .zip(certificates_in_reference_order.iter().copied())
+        {
+            let step_index = timeline
+                .steps
+                .iter()
+                .position(|step| step.id == trusted.step_id)
+                .ok_or(InstructionExportError::InvalidPathCertificateReference { step_index: 0 })?;
+            let target = timeline
+                .steps
+                .get(step_index)
+                .ok_or(InstructionExportError::InvalidPathCertificateReference { step_index })?;
+            let source = step_index
+                .checked_sub(1)
+                .and_then(|index| timeline.steps.get(index))
+                .ok_or(InstructionExportError::InvalidPathCertificateReference { step_index })?;
+            let target_fixed_face = target.pose.fixed_face;
+            let source_has_same_fixed_face = source.pose.fixed_face == target_fixed_face;
+            let same_source_model =
+                source.pose.source_model_fingerprint == target.pose.source_model_fingerprint;
+            let fixed_face = target_fixed_face
+                .ok_or(InstructionExportError::InvalidPathCertificateReference { step_index })?;
+            let instruction_source = instruction_pose_fingerprint_v1(
+                &target.pose.source_model_fingerprint,
+                fixed_face,
+                &source.pose.hinge_angles,
+            );
+            let instruction_target = instruction_pose_fingerprint_v1(
+                &target.pose.source_model_fingerprint,
+                fixed_face,
+                &target.pose.hinge_angles,
+            );
+            let live_reference_endpoints_match = trusted.reference.source_pose_sha256
+                == instruction_source
+                && trusted.reference.target_pose_sha256 == instruction_target;
+            let live_certificate_endpoints_match = certificate.edges().iter().any(|edge| {
+                edge.source() == instruction_source && edge.target() == instruction_target
+            });
+            let source_model_binding_matches = trusted.reference.source_model_binding_sha256
+                == path_certificate_source_model_binding_v1(&target.pose.source_model_fingerprint);
+            if !certificate.is_native_attestable_v1()
+                || certificate.native_fixed_face_v1() != Some(fixed_face)
+                || !source_has_same_fixed_face
+                || !same_source_model
+                || !source_model_binding_matches
+                || certificate.native_source_model_binding_v1()
+                    != Some(trusted.reference.source_model_binding_sha256)
+                || !live_reference_endpoints_match
+                || !live_certificate_endpoints_match
+                || !certificate.matches_path_certificate_reference_v1(&trusted.reference)
+            {
+                return Err(InstructionExportError::InvalidPathCertificateReference { step_index });
+            }
+        }
+        Ok(Self {
+            references: expected,
+        })
+    }
+
+    #[cfg(test)]
+    fn from_trusted_references_for_layout_test_v1(
+        timeline: &InstructionTimeline,
+    ) -> Result<Self, InstructionExportError> {
+        validate_instruction_timeline(timeline).map_err(|_| {
+            InstructionExportError::InvalidPathCertificateReference {
+                step_index: first_path_certificate_reference_step_v1(timeline),
+            }
+        })?;
+        Ok(Self {
+            references: collect_path_certificate_references_v1(timeline)?,
+        })
+    }
+}
+
 pub fn export_instruction_document(
     format: InstructionExportFormat,
     title: &str,
@@ -257,6 +415,30 @@ pub fn export_instruction_document(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn export_instruction_document_with_path_certificate_attestation_v1(
+    format: InstructionExportFormat,
+    title: &str,
+    current_fold_model_fingerprint: &str,
+    pattern: &CreasePattern,
+    paper: &Paper,
+    timeline: &InstructionTimeline,
+    topology: &TopologySnapshot,
+    attestation: &PathCertificateExportAttestationV1,
+) -> Result<InstructionExportArtifact, InstructionExportError> {
+    export_instruction_document_with_limits_and_path_certificate_attestation_v1(
+        format,
+        title,
+        current_fold_model_fingerprint,
+        pattern,
+        paper,
+        timeline,
+        topology,
+        InstructionExportLimits::default(),
+        attestation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn export_instruction_document_with_limits(
     format: InstructionExportFormat,
     title: &str,
@@ -267,9 +449,8 @@ pub fn export_instruction_document_with_limits(
     topology: &TopologySnapshot,
     limits: InstructionExportLimits,
 ) -> Result<InstructionExportArtifact, InstructionExportError> {
-    validate_title(title)?;
-    let title = canonical_instruction_title(title);
-    let (plan, font) = build_canonical_instruction_plan(
+    export_instruction_document_with_limits_and_optional_path_certificate_attestation_v1(
+        format,
         title,
         current_fold_model_fingerprint,
         pattern,
@@ -277,6 +458,58 @@ pub fn export_instruction_document_with_limits(
         timeline,
         topology,
         limits,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn export_instruction_document_with_limits_and_path_certificate_attestation_v1(
+    format: InstructionExportFormat,
+    title: &str,
+    current_fold_model_fingerprint: &str,
+    pattern: &CreasePattern,
+    paper: &Paper,
+    timeline: &InstructionTimeline,
+    topology: &TopologySnapshot,
+    limits: InstructionExportLimits,
+    attestation: &PathCertificateExportAttestationV1,
+) -> Result<InstructionExportArtifact, InstructionExportError> {
+    export_instruction_document_with_limits_and_optional_path_certificate_attestation_v1(
+        format,
+        title,
+        current_fold_model_fingerprint,
+        pattern,
+        paper,
+        timeline,
+        topology,
+        limits,
+        Some(attestation),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_instruction_document_with_limits_and_optional_path_certificate_attestation_v1(
+    format: InstructionExportFormat,
+    title: &str,
+    current_fold_model_fingerprint: &str,
+    pattern: &CreasePattern,
+    paper: &Paper,
+    timeline: &InstructionTimeline,
+    topology: &TopologySnapshot,
+    limits: InstructionExportLimits,
+    attestation: Option<&PathCertificateExportAttestationV1>,
+) -> Result<InstructionExportArtifact, InstructionExportError> {
+    validate_title(title)?;
+    let title = canonical_instruction_title(title);
+    let (plan, font) = build_canonical_instruction_plan_with_path_certificate_attestation_v1(
+        title,
+        current_fold_model_fingerprint,
+        pattern,
+        paper,
+        timeline,
+        topology,
+        limits,
+        attestation,
     )?;
     let bytes = match format {
         InstructionExportFormat::Pdf17 => pdf::serialize_instruction_pdf(
@@ -318,6 +551,7 @@ pub fn export_instruction_document_with_limits(
     })
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn build_canonical_instruction_plan(
     title: &str,
@@ -328,7 +562,30 @@ fn build_canonical_instruction_plan(
     topology: &TopologySnapshot,
     limits: InstructionExportLimits,
 ) -> Result<(CanonicalInstructionPlanV1, font::InstructionFont<'static>), InstructionExportError> {
-    validate_path_certificate_references(timeline)?;
+    build_canonical_instruction_plan_with_path_certificate_attestation_v1(
+        title,
+        current_fold_model_fingerprint,
+        pattern,
+        paper,
+        timeline,
+        topology,
+        limits,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_canonical_instruction_plan_with_path_certificate_attestation_v1(
+    title: &str,
+    current_fold_model_fingerprint: &str,
+    pattern: &CreasePattern,
+    paper: &Paper,
+    timeline: &InstructionTimeline,
+    topology: &TopologySnapshot,
+    limits: InstructionExportLimits,
+    attestation: Option<&PathCertificateExportAttestationV1>,
+) -> Result<(CanonicalInstructionPlanV1, font::InstructionFont<'static>), InstructionExportError> {
+    validate_path_certificate_references(timeline, attestation)?;
     let diagram = build_instruction_diagram_plan_with_limits(
         current_fold_model_fingerprint,
         pattern,
@@ -346,23 +603,111 @@ fn build_canonical_instruction_plan(
         &font,
         limits,
     )?;
+    let allocation_error =
+        || InstructionExportError::Diagram(InstructionDiagramError::ResourceLimitExceeded);
+    let mut frozen_title = String::new();
+    frozen_title
+        .try_reserve_exact(title.len())
+        .map_err(|_| allocation_error())?;
+    frozen_title.push_str(title);
+    let mut warnings = Vec::new();
+    warnings
+        .try_reserve_exact(INSTRUCTION_EXPORT_WARNINGS.len())
+        .map_err(|_| allocation_error())?;
+    warnings.extend_from_slice(&INSTRUCTION_EXPORT_WARNINGS);
     let plan = CanonicalInstructionPlanV1 {
         profile: INSTRUCTION_EXPORT_PROFILE,
         projection_profile: INSTRUCTION_PROJECTION_PROFILE,
-        title: title.to_owned(),
+        title: frozen_title,
         pages: layout.pages,
         step_count: timeline.steps.len(),
         glyph_count: layout.glyph_count,
         projected_vertex_visits: diagram.projected_vertex_visits,
-        warnings: INSTRUCTION_EXPORT_WARNINGS.to_vec(),
+        warnings,
     };
     plan.validate(&font)?;
     Ok((plan, font))
 }
 
+fn collect_path_certificate_references_v1(
+    timeline: &InstructionTimeline,
+) -> Result<Vec<TrustedPathCertificateReferenceV1>, InstructionExportError> {
+    let reference_count = timeline
+        .steps
+        .iter()
+        .filter(|step| step.visual.path_certificate_reference_v1.is_some())
+        .count();
+    let mut references = Vec::new();
+    references.try_reserve_exact(reference_count).map_err(|_| {
+        InstructionExportError::Diagram(InstructionDiagramError::ResourceLimitExceeded)
+    })?;
+    for (step_index, step) in timeline.steps.iter().enumerate() {
+        let Some(reference) = step.visual.path_certificate_reference_v1.as_ref() else {
+            continue;
+        };
+        let mut model_id = String::new();
+        model_id
+            .try_reserve_exact(reference.model_id.len())
+            .map_err(|_| {
+                InstructionExportError::Diagram(InstructionDiagramError::ResourceLimitExceeded)
+            })?;
+        model_id.push_str(&reference.model_id);
+        references.push(TrustedPathCertificateReferenceV1::new(
+            step_index
+                .checked_sub(1)
+                .and_then(|index| timeline.steps.get(index)),
+            step,
+            PathCertificateReferenceV1 {
+                version: reference.version,
+                model_id,
+                binding_sha256: reference.binding_sha256,
+                source_pose_sha256: reference.source_pose_sha256,
+                target_pose_sha256: reference.target_pose_sha256,
+                source_model_binding_sha256: reference.source_model_binding_sha256,
+                transition_count: reference.transition_count,
+            },
+        ));
+    }
+    Ok(references)
+}
+
+fn first_path_certificate_reference_step_v1(timeline: &InstructionTimeline) -> usize {
+    timeline
+        .steps
+        .iter()
+        .position(|step| step.visual.path_certificate_reference_v1.is_some())
+        .unwrap_or(0)
+}
+
+fn path_certificate_source_model_binding_v1(source_model_fingerprint: &str) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"path_certificate_source_model_binding_v1");
+    hash.update(source_model_fingerprint.as_bytes());
+    hash.finalize().into()
+}
+
 fn validate_path_certificate_references(
     timeline: &InstructionTimeline,
+    attestation: Option<&PathCertificateExportAttestationV1>,
 ) -> Result<(), InstructionExportError> {
+    validate_instruction_timeline(timeline).map_err(|_| {
+        InstructionExportError::InvalidPathCertificateReference {
+            step_index: first_path_certificate_reference_step_v1(timeline),
+        }
+    })?;
+    let persisted_references = collect_path_certificate_references_v1(timeline)?;
+    if attestation.map(|value| value.references.as_slice()) != Some(persisted_references.as_slice())
+        && !persisted_references.is_empty()
+    {
+        return Err(InstructionExportError::InvalidPathCertificateReference {
+            step_index: first_path_certificate_reference_step_v1(timeline),
+        });
+    }
+    if persisted_references.is_empty()
+        && attestation.is_some_and(|value| !value.references.is_empty())
+    {
+        return Err(InstructionExportError::InvalidPathCertificateReference { step_index: 0 });
+    }
     for (step_index, step) in timeline.steps.iter().enumerate() {
         let claims_certified_path = [&step.title, &step.description, &step.caution]
             .iter()
@@ -409,6 +754,11 @@ fn validate_path_certificate_references(
         match &step.visual.path_certificate_reference_v1 {
             None if reference_count == 0 && !claims_certified_path => {}
             Some(reference) if reference_count == 1 => {
+                if step.pose.model != ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1 {
+                    return Err(InstructionExportError::InvalidPathCertificateReference {
+                        step_index,
+                    });
+                }
                 let fixed_face = step.pose.fixed_face.ok_or(
                     InstructionExportError::InvalidPathCertificateReference { step_index },
                 )?;
@@ -418,15 +768,13 @@ fn validate_path_certificate_references(
                     .filter(|previous| {
                         previous.pose.model
                             == ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1
+                            && previous.pose.fixed_face == Some(fixed_face)
                             && previous.pose.source_model_fingerprint
                                 == step.pose.source_model_fingerprint
                     })
                     .ok_or(InstructionExportError::InvalidPathCertificateReference {
                         step_index,
                     })?;
-                let mut model_hash = Sha256::new();
-                model_hash.update(b"path_certificate_source_model_binding_v1");
-                model_hash.update(step.pose.source_model_fingerprint.as_bytes());
                 let instruction_endpoints_match = reference.source_pose_sha256
                     == instruction_pose_fingerprint_v1(
                         &step.pose.source_model_fingerprint,
@@ -439,14 +787,12 @@ fn validate_path_certificate_references(
                             fixed_face,
                             &step.pose.hinge_angles,
                         );
-                let graph_endpoints_match = reference.source_pose_sha256
-                    == stacked_fold_graph_pose_fingerprint_v1(&previous.pose.hinge_angles)
-                    && reference.target_pose_sha256
-                        == stacked_fold_graph_pose_fingerprint_v1(&step.pose.hinge_angles);
                 if described_binding != Some(reference.binding_sha256)
                     || reference.source_model_binding_sha256
-                        != <[u8; 32]>::from(model_hash.finalize())
-                    || !(instruction_endpoints_match || graph_endpoints_match)
+                        != path_certificate_source_model_binding_v1(
+                            &step.pose.source_model_fingerprint,
+                        )
+                    || !instruction_endpoints_match
                 {
                     return Err(InstructionExportError::InvalidPathCertificateReference {
                         step_index,
@@ -461,10 +807,13 @@ fn validate_path_certificate_references(
     Ok(())
 }
 
+#[cfg(test)]
 fn stacked_fold_graph_pose_fingerprint_v1(
     hinge_angles: &[ori_domain::InstructionHingeAngle],
-) -> [u8; 32] {
-    let mut canonical = hinge_angles.to_vec();
+) -> Option<[u8; 32]> {
+    let mut canonical = Vec::new();
+    canonical.try_reserve_exact(hinge_angles.len()).ok()?;
+    canonical.extend_from_slice(hinge_angles);
     canonical.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
     let mut hash = Sha256::new();
     hash.update(b"stacked_fold_certified_path_graph_state_v1");
@@ -473,7 +822,7 @@ fn stacked_fold_graph_pose_fingerprint_v1(
         hash.update(hinge.edge.canonical_bytes());
         hash.update(hinge.angle_degrees.to_bits().to_be_bytes());
     }
-    hash.finalize().into()
+    Some(hash.finalize().into())
 }
 
 fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
@@ -525,8 +874,9 @@ mod tests {
     };
 
     use ori_domain::{
-        Edge, EdgeId, EdgeKind, InstructionHingeAngle, InstructionPose, InstructionPoseModel,
-        InstructionStep, InstructionStepId, Point2, ProjectId, Vertex, VertexId,
+        Edge, EdgeId, EdgeKind, FaceId, InstructionHingeAngle, InstructionPose,
+        InstructionPoseModel, InstructionStep, InstructionStepId, Point2, ProjectId, Vertex,
+        VertexId,
     };
     use ori_topology::{FaceExtractionInput, analyze_faces};
     use sha2::{Digest, Sha256};
@@ -541,6 +891,13 @@ mod tests {
         paper: Paper,
         topology: TopologySnapshot,
         fold: EdgeId,
+    }
+
+    fn trusted_attestation_for_test(
+        timeline: &InstructionTimeline,
+    ) -> PathCertificateExportAttestationV1 {
+        PathCertificateExportAttestationV1::from_trusted_references_for_layout_test_v1(timeline)
+            .expect("module-local layout fixture has a valid structured reference")
     }
 
     fn fixture_vertex_id(index: u64) -> VertexId {
@@ -892,6 +1249,26 @@ mod tests {
     #[test]
     fn certified_path_reference_survives_step_layout_and_both_final_formats() {
         let fixture = fixture();
+        let build_canonical_instruction_plan =
+            |title: &str,
+             current_fold_model_fingerprint: &str,
+             pattern: &CreasePattern,
+             paper: &Paper,
+             timeline: &InstructionTimeline,
+             topology: &TopologySnapshot,
+             limits: InstructionExportLimits| {
+                let attestation = trusted_attestation_for_test(timeline);
+                build_canonical_instruction_plan_with_path_certificate_attestation_v1(
+                    title,
+                    current_fold_model_fingerprint,
+                    pattern,
+                    paper,
+                    timeline,
+                    topology,
+                    limits,
+                    Some(&attestation),
+                )
+            };
         let certificate_reference = "7c".repeat(32);
         let mut timeline = timeline(&fixture, "開始姿勢です。".to_owned());
         timeline.steps[1].description = format!(
@@ -919,6 +1296,18 @@ mod tests {
                 source_model_binding_sha256: model_hash.finalize().into(),
                 transition_count: 1,
             });
+        assert!(matches!(
+            super::build_canonical_instruction_plan(
+                "trusted-reference-required",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &timeline,
+                &fixture.topology,
+                InstructionExportLimits::default(),
+            ),
+            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
+        ));
         let (plan, font) = build_canonical_instruction_plan(
             "証明付き手順",
             FINGERPRINT,
@@ -1096,11 +1485,12 @@ mod tests {
             Err(InstructionExportError::LayoutLimitExceeded)
         ));
 
+        let reopened_attestation = trusted_attestation_for_test(&reopened);
         for format in [
             InstructionExportFormat::Pdf17,
             InstructionExportFormat::SvgPageZip,
         ] {
-            let artifact = export_instruction_document(
+            let artifact = export_instruction_document_with_path_certificate_attestation_v1(
                 format,
                 "証明付き手順",
                 FINGERPRINT,
@@ -1108,6 +1498,7 @@ mod tests {
                 &fixture.paper,
                 &reopened,
                 &fixture.topology,
+                &reopened_attestation,
             )
             .expect("proof-bearing export");
             assert_eq!(artifact.step_count, reopened.steps.len());
@@ -1117,10 +1508,12 @@ mod tests {
         let mut graph_bound_reopened = reopened.clone();
         let graph_source = stacked_fold_graph_pose_fingerprint_v1(
             &graph_bound_reopened.steps[0].pose.hinge_angles,
-        );
+        )
+        .expect("bounded graph source fingerprint");
         let graph_target = stacked_fold_graph_pose_fingerprint_v1(
             &graph_bound_reopened.steps[1].pose.hinge_angles,
-        );
+        )
+        .expect("bounded graph target fingerprint");
         let graph_reference = graph_bound_reopened.steps[1]
             .visual
             .path_certificate_reference_v1
@@ -1128,21 +1521,69 @@ mod tests {
             .expect("graph-bound structured proof reference");
         graph_reference.source_pose_sha256 = graph_source;
         graph_reference.target_pose_sha256 = graph_target;
+        let graph_attestation = trusted_attestation_for_test(&graph_bound_reopened);
         for format in [
             InstructionExportFormat::Pdf17,
             InstructionExportFormat::SvgPageZip,
         ] {
-            export_instruction_document(
-                format,
-                "pose-graph証明付き手順",
+            assert!(matches!(
+                export_instruction_document_with_path_certificate_attestation_v1(
+                    format,
+                    "pose-graph証明付き手順",
+                    FINGERPRINT,
+                    &fixture.pattern,
+                    &fixture.paper,
+                    &graph_bound_reopened,
+                    &fixture.topology,
+                    &graph_attestation,
+                ),
+                Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
+            ));
+        }
+
+        let mut mismatched_fixed_face = reopened.clone();
+        mismatched_fixed_face.steps[0].pose.fixed_face = Some(FaceId::new());
+        assert!(matches!(
+            export_instruction_document_with_path_certificate_attestation_v1(
+                InstructionExportFormat::Pdf17,
+                "fixed-face drift",
                 FINGERPRINT,
                 &fixture.pattern,
                 &fixture.paper,
-                &graph_bound_reopened,
+                &mismatched_fixed_face,
                 &fixture.topology,
-            )
-            .expect("graph-bound proof-bearing export");
-        }
+                &reopened_attestation,
+            ),
+            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
+        ));
+
+        let mut coordinated_tamper = reopened.clone();
+        let tampered_reference = coordinated_tamper.steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .as_mut()
+            .expect("instruction-bound structured proof reference");
+        tampered_reference.binding_sha256[0] ^= 1;
+        let tampered_binding = tampered_reference
+            .binding_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        coordinated_tamper.steps[1].description =
+            format!("経路証明 SHA-256: {tampered_binding} / 元モデル SHA-256: {FINGERPRINT}");
+        assert!(matches!(
+            export_instruction_document_with_path_certificate_attestation_v1(
+                InstructionExportFormat::Pdf17,
+                "coordinated tamper",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &coordinated_tamper,
+                &fixture.topology,
+                &reopened_attestation,
+            ),
+            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
+        ));
 
         let mut malformed_reference = reopened.clone();
         malformed_reference.steps[1].description = format!(

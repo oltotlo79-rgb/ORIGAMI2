@@ -279,6 +279,18 @@ fn non_flat_three_hinge_continuation_chains_twice_with_exact_source_anchor() {
                 .iter()
                 .all(|angle| angle.angle_degrees().to_bits() == target.to_bits())
         );
+        assert!(
+            project
+                .trusted_path_certificates
+                .export_attestation_v1(
+                    project.instance_id,
+                    project.project_id,
+                    project.editor.instruction_timeline(),
+                )
+                .expect("live non-flat continuation registry")
+                .is_some(),
+            "a successful continuation must be immediately export-attestable"
+        );
     }
     let project = lock_project(&app_state).unwrap();
     assert_eq!(project.editor.revision(), 2);
@@ -518,7 +530,7 @@ fn non_flat_continuation_pose_reissue_failure_rolls_back_the_complete_project() 
     let app_state = AppState::new(project);
     let foldability_state = GlobalFlatFoldabilityState::default();
     let state = NonFlatCycleContinuationState::default();
-    let (document_before, layer_before, pose_before) = {
+    let (document_before, layer_before, pose_before, registry_len_before) = {
         let project = lock_project(&app_state).unwrap();
         (
             project.document(),
@@ -528,6 +540,7 @@ fn non_flat_continuation_pose_reissue_failure_rolls_back_the_complete_project() 
                 .capture_capability(&project)
                 .unwrap()
                 .unwrap(),
+            project.trusted_path_certificates.len_v1(),
         )
     };
     let request = {
@@ -554,6 +567,11 @@ fn non_flat_continuation_pose_reissue_failure_rolls_back_the_complete_project() 
     let project = lock_project(&app_state).unwrap();
     assert_eq!(project.document(), document_before);
     assert_eq!(project.current_layer_evidence, layer_before);
+    assert_eq!(
+        project.trusted_path_certificates.len_v1(),
+        registry_len_before,
+        "a post-mutation rollback must retain the old registry image"
+    );
     assert!(
         project
             .applied_pose_authority

@@ -58,14 +58,14 @@ fn blockwise_control_gate_rejects_stops_and_accepts_only_current_generation() {
 }
 
 #[test]
-fn three_block_transport_preflight_enforces_the_aggregate_and_every_exact_limit() {
+fn bounded_multi_block_transport_preflight_enforces_six_proof_aggregate_and_exact_limits() {
     use ori_collision::GeneralCellTransportLimitsV1;
 
     use super::stacked_fold_blockwise_cycle::{
-        ThreeBlockCellTransportWorkV1, preflight_three_block_transport_aggregate_v1,
+        BoundedMultiBlockCellTransportWorkV1, preflight_bounded_multi_block_transport_aggregate_v1,
     };
 
-    let per_proof = ThreeBlockCellTransportWorkV1 {
+    let per_proof = BoundedMultiBlockCellTransportWorkV1 {
         transitions: 3,
         cells: 5,
         layer_records: 7,
@@ -77,7 +77,18 @@ fn three_block_transport_preflight_enforces_the_aggregate_and_every_exact_limit(
         .checked_add_v1(per_proof)
         .and_then(|work| work.checked_add_v1(per_proof))
         .and_then(|work| work.checked_add_v1(per_proof))
-        .expect("four-proof aggregate");
+        .and_then(|work| work.checked_add_v1(per_proof))
+        .and_then(|work| work.checked_add_v1(per_proof))
+        .expect("whole-parent plus five-block aggregate");
+    assert_eq!(
+        (
+            aggregate.transitions,
+            aggregate.cells,
+            aggregate.layer_records,
+            aggregate.boundary_samples,
+        ),
+        (18, 30, 42, 66),
+    );
     let exact = GeneralCellTransportLimitsV1 {
         max_transitions: aggregate.transitions,
         max_cells: aggregate.cells,
@@ -85,12 +96,12 @@ fn three_block_transport_preflight_enforces_the_aggregate_and_every_exact_limit(
         max_boundary_samples: aggregate.boundary_samples,
     };
     assert_eq!(
-        preflight_three_block_transport_aggregate_v1(per_proof, exact),
+        preflight_bounded_multi_block_transport_aggregate_v1(per_proof, exact),
         Ok(()),
         "each individual proof fits the aggregate limits"
     );
     assert_eq!(
-        preflight_three_block_transport_aggregate_v1(aggregate, exact),
+        preflight_bounded_multi_block_transport_aggregate_v1(aggregate, exact),
         Ok(()),
         "the exact whole-operation aggregate is accepted"
     );
@@ -114,17 +125,17 @@ fn three_block_transport_preflight_enforces_the_aggregate_and_every_exact_limit(
         },
     ] {
         assert_eq!(
-            preflight_three_block_transport_aggregate_v1(aggregate, one_short),
+            preflight_bounded_multi_block_transport_aggregate_v1(aggregate, one_short),
             Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
         );
     }
 }
 
 #[test]
-fn three_block_transport_aggregate_addition_rejects_every_overflow() {
-    use super::stacked_fold_blockwise_cycle::ThreeBlockCellTransportWorkV1;
+fn bounded_multi_block_transport_aggregate_addition_rejects_every_overflow() {
+    use super::stacked_fold_blockwise_cycle::BoundedMultiBlockCellTransportWorkV1;
 
-    let one = ThreeBlockCellTransportWorkV1 {
+    let one = BoundedMultiBlockCellTransportWorkV1 {
         transitions: 1,
         cells: 1,
         layer_records: 1,
@@ -133,23 +144,23 @@ fn three_block_transport_aggregate_addition_rejects_every_overflow() {
         maximum_boundary_points: 1,
     };
     for near_overflow in [
-        ThreeBlockCellTransportWorkV1 {
+        BoundedMultiBlockCellTransportWorkV1 {
             transitions: usize::MAX,
             ..Default::default()
         },
-        ThreeBlockCellTransportWorkV1 {
+        BoundedMultiBlockCellTransportWorkV1 {
             cells: usize::MAX,
             ..Default::default()
         },
-        ThreeBlockCellTransportWorkV1 {
+        BoundedMultiBlockCellTransportWorkV1 {
             layer_records: usize::MAX,
             ..Default::default()
         },
-        ThreeBlockCellTransportWorkV1 {
+        BoundedMultiBlockCellTransportWorkV1 {
             boundary_samples: usize::MAX,
             ..Default::default()
         },
-        ThreeBlockCellTransportWorkV1 {
+        BoundedMultiBlockCellTransportWorkV1 {
             folded_faces: usize::MAX,
             ..Default::default()
         },
@@ -159,47 +170,56 @@ fn three_block_transport_aggregate_addition_rejects_every_overflow() {
 }
 
 #[test]
-fn three_block_layer_peak_preflight_accepts_exact_rejects_one_short_and_overflow() {
+fn bounded_multi_block_layer_peak_preflight_is_arity_independent_and_checked() {
     use super::stacked_fold_blockwise_cycle::{
-        checked_three_block_layer_peak_retained_bytes_v1,
-        checked_three_block_operation_peak_retained_bytes_v1,
-        preflight_three_block_layer_peak_retained_bytes_v1,
+        checked_bounded_multi_block_layer_peak_retained_bytes_v1,
+        checked_bounded_multi_block_operation_peak_retained_bytes_v1,
+        preflight_bounded_multi_block_layer_peak_retained_bytes_v1,
     };
 
-    let layer_peak = checked_three_block_layer_peak_retained_bytes_v1(10, 7)
-        .expect("three whole-source and two restricted-source copies");
-    assert_eq!(layer_peak, 44);
-    let peak = checked_three_block_operation_peak_retained_bytes_v1(layer_peak, 5, 7)
-        .expect("proof-retained and streaming workspace bytes");
+    let exact_three_restricted_sum = 2 + 2 + 3;
+    let exact_four_restricted_sum = 1 + 2 + 2 + 2;
+    assert_eq!(exact_three_restricted_sum, exact_four_restricted_sum);
+    let three_block_layer_peak =
+        checked_bounded_multi_block_layer_peak_retained_bytes_v1(10, exact_three_restricted_sum)
+            .expect("three whole-source and two restricted-source copies");
+    let four_block_layer_peak =
+        checked_bounded_multi_block_layer_peak_retained_bytes_v1(10, exact_four_restricted_sum)
+            .expect("multiplicity is independent of the number of restricted sources");
+    assert_eq!(three_block_layer_peak, 44);
+    assert_eq!(four_block_layer_peak, three_block_layer_peak);
+    let peak =
+        checked_bounded_multi_block_operation_peak_retained_bytes_v1(four_block_layer_peak, 5, 7)
+            .expect("proof-retained and streaming workspace bytes");
     assert_eq!(peak, 56);
     assert_eq!(
-        preflight_three_block_layer_peak_retained_bytes_v1(peak, peak),
+        preflight_bounded_multi_block_layer_peak_retained_bytes_v1(peak, peak),
         Ok(())
     );
     assert_eq!(
-        preflight_three_block_layer_peak_retained_bytes_v1(peak, peak - 1),
+        preflight_bounded_multi_block_layer_peak_retained_bytes_v1(peak, peak - 1),
         Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
     );
     assert_eq!(
-        checked_three_block_layer_peak_retained_bytes_v1(usize::MAX, 0),
+        checked_bounded_multi_block_layer_peak_retained_bytes_v1(usize::MAX, 0),
         None
     );
     assert_eq!(
-        checked_three_block_layer_peak_retained_bytes_v1(0, usize::MAX),
+        checked_bounded_multi_block_layer_peak_retained_bytes_v1(0, usize::MAX),
         None
     );
     assert_eq!(
-        checked_three_block_operation_peak_retained_bytes_v1(usize::MAX, 1, 0),
+        checked_bounded_multi_block_operation_peak_retained_bytes_v1(usize::MAX, 1, 0),
         None
     );
     assert_eq!(
-        checked_three_block_operation_peak_retained_bytes_v1(0, usize::MAX, 1),
+        checked_bounded_multi_block_operation_peak_retained_bytes_v1(0, usize::MAX, 1),
         None
     );
 }
 
 #[test]
-fn three_block_layer_peak_rejection_happens_before_any_source_clone() {
+fn bounded_multi_block_layer_peak_handles_exact_three_four_and_five_before_any_clone() {
     use ori_foldability::{
         GLOBAL_FLAT_FOLDABILITY_MODEL_ID, GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID,
         LayerFace, LayerOrderDerivation, LayerOrderProvenance, LayerOrderSnapshot,
@@ -207,9 +227,11 @@ fn three_block_layer_peak_rejection_happens_before_any_source_clone() {
     use ori_topology::FaceKey;
 
     use super::stacked_fold_blockwise_cycle::{
-        ThreeBlockLayerRetainedBytesV1, materialize_three_block_layer_sources_v1,
-        reset_three_block_layer_source_clone_attempts_for_test_v1,
-        three_block_layer_source_clone_attempts_for_test_v1,
+        BoundedMultiBlockLayerRetainedBytesV1,
+        bounded_multi_block_layer_source_clone_attempts_for_test_v1,
+        checked_bounded_multi_block_layer_peak_retained_bytes_v1,
+        materialize_bounded_multi_block_layer_sources_v1,
+        reset_bounded_multi_block_layer_source_clone_attempts_for_test_v1,
     };
 
     let _serial = lock_stacked_fold_read_generation_test();
@@ -236,25 +258,110 @@ fn three_block_layer_peak_rejection_happens_before_any_source_clone() {
         face_pair_orders: Vec::new(),
         proof_summary: None,
     };
-    let no_faces: &[FaceId] = &[];
-    let face_sets = [no_faces; 3];
-    let plan = ThreeBlockLayerRetainedBytesV1::for_source_v1(&source, face_sets, 5, 7)
-        .expect("checked proof-retained and temporary peak");
-    reset_three_block_layer_source_clone_attempts_for_test_v1();
+    let selected_face_ids = [face.face_id];
+    let selected_faces: &[FaceId] = &selected_face_ids;
+    let three_face_sets = [selected_faces; 3];
+    let four_face_sets = [selected_faces; 4];
+    let five_face_sets = [selected_faces; 5];
+    let three_plan =
+        BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &three_face_sets, 5, 7)
+            .expect("checked proof-retained and temporary peak");
+    let four_plan =
+        BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &four_face_sets, 5, 7)
+            .expect("four-block retained-byte plan");
+    let five_plan =
+        BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(&source, &five_face_sets, 5, 7)
+            .expect("five-block retained-byte plan");
+    assert_eq!(three_plan.block_sources.len(), 3);
+    assert_eq!(four_plan.block_sources.len(), 4);
+    assert_eq!(five_plan.block_sources.len(), 5);
+    for plan in [&three_plan, &four_plan, &five_plan] {
+        let restricted_sum = plan
+            .block_sources
+            .iter()
+            .try_fold(0usize, |sum, retained| sum.checked_add(*retained))
+            .expect("bounded restricted-source sum");
+        let source_peak = checked_bounded_multi_block_layer_peak_retained_bytes_v1(
+            plan.whole_source,
+            restricted_sum,
+        )
+        .expect("bounded source-retention peak");
+        assert_eq!(
+            plan.peak,
+            source_peak + plan.proof_retained + plan.peak_temporary
+        );
+    }
+    for unsupported_face_sets in [&[selected_faces; 2][..], &[selected_faces; 6][..]] {
+        assert_eq!(
+            BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(
+                &source,
+                unsupported_face_sets,
+                5,
+                7,
+            ),
+            Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
+        );
+    }
+    reset_bounded_multi_block_layer_source_clone_attempts_for_test_v1();
     assert_eq!(
-        materialize_three_block_layer_sources_v1(&source, face_sets, 5, 7, plan.peak - 1),
+        materialize_bounded_multi_block_layer_sources_v1(
+            &source,
+            &five_face_sets,
+            5,
+            7,
+            five_plan.peak - 1,
+        ),
         Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
     );
     assert_eq!(
-        three_block_layer_source_clone_attempts_for_test_v1(),
+        bounded_multi_block_layer_source_clone_attempts_for_test_v1(),
         0,
         "peak amplification must be rejected before the whole or restricted source is cloned"
     );
+    let (whole_source, block_sources, materialized_plan) =
+        materialize_bounded_multi_block_layer_sources_v1(
+            &source,
+            &five_face_sets,
+            5,
+            7,
+            five_plan.peak,
+        )
+        .expect("the exact five-block retained-byte peak is accepted");
+    assert_eq!(materialized_plan, five_plan);
+    assert_eq!(block_sources.len(), 5);
     assert_eq!(
-        materialize_three_block_layer_sources_v1(&source, face_sets, usize::MAX, 1, usize::MAX,),
+        bounded_multi_block_layer_source_clone_attempts_for_test_v1(),
+        6,
+        "one whole source and all five restricted sources are materialized"
+    );
+    assert!(
+        whole_source
+            .checked_deep_retained_bytes_v1()
+            .is_some_and(|actual| actual <= materialized_plan.whole_source)
+    );
+    assert!(
+        block_sources
+            .iter()
+            .zip(&materialized_plan.block_sources)
+            .all(|(source, maximum)| source
+                .checked_deep_retained_bytes_v1()
+                .is_some_and(|actual| actual <= *maximum))
+    );
+    reset_bounded_multi_block_layer_source_clone_attempts_for_test_v1();
+    assert_eq!(
+        materialize_bounded_multi_block_layer_sources_v1(
+            &source,
+            &five_face_sets,
+            usize::MAX,
+            1,
+            usize::MAX,
+        ),
         Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
     );
-    assert_eq!(three_block_layer_source_clone_attempts_for_test_v1(), 0);
+    assert_eq!(
+        bounded_multi_block_layer_source_clone_attempts_for_test_v1(),
+        0
+    );
 }
 
 #[test]

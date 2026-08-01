@@ -49,6 +49,7 @@ export type GlobalFlatFoldabilityPresentation = Readonly<{
   cancelRequested: boolean
   phaseText: string | null
   workText: string | null
+  layerViewAvailable: boolean
   summaryEntries: readonly GlobalFlatFoldabilityPresentationEntry[]
   resultEntries: readonly GlobalFlatFoldabilityPresentationEntry[]
 }>
@@ -142,6 +143,7 @@ function idlePresentation(locale: unknown): GlobalFlatFoldabilityPresentation {
     cancelRequested: false,
     phaseText: null,
     workText: null,
+    layerViewAvailable: false,
     summaryEntries: staticSummaryEntries(locale),
     resultEntries: Object.freeze([]),
   })
@@ -161,6 +163,7 @@ function invalidPresentation(
     cancelRequested: false,
     phaseText: null,
     workText: null,
+    layerViewAvailable: false,
     summaryEntries: staticSummaryEntries(locale),
     resultEntries: Object.freeze([]),
   })
@@ -200,6 +203,7 @@ function activePresentation(
     cancelRequested: job.cancel_requested,
     phaseText,
     workText,
+    layerViewAvailable: false,
     summaryEntries: summaryEntries(job.progress, locale),
     resultEntries: Object.freeze([]),
   })
@@ -219,6 +223,7 @@ function completedPresentation(
         detail: copy.possibleDetail,
         liveText: copy.possibleLive,
         summary: result.summary,
+        layerViewAvailable: result.layer_order.layer_view_available,
         resultEntries: [
           {
             label: copy.layerOrderModelLabel,
@@ -319,6 +324,7 @@ function terminalPresentation(input: Readonly<{
   liveText: string
   summary: GlobalFlatFoldabilitySummary
   resultEntries?: readonly GlobalFlatFoldabilityPresentationEntry[]
+  layerViewAvailable?: boolean
 }>, locale: unknown): GlobalFlatFoldabilityPresentation {
   return Object.freeze({
     kind: input.kind,
@@ -330,6 +336,7 @@ function terminalPresentation(input: Readonly<{
     cancelRequested: false,
     phaseText: null,
     workText: null,
+    layerViewAvailable: input.layerViewAvailable === true,
     summaryEntries: summaryEntries(input.summary, locale),
     resultEntries: Object.freeze(
       (input.resultEntries ?? []).map((entry) => Object.freeze(entry)),

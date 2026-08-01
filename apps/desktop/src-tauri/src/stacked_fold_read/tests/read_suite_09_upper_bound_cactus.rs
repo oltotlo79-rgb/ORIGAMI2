@@ -168,7 +168,7 @@ fn sixteen_sector_upper_bound_previews_applies_reopens_and_rejects_nonopposite_p
             },
         )
         .unwrap_err(),
-        CYCLE_NONCLOSING_MESSAGE
+        CYCLE_PATH_UNCERTIFIED_MESSAGE
     );
 }
 

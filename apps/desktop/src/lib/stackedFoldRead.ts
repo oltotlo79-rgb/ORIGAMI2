@@ -314,6 +314,26 @@ const MAX_STACKED_FOLD_RENDERED_CELLS_V1 = 2_048
 const MAX_STACKED_FOLD_RENDERED_FACES_V1 = 2_048
 const MAX_STACKED_FOLD_RENDERED_CELL_LAYERS_V1 = 2_048
 const MAX_STACKED_FOLD_RENDERED_BOUNDARY_POINTS_V1 = 4_096
+const MAX_STACKED_FOLD_RENDER_VERTEX_INSTANCES_V1 = 32_768
+
+const isBoundedStackedFoldViewerCell = (value: unknown): boolean => {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ['cellKeySha256', 'bottomToTopFaces', 'boundaryWorld'])
+    || !isLowerSha256(value.cellKeySha256)
+    || !Array.isArray(value.bottomToTopFaces)
+    || value.bottomToTopFaces.length === 0
+    || value.bottomToTopFaces.length > MAX_STACKED_FOLD_RENDERED_CELL_LAYERS_V1
+    || !value.bottomToTopFaces.every(isCanonicalNonNilUuid)
+    || new Set(value.bottomToTopFaces).size !== value.bottomToTopFaces.length
+    || !Array.isArray(value.boundaryWorld)
+    || value.boundaryWorld.length < 3
+    || value.boundaryWorld.length > MAX_STACKED_FOLD_RENDERED_BOUNDARY_POINTS_V1
+    || !value.boundaryWorld.every(isFinitePoint)
+  ) return false
+  return value.bottomToTopFaces.length * value.boundaryWorld.length
+    <= MAX_STACKED_FOLD_RENDER_VERTEX_INSTANCES_V1
+}
 
 const allCounts = (value: Record<string, unknown>, fields: readonly string[]): boolean =>
   fields.every((field) => isCount(value[field]))
@@ -706,20 +726,7 @@ export function normalizeStackedFoldReadResponse(
       value.support !== 'bit_exact_flat_endpoint_tree') ||
     !Array.isArray(value.crossedCells) ||
     value.crossedCells.length > MAX_STACKED_FOLD_RENDERED_CELLS_V1 ||
-    !value.crossedCells.every(
-      (cell) =>
-        isRecord(cell) &&
-        hasExactKeys(cell, ['cellKeySha256', 'bottomToTopFaces', 'boundaryWorld']) &&
-        isLowerSha256(cell.cellKeySha256) &&
-        Array.isArray(cell.bottomToTopFaces) &&
-        cell.bottomToTopFaces.length > 0 &&
-        cell.bottomToTopFaces.length <= MAX_STACKED_FOLD_RENDERED_CELL_LAYERS_V1 &&
-        cell.bottomToTopFaces.every(isCanonicalNonNilUuid) &&
-        Array.isArray(cell.boundaryWorld) &&
-        cell.boundaryWorld.length >= 3 &&
-        cell.boundaryWorld.length <= MAX_STACKED_FOLD_RENDERED_BOUNDARY_POINTS_V1 &&
-        cell.boundaryWorld.every(isFinitePoint),
-    ) ||
+    !value.crossedCells.every(isBoundedStackedFoldViewerCell) ||
     !Array.isArray(value.targetFaces) ||
     value.targetFaces.length === 0 ||
     value.targetFaces.length > MAX_STACKED_FOLD_RENDERED_FACES_V1 ||
@@ -887,5 +894,14 @@ export function normalizeStackedFoldReadResponse(
   const cellKeys = checkedCells.map((cell) => cell.cellKeySha256)
   if (new Set(cellKeys).size !== cellKeys.length ||
     new Set(checkedTargetFaces).size !== checkedTargetFaces.length) return null
+  let renderVertexInstances = 0
+  for (const cell of checkedCells) {
+    const product = (cell.bottomToTopFaces as readonly unknown[]).length
+      * (cell.boundaryWorld as readonly unknown[]).length
+    if (product > MAX_STACKED_FOLD_RENDER_VERTEX_INSTANCES_V1 - renderVertexInstances) {
+      return null
+    }
+    renderVertexInstances += product
+  }
   return value as StackedFoldReadResponse
 }

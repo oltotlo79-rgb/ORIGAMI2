@@ -1425,6 +1425,142 @@ fn kawasaki_degree_four_generator_is_deterministic_and_resource_bounded() {
     );
 }
 
+fn bounded_kawasaki_ratio_fixture(
+    numerator: i64,
+    denominator: u64,
+) -> (MaterialHingeGraphGeometry, MaterialHingeGraphAudit, FaceId) {
+    let namespace = ProjectId::new();
+    let faces = [b"a", b"b", b"c", b"d"].map(|name| FaceId::derive_v5(namespace, name));
+    let edges = [b"ab", b"bc", b"cd", b"da"].map(|name| EdgeId::derive_v5(namespace, name));
+    let topology = TopologySnapshot {
+        source_revision: 1,
+        faces: faces
+            .iter()
+            .map(|id| Face {
+                id: *id,
+                key: FaceKey(id.canonical_bytes().repeat(2).try_into().unwrap()),
+                outer: BoundaryWalk {
+                    half_edges: Vec::new(),
+                    signed_double_area: 1.0,
+                },
+                holes: Vec::new(),
+                seams: Vec::new(),
+                area: 0.5,
+            })
+            .collect(),
+        edge_incidence: Vec::new(),
+        hinge_adjacency: (0..4)
+            .map(|index| FaceAdjacency {
+                edge: edges[index],
+                first: faces[index],
+                second: faces[(index + 1) % 4],
+                assignment: if index == 3 {
+                    FoldAssignment::Mountain
+                } else {
+                    FoldAssignment::Valley
+                },
+            })
+            .collect(),
+        material_components: Vec::new(),
+    };
+    let audit =
+        MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+    let ratio = numerator as f64 / denominator as f64;
+    let complement = (1.0 - ratio * ratio).sqrt();
+    let axes = [
+        Point3::new(1.0, 0.0, 0.0).unwrap(),
+        Point3::new(-ratio, 0.0, complement).unwrap(),
+        Point3::new(2.0 * ratio * ratio - 1.0, 0.0, -2.0 * ratio * complement).unwrap(),
+        Point3::new(ratio, 0.0, -complement).unwrap(),
+    ];
+    let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+    let geometry = MaterialHingeGraphGeometry::new_for_test(
+        faces.to_vec(),
+        (0..4)
+            .map(|index| {
+                TreeHinge::new_for_test(
+                    edges[index],
+                    if index == 3 {
+                        FoldAssignment::Mountain
+                    } else {
+                        FoldAssignment::Valley
+                    },
+                    faces[index],
+                    faces[(index + 1) % 4],
+                    start,
+                    axes[index],
+                    axes[index],
+                )
+            })
+            .collect(),
+    );
+    (geometry, audit, faces[0])
+}
+
+#[test]
+fn bounded_kawasaki_ratio_boundaries_preserve_candidate_coefficient_limits() {
+    for (numerator, denominator) in [(37, 64), (33, 65), (2_945, 4_993), (4_095, 8_192)] {
+        assert_eq!(
+            bounded_kawasaki_sector_ratio_v1(numerator as f64 / denominator as f64),
+            Some((numerator, denominator))
+        );
+    }
+    assert_eq!(bounded_kawasaki_sector_ratio_v1(4_097.0 / 8_193.0), None);
+
+    for (numerator, denominator) in [(37, 64), (33, 65), (2_945, 4_993)] {
+        let (geometry, audit, fixed_face) = bounded_kawasaki_ratio_fixture(numerator, denominator);
+        let candidate = generate_bounded_degree_four_kawasaki_path_candidate_v1(
+            &geometry,
+            &audit,
+            fixed_face,
+            CycleScheduleLimitsV1::default(),
+        )
+        .expect("an in-bound rational ratio must produce a schedule candidate");
+        assert_eq!(
+            candidate
+                .schedule()
+                .bounded_symmetric_kawasaki_profile_v1()
+                .map(|(_, _, actual_numerator, actual_denominator)| {
+                    (actual_numerator, actual_denominator)
+                }),
+            Some((numerator, denominator))
+        );
+        assert!(!candidate.authorizes_closure());
+        assert!(!candidate.authorizes_collision_clearance());
+    }
+
+    let (largest_geometry, largest_audit, largest_fixed_face) =
+        bounded_kawasaki_ratio_fixture(4_095, 8_192);
+    let largest = generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
+        &largest_geometry,
+        &largest_audit,
+        largest_fixed_face,
+        16,
+        CycleScheduleLimitsV1::default(),
+    )
+    .expect("the upper ratio bound remains within the coefficient-bit budget");
+    assert_eq!(
+        largest
+            .schedule()
+            .bounded_symmetric_kawasaki_profile_v1()
+            .map(|(_, _, numerator, denominator)| (numerator, denominator)),
+        Some((4_095, 8_192))
+    );
+    assert!(!largest.authorizes_closure());
+    assert!(!largest.authorizes_collision_clearance());
+
+    let (over_geometry, over_audit, over_fixed_face) = bounded_kawasaki_ratio_fixture(4_097, 8_193);
+    assert_eq!(
+        generate_bounded_degree_four_kawasaki_path_candidate_v1(
+            &over_geometry,
+            &over_audit,
+            over_fixed_face,
+            CycleScheduleLimitsV1::default(),
+        ),
+        Err(MultiHingePathCandidateErrorV1::CandidateRejected)
+    );
+}
+
 #[test]
 fn canonical_schedule_evaluates_and_bounds_derivative() {
     let (geometry, audit, fixed, edges) = fixture();
@@ -2320,6 +2456,49 @@ fn exact_bernstein_derivative_and_same_degree_sub_are_bounded() {
     assert_eq!(
         evaluate_pole_free_rational_dyadic_v1(&p, &q, 0.5, 64, 0),
         Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+    );
+}
+
+#[test]
+fn half_angle_schedule_maps_unit_parameters_to_non_unit_domain_endpoints_v1() {
+    let (geometry, audit, fixed_face, mut edges) = fixture();
+    edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        &geometry,
+        &audit,
+        fixed_face,
+        edges
+            .into_iter()
+            .map(|edge| HalfAngleRationalEntryInputV1 {
+                edge,
+                u_domain: [rational(-1, 1), rational(1, 1)],
+                numerator_power_coefficients: vec![rational(1, 1), rational(1, 1)],
+                denominator_power_coefficients: vec![rational(64, 1)],
+            })
+            .collect(),
+        CycleScheduleLimitsV1::default(),
+    )
+    .expect("non-unit-domain half-angle schedule");
+
+    let lower = schedule.evaluate(0.0).expect("normalized lower endpoint");
+    let upper = schedule.evaluate(1.0).expect("normalized upper endpoint");
+    let expected_lower =
+        deterministic_half_angle_ratio_degrees_v1(0.0, 64.0).expect("finite lower endpoint");
+    let expected_upper =
+        deterministic_half_angle_ratio_degrees_v1(2.0, 64.0).expect("finite upper endpoint");
+    assert_eq!(lower.as_slice().len(), geometry.hinges().len());
+    assert_eq!(upper.as_slice().len(), geometry.hinges().len());
+    assert!(
+        lower
+            .as_slice()
+            .iter()
+            .all(|angle| { angle.angle_degrees().to_bits() == expected_lower.to_bits() })
+    );
+    assert!(
+        upper
+            .as_slice()
+            .iter()
+            .all(|angle| { angle.angle_degrees().to_bits() == expected_upper.to_bits() })
     );
 }
 

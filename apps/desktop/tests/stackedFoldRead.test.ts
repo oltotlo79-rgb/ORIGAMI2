@@ -602,6 +602,46 @@ describe('stacked-fold read boundary', () => {
       ),
       null,
     )
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          crossedCells: [{
+            ...response.crossedCells[0],
+            bottomToTopFaces: [faceId, faceId],
+          }],
+        },
+        request,
+      ),
+      null,
+      'duplicate faces make the layer controls ambiguous',
+    )
+    const renderFaces = Array.from(
+      { length: 8 },
+      (_, index) => `00000000-0000-4000-8000-${(index + 1)
+        .toString(16).padStart(12, '0')}`,
+    )
+    const renderBoundary = Array.from(
+      { length: 2_049 },
+      (_, index) => [index, 0, index] as [number, number, number],
+    )
+    const renderHeavyCells = [0, 1].map((index) => ({
+      cellKeySha256: (index + 1).toString(16).padStart(64, '0'),
+      bottomToTopFaces: renderFaces,
+      boundaryWorld: renderBoundary,
+    }))
+    assert.equal(
+      normalizeStackedFoldReadResponse(
+        {
+          ...response,
+          crossedCells: renderHeavyCells,
+          work: { ...response.work, retainedCells: renderHeavyCells.length },
+        },
+        request,
+      ),
+      null,
+      'the aggregate SVG vertex-instance budget is fail closed',
+    )
     const repeatedCells = Array.from({ length: 2_049 }, (_, index) => ({
       ...response.crossedCells[0],
       cellKeySha256: index.toString(16).padStart(64, '0'),

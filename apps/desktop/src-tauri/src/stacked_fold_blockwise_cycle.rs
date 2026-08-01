@@ -73,11 +73,18 @@ pub(super) fn certified_blockwise_layer_pairs_v1(
     sources: &[Box<ori_foldability::LayerOrderSnapshot>],
     certified_pair_count: usize,
 ) -> Result<Vec<(FaceId, FaceId)>, String> {
-    let mut pairs = sources
-        .iter()
-        .flat_map(|source| source.face_pair_orders.iter())
-        .map(|pair| (pair.lower_face.face_id, pair.upper_face.face_id))
-        .collect::<Vec<_>>();
+    let pair_capacity = sources.iter().try_fold(0usize, |count, source| {
+        count.checked_add(source.face_pair_orders.len())
+    });
+    let mut pairs = Vec::new();
+    pairs
+        .try_reserve_exact(pair_capacity.ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?)
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    for source in sources {
+        for pair in &source.face_pair_orders {
+            pairs.push((pair.lower_face.face_id, pair.upper_face.face_id));
+        }
+    }
     pairs.sort_unstable_by_key(|(lower, upper)| (lower.canonical_bytes(), upper.canonical_bytes()));
     pairs.dedup();
     if pairs.len() != certified_pair_count {
@@ -87,55 +94,65 @@ pub(super) fn certified_blockwise_layer_pairs_v1(
 }
 
 const THREE_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 3;
-const THREE_BLOCK_TRANSPORT_PROOF_COUNT_V1: usize = THREE_BLOCK_CURRENT_CYCLE_ARITY_V1 + 1;
-const THREE_BLOCK_WHOLE_SOURCE_PEAK_MULTIPLICITY_V1: usize = 3;
-const THREE_BLOCK_RESTRICTED_SOURCE_PEAK_MULTIPLICITY_V1: usize = 2;
+const FOUR_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 4;
+const FIVE_BLOCK_CURRENT_CYCLE_ARITY_V1: usize = 5;
+const BOUNDED_MULTI_BLOCK_CURRENT_CYCLE_MAX_ARITY_V1: usize = FIVE_BLOCK_CURRENT_CYCLE_ARITY_V1;
+const BOUNDED_MULTI_BLOCK_WHOLE_SOURCE_PEAK_MULTIPLICITY_V1: usize = 3;
+const BOUNDED_MULTI_BLOCK_RESTRICTED_SOURCE_PEAK_MULTIPLICITY_V1: usize = 2;
+
+pub(super) const fn bounded_multi_block_current_cycle_arity_supported_v1(
+    block_count: usize,
+) -> bool {
+    block_count >= THREE_BLOCK_CURRENT_CYCLE_ARITY_V1
+        && block_count <= BOUNDED_MULTI_BLOCK_CURRENT_CYCLE_MAX_ARITY_V1
+}
 
 #[cfg(test)]
-static THREE_BLOCK_LAYER_PEAK_LIMIT_OVERRIDE_V1: std::sync::atomic::AtomicUsize =
+static BOUNDED_MULTI_BLOCK_LAYER_PEAK_LIMIT_OVERRIDE_V1: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(usize::MAX);
 #[cfg(test)]
-static THREE_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1: std::sync::atomic::AtomicUsize =
+static BOUNDED_MULTI_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
-pub(super) struct ThreeBlockLayerPeakLimitOverrideGuardV1 {
+pub(super) struct BoundedMultiBlockLayerPeakLimitOverrideGuardV1 {
     previous: usize,
 }
 
 #[cfg(test)]
-impl Drop for ThreeBlockLayerPeakLimitOverrideGuardV1 {
+impl Drop for BoundedMultiBlockLayerPeakLimitOverrideGuardV1 {
     fn drop(&mut self) {
-        THREE_BLOCK_LAYER_PEAK_LIMIT_OVERRIDE_V1
+        BOUNDED_MULTI_BLOCK_LAYER_PEAK_LIMIT_OVERRIDE_V1
             .store(self.previous, std::sync::atomic::Ordering::Release);
     }
 }
 
 #[cfg(test)]
-pub(super) fn override_three_block_layer_peak_limit_for_test_v1(
+pub(super) fn override_bounded_multi_block_layer_peak_limit_for_test_v1(
     limit: usize,
-) -> ThreeBlockLayerPeakLimitOverrideGuardV1 {
-    ThreeBlockLayerPeakLimitOverrideGuardV1 {
-        previous: THREE_BLOCK_LAYER_PEAK_LIMIT_OVERRIDE_V1
+) -> BoundedMultiBlockLayerPeakLimitOverrideGuardV1 {
+    BoundedMultiBlockLayerPeakLimitOverrideGuardV1 {
+        previous: BOUNDED_MULTI_BLOCK_LAYER_PEAK_LIMIT_OVERRIDE_V1
             .swap(limit, std::sync::atomic::Ordering::AcqRel),
     }
 }
 
 #[cfg(test)]
-pub(super) fn reset_three_block_layer_source_clone_attempts_for_test_v1() {
-    THREE_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1.store(0, std::sync::atomic::Ordering::Release);
+pub(super) fn reset_bounded_multi_block_layer_source_clone_attempts_for_test_v1() {
+    BOUNDED_MULTI_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1
+        .store(0, std::sync::atomic::Ordering::Release);
 }
 
 #[cfg(test)]
-pub(super) fn three_block_layer_source_clone_attempts_for_test_v1() -> usize {
-    THREE_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1.load(std::sync::atomic::Ordering::Acquire)
+pub(super) fn bounded_multi_block_layer_source_clone_attempts_for_test_v1() -> usize {
+    BOUNDED_MULTI_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1.load(std::sync::atomic::Ordering::Acquire)
 }
 
-fn production_three_block_layer_peak_limit_v1() -> usize {
+fn production_bounded_multi_block_layer_peak_limit_v1() -> usize {
     #[cfg(test)]
     {
-        let overridden =
-            THREE_BLOCK_LAYER_PEAK_LIMIT_OVERRIDE_V1.load(std::sync::atomic::Ordering::Acquire);
+        let overridden = BOUNDED_MULTI_BLOCK_LAYER_PEAK_LIMIT_OVERRIDE_V1
+            .load(std::sync::atomic::Ordering::Acquire);
         if overridden != usize::MAX {
             return overridden;
         }
@@ -143,19 +160,27 @@ fn production_three_block_layer_peak_limit_v1() -> usize {
     ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES
 }
 
-pub(super) fn checked_three_block_layer_peak_retained_bytes_v1(
+/// Computes the source-retention peak shared by the exact 3..=5-block paths.
+///
+/// The multiplicities are independent of block count: the live whole source is
+/// retained by the capability, materialized input, and completed whole-parent
+/// proof (three copies). Every restricted source is retained by its materialized
+/// input and its completed per-block proof (two copies). The sum of restricted
+/// source bytes therefore scales with block count, while the multiplicities do
+/// not.
+pub(super) fn checked_bounded_multi_block_layer_peak_retained_bytes_v1(
     whole_source_retained_bytes: usize,
     restricted_sources_retained_bytes: usize,
 ) -> Option<usize> {
     whole_source_retained_bytes
-        .checked_mul(THREE_BLOCK_WHOLE_SOURCE_PEAK_MULTIPLICITY_V1)?
+        .checked_mul(BOUNDED_MULTI_BLOCK_WHOLE_SOURCE_PEAK_MULTIPLICITY_V1)?
         .checked_add(
             restricted_sources_retained_bytes
-                .checked_mul(THREE_BLOCK_RESTRICTED_SOURCE_PEAK_MULTIPLICITY_V1)?,
+                .checked_mul(BOUNDED_MULTI_BLOCK_RESTRICTED_SOURCE_PEAK_MULTIPLICITY_V1)?,
         )
 }
 
-pub(super) fn checked_three_block_operation_peak_retained_bytes_v1(
+pub(super) fn checked_bounded_multi_block_operation_peak_retained_bytes_v1(
     layer_source_peak_bytes: usize,
     proof_retained_bytes: usize,
     peak_temporary_bytes: usize,
@@ -165,7 +190,7 @@ pub(super) fn checked_three_block_operation_peak_retained_bytes_v1(
         .checked_add(peak_temporary_bytes)
 }
 
-pub(super) fn preflight_three_block_layer_peak_retained_bytes_v1(
+pub(super) fn preflight_bounded_multi_block_layer_peak_retained_bytes_v1(
     peak_retained_bytes: usize,
     maximum_peak_retained_bytes: usize,
 ) -> Result<(), String> {
@@ -175,40 +200,48 @@ pub(super) fn preflight_three_block_layer_peak_retained_bytes_v1(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct ThreeBlockLayerRetainedBytesV1 {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BoundedMultiBlockLayerRetainedBytesV1 {
     pub(super) whole_source: usize,
-    pub(super) block_sources: [usize; THREE_BLOCK_CURRENT_CYCLE_ARITY_V1],
+    pub(super) block_sources: Vec<usize>,
     pub(super) proof_retained: usize,
     pub(super) peak_temporary: usize,
     pub(super) peak: usize,
 }
 
-impl ThreeBlockLayerRetainedBytesV1 {
+impl BoundedMultiBlockLayerRetainedBytesV1 {
     pub(super) fn for_source_v1(
         source: &ori_foldability::LayerOrderSnapshot,
-        block_face_sets: [&[FaceId]; THREE_BLOCK_CURRENT_CYCLE_ARITY_V1],
+        block_face_sets: &[&[FaceId]],
         proof_retained_bytes: usize,
         peak_temporary_bytes: usize,
     ) -> Result<Self, String> {
+        if !bounded_multi_block_current_cycle_arity_supported_v1(block_face_sets.len()) {
+            return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+        }
         let whole_source = source
             .checked_deep_retained_bytes_v1()
             .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
-        let block_sources = block_face_sets.map(|faces| {
-            source
+        let mut block_sources = Vec::new();
+        block_sources
+            .try_reserve_exact(block_face_sets.len())
+            .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+        let mut restricted_sources = 0usize;
+        for faces in block_face_sets {
+            let retained = source
                 .checked_restricted_deep_retained_bytes_v1(faces)
-                .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
-        });
-        let [first, second, third] = block_sources;
-        let block_sources = [first?, second?, third?];
-        let restricted_sources = block_sources
-            .into_iter()
-            .try_fold(0usize, |sum, bytes| sum.checked_add(bytes))
-            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
-        let layer_source_peak =
-            checked_three_block_layer_peak_retained_bytes_v1(whole_source, restricted_sources)
                 .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
-        let peak = checked_three_block_operation_peak_retained_bytes_v1(
+            restricted_sources = restricted_sources
+                .checked_add(retained)
+                .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+            block_sources.push(retained);
+        }
+        let layer_source_peak = checked_bounded_multi_block_layer_peak_retained_bytes_v1(
+            whole_source,
+            restricted_sources,
+        )
+        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+        let peak = checked_bounded_multi_block_operation_peak_retained_bytes_v1(
             layer_source_peak,
             proof_retained_bytes,
             peak_temporary_bytes,
@@ -225,7 +258,7 @@ impl ThreeBlockLayerRetainedBytesV1 {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct ThreeBlockCellTransportWorkV1 {
+pub(super) struct BoundedMultiBlockCellTransportWorkV1 {
     pub(super) transitions: usize,
     pub(super) cells: usize,
     pub(super) layer_records: usize,
@@ -234,7 +267,7 @@ pub(super) struct ThreeBlockCellTransportWorkV1 {
     pub(super) maximum_boundary_points: usize,
 }
 
-impl ThreeBlockCellTransportWorkV1 {
+impl BoundedMultiBlockCellTransportWorkV1 {
     fn for_source(
         source: &ori_foldability::LayerOrderSnapshot,
         closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
@@ -339,23 +372,31 @@ impl ThreeBlockCellTransportWorkV1 {
     }
 }
 
-fn production_three_block_transport_limits_v1() -> Result<GeneralCellTransportLimitsV1, String> {
+fn production_bounded_multi_block_transport_limits_v1(
+    block_count: usize,
+) -> Result<GeneralCellTransportLimitsV1, String> {
+    if !bounded_multi_block_current_cycle_arity_supported_v1(block_count) {
+        return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+    }
+    let proof_count = block_count
+        .checked_add(1)
+        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     Ok(GeneralCellTransportLimitsV1 {
-        max_transitions: THREE_BLOCK_TRANSPORT_PROOF_COUNT_V1
+        max_transitions: proof_count
             .checked_mul(65_537)
             .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
-        max_cells: THREE_BLOCK_TRANSPORT_PROOF_COUNT_V1
+        max_cells: proof_count
             .checked_mul(ori_foldability::DEFAULT_MAX_OVERLAP_CELLS)
             .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
-        max_layer_records: THREE_BLOCK_TRANSPORT_PROOF_COUNT_V1
+        max_layer_records: proof_count
             .checked_mul(ori_foldability::DEFAULT_MAX_TOTAL_RECORDS)
             .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
         max_boundary_samples: ori_foldability::DEFAULT_MAX_EXACT_OPERATIONS,
     })
 }
 
-pub(super) fn preflight_three_block_transport_aggregate_v1(
-    work: ThreeBlockCellTransportWorkV1,
+pub(super) fn preflight_bounded_multi_block_transport_aggregate_v1(
+    work: BoundedMultiBlockCellTransportWorkV1,
     limits: GeneralCellTransportLimitsV1,
 ) -> Result<(), String> {
     preflight_general_cell_transport_work_v1(
@@ -368,21 +409,22 @@ pub(super) fn preflight_three_block_transport_aggregate_v1(
     .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
 }
 
-fn restrict_three_block_layer_source_v1(
+fn restrict_bounded_multi_block_layer_source_v1(
     source: &ori_foldability::LayerOrderSnapshot,
     faces: &[FaceId],
     retained_bytes: usize,
 ) -> Result<ori_foldability::LayerOrderSnapshot, String> {
     #[cfg(test)]
-    THREE_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    BOUNDED_MULTI_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     source
         .try_restrict_to_faces_with_retained_byte_limit_v1(faces, retained_bytes)
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
 }
 
-pub(super) fn materialize_three_block_layer_sources_v1(
+pub(super) fn materialize_bounded_multi_block_layer_sources_v1(
     source: &ori_foldability::LayerOrderSnapshot,
-    block_face_sets: [&[FaceId]; THREE_BLOCK_CURRENT_CYCLE_ARITY_V1],
+    block_face_sets: &[&[FaceId]],
     proof_retained_bytes: usize,
     peak_temporary_bytes: usize,
     maximum_peak_retained_bytes: usize,
@@ -390,67 +432,74 @@ pub(super) fn materialize_three_block_layer_sources_v1(
     (
         Box<ori_foldability::LayerOrderSnapshot>,
         Vec<ori_foldability::LayerOrderSnapshot>,
-        ThreeBlockLayerRetainedBytesV1,
+        BoundedMultiBlockLayerRetainedBytesV1,
     ),
     String,
 > {
-    let retained = ThreeBlockLayerRetainedBytesV1::for_source_v1(
+    let retained = BoundedMultiBlockLayerRetainedBytesV1::for_source_v1(
         source,
         block_face_sets,
         proof_retained_bytes,
         peak_temporary_bytes,
     )?;
-    preflight_three_block_layer_peak_retained_bytes_v1(retained.peak, maximum_peak_retained_bytes)?;
+    preflight_bounded_multi_block_layer_peak_retained_bytes_v1(
+        retained.peak,
+        maximum_peak_retained_bytes,
+    )?;
     let mut block_sources = Vec::new();
     block_sources
-        .try_reserve_exact(THREE_BLOCK_CURRENT_CYCLE_ARITY_V1)
+        .try_reserve_exact(block_face_sets.len())
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     #[cfg(test)]
-    THREE_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    BOUNDED_MULTI_BLOCK_LAYER_SOURCE_CLONE_ATTEMPTS_V1
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     let whole_source = Box::new(
         source
             .try_clone_with_retained_byte_limit_v1(retained.whole_source)
             .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
     );
-    for (faces, retained_bytes) in block_face_sets.into_iter().zip(retained.block_sources) {
-        block_sources.push(restrict_three_block_layer_source_v1(
+    for (faces, retained_bytes) in block_face_sets.iter().copied().zip(&retained.block_sources) {
+        block_sources.push(restrict_bounded_multi_block_layer_source_v1(
             source,
             faces,
-            retained_bytes,
+            *retained_bytes,
         )?);
     }
     Ok((whole_source, block_sources, retained))
 }
 
-fn exact_three_block_cross_pairs_v1(
+fn exact_bounded_multi_block_cross_pairs_v1(
     decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
 ) -> Result<Vec<CommonArticulationCrossBlockFacePairV1>, String> {
-    let [first, second, third] = decomposition.blocks() else {
+    let blocks = decomposition.blocks();
+    if !bounded_multi_block_current_cycle_arity_supported_v1(blocks.len()) {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
-    };
-    let blocks = [first, second, third];
-    let raw_pair_count = [(0usize, 1usize), (0, 2), (1, 2)]
-        .into_iter()
-        .try_fold(0usize, |sum, (left, right)| {
-            blocks[left]
+    }
+    let mut raw_pair_count = 0usize;
+    for left in 0..blocks.len() {
+        for right in left + 1..blocks.len() {
+            raw_pair_count = blocks[left]
                 .geometry()
                 .face_ids()
                 .len()
                 .checked_mul(blocks[right].geometry().face_ids().len())
-                .and_then(|count| sum.checked_add(count))
-        })
-        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+                .and_then(|count| raw_pair_count.checked_add(count))
+                .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+        }
+    }
     let mut pairs = Vec::new();
     pairs
         .try_reserve_exact(raw_pair_count)
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
-    for (left, right) in [(0usize, 1usize), (0, 2), (1, 2)] {
-        for first_face in blocks[left].geometry().face_ids().iter().copied() {
-            for second_face in blocks[right].geometry().face_ids().iter().copied() {
-                if let Some(pair) =
-                    CommonArticulationCrossBlockFacePairV1::new(first_face, second_face)
-                {
-                    pairs.push(pair);
+    for left in 0..blocks.len() {
+        for right in left + 1..blocks.len() {
+            for first_face in blocks[left].geometry().face_ids().iter().copied() {
+                for second_face in blocks[right].geometry().face_ids().iter().copied() {
+                    if let Some(pair) =
+                        CommonArticulationCrossBlockFacePairV1::new(first_face, second_face)
+                    {
+                        pairs.push(pair);
+                    }
                 }
             }
         }
@@ -525,9 +574,10 @@ pub(super) fn prepare_blockwise_current_cycle_fallback_v1(
         .decompose_canonical_edge_blocks_v1(audit, CanonicalEdgeBlockLimitsV1::default())
         .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
     checkpoint()?;
-    if decomposition.blocks().len() == 3 {
+    let block_count = decomposition.blocks().len();
+    if bounded_multi_block_current_cycle_arity_supported_v1(block_count) {
         drop(decomposition);
-        return prepare_three_block_current_cycle_fallback_v1(
+        return prepare_bounded_multi_block_current_cycle_fallback_v1(
             app,
             transaction_state,
             project,
@@ -541,6 +591,7 @@ pub(super) fn prepare_blockwise_current_cycle_fallback_v1(
             progress_request_id,
             source_revision,
             target_revision,
+            block_count,
         );
     }
     let [first, second] = decomposition.blocks() else {
@@ -909,7 +960,7 @@ pub(super) fn prepare_blockwise_current_cycle_fallback_v1(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_three_block_current_cycle_fallback_v1(
+fn prepare_bounded_multi_block_current_cycle_fallback_v1(
     app: Option<&AppHandle>,
     transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,
     project: &super::ProjectState,
@@ -923,6 +974,7 @@ fn prepare_three_block_current_cycle_fallback_v1(
     progress_request_id: Option<&str>,
     source_revision: u64,
     target_revision: u64,
+    expected_block_count: usize,
 ) -> Result<CurrentCyclePosePreviewResponseV1, String> {
     let control = CooperativeOperationControlV1::unbounded();
     let checkpoint = || {
@@ -934,6 +986,7 @@ fn prepare_three_block_current_cycle_fallback_v1(
         != Some(target_revision)
         || !thickness.is_finite()
         || thickness <= 0.0
+        || !bounded_multi_block_current_cycle_arity_supported_v1(expected_block_count)
     {
         return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
     }
@@ -944,14 +997,14 @@ fn prepare_three_block_current_cycle_fallback_v1(
         .decompose_canonical_edge_blocks_v1(
             audit,
             CanonicalEdgeBlockLimitsV1 {
-                max_blocks: THREE_BLOCK_CURRENT_CYCLE_ARITY_V1,
+                max_blocks: expected_block_count,
                 ..CanonicalEdgeBlockLimitsV1::default()
             },
         )
         .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-    let [_, _, _] = decomposition.blocks() else {
+    if decomposition.blocks().len() != expected_block_count {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
-    };
+    }
     let schedule_limits = production_cycle_schedule_limits_v1();
     let closure = geometry
         .prove_dyadic_schedule_closure_v1(
@@ -995,7 +1048,7 @@ fn prepare_three_block_current_cycle_fallback_v1(
         .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     checkpoint()?;
     let common_pose_limits = ori_kinematics::CommonArticulationPoseLimitsV1 {
-        max_blocks: THREE_BLOCK_CURRENT_CYCLE_ARITY_V1,
+        max_blocks: expected_block_count,
         ..ori_kinematics::CommonArticulationPoseLimitsV1::default()
     };
     let common_pose = issue_common_articulation_pose_authority_with_control_v1(
@@ -1018,9 +1071,9 @@ fn prepare_three_block_current_cycle_fallback_v1(
         }
         _ => CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned(),
     })?;
-    let cross_block_pairs = exact_three_block_cross_pairs_v1(&decomposition)?;
+    let cross_block_pairs = exact_bounded_multi_block_cross_pairs_v1(&decomposition)?;
     let clearance_limits = CommonArticulationClearanceLimitsV1 {
-        max_blocks: THREE_BLOCK_CURRENT_CYCLE_ARITY_V1,
+        max_blocks: expected_block_count,
         ..CommonArticulationClearanceLimitsV1::default()
     };
     let clearance = issue_common_articulation_clearance_prerequisite_with_control_v1(
@@ -1061,7 +1114,7 @@ fn prepare_three_block_current_cycle_fallback_v1(
     };
     let mut canonical_block_edges = Vec::new();
     canonical_block_edges
-        .try_reserve_exact(THREE_BLOCK_CURRENT_CYCLE_ARITY_V1)
+        .try_reserve_exact(expected_block_count)
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     for block in decomposition.blocks() {
         let mut edges = Vec::new();
@@ -1103,10 +1156,8 @@ fn prepare_three_block_current_cycle_fallback_v1(
     })?;
     checkpoint()?;
     let layer_source = layer_capability.snapshot();
-    let whole_parent_work = ThreeBlockCellTransportWorkV1::for_source(layer_source, &closure)?;
-    let [first_block, second_block, third_block] = decomposition.blocks() else {
-        return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
-    };
+    let whole_parent_work =
+        BoundedMultiBlockCellTransportWorkV1::for_source(layer_source, &closure)?;
     let prepare_block = |block: &ori_kinematics::CanonicalMaterialEdgeBlockV1| {
         checkpoint()?;
         let block_fixed_face = block
@@ -1153,18 +1204,20 @@ fn prepare_three_block_current_cycle_fallback_v1(
             })?;
         Ok::<_, String>((block_schedule, block_closure))
     };
-    let block_schedules = [
-        prepare_block(first_block)?,
-        prepare_block(second_block)?,
-        prepare_block(third_block)?,
-    ];
+    let mut block_schedules = Vec::new();
+    block_schedules
+        .try_reserve_exact(expected_block_count)
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    for block in decomposition.blocks() {
+        block_schedules.push(prepare_block(block)?);
+    }
     let mut aggregate_work = whole_parent_work;
     let mut block_transport_work = Vec::new();
     block_transport_work
-        .try_reserve_exact(THREE_BLOCK_CURRENT_CYCLE_ARITY_V1)
+        .try_reserve_exact(expected_block_count)
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     for (block, (_, block_closure)) in decomposition.blocks().iter().zip(&block_schedules) {
-        let work = ThreeBlockCellTransportWorkV1::for_restricted_source_v1(
+        let work = BoundedMultiBlockCellTransportWorkV1::for_restricted_source_v1(
             layer_source,
             block_closure,
             block.geometry().face_ids(),
@@ -1174,9 +1227,9 @@ fn prepare_three_block_current_cycle_fallback_v1(
             .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
         block_transport_work.push(work);
     }
-    preflight_three_block_transport_aggregate_v1(
+    preflight_bounded_multi_block_transport_aggregate_v1(
         aggregate_work,
-        production_three_block_transport_limits_v1()?,
+        production_bounded_multi_block_transport_limits_v1(expected_block_count)?,
     )?;
     let whole_memory = whole_parent_work.memory_work_v1()?;
     let (proof_retained_bytes, peak_temporary_bytes) = block_transport_work.iter().try_fold(
@@ -1204,34 +1257,37 @@ fn prepare_three_block_current_cycle_fallback_v1(
             .min()
             .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
     };
-    let mut block_source_specs = [
-        (
-            canonical_source_key(first_block)?,
-            first_block.geometry().face_ids(),
-        ),
-        (
-            canonical_source_key(second_block)?,
-            second_block.geometry().face_ids(),
-        ),
-        (
-            canonical_source_key(third_block)?,
-            third_block.geometry().face_ids(),
-        ),
-    ];
+    let mut block_source_specs = Vec::new();
+    block_source_specs
+        .try_reserve_exact(expected_block_count)
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    for block in decomposition.blocks() {
+        block_source_specs.push((canonical_source_key(block)?, block.geometry().face_ids()));
+    }
     block_source_specs.sort_unstable_by_key(|(key, _)| *key);
-    let canonical_block_keys = block_source_specs.map(|(key, _)| key);
-    let block_face_sets = block_source_specs.map(|(_, faces)| faces);
+    let mut canonical_block_keys = Vec::new();
+    canonical_block_keys
+        .try_reserve_exact(expected_block_count)
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    let mut block_face_sets = Vec::new();
+    block_face_sets
+        .try_reserve_exact(expected_block_count)
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    for (key, faces) in &block_source_specs {
+        canonical_block_keys.push(*key);
+        block_face_sets.push(*faces);
+    }
     let mut closure_inputs = Vec::new();
     closure_inputs
-        .try_reserve_exact(THREE_BLOCK_CURRENT_CYCLE_ARITY_V1)
+        .try_reserve_exact(expected_block_count)
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     let mut positive_layer_inputs = Vec::new();
     positive_layer_inputs
-        .try_reserve_exact(THREE_BLOCK_CURRENT_CYCLE_ARITY_V1)
+        .try_reserve_exact(expected_block_count)
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     let mut block_hinges = Vec::new();
     block_hinges
-        .try_reserve_exact(THREE_BLOCK_CURRENT_CYCLE_ARITY_V1)
+        .try_reserve_exact(expected_block_count)
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
     for block in decomposition.blocks() {
         let mut hinges = Vec::new();
@@ -1251,13 +1307,14 @@ fn prepare_three_block_current_cycle_fallback_v1(
             .iter()
             .map(|angle| (angle.edge(), angle.angle_degrees())),
     );
-    let (source, block_sources, _retained_bytes) = materialize_three_block_layer_sources_v1(
-        layer_source,
-        block_face_sets,
-        proof_retained_bytes,
-        peak_temporary_bytes,
-        production_three_block_layer_peak_limit_v1(),
-    )?;
+    let (source, block_sources, _retained_bytes) =
+        materialize_bounded_multi_block_layer_sources_v1(
+            layer_source,
+            &block_face_sets,
+            proof_retained_bytes,
+            peak_temporary_bytes,
+            production_bounded_multi_block_layer_peak_limit_v1(),
+        )?;
     checkpoint()?;
     let whole_parent_layer =
         certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
@@ -1335,7 +1392,18 @@ fn prepare_three_block_current_cycle_fallback_v1(
     )
     .0;
     let mut articulation_fingerprint = Sha256::new();
-    articulation_fingerprint.update(b"three-block-current-cycle-articulation-layer-v1");
+    articulation_fingerprint.update(match expected_block_count {
+        THREE_BLOCK_CURRENT_CYCLE_ARITY_V1 => {
+            b"three-block-current-cycle-articulation-layer-v1".as_slice()
+        }
+        FOUR_BLOCK_CURRENT_CYCLE_ARITY_V1 => {
+            b"four-block-current-cycle-articulation-layer-v1".as_slice()
+        }
+        FIVE_BLOCK_CURRENT_CYCLE_ARITY_V1 => {
+            b"five-block-current-cycle-articulation-layer-v1".as_slice()
+        }
+        _ => return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned()),
+    });
     articulation_fingerprint.update(issuer_context);
     for face in decomposition.articulation_faces() {
         articulation_fingerprint.update(face.canonical_bytes());
@@ -1361,29 +1429,29 @@ fn prepare_three_block_current_cycle_fallback_v1(
     )
     .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     checkpoint()?;
-    let completeness_inputs = [
-        BlockUnionCompletenessInputV1 {
-            faces: first_block.geometry().face_ids(),
-            hinges: &block_hinges[0],
-        },
-        BlockUnionCompletenessInputV1 {
-            faces: second_block.geometry().face_ids(),
-            hinges: &block_hinges[1],
-        },
-        BlockUnionCompletenessInputV1 {
-            faces: third_block.geometry().face_ids(),
-            hinges: &block_hinges[2],
-        },
-    ];
+    let mut completeness_inputs = Vec::new();
+    completeness_inputs
+        .try_reserve_exact(expected_block_count)
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    for (block, hinges) in decomposition.blocks().iter().zip(&block_hinges) {
+        completeness_inputs.push(BlockUnionCompletenessInputV1 {
+            faces: block.geometry().face_ids(),
+            hinges,
+        });
+    }
     let completeness_report = diagnose_block_union_completeness_v1(geometry, &completeness_inputs)
         .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     if !completeness_report.exact_live_union_observed() {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
     }
-    let [first_source, second_source, third_source] = block_sources.as_slice() else {
+    if block_sources.len() != expected_block_count {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
-    };
-    let block_source_refs = [first_source, second_source, third_source];
+    }
+    let mut block_source_refs = Vec::new();
+    block_source_refs
+        .try_reserve_exact(expected_block_count)
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+    block_source_refs.extend(block_sources.iter());
     let complete = issue_complete_multi_block_positive_layer_authority_v1(
         geometry,
         completeness_report,
@@ -1446,7 +1514,7 @@ fn prepare_three_block_current_cycle_fallback_v1(
         }
         _ => CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned(),
     })?;
-    if authority.block_count_v1() != THREE_BLOCK_CURRENT_CYCLE_ARITY_V1 || transition_count == 0 {
+    if authority.block_count_v1() != expected_block_count || transition_count == 0 {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
     }
     checkpoint()?;
@@ -1493,7 +1561,7 @@ fn prepare_three_block_current_cycle_fallback_v1(
         std::fmt::Write::write_fmt(&mut target_hash, format_args!("{byte:02x}"))
             .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     }
-    let pending = super::stacked_fold_transaction::PendingThreeBlockCurrentCyclePremisesV1 {
+    let pending = super::stacked_fold_transaction::PendingBoundedMultiBlockCurrentCyclePremisesV1 {
         expected_instance_id: project.instance_id,
         expected_project_id: project.project_id,
         expected_revision: project.editor.revision(),
@@ -1541,7 +1609,7 @@ fn prepare_three_block_current_cycle_fallback_v1(
         authorizes_project_mutation: false,
     };
     super::with_current_cycle_publication_v1(generation, || {
-        super::stacked_fold_transaction::install_pending_three_block_current_cycle_pose_with_token_v1(
+        super::stacked_fold_transaction::install_pending_bounded_multi_block_current_cycle_pose_with_token_v1(
             transaction_state,
             token,
             pending,

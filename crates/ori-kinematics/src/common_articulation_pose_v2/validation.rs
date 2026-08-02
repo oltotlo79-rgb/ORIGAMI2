@@ -4,10 +4,21 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
-pub(super) fn decomposition_binding_with_checkpoint_v2(
+pub(super) fn decomposition_binding_matches_with_checkpoint_v2<Stop>(
+    expected: [u8; 32],
     decomposition: &CanonicalMaterialEdgeBlockDecompositionV2,
-    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV2>,
-) -> Result<[u8; 32], CommonArticulationPoseErrorV2> {
+    checkpoint: &mut impl FnMut() -> Result<(), Stop>,
+) -> Result<bool, Stop> {
+    Ok(
+        decomposition_binding_candidate_with_checkpoint_v2(decomposition, checkpoint)?
+            .is_some_and(|binding| binding == expected),
+    )
+}
+
+fn decomposition_binding_candidate_with_checkpoint_v2<Stop>(
+    decomposition: &CanonicalMaterialEdgeBlockDecompositionV2,
+    checkpoint: &mut impl FnMut() -> Result<(), Stop>,
+) -> Result<Option<[u8; 32]>, Stop> {
     let mut hash = Sha256::new();
     hash.update(b"common_articulation_pose_decomposition_v2");
     for value in [
@@ -17,28 +28,48 @@ pub(super) fn decomposition_binding_with_checkpoint_v2(
         decomposition.blocks().len(),
         decomposition.articulation_faces().len(),
     ] {
-        update_usize_v2(&mut hash, value)?;
+        let Ok(value) = u64::try_from(value) else {
+            return Ok(None);
+        };
+        hash.update(value.to_le_bytes());
     }
     for face in decomposition.articulation_faces() {
-        checkpoint_v2(checkpoint)?;
+        checkpoint()?;
         hash.update(face.canonical_bytes());
     }
     for block in decomposition.blocks() {
-        checkpoint_v2(checkpoint)?;
-        update_usize_v2(&mut hash, block.geometry().face_ids().len())?;
-        update_usize_v2(&mut hash, block.geometry().hinges().len())?;
+        checkpoint()?;
+        for value in [
+            block.geometry().face_ids().len(),
+            block.geometry().hinges().len(),
+        ] {
+            let Ok(value) = u64::try_from(value) else {
+                return Ok(None);
+            };
+            hash.update(value.to_le_bytes());
+        }
         for face in block.geometry().face_ids() {
-            checkpoint_v2(checkpoint)?;
+            checkpoint()?;
             hash.update(face.canonical_bytes());
         }
         for hinge in block.geometry().hinges() {
-            checkpoint_v2(checkpoint)?;
+            checkpoint()?;
             hash.update(hinge.edge().canonical_bytes());
             hash.update(hinge.left_face().canonical_bytes());
             hash.update(hinge.right_face().canonical_bytes());
         }
     }
-    Ok(hash.finalize().into())
+    Ok(Some(hash.finalize().into()))
+}
+
+pub(super) fn decomposition_binding_with_checkpoint_v2(
+    decomposition: &CanonicalMaterialEdgeBlockDecompositionV2,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationPoseStopV2>,
+) -> Result<[u8; 32], CommonArticulationPoseErrorV2> {
+    decomposition_binding_candidate_with_checkpoint_v2(decomposition, &mut || {
+        checkpoint_v2(checkpoint)
+    })?
+    .ok_or(CommonArticulationPoseErrorV2::ResourceLimit)
 }
 
 pub(super) fn pose_binding_with_checkpoint_v2(

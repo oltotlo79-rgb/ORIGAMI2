@@ -70,6 +70,8 @@
 #![forbid(unsafe_code)]
 
 mod common_articulation_block_closure_set_v2;
+mod common_articulation_dynamic_closure_bridge_v2;
+mod common_articulation_dynamic_closure_bundle_v2;
 mod common_articulation_pose_v2;
 mod common_articulation_resource_profile;
 mod common_articulation_whole_parent_closure_v2;
@@ -89,6 +91,14 @@ pub use common_articulation_block_closure_set_v2::{
     CommonArticulationBlockClosureSetStopV2, CommonArticulationBlockClosureSetV2,
     prove_common_articulation_block_closure_set_v2,
     prove_common_articulation_block_closure_set_with_checkpoint_v2,
+};
+pub use common_articulation_dynamic_closure_bridge_v2::{
+    CommonArticulationDynamicClosureBridgeErrorV2, CommonArticulationDynamicClosureBridgeInputV2,
+    CommonArticulationDynamicClosureBridgeLimitsV2,
+    CommonArticulationDynamicClosureBridgeRevalidationInputV2,
+    CommonArticulationDynamicClosureBridgeStopV2, CommonArticulationDynamicClosureBridgeV2,
+    prove_common_articulation_dynamic_closure_bridge_v2,
+    prove_common_articulation_dynamic_closure_bridge_with_checkpoint_v2,
 };
 pub use common_articulation_pose_v2::{
     COMMON_ARTICULATION_POSE_MODEL_ID_V2, CommonArticulationHingeAngleBitsV2,

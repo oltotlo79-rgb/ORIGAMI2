@@ -50,6 +50,34 @@ pub(crate) enum CycleScheduleDyadicEvaluationErrorV2 {
     WorkspaceLimit,
 }
 
+/// Allocation-free witness for the deliberately narrow ordinary affine
+/// profile accepted by the V2 exact parallel-cut closure theorem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExactParallelCutScheduleProfileV2 {
+    schedule_fingerprint_v2: [u8; 32],
+    moving_count: usize,
+    charged_work: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExactParallelCutProfileErrorV2<Stop> {
+    Stop(Stop),
+    ResourceLimit,
+}
+
+fn exact_parallel_cut_profile_poll_and_charge_v2<Stop>(
+    work: &mut usize,
+    max_work: usize,
+    checkpoint: &mut impl FnMut() -> Result<(), Stop>,
+) -> Result<(), ExactParallelCutProfileErrorV2<Stop>> {
+    checkpoint().map_err(ExactParallelCutProfileErrorV2::Stop)?;
+    *work = work
+        .checked_add(1)
+        .filter(|value| *value <= max_work)
+        .ok_or(ExactParallelCutProfileErrorV2::ResourceLimit)?;
+    Ok(())
+}
+
 impl From<CycleSchedulePrepareErrorV1> for CycleScheduleDyadicEvaluationErrorV2 {
     fn from(error: CycleSchedulePrepareErrorV1) -> Self {
         Self::Prepare(error)
@@ -294,6 +322,117 @@ impl PreparedHalfAngleRationalEntryV1 {
 }
 
 impl CanonicalCycleScheduleV1 {
+    /// Classifies the allocation-free ordinary profile admitted by the V2
+    /// exact parallel-cut closure recognizer. Moving hinges must all carry one
+    /// bit-identical affine `initial + c1*x` profile whose exact-real endpoint
+    /// range lies strictly inside 0..180 degrees. Every other hinge must use
+    /// the recognized zero encoding (`initial == c0 == 0`, no higher term).
+    /// The caller edge slice is in canonical order.
+    pub(crate) fn classify_exact_parallel_cut_profile_with_checkpoint_v2<Stop>(
+        &self,
+        canonical_edges: &[EdgeId],
+        max_work: usize,
+        mut checkpoint: impl FnMut() -> Result<(), Stop>,
+    ) -> Result<
+        (Option<ExactParallelCutScheduleProfileV2>, usize),
+        ExactParallelCutProfileErrorV2<Stop>,
+    > {
+        let mut work = 0usize;
+        exact_parallel_cut_profile_poll_and_charge_v2(&mut work, max_work, &mut checkpoint)?;
+        if !self.half_angle_entries.is_empty() || self.entries.len() != canonical_edges.len() {
+            return Ok((None, work));
+        }
+        let mut reference: Option<&Entry> = None;
+        let mut moving_count = 0usize;
+        for (entry, expected_edge) in self.entries.iter().zip(canonical_edges) {
+            exact_parallel_cut_profile_poll_and_charge_v2(&mut work, max_work, &mut checkpoint)?;
+            if entry.edge != *expected_edge || entry.coefficients.is_empty() {
+                return Ok((None, work));
+            }
+            let mut constant = true;
+            for coefficient in entry.coefficients.iter().skip(1) {
+                exact_parallel_cut_profile_poll_and_charge_v2(
+                    &mut work,
+                    max_work,
+                    &mut checkpoint,
+                )?;
+                constant &= *coefficient == 0.0;
+            }
+            if constant {
+                if entry.initial != 0.0 || entry.coefficients[0] != 0.0 {
+                    return Ok((None, work));
+                }
+                continue;
+            }
+            // The theorem deliberately admits only affine schedules. A
+            // correctly-rounded endpoint strictly inside the representable
+            // bounds implies the exact binary-rational sum is inside them too.
+            if entry.coefficients.len() != 2 || entry.coefficients[0] != 0.0 {
+                return Ok((None, work));
+            }
+            let slope = entry.coefficients[1];
+            let lower = entry.initial - slope.abs();
+            let upper = entry.initial + slope.abs();
+            if !lower.is_finite() || !upper.is_finite() || lower <= 0.0 || upper >= 180.0 {
+                return Ok((None, work));
+            }
+            if let Some(reference) = reference {
+                if entry.initial.to_bits() != reference.initial.to_bits()
+                    || entry.coefficients.len() != reference.coefficients.len()
+                {
+                    return Ok((None, work));
+                }
+                for (actual, expected) in entry.coefficients.iter().zip(&reference.coefficients) {
+                    exact_parallel_cut_profile_poll_and_charge_v2(
+                        &mut work,
+                        max_work,
+                        &mut checkpoint,
+                    )?;
+                    if actual.to_bits() != expected.to_bits() {
+                        return Ok((None, work));
+                    }
+                }
+            } else {
+                reference = Some(entry);
+            }
+            moving_count = moving_count.saturating_add(1);
+        }
+        exact_parallel_cut_profile_poll_and_charge_v2(&mut work, max_work, &mut checkpoint)?;
+        Ok((
+            reference.map(|_| ExactParallelCutScheduleProfileV2 {
+                schedule_fingerprint_v2: self.schedule_fingerprint_v2,
+                moving_count,
+                charged_work: work,
+            }),
+            work,
+        ))
+    }
+
+    pub(crate) fn exact_parallel_cut_position_is_moving_v2(
+        &self,
+        profile: ExactParallelCutScheduleProfileV2,
+        position: usize,
+    ) -> Option<bool> {
+        if profile.schedule_fingerprint_v2 != self.schedule_fingerprint_v2
+            || profile.moving_count == 0
+        {
+            return None;
+        }
+        let entry = self.entries.get(position)?;
+        Some(
+            entry
+                .coefficients
+                .get(1)
+                .is_some_and(|coefficient| *coefficient != 0.0),
+        )
+    }
+
+    pub(crate) const fn exact_parallel_cut_profile_charged_work_v2(
+        profile: ExactParallelCutScheduleProfileV2,
+    ) -> usize {
+        profile.charged_work
+    }
+
     /// V2 evaluator with fallible outer allocation and physical-capacity
     /// reporting for every transient exact-rational vector it creates.
     pub(crate) fn evaluate_angle_box_dyadic_with_workspace_v2(
@@ -367,6 +506,16 @@ impl CanonicalCycleScheduleV1 {
             )
             .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
             for entry in &self.entries {
+                if entry
+                    .coefficients
+                    .iter()
+                    .all(|coefficient| *coefficient == 0.0)
+                {
+                    let angle = OutwardIntervalV1::new(entry.initial, entry.initial)
+                        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+                    angle_boxes.push((entry.edge, angle));
+                    continue;
+                }
                 let zero = OutwardIntervalV1::new(0.0, 0.0)
                     .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
                 let two = OutwardIntervalV1::from_rounded(2.0)

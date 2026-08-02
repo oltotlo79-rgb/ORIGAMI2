@@ -16,8 +16,8 @@ use crate::{
 mod validation;
 
 use validation::{
-    checkpoint_v2, decomposition_binding_with_checkpoint_v2, pose_binding_with_checkpoint_v2,
-    transform_bits_v2,
+    checkpoint_v2, decomposition_binding_matches_with_checkpoint_v2,
+    decomposition_binding_with_checkpoint_v2, pose_binding_with_checkpoint_v2, transform_bits_v2,
 };
 
 /// Stable model identifier for the general-N pose provenance token.
@@ -161,19 +161,13 @@ pub struct CommonArticulationPoseBlockRestrictionRefV2<'a> {
 }
 
 impl CommonArticulationPoseBlockRestrictionRefV2<'_> {
-    /// Revalidates that this read-only restriction remains tied to this exact
-    /// issued block geometry, including its canonical face and hinge lists.
+    /// Revalidates that this read-only restriction remains tied to the exact
+    /// immutable block-geometry instance that issued it. The instance anchor
+    /// authenticates the canonical face and hinge lists, so no unmetered
+    /// duplicate slice scan is required here.
     #[must_use]
     pub fn is_for_geometry_v2(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
         self.block.geometry_issuer.matches(geometry)
-            && self.block.faces == geometry.face_ids()
-            && self.block.hinge_angles.len() == geometry.hinges().len()
-            && self
-                .block
-                .hinge_angles
-                .iter()
-                .zip(geometry.hinges())
-                .all(|(angle, hinge)| angle.edge == hinge.edge())
     }
 
     #[must_use]
@@ -246,6 +240,61 @@ impl CommonArticulationPoseAuthorityV2 {
     #[must_use]
     pub const fn binding_fingerprint_v2(&self) -> [u8; 32] {
         self.binding_fingerprint
+    }
+
+    /// Allocation-free live-input match for downstream non-authorizing proof
+    /// bundles. This does not mint or reissue pose authority; it only checks the
+    /// sealed issuer identities and canonical block restrictions already held
+    /// by this value.
+    pub(crate) fn matches_live_input_with_checkpoint_v2<Stop>(
+        &self,
+        input: CommonArticulationPoseInputV2<'_>,
+        mut checkpoint: impl FnMut() -> Result<(), Stop>,
+    ) -> Result<bool, Stop> {
+        checkpoint()?;
+        let live_pose_anchor = input.pose.instance_anchor_v2();
+        if !self.issuer_geometry.matches(input.geometry)
+            || !Arc::ptr_eq(&self.issuer_pose, &live_pose_anchor)
+            || self.profile_binding != input.profile.binding_fingerprint_v2()
+            || self.paper_thickness_bits != input.paper_thickness_mm.to_bits()
+            || self.configured_max_blocks != input.profile.configured_max_blocks_v2()
+            || self.actual_block_count != input.profile.actual_block_count_v2()
+            || self.face_count != input.geometry.face_ids().len()
+            || self.hinge_count != input.geometry.hinges().len()
+            || self.face_count != input.pose.transforms().len()
+            || self.hinge_count != input.pose.hinge_angles().as_slice().len()
+            || self.blocks.len() != input.decomposition.blocks().len()
+            || self.articulation_face_count != input.decomposition.articulation_faces().len()
+        {
+            return Ok(false);
+        }
+        if !decomposition_binding_matches_with_checkpoint_v2(
+            self.decomposition_binding,
+            input.decomposition,
+            &mut checkpoint,
+        )? {
+            return Ok(false);
+        }
+        for (retained, live) in self
+            .articulation_faces
+            .iter()
+            .zip(input.decomposition.articulation_faces())
+        {
+            checkpoint()?;
+            if retained != live {
+                return Ok(false);
+            }
+        }
+        for (record, block) in self.blocks.iter().zip(input.decomposition.blocks()) {
+            checkpoint()?;
+            if !record.geometry_issuer.matches(block.geometry())
+                || record.hinge_angles.len() != block.geometry().hinges().len()
+            {
+                return Ok(false);
+            }
+        }
+        checkpoint()?;
+        Ok(true)
     }
 
     pub fn revalidate_v2(

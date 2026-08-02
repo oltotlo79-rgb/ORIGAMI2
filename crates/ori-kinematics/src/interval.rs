@@ -118,6 +118,93 @@ impl IntervalRigidTransformV1 {
             translation,
         })
     }
+
+    pub(crate) fn about_axis_reusing_exact_zero_v2(
+        axis: [f64; 3],
+        point: [f64; 3],
+        degrees: OutwardIntervalV1,
+        max_work: usize,
+    ) -> Result<Self, OutwardIntervalErrorV1> {
+        if degrees.lower() == 0.0 && degrees.upper() == 0.0 && degrees.work() == 0 {
+            if axis.iter().any(|value| !value.is_finite()) {
+                return Err(OutwardIntervalErrorV1::InvalidEndpoint);
+            }
+            let norm_squared = axis.iter().map(|value| value * value).sum::<f64>();
+            if (norm_squared - 1.0).abs() > 32.0 * f64::EPSILON
+                || point.iter().any(|value| !value.is_finite())
+            {
+                return Err(OutwardIntervalErrorV1::InvalidEndpoint);
+            }
+            return Self::identity();
+        }
+        Self::about_axis(axis, point, degrees, max_work)
+    }
+
+    pub(crate) fn compose_reusing_exact_identity_v2(
+        self,
+        rhs: Self,
+        max_work: usize,
+    ) -> Result<Self, OutwardIntervalErrorV1> {
+        if rhs.is_exact_identity() {
+            return self
+                .work_is_within_v2(max_work)
+                .then_some(self)
+                .ok_or(OutwardIntervalErrorV1::ResourceLimit);
+        }
+        if self.is_exact_identity() {
+            return rhs
+                .work_is_within_v2(max_work)
+                .then_some(rhs)
+                .ok_or(OutwardIntervalErrorV1::ResourceLimit);
+        }
+        self.compose(rhs, max_work)
+    }
+
+    fn work_is_within_v2(&self, max_work: usize) -> bool {
+        self.rotation
+            .entries
+            .iter()
+            .flatten()
+            .chain(&self.translation)
+            .all(|entry| entry.work <= max_work)
+    }
+
+    fn is_exact_identity(&self) -> bool {
+        self.rotation
+            .entries
+            .iter()
+            .enumerate()
+            .all(|(row, entries)| {
+                entries.iter().enumerate().all(|(column, entry)| {
+                    let expected = if row == column { 1.0 } else { 0.0 };
+                    entry.lower == expected && entry.upper == expected && entry.work == 0
+                })
+            })
+            && self
+                .translation
+                .iter()
+                .all(|entry| entry.lower == 0.0 && entry.upper == 0.0 && entry.work == 0)
+    }
+
+    pub(crate) fn universally_matches_within_reusing_pristine_equality_v2(
+        self,
+        rhs: Self,
+        tolerance: f64,
+    ) -> bool {
+        if self == rhs && self.is_pristine_v2() {
+            return tolerance.is_finite() && tolerance >= 0.0;
+        }
+        self.universally_matches_within(rhs, tolerance)
+    }
+
+    fn is_pristine_v2(&self) -> bool {
+        self.rotation
+            .entries
+            .iter()
+            .flatten()
+            .chain(&self.translation)
+            .all(|entry| entry.work == 0 && entry.lower == entry.upper)
+    }
 }
 
 impl IntervalRotationMatrixV1 {
@@ -669,6 +756,58 @@ mod tests {
                 2_048,
             ),
             Err(OutwardIntervalErrorV1::InvalidEndpoint)
+        );
+    }
+
+    #[test]
+    fn pristine_equality_requires_singletons_and_accepts_exact_singletons() {
+        let mut wide = IntervalRigidTransformV1::identity().unwrap();
+        wide.translation[0] = OutwardIntervalV1::new(0.0, 1.0).unwrap();
+        assert_eq!(wide.translation[0].work(), 0);
+        assert!(
+            !wide.universally_matches_within_reusing_pristine_equality_v2(wide, 0.0),
+            "equal work-zero boxes still describe independent values"
+        );
+
+        let mut singleton = IntervalRigidTransformV1::identity().unwrap();
+        singleton.translation[0] = OutwardIntervalV1::new(1.0, 1.0).unwrap();
+        assert!(
+            singleton.universally_matches_within_reusing_pristine_equality_v2(singleton, 0.0),
+            "equal work-zero singleton transforms are exact values"
+        );
+    }
+
+    #[test]
+    fn exact_identity_reuse_preserves_the_max_work_boundary() {
+        const EXACT_WORK: usize = 7;
+
+        let identity = IntervalRigidTransformV1::identity().unwrap();
+        let mut carried = identity;
+        carried.translation[0] = OutwardIntervalV1 {
+            lower: 1.0,
+            upper: 1.0,
+            work: EXACT_WORK,
+        };
+
+        assert_eq!(
+            identity
+                .compose_reusing_exact_identity_v2(carried, EXACT_WORK)
+                .unwrap(),
+            carried
+        );
+        assert_eq!(
+            carried
+                .compose_reusing_exact_identity_v2(identity, EXACT_WORK)
+                .unwrap(),
+            carried
+        );
+        assert_eq!(
+            identity.compose_reusing_exact_identity_v2(carried, EXACT_WORK - 1),
+            Err(OutwardIntervalErrorV1::ResourceLimit)
+        );
+        assert_eq!(
+            carried.compose_reusing_exact_identity_v2(identity, EXACT_WORK - 1),
+            Err(OutwardIntervalErrorV1::ResourceLimit)
         );
     }
 }

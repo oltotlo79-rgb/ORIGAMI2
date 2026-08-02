@@ -15,9 +15,15 @@ use crate::{
 };
 
 mod dyadic_workspace_v2;
+mod restriction_workspace_v2;
 
 pub(crate) use dyadic_workspace_v2::{
     CycleScheduleDyadicEvaluationErrorV2, CycleScheduleDyadicWorkspaceBoundV2,
+    ExactParallelCutProfileErrorV2,
+};
+pub(crate) use restriction_workspace_v2::{
+    CycleScheduleRestrictionWorkspaceErrorV2, CycleScheduleRestrictionWorkspaceLimitsV2,
+    CycleScheduleRestrictionWorkspaceResourcesV2,
 };
 
 // The bound is deliberately below the 53-bit exact-coefficient budget. At the

@@ -65,6 +65,85 @@ fn fixture() -> (
     )
 }
 
+fn single_hinge_block(
+    source: &MaterialHingeGraphGeometry,
+    edge: EdgeId,
+) -> (MaterialHingeGraphGeometry, MaterialHingeGraphAudit, FaceId) {
+    let hinge = source
+        .hinges()
+        .iter()
+        .find(|hinge| hinge.edge() == edge)
+        .unwrap();
+    let faces = [hinge.left_face(), hinge.right_face()];
+    let topology = TopologySnapshot {
+        source_revision: 2,
+        faces: faces
+            .iter()
+            .map(|id| Face {
+                id: *id,
+                key: FaceKey(id.canonical_bytes().repeat(2).try_into().unwrap()),
+                outer: BoundaryWalk {
+                    half_edges: Vec::new(),
+                    signed_double_area: 1.0,
+                },
+                holes: Vec::new(),
+                seams: Vec::new(),
+                area: 0.5,
+            })
+            .collect(),
+        edge_incidence: Vec::new(),
+        hinge_adjacency: vec![FaceAdjacency {
+            edge,
+            first: hinge.left_face(),
+            second: hinge.right_face(),
+            assignment: hinge.assignment(),
+        }],
+        material_components: Vec::new(),
+    };
+    let audit =
+        MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+    let fixed = audit.faces()[0];
+    (
+        MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), vec![hinge.clone()]),
+        audit,
+        fixed,
+    )
+}
+
+fn single_hinge_foreign_edge_audit(
+    geometry: &MaterialHingeGraphGeometry,
+    foreign_edge: EdgeId,
+) -> MaterialHingeGraphAudit {
+    let hinge = &geometry.hinges()[0];
+    let topology = TopologySnapshot {
+        source_revision: 3,
+        faces: geometry
+            .face_ids()
+            .iter()
+            .map(|id| Face {
+                id: *id,
+                key: FaceKey(id.canonical_bytes().repeat(2).try_into().unwrap()),
+                outer: BoundaryWalk {
+                    half_edges: Vec::new(),
+                    signed_double_area: 1.0,
+                },
+                holes: Vec::new(),
+                seams: Vec::new(),
+                area: 0.5,
+            })
+            .collect(),
+        edge_incidence: Vec::new(),
+        hinge_adjacency: vec![FaceAdjacency {
+            edge: foreign_edge,
+            first: hinge.left_face(),
+            second: hinge.right_face(),
+            assignment: hinge.assignment(),
+        }],
+        material_components: Vec::new(),
+    };
+    MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap()
+}
+
 fn entries(edges: &[EdgeId]) -> Vec<CycleScheduleEntryInputV1> {
     let mut entries = edges
         .iter()
@@ -2121,6 +2200,421 @@ fn half_angle_schedule_and_dyadic_limits_are_exact_at_equality_and_one_short() {
         ),
         Err(CycleSchedulePrepareErrorV1::ResourceLimit)
     );
+}
+
+#[test]
+fn half_angle_restriction_preflights_all_work_before_output_allocation() {
+    let (geometry, audit, fixed, mut edges) = fixture();
+    edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        &geometry,
+        &audit,
+        fixed,
+        edges
+            .iter()
+            .map(|edge| HalfAngleRationalEntryInputV1 {
+                edge: *edge,
+                u_domain: [rational(0, 1), rational(1, 1)],
+                numerator_power_coefficients: vec![rational(1, 1)],
+                denominator_power_coefficients: vec![rational(1, 1)],
+            })
+            .collect(),
+        CycleScheduleLimitsV1 {
+            max_hinges: edges.len(),
+            max_degree: 0,
+            max_coefficient_bits: 1,
+            max_work: 1,
+        },
+    )
+    .unwrap();
+    let ceiling = usize::MAX - 1;
+    let generous = CycleScheduleRestrictionWorkspaceLimitsV2 {
+        max_work: ceiling,
+        max_restricted_schedule_retained_bytes: ceiling,
+        max_restriction_peak_bytes: ceiling,
+    };
+    let issued = schedule
+        .restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+            &geometry,
+            &audit,
+            &geometry,
+            &audit,
+            fixed,
+            generous,
+            || Ok(()),
+        )
+        .unwrap();
+    let exact = CycleScheduleRestrictionWorkspaceLimitsV2 {
+        max_work: issued.resources.charged_work,
+        max_restricted_schedule_retained_bytes: issued
+            .resources
+            .charged_restricted_schedule_retained_upper_bound_bytes,
+        max_restriction_peak_bytes: issued.resources.charged_restriction_peak_upper_bound_bytes,
+    };
+    schedule
+        .restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+            &geometry,
+            &audit,
+            &geometry,
+            &audit,
+            fixed,
+            exact,
+            || Ok(()),
+        )
+        .expect("all exact restriction ceilings must be admitted");
+
+    for one_short in [
+        CycleScheduleRestrictionWorkspaceLimitsV2 {
+            max_work: exact.max_work - 1,
+            ..exact
+        },
+        CycleScheduleRestrictionWorkspaceLimitsV2 {
+            max_restricted_schedule_retained_bytes: exact.max_restricted_schedule_retained_bytes
+                - 1,
+            ..exact
+        },
+        CycleScheduleRestrictionWorkspaceLimitsV2 {
+            max_restriction_peak_bytes: exact.max_restriction_peak_bytes - 1,
+            ..exact
+        },
+    ] {
+        assert!(matches!(
+            schedule.restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+                &geometry,
+                &audit,
+                &geometry,
+                &audit,
+                fixed,
+                one_short,
+                || Ok(()),
+            ),
+            Err(CycleScheduleRestrictionWorkspaceErrorV2::ResourceLimit)
+        ));
+    }
+}
+
+#[test]
+fn ordinary_and_half_angle_proper_block_restrictions_have_tight_resources() {
+    let (geometry, audit, fixed, mut edges) = fixture();
+    edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    let schedule_limits = CycleScheduleLimitsV1 {
+        max_hinges: edges.len(),
+        max_degree: 1,
+        max_coefficient_bits: 53,
+        max_work: 4_096,
+    };
+    let ordinary = CanonicalCycleScheduleV1::prepare(
+        &geometry,
+        &audit,
+        fixed,
+        [0.0, 1.0],
+        entries(&edges),
+        schedule_limits,
+    )
+    .unwrap();
+    let half_angle = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        &geometry,
+        &audit,
+        fixed,
+        edges
+            .iter()
+            .map(|edge| HalfAngleRationalEntryInputV1 {
+                edge: *edge,
+                u_domain: [rational(0, 1), rational(1, 1)],
+                numerator_power_coefficients: vec![rational(1_000_003, 1), rational(1, 1)],
+                denominator_power_coefficients: vec![rational(1_000_033, 1)],
+            })
+            .collect(),
+        schedule_limits,
+    )
+    .unwrap();
+    let (block_geometry, block_audit, block_fixed) = single_hinge_block(&geometry, edges[0]);
+    let ceiling = usize::MAX - 1;
+    let generous = CycleScheduleRestrictionWorkspaceLimitsV2 {
+        max_work: ceiling,
+        max_restricted_schedule_retained_bytes: ceiling,
+        max_restriction_peak_bytes: ceiling,
+    };
+
+    for schedule in [&ordinary, &half_angle] {
+        let first = schedule
+            .restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+                &geometry,
+                &audit,
+                &block_geometry,
+                &block_audit,
+                block_fixed,
+                generous,
+                || Ok(()),
+            )
+            .unwrap();
+        assert_eq!(
+            first.schedule.entries.len() + first.schedule.half_angle_entries.len(),
+            1
+        );
+        let resources = first.resources;
+        let deep_retained = first.schedule.checked_deep_retained_bytes_v1().unwrap();
+        assert!(
+            resources.charged_restricted_schedule_retained_upper_bound_bytes >= deep_retained,
+            "the charge must cover every physical outer/nested capacity and BigInt payload"
+        );
+        assert_eq!(
+            resources.charged_restriction_peak_upper_bound_bytes,
+            resources
+                .charged_restricted_schedule_retained_upper_bound_bytes
+                .checked_add(std::mem::size_of::<Sha256>())
+                .unwrap(),
+            "the completed schedule and streaming hash are simultaneously live"
+        );
+        if !first.schedule.half_angle_entries.is_empty() {
+            let outer_only = std::mem::size_of::<CanonicalCycleScheduleV1>()
+                + std::mem::size_of::<PreparedHalfAngleRationalEntryV1>()
+                    * first.schedule.half_angle_entries.capacity();
+            assert!(
+                resources.charged_restricted_schedule_retained_upper_bound_bytes > outer_only,
+                "exact-rational vectors and BigInt payload must be included"
+            );
+        }
+        let exact = CycleScheduleRestrictionWorkspaceLimitsV2 {
+            max_work: resources.charged_work,
+            max_restricted_schedule_retained_bytes: resources
+                .charged_restricted_schedule_retained_upper_bound_bytes,
+            max_restriction_peak_bytes: resources.charged_restriction_peak_upper_bound_bytes,
+        };
+        let exact_issue = schedule
+            .restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+                &geometry,
+                &audit,
+                &block_geometry,
+                &block_audit,
+                block_fixed,
+                exact,
+                || Ok(()),
+            )
+            .unwrap();
+        assert_eq!(exact_issue.resources, resources);
+
+        for one_short in [
+            CycleScheduleRestrictionWorkspaceLimitsV2 {
+                max_work: exact.max_work - 1,
+                ..exact
+            },
+            CycleScheduleRestrictionWorkspaceLimitsV2 {
+                max_restricted_schedule_retained_bytes: exact
+                    .max_restricted_schedule_retained_bytes
+                    - 1,
+                ..exact
+            },
+            CycleScheduleRestrictionWorkspaceLimitsV2 {
+                max_restriction_peak_bytes: exact.max_restriction_peak_bytes - 1,
+                ..exact
+            },
+        ] {
+            assert!(matches!(
+                schedule.restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+                    &geometry,
+                    &audit,
+                    &block_geometry,
+                    &block_audit,
+                    block_fixed,
+                    one_short,
+                    || Ok(()),
+                ),
+                Err(CycleScheduleRestrictionWorkspaceErrorV2::ResourceLimit)
+            ));
+        }
+    }
+}
+
+#[test]
+fn restriction_policy_stop_and_foreign_input_classification_is_exact() {
+    let (geometry, audit, fixed, mut edges) = fixture();
+    edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    let schedule_limits = CycleScheduleLimitsV1 {
+        max_hinges: edges.len(),
+        max_degree: 1,
+        max_coefficient_bits: 53,
+        max_work: 4_096,
+    };
+    let ordinary = CanonicalCycleScheduleV1::prepare(
+        &geometry,
+        &audit,
+        fixed,
+        [0.0, 1.0],
+        entries(&edges),
+        schedule_limits,
+    )
+    .unwrap();
+    let half_angle = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        &geometry,
+        &audit,
+        fixed,
+        edges
+            .iter()
+            .map(|edge| HalfAngleRationalEntryInputV1 {
+                edge: *edge,
+                u_domain: [rational(0, 1), rational(1, 1)],
+                numerator_power_coefficients: vec![rational(1, 1), rational(1, 1)],
+                denominator_power_coefficients: vec![rational(2, 1)],
+            })
+            .collect(),
+        schedule_limits,
+    )
+    .unwrap();
+    let (block_geometry, block_audit, block_fixed) = single_hinge_block(&geometry, edges[0]);
+    let ceiling = usize::MAX - 1;
+    let generous = CycleScheduleRestrictionWorkspaceLimitsV2 {
+        max_work: ceiling,
+        max_restricted_schedule_retained_bytes: ceiling,
+        max_restriction_peak_bytes: ceiling,
+    };
+
+    for schedule in [&ordinary, &half_angle] {
+        let mut successful_polls = 0usize;
+        schedule
+            .restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+                &geometry,
+                &audit,
+                &block_geometry,
+                &block_audit,
+                block_fixed,
+                generous,
+                || {
+                    successful_polls += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert!(successful_polls > 1);
+        for stop in [
+            CycleScheduleRestrictionStopV1::Cancelled,
+            CycleScheduleRestrictionStopV1::DeadlineExceeded,
+        ] {
+            for stop_at in 1..=successful_polls {
+                let mut polls = 0usize;
+                let error = schedule
+                    .restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+                        &geometry,
+                        &audit,
+                        &block_geometry,
+                        &block_audit,
+                        block_fixed,
+                        generous,
+                        || {
+                            polls += 1;
+                            if polls == stop_at { Err(stop) } else { Ok(()) }
+                        },
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    error,
+                    match stop {
+                        CycleScheduleRestrictionStopV1::Cancelled => {
+                            CycleScheduleRestrictionWorkspaceErrorV2::Cancelled
+                        }
+                        CycleScheduleRestrictionStopV1::DeadlineExceeded => {
+                            CycleScheduleRestrictionWorkspaceErrorV2::DeadlineExceeded
+                        }
+                    }
+                );
+            }
+        }
+    }
+
+    for invalid_policy in [
+        CycleScheduleRestrictionWorkspaceLimitsV2 {
+            max_work: usize::MAX,
+            ..generous
+        },
+        CycleScheduleRestrictionWorkspaceLimitsV2 {
+            max_restricted_schedule_retained_bytes: usize::MAX,
+            ..generous
+        },
+        CycleScheduleRestrictionWorkspaceLimitsV2 {
+            max_restriction_peak_bytes: usize::MAX,
+            ..generous
+        },
+    ] {
+        assert!(matches!(
+            ordinary.restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+                &geometry,
+                &audit,
+                &block_geometry,
+                &block_audit,
+                block_fixed,
+                invalid_policy,
+                || Ok(()),
+            ),
+            Err(CycleScheduleRestrictionWorkspaceErrorV2::ResourceLimit)
+        ));
+    }
+
+    let (foreign_geometry, foreign_audit, _, foreign_edges) = fixture();
+    let (foreign_block_geometry, foreign_block_audit, foreign_block_fixed) =
+        single_hinge_block(&foreign_geometry, foreign_edges[0]);
+    let wrong_block_audit = single_hinge_foreign_edge_audit(
+        &block_geometry,
+        EdgeId::derive_v5(
+            ProjectId::schema_namespace([0xd7; 16]),
+            b"foreign-block-audit-edge",
+        ),
+    );
+    let absent_fixed = geometry
+        .face_ids()
+        .iter()
+        .copied()
+        .find(|face| !block_geometry.face_ids().contains(face))
+        .unwrap();
+    for (source_geometry, source_audit, candidate_geometry, candidate_audit, candidate_fixed) in [
+        (
+            &foreign_geometry,
+            &foreign_audit,
+            &block_geometry,
+            &block_audit,
+            block_fixed,
+        ),
+        (
+            &geometry,
+            &foreign_audit,
+            &block_geometry,
+            &block_audit,
+            block_fixed,
+        ),
+        (
+            &geometry,
+            &audit,
+            &foreign_block_geometry,
+            &foreign_block_audit,
+            foreign_block_fixed,
+        ),
+        (
+            &geometry,
+            &audit,
+            &block_geometry,
+            &wrong_block_audit,
+            block_fixed,
+        ),
+        (
+            &geometry,
+            &audit,
+            &block_geometry,
+            &block_audit,
+            absent_fixed,
+        ),
+    ] {
+        assert!(matches!(
+            ordinary.restrict_to_edge_block_with_workspace_and_checkpoint_v2(
+                source_geometry,
+                source_audit,
+                candidate_geometry,
+                candidate_audit,
+                candidate_fixed,
+                generous,
+                || Ok(()),
+            ),
+            Err(CycleScheduleRestrictionWorkspaceErrorV2::InvalidInput)
+        ));
+    }
 }
 
 #[test]

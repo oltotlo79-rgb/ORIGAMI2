@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, mem::size_of};
+use std::mem::size_of;
 
 use ori_domain::EdgeId;
 use ori_topology::FoldAssignment;
@@ -6,6 +6,12 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::schedule::{CycleScheduleDyadicEvaluationErrorV2, CycleScheduleDyadicWorkspaceBoundV2};
+
+mod exact_parallel_cut;
+
+use exact_parallel_cut::{
+    ExactParallelCutRecognitionV2, recognize_exact_parallel_cut_with_checkpoint_v2,
+};
 
 /// Resource policy for the allocation-bounded, adaptive dyadic V2 engine.
 ///
@@ -21,6 +27,8 @@ pub(crate) struct DyadicIntervalClosureWorkspaceLimitsV2 {
     pub(crate) max_leaves: usize,
     pub(crate) max_work: usize,
     pub(crate) schedule_limits: CycleScheduleLimitsV1,
+    pub(crate) max_theorem_recognizer_work: usize,
+    pub(crate) max_theorem_recognizer_workspace_bytes: usize,
     pub(crate) max_carrier_index_workspace_bytes: usize,
     pub(crate) max_schedule_evaluation_workspace_bytes: usize,
     pub(crate) max_big_rational_payload_bytes: usize,
@@ -47,6 +55,7 @@ pub(crate) struct DyadicIntervalClosureWorkspaceLimitsV2 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DyadicIntervalClosureWorkspaceResourcesV2 {
     pub(crate) charged_binding_validation_upper_bound_bytes: usize,
+    pub(crate) charged_theorem_recognizer_work: usize,
     pub(crate) charged_theorem_recognizer_upper_bound_bytes: usize,
     pub(crate) charged_carrier_index_workspace_upper_bound_bytes: usize,
     pub(crate) charged_schedule_evaluation_workspace_upper_bound_bytes: usize,
@@ -96,6 +105,7 @@ impl WorkspaceBoundedDyadicMaterialHingeIntervalClosureV2 {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn has_nonempty_canonical_complete_partition_v2(&self) -> bool {
         has_nonempty_canonical_complete_partition_v2(&self.partition)
     }
@@ -139,6 +149,8 @@ fn limits_contain_usize_max_v2(limits: DyadicIntervalClosureWorkspaceLimitsV2) -
         limits.schedule_limits.max_hinges,
         limits.schedule_limits.max_degree,
         limits.schedule_limits.max_work,
+        limits.max_theorem_recognizer_work,
+        limits.max_theorem_recognizer_workspace_bytes,
         limits.max_carrier_index_workspace_bytes,
         limits.max_schedule_evaluation_workspace_bytes,
         limits.max_big_rational_payload_bytes,
@@ -200,7 +212,7 @@ fn checked_preflight_v2(
         schedule,
         resources: DyadicIntervalClosureWorkspaceResourcesV2 {
             charged_binding_validation_upper_bound_bytes: 0,
-            // This V2 route never calls the legacy theorem recognizers.
+            charged_theorem_recognizer_work: 0,
             charged_theorem_recognizer_upper_bound_bytes: 0,
             charged_carrier_index_workspace_upper_bound_bytes: carrier_index,
             charged_schedule_evaluation_workspace_upper_bound_bytes: schedule.peak_bytes(),
@@ -223,6 +235,9 @@ fn resources_fit_limits_v2(
 ) -> bool {
     resources.charged_carrier_index_workspace_upper_bound_bytes
         <= limits.max_carrier_index_workspace_bytes
+        && resources.charged_theorem_recognizer_work <= limits.max_theorem_recognizer_work
+        && resources.charged_theorem_recognizer_upper_bound_bytes
+            <= limits.max_theorem_recognizer_workspace_bytes
         && resources.charged_schedule_evaluation_workspace_upper_bound_bytes
             <= limits.max_schedule_evaluation_workspace_bytes
         && resources.charged_big_rational_payload_upper_bound_bytes
@@ -248,7 +263,11 @@ fn refresh_peak_v2(resources: &mut DyadicIntervalClosureWorkspaceResourcesV2) ->
         .charged_carrier_index_workspace_upper_bound_bytes
         .checked_add(resources.charged_partition_workspace_upper_bound_bytes)?
         .checked_add(resources.charged_retained_material_upper_bound_bytes)?
-        .checked_add(proof_phase.max(resources.charged_publication_workspace_upper_bound_bytes))?;
+        .checked_add(
+            proof_phase
+                .max(resources.charged_theorem_recognizer_upper_bound_bytes)
+                .max(resources.charged_publication_workspace_upper_bound_bytes),
+        )?;
     Some(())
 }
 
@@ -326,7 +345,7 @@ fn prove_interval_closure_with_workspace_v2(
     if !tolerance.is_finite()
         || tolerance < 0.0
         || max_work == 0
-        || geometry.face_ids() != audit.faces()
+        || geometry.face_ids().len() != audit.faces().len()
         || geometry.hinges().len() != angle_boxes.len()
         || geometry.hinges().len() != canonical_hinge_indices.len()
         || geometry.hinges().len()
@@ -335,8 +354,24 @@ fn prove_interval_closure_with_workspace_v2(
                 .len()
                 .checked_add(audit.closure_hinges().len())
                 .ok_or(IntervalAttemptErrorV2::ResourceLimit)?
-        || !audit.faces().contains(&fixed_face)
     {
+        return Err(IntervalAttemptErrorV2::InvalidInput);
+    }
+    for (geometry_face, audit_face) in geometry.face_ids().iter().zip(audit.faces()) {
+        map_checkpoint_v2(checkpoint)?;
+        if geometry_face != audit_face {
+            return Err(IntervalAttemptErrorV2::InvalidInput);
+        }
+    }
+    let mut fixed_face_present = false;
+    for face in audit.faces() {
+        map_checkpoint_v2(checkpoint)?;
+        if *face == fixed_face {
+            fixed_face_present = true;
+            break;
+        }
+    }
+    if !fixed_face_present {
         return Err(IntervalAttemptErrorV2::InvalidInput);
     }
     for (position, geometry_index) in canonical_hinge_indices.iter().copied().enumerate() {
@@ -355,12 +390,18 @@ fn prove_interval_closure_with_workspace_v2(
     adjacency
         .try_reserve_exact(faces)
         .map_err(|_| IntervalAttemptErrorV2::ResourceLimit)?;
-    adjacency.resize_with(faces, Vec::new);
+    for _ in 0..faces {
+        map_checkpoint_v2(checkpoint)?;
+        adjacency.push(Vec::new());
+    }
     let mut degrees = Vec::<usize>::new();
     degrees
         .try_reserve_exact(faces)
         .map_err(|_| IntervalAttemptErrorV2::ResourceLimit)?;
-    degrees.resize(faces, 0);
+    for _ in 0..faces {
+        map_checkpoint_v2(checkpoint)?;
+        degrees.push(0);
+    }
     for geometry_index in canonical_hinge_indices.iter().copied() {
         map_checkpoint_v2(checkpoint)?;
         let hinge = &geometry.hinges()[geometry_index];
@@ -403,6 +444,7 @@ fn prove_interval_closure_with_workspace_v2(
         .try_reserve_exact(faces)
         .map_err(|_| IntervalAttemptErrorV2::ResourceLimit)?;
     for _ in 0..faces {
+        map_checkpoint_v2(checkpoint)?;
         poses.push(None);
     }
     let mut queue = VecDeque::<usize>::new();
@@ -430,6 +472,7 @@ fn prove_interval_closure_with_workspace_v2(
         face_index_v2(audit, fixed_face).ok_or(IntervalAttemptErrorV2::InvalidInput)?;
     poses[fixed_index] = Some(IntervalRigidTransformV1::identity().map_err(interval_error)?);
     queue.push_back(fixed_index);
+    let mut visited_faces = 1usize;
     let mut charged = 0usize;
     while let Some(parent_face) = queue.pop_front() {
         map_checkpoint_v2(checkpoint)?;
@@ -448,7 +491,7 @@ fn prove_interval_closure_with_workspace_v2(
             let degrees = angle_boxes[hinge_position].1;
             let mountain = hinge.assignment() == FoldAssignment::Mountain;
             let sign = if reverse ^ !mountain { -1.0 } else { 1.0 };
-            let local = IntervalRigidTransformV1::about_axis(
+            let local = IntervalRigidTransformV1::about_axis_reusing_exact_zero_v2(
                 [
                     sign * hinge.axis().x(),
                     sign * hinge.axis().y(),
@@ -459,11 +502,18 @@ fn prove_interval_closure_with_workspace_v2(
                 max_work,
             )
             .map_err(interval_error)?;
-            poses[child_face] = Some(parent.compose(local, max_work).map_err(interval_error)?);
+            poses[child_face] = Some(
+                parent
+                    .compose_reusing_exact_identity_v2(local, max_work)
+                    .map_err(interval_error)?,
+            );
+            visited_faces = visited_faces
+                .checked_add(1)
+                .ok_or(IntervalAttemptErrorV2::ResourceLimit)?;
             queue.push_back(child_face);
         }
     }
-    if poses.iter().any(Option::is_none) {
+    if visited_faces != faces {
         return Err(IntervalAttemptErrorV2::InvalidInput);
     }
 
@@ -489,7 +539,7 @@ fn prove_interval_closure_with_workspace_v2(
         } else {
             -1.0
         };
-        let local = IntervalRigidTransformV1::about_axis(
+        let local = IntervalRigidTransformV1::about_axis_reusing_exact_zero_v2(
             [
                 sign * hinge.axis().x(),
                 sign * hinge.axis().y(),
@@ -500,8 +550,10 @@ fn prove_interval_closure_with_workspace_v2(
             max_work,
         )
         .map_err(interval_error)?;
-        let expected = left.compose(local, max_work).map_err(interval_error)?;
-        if !expected.universally_matches_within(right, tolerance) {
+        let expected = left
+            .compose_reusing_exact_identity_v2(local, max_work)
+            .map_err(interval_error)?;
+        if !expected.universally_matches_within_reusing_pristine_equality_v2(right, tolerance) {
             return Err(IntervalAttemptErrorV2::Unproven);
         }
     }
@@ -510,6 +562,7 @@ fn prove_interval_closure_with_workspace_v2(
     })
 }
 
+#[cfg(test)]
 fn has_nonempty_canonical_complete_partition_v2(partition: &[(u32, u64)]) -> bool {
     if partition.is_empty() {
         return false;
@@ -623,11 +676,15 @@ fn compute_partition_binding_with_checkpoint_v2(
     partition: &[(u32, u64)],
     canonical_checked_hinges: &[EdgeId],
     resources: DyadicIntervalClosureWorkspaceResourcesV2,
+    exact_parallel_cut: bool,
     checkpoint: &mut impl FnMut() -> Result<(), DyadicIntervalClosureStopV1>,
 ) -> Result<[u8; 32], DyadicIntervalClosureControlErrorV1> {
     closure_checkpoint_v1(checkpoint)?;
     let mut hash = Sha256::new();
     hash.update(b"ORIGAMI2_WORKSPACE_BOUNDED_DYADIC_CLOSURE_V2");
+    if exact_parallel_cut {
+        hash.update(b"EXACT_PARALLEL_CUT_AFFINE_V2");
+    }
     hash.update(fixed_face.canonical_bytes());
     hash.update(schedule_binding_fingerprint_v2);
     hash.update(graph_binding_fingerprint_v1);
@@ -639,6 +696,8 @@ fn compute_partition_binding_with_checkpoint_v2(
         policy.schedule_limits.max_hinges,
         policy.schedule_limits.max_degree,
         policy.schedule_limits.max_work,
+        policy.max_theorem_recognizer_work,
+        policy.max_theorem_recognizer_workspace_bytes,
         policy.max_carrier_index_workspace_bytes,
         policy.max_schedule_evaluation_workspace_bytes,
         policy.max_big_rational_payload_bytes,
@@ -657,6 +716,7 @@ fn compute_partition_binding_with_checkpoint_v2(
     hash.update(policy.schedule_limits.max_coefficient_bits.to_be_bytes());
     for value in [
         resources.charged_binding_validation_upper_bound_bytes,
+        resources.charged_theorem_recognizer_work,
         resources.charged_theorem_recognizer_upper_bound_bytes,
         resources.charged_carrier_index_workspace_upper_bound_bytes,
         resources.charged_schedule_evaluation_workspace_upper_bound_bytes,
@@ -794,15 +854,34 @@ impl MaterialHingeGraphGeometry {
             || !tolerance.is_finite()
             || tolerance < 0.0
             || limits.max_depth >= 64
-            || self.face_ids() != audit.faces()
             || audit.faces().is_empty()
-            || !audit.faces().contains(&fixed_face)
         {
+            return Err(DyadicIntervalClosureErrorV1::InvalidInput.into());
+        }
+        if self.face_ids().len() != audit.faces().len() {
+            return Err(DyadicIntervalClosureErrorV1::InvalidInput.into());
+        }
+        for (geometry_face, audit_face) in self.face_ids().iter().zip(audit.faces()) {
+            closure_checkpoint_v1(&mut checkpoint)?;
+            if geometry_face != audit_face {
+                return Err(DyadicIntervalClosureErrorV1::InvalidInput.into());
+            }
+        }
+        let mut fixed_face_present = false;
+        for face in audit.faces() {
+            closure_checkpoint_v1(&mut checkpoint)?;
+            if *face == fixed_face {
+                fixed_face_present = true;
+                break;
+            }
+        }
+        if !fixed_face_present {
             return Err(DyadicIntervalClosureErrorV1::InvalidInput.into());
         }
         if limits_contain_usize_max_v2(limits)
             || limits.max_leaves == 0
             || limits.max_work == 0
+            || limits.max_theorem_recognizer_work == 0
             || limits.schedule_limits.max_hinges == 0
             || limits.schedule_limits.max_work == 0
             || limits.schedule_limits.max_coefficient_bits == u32::MAX
@@ -920,8 +999,55 @@ impl MaterialHingeGraphGeometry {
             return Err(DyadicIntervalClosureErrorV1::ResourceLimit.into());
         }
 
-        pending.push((0, 0));
-        let mut visited = 0usize;
+        let theorem_live_base = resources
+            .charged_carrier_index_workspace_upper_bound_bytes
+            .checked_add(resources.charged_partition_workspace_upper_bound_bytes)
+            .and_then(|bytes| {
+                bytes.checked_add(resources.charged_retained_material_upper_bound_bytes)
+            })
+            .ok_or(DyadicIntervalClosureErrorV1::ResourceLimit)?;
+        let max_theorem_workspace_bytes = limits
+            .max_peak_workspace_bytes
+            .checked_sub(theorem_live_base)
+            .map(|peak_remaining| peak_remaining.min(limits.max_theorem_recognizer_workspace_bytes))
+            .ok_or(DyadicIntervalClosureErrorV1::ResourceLimit)?;
+        let recognition = recognize_exact_parallel_cut_with_checkpoint_v2(
+            self,
+            schedule,
+            &canonical_hinge_indices,
+            &canonical_checked_hinges,
+            limits.max_theorem_recognizer_work,
+            max_theorem_workspace_bytes,
+            &mut checkpoint,
+        )
+        .map_err(map_interval_control_error_v2)?;
+        let (exact_parallel_cut, theorem_work, theorem_workspace_bytes) = match recognition {
+            ExactParallelCutRecognitionV2::Proven {
+                charged_work,
+                workspace_bytes,
+            } => {
+                closure_checkpoint_v1(&mut checkpoint)?;
+                partition.push((0, 0));
+                (true, charged_work, workspace_bytes)
+            }
+            ExactParallelCutRecognitionV2::NotApplicable {
+                charged_work,
+                workspace_bytes,
+            } => (false, charged_work, workspace_bytes),
+        };
+        resources.charged_theorem_recognizer_work =
+            resources.charged_theorem_recognizer_work.max(theorem_work);
+        resources.charged_theorem_recognizer_upper_bound_bytes = resources
+            .charged_theorem_recognizer_upper_bound_bytes
+            .max(theorem_workspace_bytes);
+        refresh_peak_v2(&mut resources).ok_or(DyadicIntervalClosureErrorV1::ResourceLimit)?;
+        if !resources_fit_limits_v2(resources, limits) {
+            return Err(DyadicIntervalClosureErrorV1::ResourceLimit.into());
+        }
+        if !exact_parallel_cut {
+            pending.push((0, 0));
+        }
+        let mut visited = usize::from(exact_parallel_cut);
         while let Some((depth, index)) = pending.pop() {
             closure_checkpoint_v1(&mut checkpoint)?;
             visited = visited
@@ -1042,6 +1168,7 @@ impl MaterialHingeGraphGeometry {
             &partition,
             &canonical_checked_hinges,
             resources,
+            exact_parallel_cut,
             &mut checkpoint,
         )?;
         let material = WorkspaceBoundedDyadicMaterialHingeIntervalClosureV2 {
@@ -1067,7 +1194,6 @@ impl MaterialHingeGraphGeometry {
             || material.policy != limits
             || material.resources() != resources
             || material.partition().len() != resources.issued_leaves
-            || !material.has_nonempty_canonical_complete_partition_v2()
             || material.canonical_checked_hinges().len() != self.hinges().len()
             || material.partition_binding_fingerprint_v2() != partition_binding_fingerprint_v2
         {

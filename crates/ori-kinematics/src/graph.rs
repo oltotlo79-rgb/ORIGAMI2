@@ -24,6 +24,10 @@ mod common_articulation_decomposition_v2;
 mod common_articulation_pose;
 mod dense_grid;
 mod dyadic_workspace_v2;
+pub(crate) use dyadic_workspace_v2::{
+    DyadicIntervalClosureWorkspaceLimitsV2, DyadicIntervalClosureWorkspaceResourcesV2,
+    WorkspaceBoundedDyadicMaterialHingeIntervalClosureV2,
+};
 mod exact_common_effective_generator_sign;
 mod exact_common_split_pair_effective_generator_sign;
 mod exact_cut_carrier;
@@ -913,9 +917,9 @@ impl MaterialHingeGraphGeometry {
             if index % 64 == 0 {
                 closure_checkpoint_v1(&mut checkpoint)?;
             }
-            if !schedule
+            if schedule
                 .derivative_bound(hinge.edge())
-                .is_some_and(|bound| bound.to_bits() == 0.0_f64.to_bits())
+                .is_none_or(|bound| bound.to_bits() != 0.0_f64.to_bits())
             {
                 stationary_closed = false;
                 break;

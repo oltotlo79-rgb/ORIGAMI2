@@ -23,8 +23,10 @@ use crate::{
     OverlapCellKey, OverlapCellSnapshot, RequiredLayerOrderError, RequiredLayerOrderPair,
     UnsupportedFlatFoldabilityTopology, complete_progress,
     constraints::{
-        ConstraintSolverControl, ConstraintSolverEvent, ConstraintSolverResult, TupleConstraint,
-        solve_constraints_with_memory,
+        CompleteAssignmentVerificationResult, ConstraintConflict, ConstraintSet,
+        ConstraintSolverControl, ConstraintSolverEvent, ConstraintSolverResult, ConstraintView,
+        TransitivityConstraintFamily, TransitivityConstraints, TupleConstraint, choose_three,
+        choose_two, solve_constraints_with_memory, verify_complete_assignment_with_memory,
     },
     exact::{
         self, ExactBudget, ExactError, Point, Rational, Transform, add, apply, average3, cmp,
@@ -673,6 +675,7 @@ pub(crate) fn analyze_facewise<O: GlobalFlatFoldabilityObserver + ?Sized>(
                     reason: success.reason,
                     layer_order: Box::new(success.layer_order),
                 },
+                analysis_seal: super::GlobalFlatFoldabilityAnalysisSealV2,
             })
         }
         Err(FacewiseAbort::Unknown(reason)) => {
@@ -685,6 +688,7 @@ pub(crate) fn analyze_facewise<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 provenance,
                 work_counts: runtime.work,
                 outcome: GlobalFlatFoldabilityOutcome::Impossible { reason },
+                analysis_seal: super::GlobalFlatFoldabilityAnalysisSealV2,
             })
         }
         Err(FacewiseAbort::RequiredLayerOrder(_)) => {
@@ -3449,9 +3453,11 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
                     RequiredLayerOrderError::Unsatisfied,
                 ));
             }
-            if let Some(index) = conflict_constraint {
-                let constraint = problem.constraints.get(index).ok_or_else(internal_abort)?;
-                return Err(constraint_contradiction(constraint, &embedding));
+            if let Some(conflict) = conflict_constraint {
+                if conflict.logical_index >= problem.constraints.len() {
+                    return Err(FacewiseAbort::Execution(internal_error()));
+                }
+                return Err(constraint_conflict_contradiction(conflict, &embedding));
             }
             return Err(FacewiseAbort::Impossible(
                 GlobalFlatFoldabilityImpossibleReason::FacewiseSearchExhausted {
@@ -4123,7 +4129,7 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
 #[derive(Clone, PartialEq, Eq)]
 struct ConstraintProblem {
     variables: Vec<(usize, usize)>,
-    constraints: Vec<TupleConstraint>,
+    constraints: ConstraintSet,
     fixed_assignments: Vec<Option<bool>>,
 }
 
@@ -4250,6 +4256,8 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
         ));
     }
     let mut constraints = Vec::new();
+    let mut transitivity_families = Vec::new();
+    let mut transitivity_constraint_count = 0_usize;
     let fixed_assignment_bytes =
         runtime.allocation_bytes(variables.len(), std::mem::size_of::<Option<bool>>())?;
     add_constraint_problem_storage(runtime, storage_scope, fixed_assignment_bytes)?;
@@ -4273,6 +4281,7 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
             },
             runtime,
             storage_scope,
+            0,
         )?;
     }
 
@@ -4301,7 +4310,10 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 faces: vec![key.0, key.1],
                 supporting_cell: supporting_cell(cells, &[key.0, key.1], runtime)?,
             };
-            return Err(constraint_contradiction(&constraint, embedding));
+            return Err(constraint_contradiction(
+                ConstraintView::Explicit(&constraint),
+                embedding,
+            ));
         }
         fixed_assignments[variable] = Some(canonical_value);
         ensure_constraint_construction_headroom(runtime, storage_scope)?;
@@ -4316,35 +4328,34 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
             },
             runtime,
             storage_scope,
+            0,
         )?;
     }
 
     for cell in cells {
         runtime.checkpoint(None)?;
-        for first_index in 0..cell.covering_faces.len() {
-            for second_index in (first_index + 1)..cell.covering_faces.len() {
-                for third_index in (second_index + 1)..cell.covering_faces.len() {
-                    let first = cell.covering_faces[first_index];
-                    let second = cell.covering_faces[second_index];
-                    let third = cell.covering_faces[third_index];
-                    let relations = [(first, second), (second, third), (third, first)];
-                    let faces = [first, second, third];
-                    let constraint = relation_constraint(
-                        RelationConstraintInput {
-                            kind: FacewiseConstraintKind::Transitivity,
-                            relations: &relations,
-                            faces: &faces,
-                            supporting_cell: Some(cell.key),
-                            variable_pairs: &variables,
-                        },
-                        |relations| !(relations[0] == relations[1] && relations[1] == relations[2]),
-                        runtime,
-                        storage_scope,
-                    )?;
-                    push_constraint(&mut constraints, constraint, runtime, storage_scope)?;
-                }
-            }
+        let family_count = choose_three(cell.covering_faces.len())
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+        let current_logical_count = constraints
+            .len()
+            .checked_add(transitivity_constraint_count)
+            .ok_or_else(|| constraint_limit_abort(runtime, usize::MAX))?;
+        admit_constraint_batch(current_logical_count, family_count, runtime)?;
+        if family_count == 0 {
+            continue;
         }
+        let family =
+            build_transitivity_constraint_family(cell, &variables, runtime, storage_scope)?;
+        push_transitivity_constraint_family(
+            &mut transitivity_families,
+            family,
+            cells.len(),
+            runtime,
+            storage_scope,
+        )?;
+        transitivity_constraint_count = transitivity_constraint_count
+            .checked_add(family_count)
+            .ok_or_else(|| constraint_limit_abort(runtime, usize::MAX))?;
     }
 
     for hinge in &embedding.hinges {
@@ -4378,7 +4389,13 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 runtime,
                 storage_scope,
             )?;
-            push_constraint(&mut constraints, constraint, runtime, storage_scope)?;
+            push_constraint(
+                &mut constraints,
+                constraint,
+                runtime,
+                storage_scope,
+                transitivity_constraint_count,
+            )?;
         }
     }
 
@@ -4437,7 +4454,13 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 runtime,
                 storage_scope,
             )?;
-            push_constraint(&mut constraints, constraint, runtime, storage_scope)?;
+            push_constraint(
+                &mut constraints,
+                constraint,
+                runtime,
+                storage_scope,
+                transitivity_constraint_count,
+            )?;
         }
     }
 
@@ -4445,6 +4468,17 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
     // topology annotations (`AuxiliaryIgnored`), not unfolded material
     // creases, so tortilla-tortilla constraints are intentionally zero.
     constraints.sort_unstable_by(compare_constraints);
+    let transitivity_insertion = constraints.partition_point(|constraint| {
+        constraint_kind_rank(constraint.kind)
+            < constraint_kind_rank(FacewiseConstraintKind::Transitivity)
+    });
+    let transitivity = TransitivityConstraints::try_new(transitivity_families, variables.len())
+        .ok_or_else(internal_abort)?;
+    if transitivity.len() != transitivity_constraint_count {
+        return Err(FacewiseAbort::Execution(internal_error()));
+    }
+    let constraints = ConstraintSet::new(constraints, transitivity, transitivity_insertion)
+        .ok_or_else(internal_abort)?;
     if record_work {
         runtime.set_constraints(constraints.len())?;
     } else if constraints.len() > runtime.limits.max_constraints {
@@ -4460,6 +4494,165 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
         constraints,
         fixed_assignments,
     })
+}
+
+fn constraint_limit_abort<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    runtime: &Runtime<'_, O>,
+    observed: usize,
+) -> FacewiseAbort {
+    FacewiseAbort::Unknown(GlobalFlatFoldabilityUnknownReason::ConstraintLimitReached {
+        limit: runtime.limits.max_constraints,
+        observed,
+    })
+}
+
+fn admit_constraint_batch<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    current: usize,
+    additional: usize,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()> {
+    // Preserve the old push path's control priority: cancellation/deadline is
+    // observed before a logical constraint-limit failure.
+    runtime.checkpoint(None)?;
+    let observed = current.saturating_add(additional);
+    let records_before_result = if observed > runtime.limits.max_constraints {
+        runtime
+            .limits
+            .max_constraints
+            .saturating_sub(current)
+            .saturating_add(1)
+            .min(additional)
+    } else {
+        additional
+    };
+    let checkpoint_count =
+        records_before_result.saturating_add(CONTROL_POLL_RECORDS - 1) / CONTROL_POLL_RECORDS;
+    for _ in 0..checkpoint_count {
+        runtime.checkpoint(None)?;
+    }
+    if observed > runtime.limits.max_constraints {
+        return Err(constraint_limit_abort(
+            runtime,
+            runtime.limits.max_constraints.saturating_add(1),
+        ));
+    }
+    Ok(())
+}
+
+fn build_transitivity_constraint_family<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    cell: &OverlapCell,
+    variable_pairs: &[(usize, usize)],
+    runtime: &mut Runtime<'_, O>,
+    storage_scope: ConstraintStorageScope,
+) -> FacewiseResult<TransitivityConstraintFamily> {
+    if cell.covering_faces.len() < 3
+        || !cell
+            .covering_faces
+            .windows(2)
+            .all(|faces| faces[0] < faces[1])
+    {
+        return Err(FacewiseAbort::Execution(internal_error()));
+    }
+    let pair_count = choose_two(cell.covering_faces.len())
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    let face_bytes =
+        runtime.allocation_bytes(cell.covering_faces.len(), std::mem::size_of::<usize>())?;
+    let pair_bytes = runtime.allocation_bytes(pair_count, std::mem::size_of::<usize>())?;
+    let nested_bytes = face_bytes
+        .checked_add(pair_bytes)
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    ensure_constraint_scope_transient(runtime, storage_scope, nested_bytes)?;
+
+    let mut covering_faces = Vec::new();
+    covering_faces
+        .try_reserve_exact(cell.covering_faces.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    covering_faces.extend_from_slice(&cell.covering_faces);
+    let mut pair_variables = Vec::new();
+    pair_variables
+        .try_reserve_exact(pair_count)
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let mut pair_poll = 0_usize;
+    for first in 0..covering_faces.len() {
+        for second in first + 1..covering_faces.len() {
+            runtime.poll_control(&mut pair_poll)?;
+            let pair = ordered_pair(covering_faces[first], covering_faces[second]);
+            let variable = variable_pairs
+                .binary_search(&pair)
+                .map_err(|_| certificate_failure())?;
+            pair_variables.push(variable);
+        }
+    }
+    if pair_variables.len() != pair_count
+        || !pair_variables
+            .windows(2)
+            .all(|variables| variables[0] < variables[1])
+    {
+        return Err(FacewiseAbort::Execution(internal_error()));
+    }
+    Ok(TransitivityConstraintFamily {
+        covering_faces,
+        pair_variables,
+        supporting_cell: cell.key,
+    })
+}
+
+fn push_transitivity_constraint_family<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    families: &mut Vec<TransitivityConstraintFamily>,
+    family: TransitivityConstraintFamily,
+    maximum_families: usize,
+    runtime: &mut Runtime<'_, O>,
+    storage_scope: ConstraintStorageScope,
+) -> FacewiseResult<()> {
+    runtime.checkpoint(None)?;
+    let nested_bytes = runtime
+        .allocation_bytes(
+            family.covering_faces.capacity(),
+            std::mem::size_of::<usize>(),
+        )?
+        .checked_add(runtime.allocation_bytes(
+            family.pair_variables.capacity(),
+            std::mem::size_of::<usize>(),
+        )?)
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    let prior_capacity = families.capacity();
+    let next_capacity = if families.len() == prior_capacity {
+        next_vector_capacity(prior_capacity, families.len(), maximum_families, runtime)?
+    } else {
+        prior_capacity
+    };
+    let outer_bytes = runtime.allocation_bytes(
+        next_capacity - prior_capacity,
+        std::mem::size_of::<TransitivityConstraintFamily>(),
+    )?;
+    let additional = nested_bytes
+        .checked_add(outer_bytes)
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    let old_outer_bytes = if next_capacity > prior_capacity {
+        runtime.allocation_bytes(
+            prior_capacity,
+            std::mem::size_of::<TransitivityConstraintFamily>(),
+        )?
+    } else {
+        0
+    };
+    ensure_constraint_scope_transient(
+        runtime,
+        storage_scope,
+        additional
+            .checked_add(old_outer_bytes)
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+    )?;
+    add_constraint_problem_storage(runtime, storage_scope, additional)?;
+    if next_capacity > prior_capacity {
+        families
+            .try_reserve_exact(next_capacity - families.len())
+            .map_err(|_| {
+                runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+            })?;
+    }
+    families.push(family);
+    Ok(())
 }
 
 fn taco_taco_source_tuple_accepts(relations: &[bool]) -> bool {
@@ -4492,9 +4685,14 @@ fn push_constraint<O: GlobalFlatFoldabilityObserver + ?Sized>(
     constraint: TupleConstraint,
     runtime: &mut Runtime<'_, O>,
     storage_scope: ConstraintStorageScope,
+    implicit_constraint_count: usize,
 ) -> FacewiseResult<()> {
     runtime.checkpoint(None)?;
-    let observed = match constraints.len().checked_add(1) {
+    let observed = match constraints
+        .len()
+        .checked_add(implicit_constraint_count)
+        .and_then(|count| count.checked_add(1))
+    {
         Some(observed) => observed,
         None => {
             return Err(FacewiseAbort::Unknown(
@@ -4833,23 +5031,48 @@ fn ordered_rationals<'a>(
 }
 
 fn constraint_contradiction(
-    constraint: &TupleConstraint,
+    constraint: ConstraintView<'_>,
     embedding: &FlatEmbedding,
 ) -> FacewiseAbort {
-    let faces = constraint
-        .faces
+    constraint_contradiction_parts(
+        constraint.kind(),
+        constraint.faces(),
+        constraint.supporting_cell(),
+        embedding,
+    )
+}
+
+fn constraint_conflict_contradiction(
+    conflict: ConstraintConflict,
+    embedding: &FlatEmbedding,
+) -> FacewiseAbort {
+    constraint_contradiction_parts(
+        conflict.kind,
+        conflict.faces(),
+        conflict.supporting_cell,
+        embedding,
+    )
+}
+
+fn constraint_contradiction_parts(
+    kind: FacewiseConstraintKind,
+    face_indices: &[usize],
+    supporting_cell: Option<OverlapCellKey>,
+    embedding: &FlatEmbedding,
+) -> FacewiseAbort {
+    let faces = face_indices
         .iter()
         .filter_map(|index| embedding.faces.get(*index))
         .map(|face| face.source.layer)
         .collect::<Vec<_>>();
-    if faces.len() != constraint.faces.len() {
+    if faces.len() != face_indices.len() {
         return FacewiseAbort::Execution(internal_error());
     }
     FacewiseAbort::Impossible(
         GlobalFlatFoldabilityImpossibleReason::FacewiseConstraintContradiction {
-            constraint_kind: constraint.kind,
+            constraint_kind: kind,
             faces,
-            supporting_cell: constraint.supporting_cell,
+            supporting_cell,
         },
     )
 }
@@ -4950,16 +5173,46 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         runtime.restore_verification_storage(verification_base);
         return Err(certificate_failure());
     }
-    for constraint in &regenerated.constraints {
-        if let Err(abort) = runtime.checkpoint(None) {
-            drop(regenerated);
-            runtime.restore_verification_storage(verification_base);
-            return Err(abort);
-        }
-        if !fresh_constraint_accepts(constraint, assignment) {
+    let verifier_memory_limit = runtime.remaining_storage_bytes()?;
+    let retained_search_nodes = runtime.work.search_nodes;
+    let verification = verify_complete_assignment_with_memory(
+        assignment,
+        &regenerated.constraints,
+        verifier_memory_limit,
+        |event, _| runtime.constraint_solver_control(event, retained_search_nodes),
+    );
+    match verification {
+        CompleteAssignmentVerificationResult::Accepts => {}
+        CompleteAssignmentVerificationResult::Rejects
+        | CompleteAssignmentVerificationResult::InvalidConstraint => {
             drop(regenerated);
             runtime.restore_verification_storage(verification_base);
             return Err(certificate_failure());
+        }
+        CompleteAssignmentVerificationResult::DeadlineReached => {
+            drop(regenerated);
+            runtime.restore_verification_storage(verification_base);
+            return Err(FacewiseAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::TimeLimitReached {
+                    phase: runtime.phase,
+                },
+            ));
+        }
+        CompleteAssignmentVerificationResult::Cancelled => {
+            drop(regenerated);
+            runtime.restore_verification_storage(verification_base);
+            return Err(FacewiseAbort::Execution(
+                GlobalFlatFoldabilityExecutionError::Cancelled,
+            ));
+        }
+        CompleteAssignmentVerificationResult::WorkingMemoryLimit { observed } => {
+            let used = runtime
+                .exact_storage
+                .total()
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+            drop(regenerated);
+            runtime.restore_verification_storage(verification_base);
+            return Err(runtime.exact_storage_limit_failure(used.saturating_add(observed)));
         }
     }
     drop(regenerated);
@@ -5046,113 +5299,17 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
             });
         polygon_classes.push(class);
     }
-    let mut triple_overlap = HashMap::<(usize, usize, usize), bool>::new();
-    for first in 0..embedding.faces.len() {
-        runtime.checkpoint(None)?;
-        for second in (first + 1)..embedding.faces.len() {
-            for third in (second + 1)..embedding.faces.len() {
-                // The pair-value keys were just proved identical to the
-                // independently recomputed positive-area overlap pairs. A
-                // positive three-face common interior necessarily projects
-                // to a positive common interior for each of its three pairs,
-                // so a missing pair rejects the triple without any exact
-                // bounds, clipping, or retained predicate-cache entry.
-                if !pair_values.contains_key(&(first, second))
-                    || !pair_values.contains_key(&(first, third))
-                    || !pair_values.contains_key(&(second, third))
-                {
-                    continue;
-                }
-                let mut classes = [
-                    polygon_classes[first],
-                    polygon_classes[second],
-                    polygon_classes[third],
-                ];
-                classes.sort_unstable();
-                let predicate_key = (classes[0], classes[1], classes[2]);
-                let common_is_positive = if let Some(value) = triple_overlap.get(&predicate_key) {
-                    *value
-                } else {
-                    let strictly_separated =
-                        exact_axis_aligned_bounds_are_strictly_separated(
-                            &embedding.faces[first].polygon,
-                            face_bounds[first],
-                            &embedding.faces[second].polygon,
-                            face_bounds[second],
-                            runtime,
-                        )? || exact_axis_aligned_bounds_are_strictly_separated(
-                            &embedding.faces[first].polygon,
-                            face_bounds[first],
-                            &embedding.faces[third].polygon,
-                            face_bounds[third],
-                            runtime,
-                        )? || exact_axis_aligned_bounds_are_strictly_separated(
-                            &embedding.faces[second].polygon,
-                            face_bounds[second],
-                            &embedding.faces[third].polygon,
-                            face_bounds[third],
-                            runtime,
-                        )?;
-                    let value = if strictly_separated {
-                        false
-                    } else {
-                        let first_second = convex_polygon_intersection(
-                            &embedding.faces[first].polygon,
-                            &embedding.faces[second].polygon,
-                            runtime,
-                        )?;
-                        if first_second.len() < 3
-                            || !signed_double_area(&first_second, runtime)?.is_positive()
-                        {
-                            false
-                        } else {
-                            let triple_scope_base = runtime.verification_storage_bytes();
-                            let first_second_bytes = exact_storage_bytes_points(&first_second)?
-                                .checked_add(runtime.allocation_bytes(
-                                    first_second.capacity(),
-                                    std::mem::size_of::<Point>(),
-                                )?)
-                                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
-                            runtime.add_verification_storage(first_second_bytes)?;
-                            let common = convex_polygon_intersection(
-                                &first_second,
-                                &embedding.faces[third].polygon,
-                                runtime,
-                            )?;
-                            let value = common.len() >= 3
-                                && signed_double_area(&common, runtime)?.is_positive();
-                            drop(common);
-                            runtime.restore_verification_storage(triple_scope_base);
-                            value
-                        }
-                    };
-                    runtime.add_verification_storage(runtime.allocation_bytes(
-                        1,
-                        3 * std::mem::size_of::<((usize, usize, usize), bool)>(),
-                    )?)?;
-                    triple_overlap.try_reserve(1).map_err(|_| {
-                        runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
-                    })?;
-                    triple_overlap.insert(predicate_key, value);
-                    value
-                };
-                if !common_is_positive {
-                    continue;
-                }
-                if supporting_cell(cells, &[first, second, third], runtime)?.is_none() {
-                    return Err(certificate_failure());
-                }
-                let first_second_order = face_above(first, second, &pair_values)?;
-                let second_third_order = face_above(second, third, &pair_values)?;
-                let third_first_order = face_above(third, first, &pair_values)?;
-                if first_second_order == second_third_order
-                    && second_third_order == third_first_order
-                {
-                    return Err(certificate_failure());
-                }
-            }
-        }
-    }
+    // No independent O(F^3) common-interior scan is needed here. The checks
+    // below prove a stronger finite partition statement: every retained cell
+    // is positive-area, strictly convex, and interior-disjoint; membership in
+    // `covering_faces` is equivalent to exact polygon containment for every
+    // coincident-polygon class; and the disjoint covering-cell areas sum to
+    // each complete face area. Therefore the part of any positive-area
+    // three-face common interior outside each face's verified cell union has
+    // measure zero. A positive open common interior cannot be covered by the
+    // union of those three measure-zero gaps, so one verified cell covers all
+    // three faces. `order_cell_faces` then checks every pair in that cell's
+    // total order, which independently excludes a directed three-cycle.
     let cell_key_entry_bytes = std::mem::size_of::<[u8; 32]>()
         .checked_add(3 * std::mem::size_of::<usize>())
         .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
@@ -5629,28 +5786,57 @@ fn verify_geometric_constraints_direct<O: GlobalFlatFoldabilityObserver + ?Sized
         }
     }
 
+    // A tournament is transitive exactly when its outdegrees are the distinct
+    // values `0..ply`.  Checking that score sequence is O(ply^2), whereas
+    // enumerating every forbidden directed triangle is O(ply^3).  Keep the
+    // logical certificate count unchanged: the compact family still denotes
+    // every C(ply, 3) constraint.
+    let mut maximum_cell_ply = 0_usize;
+    let mut maximum_ply_poll = 0_usize;
+    for cell in cells {
+        runtime.poll_control(&mut maximum_ply_poll)?;
+        maximum_cell_ply = maximum_cell_ply.max(cell.covering_faces.len());
+    }
+    runtime.ensure_transient_exact_storage(
+        runtime.allocation_bytes(maximum_cell_ply, std::mem::size_of::<usize>())?,
+    )?;
+    let mut tournament_outdegrees = Vec::new();
+    tournament_outdegrees
+        .try_reserve_exact(maximum_cell_ply)
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     let mut transitivity_poll = 0_usize;
     for cell in cells {
         runtime.checkpoint(None)?;
-        for first_index in 0..cell.covering_faces.len() {
-            for second_index in (first_index + 1)..cell.covering_faces.len() {
-                for third_index in (second_index + 1)..cell.covering_faces.len() {
-                    runtime.poll_control(&mut transitivity_poll)?;
-                    expected_constraint_count =
-                        checked_certificate_count(expected_constraint_count, 1)?;
-                    let first = cell.covering_faces[first_index];
-                    let second = cell.covering_faces[second_index];
-                    let third = cell.covering_faces[third_index];
-                    let first_second = face_above(first, second, pair_values)?;
-                    let second_third = face_above(second, third, pair_values)?;
-                    let third_first = face_above(third, first, pair_values)?;
-                    if first_second == second_third && second_third == third_first {
-                        return Err(certificate_failure());
-                    }
-                }
+        let ply = cell.covering_faces.len();
+        expected_constraint_count = checked_certificate_count(
+            expected_constraint_count,
+            choose_three(ply).ok_or_else(certificate_failure)?,
+        )?;
+        if ply < 3 {
+            continue;
+        }
+        tournament_outdegrees.clear();
+        tournament_outdegrees.resize(ply, 0_usize);
+        for first_index in 0..ply {
+            for second_index in (first_index + 1)..ply {
+                runtime.poll_control(&mut transitivity_poll)?;
+                let first = cell.covering_faces[first_index];
+                let second = cell.covering_faces[second_index];
+                let winner = if face_above(first, second, pair_values)? {
+                    first_index
+                } else {
+                    second_index
+                };
+                tournament_outdegrees[winner] = tournament_outdegrees[winner]
+                    .checked_add(1)
+                    .ok_or_else(certificate_failure)?;
             }
         }
+        if !transitive_tournament_degree_sequence(&mut tournament_outdegrees) {
+            return Err(certificate_failure());
+        }
     }
+    drop(tournament_outdegrees);
 
     for (hinge_index, hinge) in embedding.hinges.iter().enumerate() {
         runtime.checkpoint(None)?;
@@ -5788,6 +5974,31 @@ fn checked_certificate_count(current: usize, additional: usize) -> FacewiseResul
         .ok_or_else(certificate_failure)
 }
 
+fn transitive_tournament_degree_sequence(outdegrees: &mut [usize]) -> bool {
+    let vertex_count = outdegrees.len();
+    if vertex_count == 0 {
+        return true;
+    }
+    if outdegrees.iter().any(|degree| *degree >= vertex_count) {
+        return false;
+    }
+    // Mark an observed degree in place by adding `vertex_count`.  Reading a
+    // later entry modulo `vertex_count` preserves its original degree even if
+    // that slot was used as an earlier marker, so no second O(ply) buffer is
+    // required.
+    for index in 0..vertex_count {
+        let degree = outdegrees[index] % vertex_count;
+        if outdegrees[degree] >= vertex_count {
+            return false;
+        }
+        let Some(marked) = outdegrees[degree].checked_add(vertex_count) else {
+            return false;
+        };
+        outdegrees[degree] = marked;
+    }
+    true
+}
+
 fn all_face_pairs_assigned(faces: &[usize], pair_values: &PairValues) -> bool {
     (0..faces.len()).all(|first| {
         ((first + 1)..faces.len())
@@ -5806,30 +6017,6 @@ fn face_above(first: usize, second: usize, pair_values: &PairValues) -> Facewise
     } else {
         canonical_second_above_first
     })
-}
-
-fn fresh_constraint_accepts(constraint: &TupleConstraint, assignment: &[bool]) -> bool {
-    if constraint.variables.len() > 6
-        || constraint
-            .variables
-            .iter()
-            .any(|index| *index >= assignment.len())
-        || constraint
-            .variables
-            .iter()
-            .enumerate()
-            .any(|(index, variable)| constraint.variables[..index].contains(variable))
-    {
-        return false;
-    }
-    let row = constraint
-        .variables
-        .iter()
-        .enumerate()
-        .fold(0_u8, |row, (position, variable)| {
-            row | (u8::from(assignment[*variable]) << position)
-        });
-    constraint.allowed_rows.contains(&row)
 }
 
 struct CertificateByteCounter<'runtime, 'observer, O: GlobalFlatFoldabilityObserver + ?Sized> {

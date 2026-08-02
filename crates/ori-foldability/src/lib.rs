@@ -1200,6 +1200,68 @@ pub struct GlobalFlatFoldabilityReport {
     pub provenance: GlobalFlatFoldabilityProvenance,
     pub work_counts: GlobalFlatFoldabilityWorkCounts,
     pub outcome: GlobalFlatFoldabilityOutcome,
+    #[serde(skip)]
+    analysis_seal: GlobalFlatFoldabilityAnalysisSealV2,
+}
+
+/// Private construction marker carried only by this crate's analysis result.
+/// It prevents external code from fabricating a report and then minting a
+/// layer-source handle from arbitrary public `LayerOrderSnapshot` fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct GlobalFlatFoldabilityAnalysisSealV2;
+
+/// Opaque borrow of a layer source emitted by a completed global analysis.
+///
+/// It has no public constructor.  Consumers can inspect its snapshot but must
+/// retain this handle at their boundary, which preserves the fact that the
+/// snapshot was emitted from a real `GlobalFlatFoldabilityReport` rather than
+/// assembled from public snapshot fields.
+///
+/// ```compile_fail
+/// use ori_foldability::GlobalFlatLayerOrderSourceAuthorityV2;
+///
+/// fn fabricate<'a>() -> GlobalFlatLayerOrderSourceAuthorityV2<'a> {
+///     GlobalFlatLayerOrderSourceAuthorityV2 {
+///         snapshot: todo!(),
+///         provenance: todo!(),
+///         _analysis_seal: todo!(),
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use ori_foldability::GlobalFlatLayerOrderSourceAuthorityV2;
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<GlobalFlatLayerOrderSourceAuthorityV2<'static>>();
+/// ```
+///
+/// ```compile_fail
+/// use ori_foldability::GlobalFlatLayerOrderSourceAuthorityV2;
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<GlobalFlatLayerOrderSourceAuthorityV2<'static>>();
+/// ```
+#[derive(Debug)]
+pub struct GlobalFlatLayerOrderSourceAuthorityV2<'report> {
+    snapshot: &'report LayerOrderSnapshot,
+    provenance: GlobalFlatFoldabilityProvenance,
+    _analysis_seal: &'report GlobalFlatFoldabilityAnalysisSealV2,
+}
+
+impl<'report> GlobalFlatLayerOrderSourceAuthorityV2<'report> {
+    #[must_use]
+    pub const fn layer_order_snapshot_v2(&self) -> &'report LayerOrderSnapshot {
+        self.snapshot
+    }
+
+    #[must_use]
+    pub const fn provenance_v2(&self) -> GlobalFlatFoldabilityProvenance {
+        self.provenance
+    }
+
+    #[must_use]
+    pub fn is_current_v2(&self) -> bool {
+        self.snapshot.is_current_for(&self.provenance)
+    }
 }
 
 impl GlobalFlatFoldabilityReport {
@@ -1221,6 +1283,23 @@ impl GlobalFlatFoldabilityReport {
             GlobalFlatFoldabilityOutcome::Impossible { .. }
             | GlobalFlatFoldabilityOutcome::Unknown { .. } => None,
         }
+    }
+
+    /// Borrows the possible-result source through an opaque analysis-issued
+    /// handle.  This is the authentication boundary for downstream V2 replay
+    /// consumers; a raw public snapshot alone is only data.
+    #[must_use]
+    pub fn layer_order_source_authority_v2(
+        &self,
+    ) -> Option<GlobalFlatLayerOrderSourceAuthorityV2<'_>> {
+        let snapshot = self.layer_order()?;
+        snapshot
+            .is_current_for(&self.provenance)
+            .then_some(GlobalFlatLayerOrderSourceAuthorityV2 {
+                snapshot,
+                provenance: self.provenance,
+                _analysis_seal: &self.analysis_seal,
+            })
     }
 }
 
@@ -1590,6 +1669,7 @@ pub fn analyze_global_flat_foldability_with_observer<O: GlobalFlatFoldabilityObs
                                 violations,
                             },
                     },
+                    analysis_seal: GlobalFlatFoldabilityAnalysisSealV2,
                 });
             }
             GlobalFlatSourceValidationFailure::Execution(error) => return Err(error),
@@ -2321,6 +2401,7 @@ const fn unknown(
         provenance,
         work_counts,
         outcome: GlobalFlatFoldabilityOutcome::Unknown { reason },
+        analysis_seal: GlobalFlatFoldabilityAnalysisSealV2,
     }
 }
 
@@ -4198,6 +4279,32 @@ mod tests {
             changed_content.source_fingerprint
         );
         assert!(!order.is_current_for(&changed_content));
+    }
+
+    #[test]
+    fn completed_report_mints_only_a_borrowed_nonserialized_layer_source_authority() {
+        let (paper, pattern, topology, local) = centered_single_hinge_square();
+        let report = analyze_global_flat_foldability(
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(2),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            ),
+            GlobalFlatFoldabilityLimits::default(),
+        )
+        .expect("baseline analysis");
+        let snapshot = report.layer_order().expect("geometry-backed layer order");
+        let authority = report
+            .layer_order_source_authority_v2()
+            .expect("a completed possible report mints an authority");
+        assert!(std::ptr::eq(authority.layer_order_snapshot_v2(), snapshot));
+        assert_eq!(authority.provenance_v2(), report.provenance);
+        assert!(authority.is_current_v2());
+
+        let serialized = serde_json::to_value(&report).expect("report serialization");
+        assert!(serialized.get("analysis_seal").is_none());
     }
 
     #[test]

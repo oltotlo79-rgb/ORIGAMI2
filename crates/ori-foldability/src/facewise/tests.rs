@@ -54,6 +54,18 @@ impl GlobalFlatFoldabilityObserver for AlwaysCancel {
     }
 }
 
+#[derive(Default)]
+struct CountingObserver {
+    checkpoints: usize,
+}
+
+impl GlobalFlatFoldabilityObserver for CountingObserver {
+    fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
+        self.checkpoints += 1;
+        GlobalFlatFoldabilityCheckpoint::Continue
+    }
+}
+
 struct CancelAfter {
     continued_checkpoints: usize,
 }
@@ -614,6 +626,41 @@ fn two_and_three_relation_templates_match_the_source_truth_tables() {
 }
 
 #[test]
+fn tournament_degree_sequence_matches_exhaustive_triangle_transitivity() {
+    for vertex_count in 0_usize..=6 {
+        let pair_count = choose_two(vertex_count).expect("small exhaustive fixture");
+        for mask in 0_u64..(1_u64 << pair_count) {
+            let mut above = vec![vec![false; vertex_count]; vertex_count];
+            let mut outdegrees = vec![0_usize; vertex_count];
+            let pairs = (0..vertex_count)
+                .flat_map(|first| ((first + 1)..vertex_count).map(move |second| (first, second)));
+            for (pair_index, (first, second)) in pairs.enumerate() {
+                let first_above_second = mask & (1_u64 << pair_index) != 0;
+                above[first][second] = first_above_second;
+                above[second][first] = !first_above_second;
+                let winner = if first_above_second { first } else { second };
+                outdegrees[winner] += 1;
+            }
+            let has_directed_triangle = (0..vertex_count).any(|first| {
+                ((first + 1)..vertex_count).any(|second| {
+                    ((second + 1)..vertex_count).any(|third| {
+                        above[first][second] == above[second][third]
+                            && above[second][third] == above[third][first]
+                    })
+                })
+            });
+            assert_eq!(
+                transitive_tournament_degree_sequence(&mut outdegrees),
+                !has_directed_triangle,
+                "vertex_count={vertex_count}, mask={mask}"
+            );
+        }
+    }
+    assert!(!transitive_tournament_degree_sequence(&mut [0, 0, 2]));
+    assert!(!transitive_tournament_degree_sequence(&mut [0, 1, 3]));
+}
+
+#[test]
 fn exact_segment_classification_is_open_and_positive_length_only() {
     let square = vec![
         integer_point(-1, -1),
@@ -744,8 +791,9 @@ fn geometry_enumerates_taco_tortilla_and_same_side_taco_taco_only() {
     assert_eq!(
         problem
             .constraints
-            .iter()
-            .filter(|constraint| constraint.kind == FacewiseConstraintKind::TacoTortilla)
+            .try_iter()
+            .expect("constraint iterator allocates")
+            .filter(|constraint| constraint.kind() == FacewiseConstraintKind::TacoTortilla)
             .count(),
         1
     );
@@ -790,8 +838,9 @@ fn geometry_enumerates_taco_tortilla_and_same_side_taco_taco_only() {
     assert_eq!(
         same_side
             .constraints
-            .iter()
-            .filter(|constraint| constraint.kind == FacewiseConstraintKind::TacoTaco)
+            .try_iter()
+            .expect("constraint iterator allocates")
+            .filter(|constraint| constraint.kind() == FacewiseConstraintKind::TacoTaco)
             .count(),
         1
     );
@@ -838,8 +887,9 @@ fn geometry_enumerates_taco_tortilla_and_same_side_taco_taco_only() {
     assert_eq!(
         opposite
             .constraints
-            .iter()
-            .filter(|constraint| constraint.kind == FacewiseConstraintKind::TacoTaco)
+            .try_iter()
+            .expect("constraint iterator allocates")
+            .filter(|constraint| constraint.kind() == FacewiseConstraintKind::TacoTaco)
             .count(),
         0
     );
@@ -1031,6 +1081,50 @@ fn canonical_cell_reverification_rejects_split_missing_merged_and_duplicate_part
     reverse_stored.reverse();
     verify_canonical_overlap_cells(&merge_faces, &reverse_stored, &mut canonical_runtime)
         .expect("cell storage order is not geometric evidence");
+}
+
+#[test]
+fn verified_cell_partition_rejects_missing_three_face_common_interior() {
+    for faces in [
+        vec![
+            synthetic_face(0, rectangle(0, 0, 4, 4), true),
+            synthetic_face(1, rectangle(0, 0, 4, 4), false),
+            synthetic_face(2, rectangle(0, 0, 4, 4), true),
+        ],
+        vec![
+            synthetic_face(0, rectangle(0, 0, 6, 4), true),
+            synthetic_face(1, rectangle(1, 0, 5, 4), false),
+            synthetic_face(2, rectangle(2, 0, 4, 4), true),
+        ],
+    ] {
+        let (_, canonical) = build_test_arrangement(&faces);
+        assert!(
+            canonical
+                .iter()
+                .any(|cell| cell.covering_faces == [0, 1, 2]),
+            "the fixture has a positive three-face common interior",
+        );
+        let mut tampered = canonical.clone();
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        for cell in &mut tampered {
+            if cell.covering_faces == [0, 1, 2] {
+                cell.covering_faces.pop();
+                cell.key =
+                    overlap_cell_key(&cell.boundary, &cell.covering_faces, &faces, &mut runtime)
+                        .expect("tampered cell key");
+            }
+        }
+        assert_certificate_reverification_failed(verify_canonical_overlap_cells(
+            &faces,
+            &tampered,
+            &mut runtime,
+        ));
+    }
 }
 
 #[test]
@@ -3730,6 +3824,7 @@ fn tuple_constraint_storage_accepts_exact_limit_and_rejects_one_byte_less_before
         sizing,
         &mut runtime,
         ConstraintStorageScope::Primary,
+        0,
     )
     .expect("exact tuple and outer Vec storage boundary is admitted");
     assert_eq!(runtime.exact_storage.total(), Some(exact_limit));
@@ -3751,6 +3846,7 @@ fn tuple_constraint_storage_accepts_exact_limit_and_rejects_one_byte_less_before
             fixture(),
             &mut over_limit,
             ConstraintStorageScope::Primary,
+            0,
         ),
         Err(FacewiseAbort::Unknown(
             GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
@@ -3766,6 +3862,114 @@ fn tuple_constraint_storage_accepts_exact_limit_and_rejects_one_byte_less_before
         "the large outer Vec is not allocated"
     );
     assert_eq!(over_limit.exact_storage.constraint_bytes, 0);
+}
+
+#[test]
+fn compact_family_storage_accepts_exact_limit_and_rejects_one_byte_less() {
+    fn fixture() -> TransitivityConstraintFamily {
+        TransitivityConstraintFamily {
+            covering_faces: vec![0, 1, 2],
+            pair_variables: vec![0, 1, 2],
+            supporting_cell: OverlapCellKey([3; 32]),
+        }
+    }
+
+    let sizing = fixture();
+    let exact_limit = sizing.covering_faces.capacity() * std::mem::size_of::<usize>()
+        + sizing.pair_variables.capacity() * std::mem::size_of::<usize>()
+        + std::mem::size_of::<TransitivityConstraintFamily>();
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut runtime = Runtime::new(
+        &mut observer,
+        GlobalFlatFoldabilityLimits {
+            max_certificate_bytes: exact_limit,
+            ..GlobalFlatFoldabilityLimits::default()
+        },
+        zero_work(),
+    );
+    let mut families = Vec::new();
+    push_transitivity_constraint_family(
+        &mut families,
+        sizing,
+        1,
+        &mut runtime,
+        ConstraintStorageScope::Primary,
+    )
+    .expect("the exact compact-family retained boundary is admitted");
+    assert_eq!(runtime.exact_storage.constraint_bytes, exact_limit);
+
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    let mut rejected_runtime = Runtime::new(
+        &mut observer,
+        GlobalFlatFoldabilityLimits {
+            max_certificate_bytes: exact_limit - 1,
+            ..GlobalFlatFoldabilityLimits::default()
+        },
+        zero_work(),
+    );
+    let mut rejected = Vec::new();
+    assert!(matches!(
+        push_transitivity_constraint_family(
+            &mut rejected,
+            fixture(),
+            1,
+            &mut rejected_runtime,
+            ConstraintStorageScope::Primary,
+        ),
+        Err(FacewiseAbort::Unknown(
+            GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                resource: FlatFoldabilityResource::CertificateBytes,
+                limit,
+                observed,
+            }
+        )) if limit == exact_limit - 1 && observed == exact_limit
+    ));
+    assert_eq!(rejected.capacity(), 0);
+    assert_eq!(rejected_runtime.exact_storage.constraint_bytes, 0);
+}
+
+#[test]
+fn compact_logical_constraint_batches_preserve_limit_and_checkpoint_boundaries() {
+    let mut observer = CountingObserver::default();
+    {
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_constraints: 2_049,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        admit_constraint_batch(0, 2_049, &mut runtime)
+            .expect("the exact logical constraint limit is admitted");
+    }
+    assert_eq!(
+        observer.checkpoints, 4,
+        "preflight plus three 1024-record batches"
+    );
+
+    let mut observer = CountingObserver::default();
+    let result = {
+        let mut one_short = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_constraints: 2_048,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        admit_constraint_batch(0, 2_049, &mut one_short)
+    };
+    assert!(matches!(
+        result,
+        Err(FacewiseAbort::Unknown(
+            GlobalFlatFoldabilityUnknownReason::ConstraintLimitReached {
+                limit: 2_048,
+                observed: 2_049,
+            }
+        ))
+    ));
+    assert_eq!(observer.checkpoints, 4);
 }
 
 #[test]
@@ -3793,6 +3997,7 @@ fn tuple_constraint_outer_growth_accounts_old_and_new_buffers_at_the_reallocatio
             fixture(),
             &mut runtime,
             ConstraintStorageScope::Primary,
+            0,
         )
         .expect("initial four-entry buffer");
     }
@@ -3812,6 +4017,7 @@ fn tuple_constraint_outer_growth_accounts_old_and_new_buffers_at_the_reallocatio
             next,
             &mut runtime,
             ConstraintStorageScope::Primary,
+            0,
         ),
         Err(FacewiseAbort::Unknown(
             GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
@@ -3831,6 +4037,7 @@ fn tuple_constraint_outer_growth_accounts_old_and_new_buffers_at_the_reallocatio
         fixture(),
         &mut runtime,
         ConstraintStorageScope::Primary,
+        0,
     )
     .expect("the exact old-plus-new reallocation peak is admitted");
     assert_eq!(constraints.len(), 5);
@@ -3887,6 +4094,7 @@ fn deadline_and_cancel_are_observed_before_constraint_outer_allocation() {
             fixture(),
             &mut deadline_runtime,
             ConstraintStorageScope::Primary,
+            0,
         ),
         Err(FacewiseAbort::Unknown(
             GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. }
@@ -3908,6 +4116,7 @@ fn deadline_and_cancel_are_observed_before_constraint_outer_allocation() {
             fixture(),
             &mut cancel_runtime,
             ConstraintStorageScope::Primary,
+            0,
         ),
         Err(FacewiseAbort::Execution(
             GlobalFlatFoldabilityExecutionError::Cancelled

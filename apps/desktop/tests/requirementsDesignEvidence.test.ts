@@ -38,9 +38,10 @@ const CURRENT_SEMANTIC_MUS_MODEL_ID
 const CURRENT_SEMANTIC_INVENTORY_HEADING
   = '## 2026-07-30 EDT-009 semantic MUS 現行正本訂正（v4・24/24）'
 const EDT_009_LIMITATION
-  = 'Semantic MUS v4 covers 24 variants. Detached SAT partitions 2..16 records by residual vertices. Two-record components may use pair templates. Exactly three records may use one unique ordinary pair plus a singleton leaf sharing one articulation across four translations; larger components require bit-compatible singletons. Component and document residuals are recertified. Exhaustion is Unknown, never UNSAT. At 17+ detached SAT is skipped. Coordinates stay private; mutation is never authorized.'
+  = 'Semantic MUS v4 covers 24 variants. Detached SAT partitions 2..16 records by residual vertices. Two-record components may use pair templates. A 3..16-record connected component may use one unique ordinary pair plus 1..14 independent singleton leaves. A 4..16-record component may alternatively use two record-disjoint ordinary pair cores sharing exactly one articulation plus 0..12 independent leaves, each sharing exactly one core-union articulation. Four translations are tried. Pair/core-external leaf overlap and ambiguous decompositions fail closed. Classification is capped at 120 pairs, 1,680 one-core leaf checks, 7,140 core combinations, and 85,680 two-core leaf checks; component and document residuals are recertified. Exhaustion is Unknown, never UNSAT. At 17+ detached SAT is skipped. Coordinates stay private; mutation is never authorized.'
 const EDT_009_MISSING_ACCEPTANCE
-  = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, unsupported connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies.'
+  = 'Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, unsupported connected components outside the bit-compatible, one-core-star, and two-core-star families, arbitrary-length parallel components, and generic or non-star angle topologies.'
+const EDT_009_TWO_CORE_COMMIT = '806747d9454ced96f9b77ec24fc0fea2742fed67'
 const SIM_010_POSE_EXTENSION_COMMIT = '45986496df5eb889a88fc32d56273f131e6e12c0'
 const SIM_010_POSE_EXTENSION_LIMITATION
   = 'Commit 45986496df5eb889a88fc32d56273f131e6e12c0 adds only a separately typed, non-authorizing 11..=32 pose authority. Its [11, configured cap, actual] u64LE binding, 2..=10 frozen legacy corpus, resource/foreign-pose/cancel/deadline failures do not raise pose/clearance caps or authorize clearance, staged/final transport, project mutation, Apply, or viewer.'
@@ -50,6 +51,8 @@ const SIM_010_CLEARANCE_EXTENSION_LIMITATION
 const SIM_010_STAGED_EXTENSION_COMMIT = 'cf30d9c901f153c5dde01280218f32fdd32c8856'
 const SIM_010_STAGED_EXTENSION_LIMITATION
   = 'Commit cf30d9c901f153c5dde01280218f32fdd32c8856 adds only a separately typed, non-authorizing 11..=32 staged extension authority. It binds [11, configured cap, actual] u64LE with revalidated pose and clearance prerequisites while legacy 2..=10 paths remain unchanged. Invalid/resource/cap/count/partition/live-drift/cancel/deadline failures do not connect it to final or desktop paths, project mutation, Apply, or viewer.'
+const SIM_010_FINAL_AND_STATIONARY_POSITIVE_COMMIT
+  = 'be34d05ead8211129126a0a784414caf63ce2f30'
 
 test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]
@@ -83,7 +86,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('SIM-010 keeps pose, clearance, and staged extensions separately typed, bounded, and non-promoting', () => {
+test('SIM-010 keeps staged, final, and stationary-positive evidence separately typed and non-promoting', () => {
   const simEvidence = evidenceManifest.requirements.find(
     (entry: { id: string }) => entry.id === 'SIM-010',
   )
@@ -92,7 +95,8 @@ test('SIM-010 keeps pose, clearance, and staged extensions separately typed, bou
   assert.ok(simEvidence.commits.includes(SIM_010_POSE_EXTENSION_COMMIT))
   assert.ok(simEvidence.commits.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
   assert.ok(simEvidence.commits.includes(SIM_010_STAGED_EXTENSION_COMMIT))
-  assert.equal(simEvidence.evidence.length, 64)
+  assert.ok(simEvidence.commits.includes(SIM_010_FINAL_AND_STATIONARY_POSITIVE_COMMIT))
+  assert.equal(simEvidence.evidence.length, 85)
   assert.ok(simEvidence.limitations.includes(SIM_010_POSE_EXTENSION_LIMITATION))
   assert.ok(simEvidence.limitations.includes(SIM_010_CLEARANCE_EXTENSION_LIMITATION))
   assert.ok(simEvidence.limitations.includes(SIM_010_STAGED_EXTENSION_LIMITATION))
@@ -122,6 +126,25 @@ test('SIM-010 keeps pose, clearance, and staged extensions separately typed, bou
     ['test', stagedTestsPath, 'fn staged_extension_revalidation_rejects_all_live_binding_drift_v1()'],
     ['test', stagedTestsPath, 'fn staged_extension_rejects_foreign_and_cross_cap_prerequisites_v1()'],
     ['test', stagedTestsPath, 'fn staged_extension_checkpoint_boundaries_and_public_control_map_stops_v1()'],
+    ['production-symbol', 'crates/ori-kinematics/src/common_articulation_resource_profile.rs', 'pub struct CommonArticulationResourceProfileV2'],
+    ['test', 'crates/ori-kinematics/src/common_articulation_resource_profile/tests.rs', 'fn canonical_miura_n32_conforms_to_the_existing_extension_envelope()'],
+    ['production-symbol', 'crates/ori-collision/src/block_composition/common_articulation_complete_v2.rs', 'pub fn issue_complete_multi_block_positive_layer_authority_v2('],
+    ['production-symbol', 'crates/ori-collision/src/block_composition/common_articulation_final_extension.rs', 'pub struct CommonArticulationContinuousLayerPathExtensionAuthorityV2'],
+    ['production-symbol', 'crates/ori-collision/src/block_composition/common_articulation_final_extension.rs', 'pub fn issue_common_articulation_continuous_layer_path_extension_authority_v2('],
+    ['test', 'crates/ori-collision/src/block_composition/common_articulation_final_extension_tests.rs', 'fn final_extension_issues_thirty_two_with_independent_oracle_v2()'],
+    ['test', 'crates/ori-collision/src/block_composition/common_articulation_final_extension_tests.rs', 'fn assert_n32_complete_resource_envelope_v2('],
+    ['test', 'crates/ori-collision/src/block_composition/common_articulation_final_extension_tests.rs', 'fn final_extension_issue_and_revalidation_checkpoint_entry_mid_final_v2()'],
+    ['test', 'crates/ori-collision/src/block_composition/common_articulation_final_extension_tests.rs', 'fn final_extension_domain_is_distinct_and_legacy_final_model_is_unchanged_v2()'],
+    ['test', 'test-support/n32_compact_pair_assignment_v2.rs', 'pub const N32_DIRECTION_ASSIGNMENT_SHA256_HEX_V2'],
+    ['production-symbol', 'crates/ori-foldability/src/compact_pair_assignment.rs', 'pub fn global_flat_layer_order_compact_pair_assignment_sha256_v2('],
+    ['production-symbol', 'crates/ori-collision/src/graph_positive_thickness/admitted_graph_proof_v2.rs', 'pub fn prove_common_articulation_admitted_positive_thickness_graph_geometry_v2('],
+    ['production-symbol', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/whole_parent_positive_thickness.rs', 'pub struct CommonArticulationProfileBoundWholeParentPositiveThicknessCertificateV2'],
+    ['production-symbol', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/whole_parent_positive_thickness.rs', 'pub fn prove_common_articulation_profile_bound_whole_parent_positive_thickness_v2('],
+    ['test', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/whole_parent_positive_thickness/tests.rs', 'fn pair_evidence_unavailable_maps_only_to_unpromoted_v2()'],
+    ['test', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/whole_parent_positive_thickness/tests.rs', 'fn genuine_n33_source_proves_only_stationary_whole_parent_thickness_v2()'],
+    ['test', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/compact_pair_source/tests.rs', 'fn n33_compact_assignment_receipt_is_pinned_v2()'],
+    ['test', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/compact_pair_source/tests.rs', 'fn genuine_n33_compact_authority_reaches_only_unpromoted_transport_v2()'],
+    ['test', 'test-support/n33_compact_pair_assignment_v2.rs', 'pub const N33_COMPACT_ASSIGNMENT_SHA256_HEX_V2'],
   ]
   for (const [kind, path, selector] of expectedEvidence) {
     assert.ok(simEvidence.evidence.some(
@@ -134,16 +157,20 @@ test('SIM-010 keeps pose, clearance, and staged extensions separately typed, bou
   assert.ok(progress.includes(SIM_010_POSE_EXTENSION_COMMIT))
   assert.ok(progress.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
   assert.ok(progress.includes(SIM_010_STAGED_EXTENSION_COMMIT))
+  assert.ok(progress.includes(SIM_010_FINAL_AND_STATIONARY_POSITIVE_COMMIT))
+  assert.ok(progress.includes('OutcomeV2::Proven'))
   assert.ok(progress.includes('59f283910c0ba24a67ef4f9e4cd8f96167a9df38'))
   assert.ok(progress.includes('2..=10のlegacy binding/revalidation golden corpus'))
   assert.ok(status.includes(SIM_010_POSE_EXTENSION_COMMIT))
   assert.ok(status.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
   assert.ok(status.includes(SIM_010_STAGED_EXTENSION_COMMIT))
+  assert.ok(status.includes(SIM_010_FINAL_AND_STATIONARY_POSITIVE_COMMIT))
   assert.ok(status.includes('legacy clearance 2..=10 binding/revalidation digest golden'))
   assert.ok(status.includes('legacy 2..=10 fixed golden'))
   assert.ok(reassessment.includes(SIM_010_POSE_EXTENSION_COMMIT))
   assert.ok(reassessment.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
   assert.ok(reassessment.includes(SIM_010_STAGED_EXTENSION_COMMIT))
+  assert.ok(reassessment.includes(SIM_010_FINAL_AND_STATIONARY_POSITIVE_COMMIT))
   assert.ok(reassessment.includes('whole-parent正証明'))
   assert.ok(reassessment.includes('証拠密度の回帰'))
   assert.ok(status.includes('MUST集計85 / 2 / 0'))
@@ -254,6 +281,10 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
     assert.match(
       currentSection,
       /部分実装[\s\S]*実装済み85 \/ 部分実装2 \/ 未着手0[\s\S]*次期反映headのCI発効までは数式・幾何制約85%[\s\S]*81\.96%（表示82\.0%）[\s\S]*発効条件成立後だけ数式・幾何制約86%[\s\S]*82\.29%（表示82\.3%）/u,
+    )
+    assert.match(
+      currentSection,
+      /two-core star[\s\S]*7,140[\s\S]*85,680[\s\S]*138 composite preparation-or-verification passes・112 full-pattern clones/u,
     )
   }
   assert.match(statusRow, /canonical 5-IDのunit-terminal two-hop core/u)
@@ -405,7 +436,12 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
     [
       'production-symbol',
       'crates/ori-core/src/constraint_exactification/three_record_component_constructive.rs',
-      'pub(super) fn construct_pair_plus_singleton_leaf_exact_assignment_v1(',
+      'pub(super) fn construct_pair_plus_singleton_star_exact_assignment_v1(',
+    ],
+    [
+      'production-symbol',
+      'crates/ori-core/src/constraint_exactification/three_record_component_constructive.rs',
+      'pub(super) fn construct_two_pair_core_singleton_star_exact_assignment_v1(',
     ],
     [
       'production-symbol',
@@ -434,8 +470,53 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
     ],
     [
       'test',
+      'crates/ori-core/src/constraint_exactification/component_constructive_tests.rs',
+      'fn unique_pair_plus_two_singleton_leaves_constructs_and_is_order_canonical()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_exactification/component_constructive_tests.rs',
+      'fn pair_plus_leaves_with_a_non_pair_shared_vertex_fail_closed()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_exactification/component_constructive_tests.rs',
+      'fn connected_pair_plus_fourteen_leaves_reaches_sixteen_and_rejects_seventeen()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_exactification/component_constructive_tests.rs',
+      'fn unique_two_pair_cores_construct_at_four_and_are_storage_order_canonical()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_exactification/component_constructive_tests.rs',
+      'fn two_pair_cores_plus_twelve_leaves_reach_sixteen_and_seventeen_fails_closed()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_exactification/component_constructive_tests.rs',
+      'fn two_pair_cores_require_exactly_one_shared_vertex_and_one_unique_decomposition()',
+    ],
+    [
+      'test',
+      'crates/ori-core/src/constraint_exactification/component_constructive_tests.rs',
+      'fn all_four_two_pair_core_offsets_can_be_exhausted_by_real_geometry()',
+    ],
+    [
+      'test',
       'apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs',
       'fn connected_pair_plus_singleton_leaf_publishes_only_detached_exact_sat()',
+    ],
+    [
+      'test',
+      'apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs',
+      'fn connected_pair_plus_two_singleton_leaves_crosses_native_as_detached_exact_sat()',
+    ],
+    [
+      'test',
+      'apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs',
+      'fn connected_two_pair_cores_cross_native_only_as_detached_exact_sat()',
     ],
     [
       'test',
@@ -475,6 +556,7 @@ test('EDT-009 retains its wire tags and tracks twenty-four sound proof families'
   assert.ok(edtEvidence.commits.includes(
     'ad8036c5ade9491d4f466c154676436bd67abdbc',
   ))
+  assert.ok(edtEvidence.commits.includes(EDT_009_TWO_CORE_COMMIT))
   assert.ok(edtEvidence.evidence.some(
     (item: { path: string, selector: string }) =>
       item.path === 'crates/ori-core/src/constraint_semantic_mus_tests/direct_family_inventory.rs'

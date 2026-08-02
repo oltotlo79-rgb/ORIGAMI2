@@ -228,7 +228,8 @@
         "daa556fe67f24322681ba6c215cdf28280f0ef49",
         "5c8693a539d3edea6accb13465e0bbf80b5a56ab",
         "6c91e5d684cb7a269d78070a0648770064283833",
-        "ad8036c5ade9491d4f466c154676436bd67abdbc"
+        "ad8036c5ade9491d4f466c154676436bd67abdbc",
+        "806747d9454ced96f9b77ec24fc0fea2742fed67"
       ],
       "evidence": [
         {
@@ -404,7 +405,12 @@
         {
           "kind": "production-symbol",
           "path": "crates/ori-core/src/constraint_exactification/three_record_component_constructive.rs",
-          "selector": "pub(super) fn construct_pair_plus_singleton_leaf_exact_assignment_v1("
+          "selector": "pub(super) fn construct_pair_plus_singleton_star_exact_assignment_v1("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraint_exactification/three_record_component_constructive.rs",
+          "selector": "pub(super) fn construct_two_pair_core_singleton_star_exact_assignment_v1("
         },
         {
           "kind": "production-symbol",
@@ -433,6 +439,41 @@
         },
         {
           "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn unique_pair_plus_two_singleton_leaves_constructs_and_is_order_canonical()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn pair_plus_leaves_with_a_non_pair_shared_vertex_fail_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn connected_pair_plus_fourteen_leaves_reaches_sixteen_and_rejects_seventeen()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn unique_two_pair_cores_construct_at_four_and_are_storage_order_canonical()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn two_pair_cores_plus_twelve_leaves_reach_sixteen_and_seventeen_fails_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn two_pair_cores_require_exactly_one_shared_vertex_and_one_unique_decomposition()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_exactification/component_constructive_tests.rs",
+          "selector": "fn all_four_two_pair_core_offsets_can_be_exhausted_by_real_geometry()"
+        },
+        {
+          "kind": "test",
           "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
           "selector": "fn connected_pair_component_and_disjoint_singleton_publish_detached_without_coordinates()"
         },
@@ -440,6 +481,16 @@
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
           "selector": "fn connected_pair_plus_singleton_leaf_publishes_only_detached_exact_sat()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
+          "selector": "fn connected_pair_plus_two_singleton_leaves_crosses_native_as_detached_exact_sat()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/geometric_constraint_analysis/singleton_constructive_sat_tests.rs",
+          "selector": "fn connected_two_pair_cores_cross_native_only_as_detached_exact_sat()"
         },
         {
           "kind": "test",
@@ -468,10 +519,10 @@
         }
       ],
       "limitations": [
-        "Semantic MUS v4 covers 24 variants. Detached SAT partitions 2..16 records by residual vertices. Two-record components may use pair templates. Exactly three records may use one unique ordinary pair plus a singleton leaf sharing one articulation across four translations; larger components require bit-compatible singletons. Component and document residuals are recertified. Exhaustion is Unknown, never UNSAT. At 17+ detached SAT is skipped. Coordinates stay private; mutation is never authorized."
+        "Semantic MUS v4 covers 24 variants. Detached SAT partitions 2..16 records by residual vertices. Two-record components may use pair templates. A 3..16-record connected component may use one unique ordinary pair plus 1..14 independent singleton leaves. A 4..16-record component may alternatively use two record-disjoint ordinary pair cores sharing exactly one articulation plus 0..12 independent leaves, each sharing exactly one core-union articulation. Four translations are tried. Pair/core-external leaf overlap and ambiguous decompositions fail closed. Classification is capped at 120 pairs, 1,680 one-core leaf checks, 7,140 core combinations, and 85,680 two-core leaf checks; component and document residuals are recertified. Exhaustion is Unknown, never UNSAT. At 17+ detached SAT is skipped. Coordinates stay private; mutation is never authorized."
       ],
       "missingAcceptance": [
-        "Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, unsupported connected components of three or more records, arbitrary-length parallel components, and generic or non-star angle topologies."
+        "Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, unsupported connected components outside the bit-compatible, one-core-star, and two-core-star families, arbitrary-length parallel components, and generic or non-star angle topologies."
       ]
     },
     {
@@ -2087,7 +2138,11 @@
         "a0b65655285e9b66e33cdb1c182cde433afc5034",
         "45986496df5eb889a88fc32d56273f131e6e12c0",
         "97623508ab1774d8ea7e594a9c71ef15acaafbb7",
-        "cf30d9c901f153c5dde01280218f32fdd32c8856"
+        "cf30d9c901f153c5dde01280218f32fdd32c8856",
+        "7e2e1247dd9685c609899017205bc3c9b317f84b",
+        "bd3e9940117bad55ce7fcfcca6090c15032bdc1e",
+        "b7a4bc726cd818d7bc6a9d5758446cffc1e11f1b",
+        "be34d05ead8211129126a0a784414caf63ce2f30"
       ],
       "evidence": [
         {
@@ -2409,6 +2464,111 @@
           "kind": "test",
           "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
           "selector": "fn staged_extension_checkpoint_boundaries_and_public_control_map_stops_v1()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-foldability/src/constraints/compact_completion.rs",
+          "selector": "pub(super) fn try_compact_completion<F>("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-foldability/src/constraints/compact_completion/tests.rs",
+          "selector": "fn maintained_closure_build_and_large_rollback_are_batch_cancelable()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-kinematics/src/common_articulation_resource_profile.rs",
+          "selector": "pub struct CommonArticulationResourceProfileV2"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/common_articulation_resource_profile/tests.rs",
+          "selector": "fn canonical_miura_n32_conforms_to_the_existing_extension_envelope()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_complete_v2.rs",
+          "selector": "pub fn issue_complete_multi_block_positive_layer_authority_v2("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_final_extension.rs",
+          "selector": "pub struct CommonArticulationContinuousLayerPathExtensionAuthorityV2"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_final_extension.rs",
+          "selector": "pub fn issue_common_articulation_continuous_layer_path_extension_authority_v2("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_final_extension_tests.rs",
+          "selector": "fn final_extension_issues_thirty_two_with_independent_oracle_v2()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_final_extension_tests.rs",
+          "selector": "fn assert_n32_complete_resource_envelope_v2("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_final_extension_tests.rs",
+          "selector": "fn final_extension_issue_and_revalidation_checkpoint_entry_mid_final_v2()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_final_extension_tests.rs",
+          "selector": "fn final_extension_domain_is_distinct_and_legacy_final_model_is_unchanged_v2()"
+        },
+        {
+          "kind": "test",
+          "path": "test-support/n32_compact_pair_assignment_v2.rs",
+          "selector": "pub const N32_DIRECTION_ASSIGNMENT_SHA256_HEX_V2"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-foldability/src/compact_pair_assignment.rs",
+          "selector": "pub fn global_flat_layer_order_compact_pair_assignment_sha256_v2("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/graph_positive_thickness/admitted_graph_proof_v2.rs",
+          "selector": "pub fn prove_common_articulation_admitted_positive_thickness_graph_geometry_v2("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/common_articulation_general_cell_transport_v2/whole_parent_positive_thickness.rs",
+          "selector": "pub struct CommonArticulationProfileBoundWholeParentPositiveThicknessCertificateV2"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/common_articulation_general_cell_transport_v2/whole_parent_positive_thickness.rs",
+          "selector": "pub fn prove_common_articulation_profile_bound_whole_parent_positive_thickness_v2("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_general_cell_transport_v2/whole_parent_positive_thickness/tests.rs",
+          "selector": "fn pair_evidence_unavailable_maps_only_to_unpromoted_v2()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_general_cell_transport_v2/whole_parent_positive_thickness/tests.rs",
+          "selector": "fn genuine_n33_source_proves_only_stationary_whole_parent_thickness_v2()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_general_cell_transport_v2/compact_pair_source/tests.rs",
+          "selector": "fn n33_compact_assignment_receipt_is_pinned_v2()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_general_cell_transport_v2/compact_pair_source/tests.rs",
+          "selector": "fn genuine_n33_compact_authority_reaches_only_unpromoted_transport_v2()"
+        },
+        {
+          "kind": "test",
+          "path": "test-support/n33_compact_pair_assignment_v2.rs",
+          "selector": "pub const N33_COMPACT_ASSIGNMENT_SHA256_HEX_V2"
         }
       ],
       "limitations": [
@@ -2420,9 +2580,14 @@
         "Commit 45986496df5eb889a88fc32d56273f131e6e12c0 adds only a separately typed, non-authorizing 11..=32 pose authority. Its [11, configured cap, actual] u64LE binding, 2..=10 frozen legacy corpus, resource/foreign-pose/cancel/deadline failures do not raise pose/clearance caps or authorize clearance, staged/final transport, project mutation, Apply, or viewer.",
         "Commit 97623508ab1774d8ea7e594a9c71ef15acaafbb7 adds only a separately typed, non-authorizing 11..=32 clearance prerequisite. Its [11, configured cap, actual] u64LE binding, old-production 2..=10 clearance goldens, whole-parent prerequisite, resource/live-drift/stop failures do not connect to staged/final transport, project mutation, Apply, or viewer.",
         "Commit cf30d9c901f153c5dde01280218f32fdd32c8856 adds only a separately typed, non-authorizing 11..=32 staged extension authority. It binds [11, configured cap, actual] u64LE with revalidated pose and clearance prerequisites while legacy 2..=10 paths remain unchanged. Invalid/resource/cap/count/partition/live-drift/cancel/deadline failures do not connect it to final or desktop paths, project mutation, Apply, or viewer.",
+        "Commit be34d05ead8211129126a0a784414caf63ce2f30 establishes separately typed CommonArticulationContinuousLayerPathExtension*V2 and CompleteMultiBlockPositiveLayer*V2 boundaries. A sealed actual-32/configured-32 live fixture replays its compact assignment at zero search nodes, issues complete and final evidence, matches an independent binding oracle, exact-revalidates, accepts all six exact resource envelopes, and rejects every one-short plus replay/foreign/live/partition/source/target/cancel/deadline boundary. Each V2 type's six authorization predicates remain false. Legacy V1 final behavior, including its existing three true predicates, plus 2..=10 and desktop paths remain unchanged.",
+        "The checked N=32 conformance is F=257 and H=384 from 9 faces/12 hinges per block with 31 shared material faces; it distinguishes 32,896 parent unordered pairs, 40,176 raw clearance candidates, and 31,744 deduplicated cross-block registry pairs. The factor-8 formula yields pose 18,072 logical / 56,304 bytes and clearance 9,154,601 logical / 2,347,648 bytes with 32-byte pair records, and the actual-32 final V2 fixture checks its exact/one-short envelopes. General-N compact V2 issuance still begins at actual N >= 33; no continuous motion, collision clearance, layer transport, project mutation, Apply, or viewer authority follows.",
+        "Commit b7a4bc72 keeps the complete logical transitivity count while replacing cubic retained constraints with compact cell families, checkpointed streaming, maintained transitive closure, and rollback search. Its original N=32 evidence was a manual fixture-only acceptance. Commit be34d05ead8211129126a0a784414caf63ce2f30 seals the 32,896-variable, 4,112-byte assignment and fixed registry/assignment receipts into ordinary regression evidence and replays it at zero search nodes in the actual-32 final V2 issuer; temporary extractors and diagnostics are absent. This still is not arbitrary-topology, dynamic positive-thickness, or downstream authority.",
+        "Commits 7e2e1247 and bd3e9940 establish the separately typed canonical-3x3-Miura variable-N transport prerequisite at actual N=33 and N=34/configured cap=40; that clearance prerequisite remains Unpromoted. Commit be34d05ead8211129126a0a784414caf63ce2f30 adds a different profile-bound stationary whole-parent positive-thickness outcome whose canonical N=33 path reaches Proven only for an exact live source/profile/transport/parent-admission/limits tuple at the bit-identical +0 pose. PairEvidenceUnavailable alone maps to Unpromoted; malformed/resource/stop failures remain errors. The stationary certificate and outcome each expose six false authorization predicates, so this is not nonstationary, arbitrary-topology, collision-clearance, transport, mutation, Apply, viewer, or final SIM-010 authority.",
         "PreparedSupportingLine prioritizes globally supporting lines with canonical-ordinal ties and allocation-free unstable sorting; canonical overlap-cell and final ExactStorage signatures remain compatible with the unprioritized and independent classifiers."
       ],
       "missingAcceptance": [
+        "A nonstationary continuous positive-thickness theorem for general N, arbitrary admitted topology and self-contact, dynamic general-N layer transport, and final collision-clearance/mutation/Apply/viewer authorization; the existing clearance prerequisite remains Unpromoted and the stationary whole-parent outcome is non-authorizing.",
         "Ten-plus or arbitrary multi-block Apply; arbitrary positive-thickness multi-hinge proof/transport; 3D crease insertion; general non-flat viewer."
       ]
     },

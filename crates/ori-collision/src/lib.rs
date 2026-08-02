@@ -61,6 +61,7 @@ mod certified_path_graph;
 mod common_articulation_clearance;
 mod common_articulation_clearance_v2;
 mod common_articulation_dynamic_closure_clearance_v2;
+mod common_articulation_dynamic_general_n_relieved_clearance_v2;
 mod common_articulation_general_cell_transport_v2;
 mod continuous_layer_transport;
 mod continuous_path;
@@ -262,6 +263,19 @@ pub use common_articulation_dynamic_closure_clearance_v2::{
     CommonArticulationDynamicClosureClearanceUnpromotedReasonV2,
     issue_common_articulation_dynamic_closure_clearance_prerequisite_v2,
     issue_common_articulation_dynamic_closure_clearance_prerequisite_with_checkpoint_v2,
+};
+pub use common_articulation_dynamic_general_n_relieved_clearance_v2::{
+    COMMON_ARTICULATION_DYNAMIC_GENERAL_N_RELIEVED_CLEARANCE_MODEL_ID_V2,
+    CommonArticulationDynamicGeneralNOrdinaryIntervalLimitsV2,
+    CommonArticulationDynamicGeneralNReliefAggregateLimitsV2,
+    CommonArticulationDynamicGeneralNRelievedClearanceCertificateV2,
+    CommonArticulationDynamicGeneralNRelievedClearanceErrorV2,
+    CommonArticulationDynamicGeneralNRelievedClearanceInputV2,
+    CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
+    CommonArticulationDynamicGeneralNRelievedClearanceRevalidationInputV2,
+    CommonArticulationDynamicGeneralNRelievedClearanceStopV2,
+    prove_common_articulation_dynamic_general_n_relieved_clearance_v2,
+    prove_common_articulation_dynamic_general_n_relieved_clearance_with_checkpoint_v2,
 };
 pub use common_articulation_general_cell_transport_v2::{
     COMMON_ARTICULATION_COMPACT_PAIR_GENERAL_CELL_TRANSPORT_MODEL_ID_V2,

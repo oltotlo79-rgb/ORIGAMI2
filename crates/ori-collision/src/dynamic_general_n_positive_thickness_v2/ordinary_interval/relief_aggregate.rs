@@ -138,6 +138,18 @@ pub(super) struct WholeParentPositiveThicknessEvidenceV2 {
     limits: ReliefAggregateLimitsV2,
 }
 
+/// Narrow one-way seal consumed by the crate-private public adapter. It omits
+/// the ordinary/relief evidence and exposes no public construction boundary.
+pub(super) struct WholeParentPositiveThicknessAdapterSealV2 {
+    pub(super) issuer_geometry: MaterialHingeGraphInstanceV1,
+    pub(super) aggregate_binding: [u8; 32],
+    pub(super) total_face_pairs: usize,
+    pub(super) ordinary_pairs: usize,
+    pub(super) shared_hinge_pairs: usize,
+    pub(super) shared_vertex_pairs: usize,
+    pub(super) aggregate_peak_bytes: usize,
+}
+
 struct SharedReliefEvidenceV2 {
     issuer_geometry: MaterialHingeGraphInstanceV1,
     shared_pair_digest: [u8; 32],
@@ -208,6 +220,20 @@ pub(super) fn prove_whole_parent_positive_thickness_v2(
     input: ReliefAggregateInputV2<'_>,
 ) -> Result<WholeParentPositiveThicknessEvidenceV2, ReliefAggregateErrorV2> {
     prove_whole_parent_positive_thickness_with_checkpoint_v2(input, || Ok(()))
+}
+
+pub(super) fn into_public_adapter_seal_v2(
+    evidence: WholeParentPositiveThicknessEvidenceV2,
+) -> WholeParentPositiveThicknessAdapterSealV2 {
+    WholeParentPositiveThicknessAdapterSealV2 {
+        issuer_geometry: evidence.issuer_geometry,
+        aggregate_binding: evidence.aggregate_binding,
+        total_face_pairs: evidence.total_face_pairs,
+        ordinary_pairs: evidence.ordinary_pairs,
+        shared_hinge_pairs: evidence.shared_hinge_pairs,
+        shared_vertex_pairs: evidence.shared_vertex_pairs,
+        aggregate_peak_bytes: evidence.resources.aggregate_peak_bytes,
+    }
 }
 
 #[cfg(test)]

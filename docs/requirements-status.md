@@ -333,6 +333,8 @@ Phase3Bでは、既存static/V1 clearance・GeneralCell/Compact transport・既�
 
 Phase3D/3Eでは、一般N非静止closureの全dyadic leafを同一world interval axisで評価するexact sessionと、whole-parentの全unordered face pairに対する通常strict SAT・共有hinge有限軸strip・共有vertex half-plane wedgeをcrate-privateに実装した。N=33/N=34のparent pair 34,980/37,128は、通常34,256/36,382とshared 724/746へfreshに完全分類され、全policy、strict境界、input/resources、foreign/ABA、cancel/deadlineを再認証する。N=33/N=34の最終hash/logical workは4,669 / 99,552,577と4,807 / 102,614,747で、Rust 1.90 WSL focused 5/5とstrict static gatesを通過した。evidenceはprivate・redacted Debug・非Clone・非serde・非認可で、public certificateやApply/viewer/export/project mutationに未接続のため、SIM-010部分実装、MUST集計85 / 2 / 0、現行81.96%（表示82.0%）と82.29%（表示82.3%）候補のremote CI発効条件は変更しない。
 
+Phase3Fでは、shared face-pair registryをpublic inputから排除して内部導出し、private Phase3E whole-parent証拠をadditive public `CommonArticulationDynamicGeneralNRelievedClearanceCertificateV2`へ封印した。N>=33/profile内の場合だけbridge・ordinary・shared relief・aggregateをissue/revalidationごとに完全replayし、全live tuple・policy・limitを二重bindingで照合する。certificateはtransparent private one-field・非Clone・非serde・非Deref・非変換・redacted Debugで、raw evidence/registry/bindingとproject mutation・Apply・viewer・export authorityを公開しない。N=33/N=34 replay、outer resource・valid binding drift・stop、Rust 1.90 WSL focused 2/2、compile-fail doctest 9/9、strict static gatesを通過した。下流利用権限は未接続のため、SIM-010部分実装、MUST集計85 / 2 / 0、現行81.96%（表示82.0%）と82.29%（表示82.3%）候補のremote CI発効条件は変更しない。
+
 ## 折り手順
 
 | ID | 状態 | 現在の根拠・不足 |

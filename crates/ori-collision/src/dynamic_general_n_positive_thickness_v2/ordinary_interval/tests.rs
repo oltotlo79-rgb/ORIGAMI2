@@ -6,6 +6,8 @@ mod kernel_tests;
 mod negative;
 #[path = "tests/relief_aggregate_tests.rs"]
 mod relief_aggregate_tests;
+#[path = "tests/relief_public_api_tests.rs"]
+mod relief_public_api_tests;
 #[path = "tests/relief_resource_tests.rs"]
 mod relief_resource_tests;
 #[path = "tests/relief_support.rs"]

@@ -24,6 +24,8 @@ use sha2::{Digest, Sha256};
 mod binding;
 mod geometry;
 mod partition;
+#[path = "ordinary_interval/public_adapter.rs"]
+pub(crate) mod public_adapter;
 mod relief_aggregate;
 mod resources;
 

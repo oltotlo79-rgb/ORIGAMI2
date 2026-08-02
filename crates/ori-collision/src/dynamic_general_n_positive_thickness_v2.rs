@@ -10,3 +10,5 @@
     reason = "the sealed general-N proof is intentionally not a public authority"
 )]
 mod ordinary_interval;
+
+pub(crate) use ordinary_interval::public_adapter;

@@ -57,9 +57,10 @@ test('Windows core debug order and desktop split cannot silently drift', () => {
   const windowsEnd = workflow.indexOf('\n          else', windowsStart)
   assert.ok(windowsStart >= 0 && windowsEnd > windowsStart)
   const windows = workflow.slice(windowsStart, windowsEnd)
+  assert.match(windows, /if \[ "\$package" = "ori-collision" \]; then\s+[\s\S]*?run_component "\$package"\s+\\\n\s*cargo test -p "\$package" --locked --all-targets --no-fail-fast -- --test-threads=1\s+else/u)
   assert.match(windows, /run_component "\$package"\s+\\\n\s*cargo test -p "\$package" --locked --all-targets --no-fail-fast/u)
   assert.match(windows, /if \[ "\$last_component_status" -ne 0 \]; then\s+core_failed=1\s+break\s+fi/u)
-  assert.match(windows, /if \[ "\$core_failed" -eq 0 \]; then\s+run_component origami2-desktop-release-lib\s+\\\n\s*cargo test -p origami2-desktop --release --locked --lib --no-fail-fast\s+run_component origami2-desktop-event-schema-debug\s+\\\n\s*cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast\s+fi/u)
+  assert.match(windows, /if \[ "\$core_failed" -eq 0 \]; then\s+run_component origami2-desktop-release-lib\s+\\\n\s*cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1\s+run_component origami2-desktop-event-schema-debug\s+\\\n\s*cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast\s+fi/u)
 })
 
 function windowsPackages(): string[] {

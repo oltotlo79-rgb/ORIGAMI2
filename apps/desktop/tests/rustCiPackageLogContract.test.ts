@@ -26,16 +26,18 @@ test('failure annotations retain the first failed component and include the fina
   assert.match(workflow, /title=Rust test log tail \(\$failed_package\)::package=\$failed_package final-30-lines:/u)
 })
 
-test('macOS runs debug core without desktop before the release and event-schema desktop components', () => {
-  const macosStart = workflow.indexOf('          else\n            run_component workspace-core-debug')
+test('macOS isolates process-global suites while preserving every Rust component', () => {
+  const macosStart = workflow.indexOf('          else\n            run_component workspace-core-excluding-collision-debug')
   const macosEnd = workflow.indexOf('\n          fi\n          if [ "$test_status"', macosStart)
   assert.ok(macosStart >= 0 && macosEnd > macosStart)
   const macos = workflow.slice(macosStart, macosEnd)
-  assert.match(macos, /run_component workspace-core-debug\s+\\\n\s*cargo test --workspace --exclude origami2-desktop --locked --all-targets --no-fail-fast/u)
-  assert.match(macos, /run_component origami2-desktop-release-lib\s+\\\n\s*cargo test -p origami2-desktop --release --locked --lib --no-fail-fast/u)
+  assert.match(macos, /run_component workspace-core-excluding-collision-debug\s+\\\n\s*cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u)
+  assert.match(macos, /run_component ori-collision-serial-debug\s+\\\n\s*cargo test -p ori-collision --locked --all-targets --no-fail-fast -- --test-threads=1/u)
+  assert.match(macos, /run_component origami2-desktop-release-lib\s+\\\n\s*cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1/u)
   assert.match(macos, /run_component origami2-desktop-event-schema-debug\s+\\\n\s*cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast/u)
   assertInOrder(macos, [
-    'run_component workspace-core-debug',
+    'run_component workspace-core-excluding-collision-debug',
+    'run_component ori-collision-serial-debug',
     'run_component origami2-desktop-release-lib',
     'run_component origami2-desktop-event-schema-debug',
   ])

@@ -10,7 +10,7 @@ test('frontend formal and Rust matrix jobs all execute the event corpus contract
   const frontend = jobBody('frontend', 'rust')
   const rust = jobBody('rust', 'windows-bundle')
   const windowsStart = rust.indexOf('          if [ "$RUNNER_OS" = "Windows" ]; then')
-  const macosStart = rust.indexOf('          else\n            run_component workspace-core-debug', windowsStart)
+  const macosStart = rust.indexOf('          else\n            run_component workspace-core-excluding-collision-debug', windowsStart)
   const macosEnd = rust.indexOf('\n          fi\n          if [ "$test_status"', macosStart)
   assert.ok(windowsStart >= 0 && macosStart > windowsStart && macosEnd > macosStart)
   const windows = rust.slice(windowsStart, macosStart)
@@ -20,9 +20,11 @@ test('frontend formal and Rust matrix jobs all execute the event corpus contract
   assert.match(frontend, /node --test \.\.\/\.\.\/\.github\/tests\/formal-release\.test\.mjs/u)
   assert.match(rust, /matrix:\s*\n\s+os: \[windows-latest, macos-latest\]/u)
   assert.match(windows, /cargo test -p "\$package" --locked --all-targets --no-fail-fast/u)
-  assert.match(macos, /cargo test --workspace --exclude origami2-desktop --locked --all-targets --no-fail-fast/u)
+  assert.match(windows, /cargo test -p "\$package" --locked --all-targets --no-fail-fast -- --test-threads=1/u)
+  assert.match(macos, /cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u)
+  assert.match(macos, /cargo test -p ori-collision --locked --all-targets --no-fail-fast -- --test-threads=1/u)
   for (const branch of [windows, macos]) {
-    assert.match(branch, /cargo test -p origami2-desktop --release --locked --lib --no-fail-fast/u)
+    assert.match(branch, /cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1/u)
     assert.match(branch, /cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast/u)
   }
   assertInOrder(windows, [
@@ -30,7 +32,8 @@ test('frontend formal and Rust matrix jobs all execute the event corpus contract
     'run_component origami2-desktop-event-schema-debug',
   ])
   assertInOrder(macos, [
-    'run_component workspace-core-debug',
+    'run_component workspace-core-excluding-collision-debug',
+    'run_component ori-collision-serial-debug',
     'run_component origami2-desktop-release-lib',
     'run_component origami2-desktop-event-schema-debug',
   ])

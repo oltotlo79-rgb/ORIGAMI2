@@ -371,7 +371,6 @@ jobs:
         env:
           BLENDER_BIN: ${{ runner.temp }}/blender-4.5.11/blender
         run: npm run test:blender
-      - run: npm run build
       - run: npm run lint
 
   slicer-acceptance:

@@ -6,6 +6,8 @@ const [statusInput, manifestInput, idsInput] = process.argv.slice(2)
 const fail = (message) => { throw new Error(`requirements traceability: ${message}`) }
 const MAX_EVIDENCE_PER_REQUIREMENT = 128
 const MAX_BOUNDARY_TEXT_LENGTH = 1024
+const MAX_HISTORICAL_CACHE_BYTES = 64 * 1024 * 1024
+const MAX_HISTORICAL_CACHE_ENTRIES = 4096
 if (!statusInput || !manifestInput || !idsInput || !process.env.REQUIREMENTS_EVIDENCE_ROOT) fail('root and three input files are required')
 const root = realpathSync(process.env.REQUIREMENTS_EVIDENCE_ROOT)
 try {
@@ -38,6 +40,37 @@ const exactKeys = (value, keys, label) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} must be an object`)
   if (Object.keys(value).sort().join('\0') !== [...keys].sort().join('\0')) fail(`${label} has an invalid key set`)
 }
+const ancestralCommits = new Set()
+const historicalFiles = new Map()
+const HISTORICAL_FILE_UNAVAILABLE = Symbol('historical file unavailable')
+let historicalCacheBytes = 0
+const requireAncestralCommit = (commit, requirementId) => {
+  if (ancestralCommits.has(commit)) return
+  try { execFileSync('git', ['-C', root, 'merge-base', '--is-ancestor', commit, 'HEAD'], { stdio: 'ignore' }) } catch { fail(`commit is not an ancestor of HEAD: ${requirementId}`) }
+  ancestralCommits.add(commit)
+}
+const historicalFile = (commit, path) => {
+  const key = `${commit}\0${path}`
+  if (historicalFiles.has(key)) return historicalFiles.get(key)
+  let historical
+  try {
+    historical = execFileSync('git', ['-C', root, 'show', `${commit}:${path}`], { encoding: 'utf8', maxBuffer: 5_000_000, stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    if (historicalFiles.size < MAX_HISTORICAL_CACHE_ENTRIES) historicalFiles.set(key, HISTORICAL_FILE_UNAVAILABLE)
+    return HISTORICAL_FILE_UNAVAILABLE
+  }
+  const cacheBytes = historical.length * 2
+  if (
+    historicalFiles.size < MAX_HISTORICAL_CACHE_ENTRIES &&
+    Number.isSafeInteger(cacheBytes) &&
+    cacheBytes <= MAX_HISTORICAL_CACHE_BYTES &&
+    historicalCacheBytes <= MAX_HISTORICAL_CACHE_BYTES - cacheBytes
+  ) {
+    historicalFiles.set(key, historical)
+    historicalCacheBytes += cacheBytes
+  }
+  return historical
+}
 
 const status = boundedText(statusInput, 2_000_000)
 const expectedIds = boundedText(idsInput, 20_000).trimEnd().split('\n')
@@ -67,7 +100,7 @@ for (const entry of manifest.requirements) {
   if (!Array.isArray(entry.commits) || entry.commits.length > 32 || new Set(entry.commits).size !== entry.commits.length) fail(`invalid commits: ${entry.id}`)
   for (const commit of entry.commits) {
     if (!/^[0-9a-f]{40}$/u.test(commit)) fail(`commit id must be a full SHA-1: ${entry.id}`)
-    try { execFileSync('git', ['-C', root, 'merge-base', '--is-ancestor', commit, 'HEAD'], { stdio: 'ignore' }) } catch { fail(`commit is not an ancestor of HEAD: ${entry.id}`) }
+    requireAncestralCommit(commit, entry.id)
   }
   if (!Array.isArray(entry.evidence) || entry.evidence.length > MAX_EVIDENCE_PER_REQUIREMENT) fail(`invalid evidence count: ${entry.id}`)
   const identities = new Set()
@@ -83,10 +116,8 @@ for (const entry of manifest.requirements) {
     if (!boundedText(evidence.path, 5_000_000).includes(evidence.selector)) fail(`selector is absent: ${entry.id} ${evidence.path}`)
     let historicallyBound = false
     for (const commit of entry.commits) {
-      try {
-        const historical = execFileSync('git', ['-C', root, 'show', `${commit}:${evidence.path}`], { encoding: 'utf8', maxBuffer: 5_000_000, stdio: ['ignore', 'pipe', 'ignore'] })
-        if (historical.includes(evidence.selector)) { historicallyBound = true; break }
-      } catch { /* Another listed commit may bind this evidence. */ }
+      const historical = historicalFile(commit, evidence.path)
+      if (historical !== HISTORICAL_FILE_UNAVAILABLE && historical.includes(evidence.selector)) { historicallyBound = true; break }
     }
     if (!historicallyBound && evidence.kind !== 'documentation') fail(`selector is not bound to a listed commit: ${entry.id}`)
   }

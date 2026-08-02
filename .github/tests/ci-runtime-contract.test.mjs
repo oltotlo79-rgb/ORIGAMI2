@@ -13,6 +13,11 @@ function rustJobSource() {
   return workflow.slice(workflow.indexOf('\n  rust:'), workflow.indexOf('\n  windows-bundle:'))
 }
 
+function frontendJobSource() {
+  const workflow = readFileSync(workflowPath, 'utf8')
+  return workflow.slice(workflow.indexOf('\n  frontend:'), workflow.indexOf('\n  slicer-acceptance:'))
+}
+
 test('CI keeps exactly the three reviewed workflows', () => {
   assert.deepEqual(
     readdirSync(join(root, '.github/workflows'))
@@ -77,6 +82,27 @@ test('CI fixes the optimized fail-closed Rust profile and process-isolated comma
     .map(([command]) => command)
     .filter((command) => command.includes('--no-fail-fast') && command.includes('--test-threads=1'))
   assert.deepEqual(serialFullSuiteCommands, [])
+})
+
+test('frontend builds once before production audits and retains Blender and lint gates', () => {
+  const frontendJob = frontendJobSource()
+  const build = 'npm run build'
+  const csp = 'verify_desktop_bundle_csp.mjs dist'
+  const security = 'verify_production_security_contract.mjs dist'
+  const diagnostics = 'verify_diagnostics_privacy.mjs'
+  const blender = 'npm run test:blender'
+  const lint = 'npm run lint'
+
+  assert.equal(frontendJob.split(build).length - 1, 1)
+  for (const command of [csp, security, diagnostics, blender, lint]) {
+    assert.equal(frontendJob.split(command).length - 1, 1, command)
+  }
+  assert.ok(frontendJob.indexOf(build) < frontendJob.indexOf(csp))
+  assert.ok(frontendJob.indexOf(build) < frontendJob.indexOf(security))
+  assert.ok(frontendJob.indexOf(csp) < frontendJob.indexOf(security))
+  assert.ok(frontendJob.indexOf(security) < frontendJob.indexOf(diagnostics))
+  assert.ok(frontendJob.indexOf(diagnostics) < frontendJob.indexOf(blender))
+  assert.ok(frontendJob.indexOf(blender) < frontendJob.indexOf(lint))
 })
 
 test('CI preserves required release checks and evidence artifacts', () => {

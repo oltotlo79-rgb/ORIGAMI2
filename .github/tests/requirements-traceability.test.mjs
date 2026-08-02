@@ -9,6 +9,15 @@ import test from 'node:test'
 const verifier = resolve(import.meta.dirname, '../scripts/verify_requirements_traceability.mjs')
 const repositoryRoot = resolve(import.meta.dirname, '../..')
 
+test('historical lookup caches have explicit byte and entry ceilings', () => {
+  const source = readFileSync(verifier, 'utf8')
+  assert.match(source, /const MAX_HISTORICAL_CACHE_BYTES = 64 \* 1024 \* 1024/u)
+  assert.match(source, /const MAX_HISTORICAL_CACHE_ENTRIES = 4096/u)
+  assert.match(source, /Number\.isSafeInteger\(cacheBytes\)/u)
+  assert.match(source, /historicalCacheBytes <= MAX_HISTORICAL_CACHE_BYTES - cacheBytes/u)
+  assert.match(source, /historicalFiles\.size < MAX_HISTORICAL_CACHE_ENTRIES/u)
+})
+
 test('the versioned requirement ID contract matches all 87 authoritative rows', () => {
   const status = readFileSync(join(repositoryRoot, 'docs/requirements-status.md'), 'utf8')
   const ids = readFileSync(join(repositoryRoot, 'docs/requirements-ids.v1.txt'), 'utf8').trimEnd().split('\n')
@@ -37,6 +46,7 @@ test('requirements traceability binds every status to ancestral code and executa
     execFileSync('git', ['add', '.'], { cwd: root })
     execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root })
     const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+    writeFileSync(join(root, 'docs/current-only.md'), 'shared current-only boundary\n')
     const manifest = {
       schema: 'origami2.requirements-evidence.v1',
       requirements: [
@@ -45,6 +55,7 @@ test('requirements traceability binds every status to ancestral code and executa
           evidence: [
             { kind: 'production-symbol', path: 'src/app.ts', selector: 'productionBoundary' },
             { kind: 'test', path: 'tests/app.test.ts', selector: 'production behavior' },
+            { kind: 'documentation', path: 'docs/current-only.md', selector: 'shared current-only boundary' },
           ],
           limitations: [], missingAcceptance: [],
         },
@@ -53,6 +64,7 @@ test('requirements traceability binds every status to ancestral code and executa
           evidence: [
             { kind: 'production-symbol', path: 'src/app.ts', selector: 'partialBoundary' },
             { kind: 'contract', path: 'tests/app.test.ts', selector: 'partial present behavior' },
+            { kind: 'documentation', path: 'docs/current-only.md', selector: 'shared current-only boundary' },
           ],
           limitations: ['general geometry remains unsupported'],
           missingAcceptance: ['native arbitrary schedule acceptance'],
@@ -71,7 +83,54 @@ test('requirements traceability binds every status to ancestral code and executa
       'node', [verifier, status, evidence, ids],
       { env: { ...process.env, REQUIREMENTS_EVIDENCE_ROOT: evidenceRoot }, stdio: 'pipe' },
     )
+    const tracedInvoke = (script, label) => {
+      const tracePath = join(root, `git-trace-${label}.jsonl`)
+      rmSync(tracePath, { force: true })
+      const output = execFileSync('node', [script, 'docs/status.md', 'docs/evidence.json', 'docs/ids.txt'], {
+        env: { ...process.env, REQUIREMENTS_EVIDENCE_ROOT: root, GIT_TRACE2_EVENT: tracePath },
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      const commands = readFileSync(tracePath, 'utf8').trim().split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .filter(({ event, argv }) => event === 'start' && Array.isArray(argv))
+        .map(({ argv }) => argv)
+      return { output, commands }
+    }
+    const commandCount = (commands, command, target) => commands.filter(
+      (argv) => argv.includes(command) && (!target || argv.includes(target)),
+    ).length
     assert.equal(verify(), '2\n')
+    const cached = tracedInvoke(verifier, 'cached')
+    assert.equal(cached.output, '2\n')
+    assert.equal(commandCount(cached.commands, 'merge-base'), 1, 'one ancestry query per unique commit')
+    assert.equal(commandCount(cached.commands, 'show'), 3, 'one historical lookup per unique commit/path')
+    assert.equal(commandCount(cached.commands, 'show', `${commit}:src/app.ts`), 1)
+    assert.equal(commandCount(cached.commands, 'show', `${commit}:tests/app.test.ts`), 1)
+    assert.equal(commandCount(cached.commands, 'show', `${commit}:docs/current-only.md`), 1, 'failed lookups use the sentinel cache')
+
+    const verifierSource = readFileSync(verifier, 'utf8')
+    const tinyByteVerifier = join(root, 'tiny-byte-cache-verifier.mjs')
+    writeFileSync(tinyByteVerifier, verifierSource.replace(
+      'const MAX_HISTORICAL_CACHE_BYTES = 64 * 1024 * 1024',
+      'const MAX_HISTORICAL_CACHE_BYTES = 1',
+    ))
+    const byteFallback = tracedInvoke(tinyByteVerifier, 'tiny-byte')
+    assert.equal(byteFallback.output, '2\n')
+    assert.equal(commandCount(byteFallback.commands, 'merge-base'), 1)
+    assert.equal(commandCount(byteFallback.commands, 'show'), 5, 'over-byte success text is returned without retention')
+    assert.equal(commandCount(byteFallback.commands, 'show', `${commit}:docs/current-only.md`), 1, 'failure sentinel remains cacheable')
+
+    const tinyEntryVerifier = join(root, 'tiny-entry-cache-verifier.mjs')
+    writeFileSync(tinyEntryVerifier, verifierSource.replace(
+      'const MAX_HISTORICAL_CACHE_ENTRIES = 4096',
+      'const MAX_HISTORICAL_CACHE_ENTRIES = 1',
+    ))
+    const entryFallback = tracedInvoke(tinyEntryVerifier, 'tiny-entry')
+    assert.equal(entryFallback.output, '2\n')
+    assert.equal(commandCount(entryFallback.commands, 'merge-base'), 1)
+    assert.equal(commandCount(entryFallback.commands, 'show'), 5, 'over-entry lookups remain correct without retention')
+    assert.equal(commandCount(entryFallback.commands, 'show', `${commit}:src/app.ts`), 1, 'the admitted first entry remains cached')
     assert.throws(() => verify({ ...manifest, requirements: manifest.requirements.slice(0, 1) }), /exact requirement set/u)
     const missingSelector = structuredClone(manifest)
     missingSelector.requirements[0].evidence[1].selector = 'invented test'

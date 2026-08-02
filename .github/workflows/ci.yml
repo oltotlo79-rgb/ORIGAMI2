@@ -446,7 +446,7 @@ jobs:
         with:
           toolchain: 1.90.0
           components: rustfmt, clippy
-      - name: Install pinned process-isolated Rust test runner
+      - name: Install pinned desktop process-isolated Rust test runner
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: nextest@0.9.140
@@ -477,7 +477,6 @@ jobs:
         run: |
           set -o pipefail
           test_status=0
-          last_component_status=0
           : > cargo-test.log
           : > cargo-test-failed-package.txt
           run_component() {
@@ -493,53 +492,19 @@ jobs:
               printf '%s\n' "$component" > cargo-test-failed-package.txt
               test_status="$component_status"
             fi
-            last_component_status="$component_status"
           }
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            packages=(
-              ori-collision
-              ori-numeric
-              ori-domain
-              ori-geometry
-              ori-topology
-              ori-kinematics
-              ori-foldability
-              ori-core
-              ori-formats
-              ori-instructions
-            )
-            core_failed=0
-            for package in "${packages[@]}"; do
-              if [ "$package" = "ori-collision" ]; then
-                # Preserve every target while isolating process-global proof
-                # and resource ledgers per test instead of serializing 700+ tests.
-                run_component "$package" \
-                  cargo nextest run -p "$package" --locked --all-targets --no-fail-fast --test-threads=4
-              else
-                run_component "$package" \
-                  cargo test -p "$package" --locked --all-targets --no-fail-fast
-              fi
-              if [ "$last_component_status" -ne 0 ]; then
-                core_failed=1
-                break
-              fi
-            done
-            if [ "$core_failed" -eq 0 ]; then
-              run_component origami2-desktop-release-lib \
-                cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4
-              run_component origami2-desktop-event-schema-debug \
-                cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
-            fi
-          else
-            run_component ori-collision-process-isolated-debug \
-              cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4
-            run_component workspace-core-excluding-collision-debug \
-              cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast
-            run_component origami2-desktop-release-lib \
-              cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4
-            run_component origami2-desktop-event-schema-debug \
-              cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
-          fi
+          # Keep ori-collision on the standard libtest harness so its costly
+          # immutable OnceLock fixtures are shared within each test target.
+          # The former failures were corrected in fixture identity, validation
+          # order, resource bounds, and expectations—not by ledger isolation.
+          run_component ori-collision-fixture-shared-test-profile \
+            cargo test -p ori-collision --locked --all-targets --no-fail-fast
+          run_component workspace-core-excluding-collision-test-profile \
+            cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast
+          run_component origami2-desktop-process-isolated-test-profile \
+            cargo nextest run -p origami2-desktop --locked --lib --no-fail-fast --test-threads=4 --ignore-default-filter -E 'all()'
+          run_component origami2-desktop-event-schema-test-profile \
+            cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
           if [ "$test_status" -ne 0 ]; then
             failed_package="$(cat cargo-test-failed-package.txt)"
             failure_summary="$(
@@ -557,37 +522,6 @@ jobs:
             echo "::error title=Rust tests failed::$failure_summary"
           fi
           exit "$test_status"
-      - name: Verify strict dyadic native lifecycle, unsupported-geometry no-op, and unproven theta rejection
-        shell: bash
-        run: |
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::open_cut_seam_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::nonfinite_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::degenerate_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::missing_boundary_vertex_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::duplicate_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::self_intersecting_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::missing_pose_capability_strict_dyadic_read_returns_unsupported_dto -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::tree_pose_capability_rejects_incomplete_target_without_mutation -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::four_hinge_tree_level_three_proof_applies_and_persists_atomically -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::five_hinge_tree_level_three_proof_applies_and_persists_atomically -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::six_hinge_tree_level_three_proof_applies_and_persists_atomically -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::seven_hinge_generic_grid_proof_applies_and_persists_atomically -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::coupled_cactus_previews_fail_closed_without_continuous_authority -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::theta_positive_thickness_preview_fails_closed_without_continuous_authority -- --exact --test-threads=1
-      - name: Verify all real named-technique compilers reach native exports
-        shell: bash
-        run: |
-          printf '%s\n' 'coverage=book_fold,basic_fold,reverse_fold,sink_fold,squash_fold,crimp_fold,layer_selective,accordion_fold'
-          cargo test --locked -p origami2-desktop --lib \
-            instruction_export::tests::compiled_ \
-            -- --test-threads=1
       - name: Summarize Rust test failure
         if: failure() && steps.rust-tests.outcome == 'failure'
         shell: bash

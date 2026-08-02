@@ -19,59 +19,35 @@ test('each Rust CI component has stable begin end and numeric status markers', (
 test('failure annotations retain the first failed component and include the final 30 lines', () => {
   assert.match(workflow, /if \[ "\$component_status" -ne 0 \] && \[ "\$test_status" -eq 0 \]; then/u)
   assert.match(workflow, /test_status="\$component_status"/u)
-  assert.match(workflow, /last_component_status="\$component_status"/u)
   assert.match(workflow, /failed_package="\$\(cat cargo-test-failed-package\.txt\)"/u)
   assert.match(workflow, /tail -n 30 cargo-test\.log/u)
   assert.match(workflow, /failure_summary="package=\$failed_package final-30-lines: \$failure_summary"/u)
   assert.match(workflow, /title=Rust test log tail \(\$failed_package\)::package=\$failed_package final-30-lines:/u)
 })
 
-test('macOS isolates process-global suites while preserving every Rust component', () => {
-  const macosStart = workflow.indexOf('          else\n            run_component ori-collision-process-isolated-debug')
-  const macosEnd = workflow.indexOf('\n          fi\n          if [ "$test_status"', macosStart)
-  assert.ok(macosStart >= 0 && macosEnd > macosStart)
-  const macos = workflow.slice(macosStart, macosEnd)
-  assert.match(macos, /run_component ori-collision-process-isolated-debug\s+\\\n\s*cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4/u)
-  assert.match(macos, /run_component workspace-core-excluding-collision-debug\s+\\\n\s*cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u)
-  assert.match(macos, /run_component origami2-desktop-release-lib\s+\\\n\s*cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4/u)
-  assert.match(macos, /run_component origami2-desktop-event-schema-debug\s+\\\n\s*cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast/u)
-  assertInOrder(macos, [
-    'run_component ori-collision-process-isolated-debug',
-    'run_component workspace-core-excluding-collision-debug',
-    'run_component origami2-desktop-release-lib',
-    'run_component origami2-desktop-event-schema-debug',
+test('both hosted OSes run the same fixture-sharing and process-isolated Rust components', () => {
+  const rustStart = workflow.indexOf('\n  rust:')
+  const componentsStart = workflow.indexOf('          run_component ori-collision-fixture-shared-test-profile', rustStart)
+  const componentsEnd = workflow.indexOf('\n          if [ "$test_status"', componentsStart)
+  assert.ok(rustStart >= 0 && componentsStart > rustStart && componentsEnd > componentsStart)
+  const components = workflow.slice(componentsStart, componentsEnd)
+  assert.match(components, /run_component ori-collision-fixture-shared-test-profile\s+\\\n\s*cargo test -p ori-collision --locked --all-targets --no-fail-fast/u)
+  assert.match(components, /run_component workspace-core-excluding-collision-test-profile\s+\\\n\s*cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u)
+  assert.match(components, /run_component origami2-desktop-process-isolated-test-profile\s+\\\n[ \t]*cargo nextest run -p origami2-desktop --locked --lib --no-fail-fast --test-threads=4 --ignore-default-filter -E 'all\(\)'[ \t]*\r?$/mu)
+  assert.match(components, /run_component origami2-desktop-event-schema-test-profile\s+\\\n\s*cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast/u)
+  assertInOrder(components, [
+    'run_component ori-collision-fixture-shared-test-profile',
+    'run_component workspace-core-excluding-collision-test-profile',
+    'run_component origami2-desktop-process-isolated-test-profile',
+    'run_component origami2-desktop-event-schema-test-profile',
   ])
 })
 
-test('dedicated debug lifecycle selectors remain exact after the split Rust components', () => {
-  const selectors = [
-    'even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read',
-    'concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
-    'cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
-    'hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
-    'open_cut_seam_strict_dyadic_preflight_is_unsupported_no_op',
-    'nonfinite_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'degenerate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'missing_boundary_vertex_strict_dyadic_preflight_is_unsupported_no_op',
-    'duplicate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'self_intersecting_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'missing_pose_capability_strict_dyadic_read_returns_unsupported_dto',
-    'tree_pose_capability_rejects_incomplete_target_without_mutation',
-    'four_hinge_tree_level_three_proof_applies_and_persists_atomically',
-    'five_hinge_tree_level_three_proof_applies_and_persists_atomically',
-    'six_hinge_tree_level_three_proof_applies_and_persists_atomically',
-    'seven_hinge_generic_grid_proof_applies_and_persists_atomically',
-    'bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history',
-    'balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history',
-    'coupled_cactus_previews_fail_closed_without_continuous_authority',
-    'theta_positive_thickness_preview_fails_closed_without_continuous_authority',
-  ]
-  for (const selector of selectors) {
-    assert.ok(workflow.includes(
-      `cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::${selector} -- --exact --test-threads=1`,
-    ), `missing dedicated debug selector: ${selector}`)
-  }
+test('the full process-isolated desktop library gate runs exactly once', () => {
+  assert.equal(
+    workflow.match(/^[ \t]*cargo nextest run -p origami2-desktop --locked --lib --no-fail-fast --test-threads=4 --ignore-default-filter -E 'all\(\)'[ \t]*$/gmu)?.length,
+    1,
+  )
 })
 
 function assertInOrder(source: string, values: string[]): void {

@@ -9,33 +9,23 @@ const rustTest = readFileSync('src-tauri/tests/event_schema_corpus.rs', 'utf8')
 test('frontend formal and Rust matrix jobs all execute the event corpus contracts', () => {
   const frontend = jobBody('frontend', 'rust')
   const rust = jobBody('rust', 'windows-bundle')
-  const windowsStart = rust.indexOf('          if [ "$RUNNER_OS" = "Windows" ]; then')
-  const macosStart = rust.indexOf('          else\n            run_component ori-collision-process-isolated-debug', windowsStart)
-  const macosEnd = rust.indexOf('\n          fi\n          if [ "$test_status"', macosStart)
-  assert.ok(windowsStart >= 0 && macosStart > windowsStart && macosEnd > macosStart)
-  const windows = rust.slice(windowsStart, macosStart)
-  const macos = rust.slice(macosStart, macosEnd)
+  const componentsStart = rust.indexOf('          run_component ori-collision-fixture-shared-test-profile')
+  const componentsEnd = rust.indexOf('\n          if [ "$test_status"', componentsStart)
+  assert.ok(componentsStart >= 0 && componentsEnd > componentsStart)
+  const components = rust.slice(componentsStart, componentsEnd)
 
   assert.match(frontend, /- run: npm test/u)
   assert.match(frontend, /node --test \.\.\/\.\.\/\.github\/tests\/formal-release\.test\.mjs/u)
   assert.match(rust, /matrix:\s*\n\s+os: \[windows-latest, macos-latest\]/u)
-  assert.match(windows, /cargo test -p "\$package" --locked --all-targets --no-fail-fast/u)
-  assert.match(windows, /cargo nextest run -p "\$package" --locked --all-targets --no-fail-fast --test-threads=4/u)
-  assert.match(macos, /cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u)
-  assert.match(macos, /cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4/u)
-  for (const branch of [windows, macos]) {
-    assert.match(branch, /cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4/u)
-    assert.match(branch, /cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast/u)
-  }
-  assertInOrder(windows, [
-    'run_component origami2-desktop-release-lib',
-    'run_component origami2-desktop-event-schema-debug',
-  ])
-  assertInOrder(macos, [
-    'run_component ori-collision-process-isolated-debug',
-    'run_component workspace-core-excluding-collision-debug',
-    'run_component origami2-desktop-release-lib',
-    'run_component origami2-desktop-event-schema-debug',
+  assert.match(components, /cargo test -p ori-collision --locked --all-targets --no-fail-fast/u)
+  assert.match(components, /cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u)
+  assert.match(components, /^[ \t]*cargo nextest run -p origami2-desktop --locked --lib --no-fail-fast --test-threads=4 --ignore-default-filter -E 'all\(\)'[ \t]*$/mu)
+  assert.match(components, /cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast/u)
+  assertInOrder(components, [
+    'run_component ori-collision-fixture-shared-test-profile',
+    'run_component workspace-core-excluding-collision-test-profile',
+    'run_component origami2-desktop-process-isolated-test-profile',
+    'run_component origami2-desktop-event-schema-test-profile',
   ])
 })
 

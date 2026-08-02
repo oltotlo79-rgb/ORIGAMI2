@@ -10,6 +10,66 @@ import { validateReleaseArchiveEntries } from '../scripts/release_archive_contra
 import { buildDependencyPolicy } from '../scripts/dependency_policy.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..')
+const strictDyadicNativeTests = [
+  'even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read',
+  'concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
+  'cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
+  'hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
+  'open_cut_seam_strict_dyadic_preflight_is_unsupported_no_op',
+  'nonfinite_boundary_strict_dyadic_preflight_is_unsupported_no_op',
+  'degenerate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
+  'missing_boundary_vertex_strict_dyadic_preflight_is_unsupported_no_op',
+  'duplicate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
+  'self_intersecting_boundary_strict_dyadic_preflight_is_unsupported_no_op',
+  'zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op',
+  'missing_pose_capability_strict_dyadic_read_returns_unsupported_dto',
+  'tree_pose_capability_rejects_incomplete_target_without_mutation',
+  'four_hinge_tree_level_three_proof_applies_and_persists_atomically',
+  'five_hinge_tree_level_three_proof_applies_and_persists_atomically',
+  'six_hinge_tree_level_three_proof_applies_and_persists_atomically',
+  'seven_hinge_generic_grid_proof_applies_and_persists_atomically',
+  'bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history',
+  'balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history',
+  'coupled_cactus_previews_fail_closed_without_continuous_authority',
+  'theta_positive_thickness_preview_fails_closed_without_continuous_authority',
+]
+const nativeCompilerExportTests = [
+  'compiled_accordion_reopens_into_native_exports_with_all_ordered_segments',
+  'compiled_two_segment_techniques_reopen_into_native_exports_with_exact_chaining',
+  'compiled_book_fold_reopens_into_native_pdf_and_svg_with_exact_proof_content',
+  'compiled_mountain_and_valley_folds_preserve_kind_through_native_pdf_and_svg',
+]
+
+function assertUniqueEnabledRustTests(source, testNames) {
+  assert.equal(new Set(testNames).size, testNames.length, 'the required Rust test names must be unique')
+  const lines = source.split(/\r?\n/u)
+  for (const testName of testNames) {
+    const escapedName = testName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+    const definition = new RegExp(
+      `^[\\t ]*(?:(?:pub(?:\\([^)]*\\))?|async|const|unsafe|extern(?:\\s+"[^"]+")?)\\s+)*fn\\s+${escapedName}\\s*(?:<[^>]*>\\s*)?\\(`,
+      'u',
+    )
+    const definitions = lines
+      .map((line, index) => ({ index, line }))
+      .filter(({ line }) => definition.test(line))
+    assert.equal(definitions.length, 1, `${testName} must have exactly one Rust definition`)
+
+    const attributes = []
+    for (let index = definitions[0].index - 1; index >= 0; index -= 1) {
+      const line = lines[index].trim()
+      if (!line.startsWith('#[') || !line.endsWith(']')) break
+      attributes.unshift(line)
+    }
+    const normalizedAttributes = attributes.map((attribute) => attribute.replace(/\s+/gu, ''))
+    assert.ok(normalizedAttributes.includes('#[test]'), `${testName} must have an immediate #[test] attribute`)
+    assert.equal(
+      normalizedAttributes.some((attribute) => /^#\[(?:ignore|cfg|cfg_attr)(?:\]|[=(])/u.test(attribute)),
+      false,
+      `${testName} must not be ignored or conditionally compiled`,
+    )
+  }
+}
+
 const ciArtifactFixture = {
   artifactId: '7', name: 'rustsec-warning-review', digest: `sha256:${'c'.repeat(64)}`,
   archiveSha256: 'c'.repeat(64), size: 128,
@@ -835,7 +895,7 @@ test('CI preserves the active Rust component across a job timeout', () => {
   assert.match(rustJob, /::notice title=Rust component completed::%s status=%s/u)
 })
 
-test('CI process-isolates collision and desktop regressions with a pinned verified nextest', () => {
+test('CI shares collision fixtures and process-isolates only desktop with pinned nextest', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const rustJob = workflow.slice(workflow.indexOf('\n  rust:'), workflow.indexOf('\n  windows-bundle:'))
   const installAction = 'taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60'
@@ -844,45 +904,40 @@ test('CI process-isolates collision and desktop regressions with a pinned verifi
     rustJob,
     /uses: taiki-e\/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2\.85\.7[\s\S]*?tool: nextest@0\.9\.140[\s\S]*?checksum: true[\s\S]*?fallback: none/u,
   )
+  assert.doesNotMatch(rustJob, /packages=\(/u)
   assert.match(
     rustJob,
-    /packages=\(\s+ori-collision\s+ori-numeric\s+ori-domain\s+ori-geometry\s+ori-topology\s+ori-kinematics\s+ori-foldability/u,
+    /run_component ori-collision-fixture-shared-test-profile\s+\\\n\s*cargo test -p ori-collision --locked --all-targets --no-fail-fast/u,
   )
-  assert.match(
-    rustJob,
-    /if \[ "\$package" = "ori-collision" \]; then[\s\S]*?cargo nextest run -p "\$package" --locked --all-targets --no-fail-fast --test-threads=4/u,
-  )
-  assert.match(
-    rustJob,
-    /cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4/u,
-  )
+  assert.doesNotMatch(rustJob, /cargo nextest run -p ori-collision/u)
   assert.match(
     rustJob,
     /cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u,
   )
   assert.doesNotMatch(
     rustJob,
-    /cargo test -p (?:"\$package"|ori-collision) --locked --all-targets --no-fail-fast -- --test-threads=1/u,
+    /cargo test -p ori-collision --locked --all-targets --no-fail-fast -- --test-threads=1/u,
   )
   assert.equal(
-    rustJob.match(/cargo nextest run -p (?:"\$package"|ori-collision) --locked --all-targets --no-fail-fast --test-threads=4/gu)?.length,
-    2,
-  )
-  assert.doesNotMatch(
-    rustJob,
-    /cargo nextest run -p (?:"\$package"|ori-collision)[^\r\n]*--test-threads=1/u,
+    rustJob.match(/cargo test -p ori-collision --locked --all-targets --no-fail-fast/gu)?.length,
+    1,
   )
   assert.equal(
-    rustJob.match(/cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4/gu)?.length,
-    2,
+    rustJob.match(/^[ \t]*cargo nextest run -p origami2-desktop --locked --lib --no-fail-fast --test-threads=4 --ignore-default-filter -E 'all\(\)'[ \t]*$/gmu)?.length,
+    1,
   )
+  assert.equal(rustJob.match(/cargo nextest run/gu)?.length, 1)
   assert.doesNotMatch(
     rustJob,
-    /cargo (?:test|nextest run) -p origami2-desktop[^\r\n]*--test-threads=1/u,
+    /cargo (?:test|nextest run) -p origami2-desktop[^\r\n]*--release[^\r\n]*--lib/u,
   )
-  assert.doesNotMatch(
-    rustJob,
-    /cargo test -p origami2-desktop --release --locked --lib/u,
+  assert.ok(
+    rustJob.indexOf('run_component ori-collision-fixture-shared-test-profile')
+      < rustJob.indexOf('run_component workspace-core-excluding-collision-test-profile'),
+  )
+  assert.ok(
+    rustJob.indexOf('run_component workspace-core-excluding-collision-test-profile')
+      < rustJob.indexOf('run_component origami2-desktop-process-isolated-test-profile'),
   )
 })
 
@@ -976,7 +1031,7 @@ test('Windows CI executes native recovery close and diagnostics persistence cont
   assert.doesNotMatch(step, /continue-on-error|\|\| true/u)
 })
 
-test('CI requires the production C6 dyadic browser, exact native lifecycle, and fail-closed theta rejection', () => {
+test('CI requires the production C6 dyadic browser and enabled native lifecycle coverage', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const desktopPackage = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'))
   const nativeReadTestsDirectory = join(
@@ -1018,31 +1073,14 @@ test('CI requires the production C6 dyadic browser, exact native lifecycle, and 
     1,
     'the C6 production Panel browser harness must be one required frontend gate',
   )
-  const exactFilter = 'stacked_fold_read::tests::even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read'
-  assert.equal(
-    workflow.match(new RegExp(exactFilter, 'gu'))?.length,
-    1,
-    'one exact Rust command must cover every bounded even-cycle family without duplicate jobs',
-  )
-  assert.match(workflow, new RegExp(`cargo test --locked -p origami2-desktop --lib\\s+${exactFilter}\\s+-- --exact --test-threads=1`, 'u'))
-  for (const fixtureTest of [
-    'concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
-    'cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
-    'hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
-    'open_cut_seam_strict_dyadic_preflight_is_unsupported_no_op',
-    'nonfinite_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'degenerate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'missing_boundary_vertex_strict_dyadic_preflight_is_unsupported_no_op',
-    'duplicate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'self_intersecting_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op',
-    'missing_pose_capability_strict_dyadic_read_returns_unsupported_dto',
-    'tree_pose_capability_rejects_incomplete_target_without_mutation',
-  ]) {
-    const fixtureFilter = `stacked_fold_read::tests::${fixtureTest}`
-    assert.equal(workflow.match(new RegExp(fixtureFilter, 'gu'))?.length, 1)
-    assert.match(workflow, new RegExp(`cargo test --locked -p origami2-desktop --lib\\s+${fixtureFilter}\\s+-- --exact --test-threads=1`, 'u'))
-    assert.match(nativeRead, new RegExp(`fn ${fixtureTest}\\(\\)`, 'u'))
+  assert.equal(strictDyadicNativeTests.length, 21)
+  assertUniqueEnabledRustTests(nativeRead, strictDyadicNativeTests)
+  for (const testName of strictDyadicNativeTests) {
+    assert.equal(
+      workflow.includes(testName),
+      false,
+      `${testName} must be covered by the full desktop library gate without a duplicate invocation`,
+    )
   }
   for (const scenario of ['concave', 'cut', 'hole', 'seam', 'duplicate-boundary', 'self-intersection', 'zero-length', 'missing-capability', 'tree-capability']) {
     assert.match(browserRead, new RegExp(`'${scenario}'`, 'u'))
@@ -1053,27 +1091,7 @@ test('CI requires the production C6 dyadic browser, exact native lifecycle, and 
   for (const fixture of ['balloon-c6', 'octagonal-c8']) {
     assert.equal(nativeRead.match(new RegExp(`"${fixture}"`, 'gu'))?.length, 1)
   }
-  for (const treeLifecycle of [
-    'four_hinge_tree_level_three_proof_applies_and_persists_atomically',
-    'five_hinge_tree_level_three_proof_applies_and_persists_atomically',
-    'six_hinge_tree_level_three_proof_applies_and_persists_atomically',
-    'seven_hinge_generic_grid_proof_applies_and_persists_atomically',
-  ]) {
-    const filter = `stacked_fold_read::tests::${treeLifecycle}`
-    assert.equal(workflow.match(new RegExp(filter, 'gu'))?.length, 1)
-    assert.match(nativeRead, new RegExp(`fn ${treeLifecycle}\\(\\)`, 'u'))
-  }
   assert.match(nativeRead, /fn revalidates_private_proofs_v1\(/u)
-  for (const lifecycle of [
-    'bounded_multi_block_opposite_bifolds_preview_apply_and_reopen_history',
-    'balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history',
-    'coupled_cactus_previews_fail_closed_without_continuous_authority',
-    'theta_positive_thickness_preview_fails_closed_without_continuous_authority',
-  ]) {
-    const filter = `stacked_fold_read::tests::${lifecycle}`
-    assert.equal(workflow.match(new RegExp(filter, 'gu'))?.length, 1)
-    assert.match(nativeRead, new RegExp(`fn ${lifecycle}\\(\\)`, 'u'))
-  }
   assert.match(nativeRead, /dyadic_request_hinge_counts_are_bounded_v1\(64, Some\(64\)\)/u)
   assert.match(nativeRead, /!dyadic_request_hinge_counts_are_bounded_v1\(65, Some\(64\)\)/u)
   assert.match(nativeRead, /!dyadic_request_hinge_counts_are_bounded_v1\(64, Some\(65\)\)/u)
@@ -1131,31 +1149,27 @@ test('CI requires exactly one full-App instruction export routing browser gate',
   ]) assert.match(browserHarness, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
 })
 
-test('CI requires one native export gate for all eight real technique compilers', () => {
+test('the full desktop gate covers enabled native exports for all eight real technique compilers', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const instructionExport = readFileSync(
     join(root, 'apps/desktop/src-tauri/src/instruction_export.rs'),
     'utf8',
   )
-  assert.equal(
-    workflow.match(/instruction_export::tests::compiled_/gu)?.length,
-    1,
-    'the eight real compilers must share one required Rust invocation',
-  )
-  assert.match(
-    workflow,
-    /cargo test --locked -p origami2-desktop --lib \\\s+instruction_export::tests::compiled_ \\\s+-- --test-threads=1/u,
-  )
+  assert.equal(nativeCompilerExportTests.length, 4)
+  assert.equal(new Set([...strictDyadicNativeTests, ...nativeCompilerExportTests]).size, 25)
+  assertUniqueEnabledRustTests(instructionExport, nativeCompilerExportTests)
+  for (const testName of nativeCompilerExportTests) {
+    assert.equal(
+      workflow.includes(testName),
+      false,
+      `${testName} must be covered by the full desktop library gate without a duplicate invocation`,
+    )
+  }
   const compilerMarkers = [
     'book_fold', 'basic_fold', 'reverse_fold', 'sink_fold', 'squash_fold', 'crimp_fold',
     'layer_selective', 'accordion_fold',
   ]
-  const gate = workflow.match(
-    /- name: Verify all real named-technique compilers reach native exports[\s\S]*?-- --test-threads=1/u,
-  )?.[0] ?? ''
-  assert.doesNotMatch(gate, /continue-on-error|\|\| true/u)
   for (const marker of compilerMarkers) {
-    assert.match(gate, new RegExp(`(?:coverage=|,)${marker}(?:,|'|$)`, 'u'))
     assert.match(instructionExport, new RegExp(`compile_certified_${marker}_timeline_v1`, 'u'))
   }
 })

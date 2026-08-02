@@ -28,7 +28,7 @@ test('CI keeps exactly the three reviewed workflows', () => {
   assert.doesNotMatch(readFileSync(workflowPath, 'utf8'), /paths-ignore:/u)
 })
 
-test('CI fixes the optimized fail-closed Rust profile and process-isolated commands', () => {
+test('CI fixes one optimized fail-closed profile with fixture sharing and bounded isolation', () => {
   const rustJob = rustJobSource()
   assert.match(rustJob, /CARGO_PROFILE_TEST_OPT_LEVEL: "2"/u)
   assert.match(rustJob, /CARGO_PROFILE_TEST_DEBUG: "line-tables-only"/u)
@@ -36,6 +36,7 @@ test('CI fixes the optimized fail-closed Rust profile and process-isolated comma
   assert.match(rustJob, /CARGO_PROFILE_TEST_OVERFLOW_CHECKS: "true"/u)
   assert.match(rustJob, /CARGO_PROFILE_DEV_DEBUG: "line-tables-only"/u)
   assert.match(rustJob, /CARGO_INCREMENTAL: "0"/u)
+  assert.match(rustJob, /RUST_TEST_THREADS: "4"/u)
   assert.doesNotMatch(rustJob, /CARGO_PROFILE_DEV_OPT_LEVEL/u)
 
   const staticRuntime = rustJob.indexOf('Link the Windows Rust test harness to the static MSVC runtime')
@@ -50,39 +51,46 @@ test('CI fixes the optimized fail-closed Rust profile and process-isolated comma
     /tool: nextest@0\.9\.140\s+checksum: true\s+fallback: none/u,
   )
 
-  const windowsStart = rustJob.indexOf('if [ "$RUNNER_OS" = "Windows" ]; then')
-  const macosStart = rustJob.indexOf('\n          else', windowsStart)
-  const summaryStart = rustJob.indexOf('\n          if [ "$test_status"', macosStart)
-  assert.ok(windowsStart >= 0 && macosStart > windowsStart && summaryStart > macosStart)
-  const windowsCommands = rustJob.slice(windowsStart, macosStart)
-  const macosCommands = rustJob.slice(macosStart, summaryStart)
-  assert.ok(windowsCommands.indexOf('ori-collision') < windowsCommands.indexOf('ori-numeric'))
+  const componentsStart = rustJob.indexOf('run_component ori-collision-fixture-shared-test-profile')
+  const summaryStart = rustJob.indexOf('\n          if [ "$test_status"', componentsStart)
+  assert.ok(componentsStart >= 0 && summaryStart > componentsStart)
+  const commands = rustJob.slice(componentsStart, summaryStart)
+  assert.doesNotMatch(commands, /if \[ "\$RUNNER_OS" = "Windows" \]; then/u)
   assert.match(
-    windowsCommands,
-    /cargo nextest run -p "\$package" --locked --all-targets --no-fail-fast --test-threads=4/u,
+    commands,
+    /cargo test -p ori-collision --locked --all-targets --no-fail-fast/u,
   )
+  assert.doesNotMatch(commands, /cargo nextest run -p ori-collision/u)
   assert.match(
-    windowsCommands,
-    /cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4/u,
-  )
-  assert.match(
-    macosCommands,
-    /cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4/u,
-  )
-  assert.ok(
-    macosCommands.indexOf('run_component ori-collision-process-isolated-debug')
-      < macosCommands.indexOf('run_component workspace-core-excluding-collision-debug'),
+    commands,
+    /cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u,
   )
   assert.match(
-    macosCommands,
-    /cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4/u,
+    commands,
+    /^[ \t]*cargo nextest run -p origami2-desktop --locked --lib --no-fail-fast --test-threads=4 --ignore-default-filter -E 'all\(\)'[ \t]*$/mu,
   )
+  assert.doesNotMatch(commands, /cargo nextest run -p origami2-desktop[^\r\n]*--release/u)
+  assertInOrder(commands, [
+    'run_component ori-collision-fixture-shared-test-profile',
+    'run_component workspace-core-excluding-collision-test-profile',
+    'run_component origami2-desktop-process-isolated-test-profile',
+    'run_component origami2-desktop-event-schema-test-profile',
+  ])
 
   const serialFullSuiteCommands = [...rustJob.matchAll(/^\s*cargo test[^\r\n]*/gmu)]
     .map(([command]) => command)
     .filter((command) => command.includes('--no-fail-fast') && command.includes('--test-threads=1'))
   assert.deepEqual(serialFullSuiteCommands, [])
 })
+
+function assertInOrder(source, values) {
+  let previous = -1
+  for (const value of values) {
+    const current = source.indexOf(value, previous + 1)
+    assert.ok(current > previous, `expected ${value} after the preceding Rust component`)
+    previous = current
+  }
+}
 
 test('frontend builds once before production audits and retains Blender and lint gates', () => {
   const frontendJob = frontendJobSource()

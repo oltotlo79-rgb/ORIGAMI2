@@ -1,74 +1,46 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const workflow = readFileSync('../../.github/workflows/ci.yml', 'utf8')
-const expectedWindowsCoreOrder = [
-  'ori-collision',
-  'ori-numeric',
-  'ori-domain',
-  'ori-geometry',
-  'ori-topology',
-  'ori-kinematics',
-  'ori-foldability',
-  'ori-core',
-  'ori-formats',
-  'ori-instructions',
-]
-const desktopPackage = 'origami2-desktop'
+const rustStart = workflow.indexOf('\n  rust:')
+const rustEnd = workflow.indexOf('\n  windows-bundle:', rustStart)
+assert.ok(rustStart >= 0 && rustEnd > rustStart)
+const rust = workflow.slice(rustStart, rustEnd)
 
-test('Windows debug core list exactly covers cargo metadata workspace members excluding split desktop', () => {
-  const packages = windowsPackages()
-  const metadata = JSON.parse(execFileSync('cargo', [
-    'metadata', '--no-deps', '--format-version', '1',
-  ], { cwd: '../..', encoding: 'utf8' })) as {
-    packages: Array<{ id: string, name: string }>
-    workspace_members: string[]
-  }
-  const workspaceNames = metadata.workspace_members.map((id) => {
-    const found = metadata.packages.find((pkg) => pkg.id === id)
-    assert.ok(found, `metadata member ${id} must resolve to a package`)
-    return found.name
-  })
-  assert.equal(new Set(packages).size, packages.length, 'Windows package list has duplicates')
-  assert.equal(new Set(workspaceNames).size, workspaceNames.length, 'cargo metadata has duplicate members')
-  assert.ok(workspaceNames.includes(desktopPackage), 'desktop remains a workspace member')
-  assert.ok(!packages.includes(desktopPackage), 'desktop is split out of the Windows debug all-targets loop')
-  assert.deepEqual(
-    [...packages].sort(),
-    workspaceNames.filter((name) => name !== desktopPackage).sort(),
+test('the hosted matrix uses one drift-proof workspace command for every non-desktop core member', () => {
+  const workspaceCommand = 'cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast'
+  assert.match(rust, /matrix:\s*\n\s+os: \[windows-latest, macos-latest\]/u)
+  assert.equal(rust.split(workspaceCommand).length - 1, 1)
+  assert.doesNotMatch(rust, /packages=\(/u)
+  assert.doesNotMatch(rust, /cargo test -p "\$package"/u)
+  assert.doesNotMatch(rust, /if \[ "\$RUNNER_OS" = "Windows" \]; then/u)
+})
+
+test('collision shares immutable fixtures before workspace core and split desktop tests', () => {
+  assert.match(
+    rust,
+    /run_component ori-collision-fixture-shared-test-profile\s+\\\n\s*cargo test -p ori-collision --locked --all-targets --no-fail-fast/u,
   )
+  assert.doesNotMatch(rust, /cargo nextest run -p ori-collision/u)
+  assert.match(
+    rust,
+    /run_component origami2-desktop-process-isolated-test-profile\s+\\\n[ \t]*cargo nextest run -p origami2-desktop --locked --lib --no-fail-fast --test-threads=4 --ignore-default-filter -E 'all\(\)'[ \t]*\r?$/mu,
+  )
+  assert.doesNotMatch(rust, /cargo nextest run -p origami2-desktop[^\r\n]*--release/u)
+  assertInOrder(rust, [
+    'run_component ori-collision-fixture-shared-test-profile',
+    'run_component workspace-core-excluding-collision-test-profile',
+    'run_component origami2-desktop-process-isolated-test-profile',
+    'run_component origami2-desktop-event-schema-test-profile',
+  ])
 })
 
-test('Windows core debug order and desktop split cannot silently drift', () => {
-  assert.deepEqual(windowsPackages(), expectedWindowsCoreOrder)
-  const positions = new Map(expectedWindowsCoreOrder.map((name, index) => [name, index]))
-  for (const [before, after] of [
-    ['ori-collision', 'ori-numeric'],
-    ['ori-numeric', 'ori-domain'],
-    ['ori-domain', 'ori-geometry'],
-    ['ori-geometry', 'ori-topology'],
-    ['ori-topology', 'ori-kinematics'],
-    ['ori-kinematics', 'ori-foldability'],
-    ['ori-foldability', 'ori-core'],
-  ]) assert.ok(positions.get(before)! < positions.get(after)!, `${before} must precede ${after}`)
-
-  const windowsStart = workflow.indexOf('          if [ "$RUNNER_OS" = "Windows" ]; then')
-  const windowsEnd = workflow.indexOf('\n          else', windowsStart)
-  assert.ok(windowsStart >= 0 && windowsEnd > windowsStart)
-  const windows = workflow.slice(windowsStart, windowsEnd)
-  assert.match(windows, /if \[ "\$package" = "ori-collision" \]; then\s+[\s\S]*?run_component "\$package"\s+\\\n\s*cargo nextest run -p "\$package" --locked --all-targets --no-fail-fast --test-threads=4\s+else/u)
-  assert.match(windows, /run_component "\$package"\s+\\\n\s*cargo test -p "\$package" --locked --all-targets --no-fail-fast/u)
-  assert.match(windows, /if \[ "\$last_component_status" -ne 0 \]; then\s+core_failed=1\s+break\s+fi/u)
-  assert.match(windows, /if \[ "\$core_failed" -eq 0 \]; then\s+run_component origami2-desktop-release-lib\s+\\\n\s*cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4\s+run_component origami2-desktop-event-schema-debug\s+\\\n\s*cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast\s+fi/u)
-})
-
-function windowsPackages(): string[] {
-  const rustStart = workflow.indexOf('\n  rust:')
-  const packagesStart = workflow.indexOf('            packages=(', rustStart)
-  const packagesEnd = workflow.indexOf('            )', packagesStart)
-  assert.ok(rustStart >= 0 && packagesStart > rustStart && packagesEnd > packagesStart)
-  const block = workflow.slice(packagesStart, packagesEnd)
-  return [...block.matchAll(/^\s{14}([a-z0-9-]+)$/gmu)].map((match) => match[1])
+function assertInOrder(source: string, values: string[]): void {
+  let previous = -1
+  for (const value of values) {
+    const current = source.indexOf(value, previous + 1)
+    assert.ok(current > previous, `expected ${value} after the preceding Rust component`)
+    previous = current
+  }
 }

@@ -14,9 +14,16 @@ use super::{
     },
     construct_bounded_singleton_composition_exact_assignment_v1,
     three_record_component_constructive::{
+        MAX_PAIR_PLUS_SINGLETON_STAR_LEAF_CLASSIFICATIONS_V1,
+        MAX_PAIR_PLUS_SINGLETON_STAR_PAIR_CLASSIFICATIONS_V1,
+        MAX_PAIR_PLUS_SINGLETON_STAR_REFERENCED_VERTICES_V1,
         MAX_THREE_RECORD_COMPONENT_CONSTRUCTIVE_CANDIDATES_V1,
-        MAX_THREE_RECORD_COMPONENT_REFERENCED_VERTICES_V1,
+        MAX_THREE_RECORD_COMPONENT_REFERENCED_VERTICES_V1, MAX_TWO_PAIR_CORE_COMBINATIONS_V1,
+        MAX_TWO_PAIR_CORE_LEAF_CLASSIFICATIONS_V1, MAX_TWO_PAIR_CORE_STAR_REFERENCED_VERTICES_V1,
+        checked_two_pair_core_classification_bounds_v1,
         construct_pair_plus_singleton_leaf_exact_assignment_v1,
+        construct_pair_plus_singleton_star_exact_assignment_v1,
+        construct_two_pair_core_singleton_star_exact_assignment_v1,
     },
 };
 use crate::{
@@ -88,6 +95,46 @@ fn position_bits(pattern: &CreasePattern) -> BTreeMap<[u8; 16], (u64, u64)> {
         .collect()
 }
 
+fn two_pair_core_star_fixture(
+    leaf_count: usize,
+) -> (
+    CreasePattern,
+    Vec<GeometricConstraintRecordV1>,
+    [VertexId; 2],
+) {
+    assert!(leaf_count <= 12);
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(0.0, 0.0);
+    let articulation = fixture.vertex(3.0, 4.0);
+    let second_end = fixture.vertex(8.0, 1.0);
+    let first_core = fixture.edge(first_start, articulation);
+    let second_core = fixture.edge(articulation, second_end);
+    let mut records = vec![
+        record(GeometricConstraintKindV1::Horizontal { edge: first_core }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first_core,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::Vertical { edge: second_core }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: second_core,
+            length_mm: 3.0,
+        }),
+    ];
+    for ordinal in 0..leaf_count {
+        let leaf_end = fixture.vertex(20.0 + ordinal as f64, 5.0 + ordinal as f64);
+        let leaf = fixture.edge(articulation, leaf_end);
+        records.push(record(GeometricConstraintKindV1::FixedLength {
+            edge: leaf,
+            length_mm: 4.0 + ordinal as f64,
+        }));
+    }
+    let external_start = fixture.vertex(400.0, 500.0);
+    let external_end = fixture.vertex(404.0, 509.0);
+    fixture.edge(external_start, external_end);
+    (fixture.finish(), records, [external_start, external_end])
+}
+
 #[test]
 fn component_constructor_work_envelope_is_frozen() {
     assert_eq!(
@@ -97,6 +144,57 @@ fn component_constructor_work_envelope_is_frozen() {
     assert_eq!(MAX_BOUNDED_COMPONENT_FULL_PATTERN_CLONES_V1, 112);
     assert_eq!(MAX_THREE_RECORD_COMPONENT_CONSTRUCTIVE_CANDIDATES_V1, 4);
     assert_eq!(MAX_THREE_RECORD_COMPONENT_REFERENCED_VERTICES_V1, 7);
+    assert_eq!(MAX_PAIR_PLUS_SINGLETON_STAR_PAIR_CLASSIFICATIONS_V1, 120,);
+    assert_eq!(MAX_PAIR_PLUS_SINGLETON_STAR_LEAF_CLASSIFICATIONS_V1, 1_680,);
+    assert_eq!(MAX_PAIR_PLUS_SINGLETON_STAR_REFERENCED_VERTICES_V1, 49);
+    assert_eq!(MAX_TWO_PAIR_CORE_COMBINATIONS_V1, 7_140);
+    assert_eq!(MAX_TWO_PAIR_CORE_LEAF_CLASSIFICATIONS_V1, 85_680);
+    assert_eq!(MAX_TWO_PAIR_CORE_STAR_REFERENCED_VERTICES_V1, 49);
+    assert_eq!(
+        checked_two_pair_core_classification_bounds_v1(16),
+        Some((120, 7_140, 85_680)),
+    );
+    assert_eq!(
+        checked_two_pair_core_classification_bounds_v1(4),
+        Some((6, 15, 0)),
+    );
+    assert_eq!(
+        checked_two_pair_core_classification_bounds_v1(usize::MAX),
+        None,
+        "overflowing classification arithmetic must fail closed",
+    );
+
+    let mut maximum_passes = 0usize;
+    let mut maximum_clones = 0usize;
+    for pair_components in 0..=8usize {
+        for one_core_components in 0..=5usize {
+            for two_core_components in 0..=4usize {
+                let occupied_records =
+                    pair_components * 2 + one_core_components * 3 + two_core_components * 4;
+                if occupied_records > MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1 {
+                    continue;
+                }
+                let passes = 5 * MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1
+                    + 6 * pair_components
+                    + 5 * one_core_components
+                    + 10 * two_core_components
+                    + 8
+                    + 2;
+                let clones = 4 * MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1
+                    + 5 * pair_components
+                    + 4 * one_core_components
+                    + 8 * two_core_components
+                    + 8;
+                maximum_passes = maximum_passes.max(passes);
+                maximum_clones = maximum_clones.max(clones);
+            }
+        }
+    }
+    assert_eq!(
+        maximum_passes,
+        MAX_BOUNDED_COMPONENT_PREPARATION_OR_VERIFICATION_PASSES_V1,
+    );
+    assert_eq!(maximum_clones, MAX_BOUNDED_COMPONENT_FULL_PATTERN_CLONES_V1,);
 }
 
 #[test]
@@ -500,6 +598,516 @@ fn unique_pair_plus_singleton_leaf_component_constructs_in_canonical_order() {
             position_bits(reordered.pattern()),
         );
     }
+}
+
+#[test]
+fn unique_pair_plus_two_singleton_leaves_constructs_and_is_order_canonical() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(0.0, 0.0);
+    let articulation = fixture.vertex(3.0, 4.0);
+    let first_leaf_end = fixture.vertex(8.0, 1.0);
+    let second_leaf_end = fixture.vertex(9.0, 7.0);
+    let external_start = fixture.vertex(40.0, 5.0);
+    let external_end = fixture.vertex(44.0, 9.0);
+    let pair_edge = fixture.edge(first_start, articulation);
+    let first_leaf = fixture.edge(articulation, first_leaf_end);
+    let second_leaf = fixture.edge(articulation, second_leaf_end);
+    fixture.edge(external_start, external_end);
+    let pattern = fixture.finish();
+    let records = [
+        record(GeometricConstraintKindV1::Horizontal { edge: pair_edge }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: pair_edge,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first_leaf,
+            length_mm: 3.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: second_leaf,
+            length_mm: 5.0,
+        }),
+    ];
+    let source = document(records.clone());
+
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(&pattern, &source)
+            .expect("the four-record source fixture is structurally valid")
+            .is_none(),
+        "the source geometry must not already be an exact witness",
+    );
+    let assignment = construct_pair_plus_singleton_star_exact_assignment_v1(&pattern, &source)
+        .expect("the unique ordinary pair plus two leaves must construct");
+    assert_eq!(assignment.certificate().constraint_count(), 4);
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(assignment.pattern(), &source)
+            .expect("the four-record star remains structurally valid")
+            .is_some(),
+    );
+    for external in [external_start, external_end] {
+        let before = pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == external)
+            .expect("external source vertex");
+        let after = assignment
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == external)
+            .expect("external candidate vertex");
+        assert_eq!(before.position.x.to_bits(), after.position.x.to_bits());
+        assert_eq!(before.position.y.to_bits(), after.position.y.to_bits());
+    }
+
+    let mut reordered_pattern = pattern.clone();
+    reordered_pattern.vertices.reverse();
+    reordered_pattern.edges.reverse();
+    let reordered_source = document([
+        records[3].clone(),
+        records[1].clone(),
+        records[2].clone(),
+        records[0].clone(),
+    ]);
+    let reordered = construct_bounded_singleton_composition_exact_assignment_v1(
+        &reordered_pattern,
+        &reordered_source,
+    )
+    .expect("record and storage order cannot change the admitted star");
+    assert_eq!(
+        position_bits(assignment.pattern()),
+        position_bits(reordered.pattern()),
+    );
+}
+
+#[test]
+fn pair_plus_leaves_with_a_non_pair_shared_vertex_fail_closed() {
+    let mut fixture = FixtureBuilder::default();
+    let pair_start = fixture.vertex(0.0, 0.0);
+    let articulation = fixture.vertex(3.0, 4.0);
+    let shared_outside_pair = fixture.vertex(8.0, 1.0);
+    let line_end = fixture.vertex(9.0, 7.0);
+    let pair_edge = fixture.edge(pair_start, articulation);
+    let first_leaf = fixture.edge(articulation, shared_outside_pair);
+    let second_leaf_line = fixture.edge(articulation, line_end);
+    let pattern = fixture.finish();
+    let source = document([
+        record(GeometricConstraintKindV1::Horizontal { edge: pair_edge }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: pair_edge,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first_leaf,
+            length_mm: 3.0,
+        }),
+        record(GeometricConstraintKindV1::PointOnLine {
+            vertex: shared_outside_pair,
+            line_edge: second_leaf_line,
+        }),
+    ]);
+
+    assert!(
+        construct_pair_plus_singleton_star_exact_assignment_v1(&pattern, &source).is_none(),
+        "leaves coupled away from the admitted pair are not an independent star",
+    );
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &source).is_none(),
+        "the bounded compositor must preserve the non-pair overlap boundary",
+    );
+}
+
+#[test]
+fn connected_pair_plus_fourteen_leaves_reaches_sixteen_and_rejects_seventeen() {
+    let mut fixture = FixtureBuilder::default();
+    let pair_start = fixture.vertex(0.0, 0.0);
+    let articulation = fixture.vertex(3.0, 4.0);
+    let pair_edge = fixture.edge(pair_start, articulation);
+    let mut records = vec![
+        record(GeometricConstraintKindV1::Horizontal { edge: pair_edge }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: pair_edge,
+            length_mm: 2.0,
+        }),
+    ];
+    for ordinal in 0..14 {
+        let leaf_end = fixture.vertex(20.0 + ordinal as f64, 5.0 + ordinal as f64);
+        let leaf_edge = fixture.edge(articulation, leaf_end);
+        records.push(record(GeometricConstraintKindV1::FixedLength {
+            edge: leaf_edge,
+            length_mm: 3.0 + ordinal as f64,
+        }));
+    }
+    let pattern = fixture.finish();
+    let sixteen = document(records);
+    assert_eq!(
+        sixteen.constraints.len(),
+        MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    );
+
+    let assignment =
+        construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &sixteen)
+            .expect("one pair plus fourteen independent leaves must reach the fixed ceiling");
+    assert_eq!(
+        assignment.certificate().constraint_count(),
+        MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    );
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(
+            assignment.pattern(),
+            &sixteen,
+        )
+        .expect("the ceiling star remains structurally valid")
+        .is_some(),
+    );
+
+    let mut seventeen_fixture = FixtureBuilder {
+        vertices: pattern.vertices.clone(),
+        edges: pattern.edges.clone(),
+    };
+    let seventeenth_end = seventeen_fixture.vertex(99.0, 101.0);
+    let seventeenth_edge = seventeen_fixture.edge(articulation, seventeenth_end);
+    let seventeen_pattern = seventeen_fixture.finish();
+    let mut seventeen = sixteen;
+    seventeen
+        .constraints
+        .push(record(GeometricConstraintKindV1::FixedLength {
+            edge: seventeenth_edge,
+            length_mm: 17.0,
+        }));
+    assert!(
+        construct_pair_plus_singleton_star_exact_assignment_v1(&seventeen_pattern, &seventeen,)
+            .is_none(),
+        "the fixed record ceiling must reject a seventeenth connected leaf before classification",
+    );
+}
+
+#[test]
+fn unique_two_pair_cores_construct_at_four_and_are_storage_order_canonical() {
+    let (pattern, records, external_vertices) = two_pair_core_star_fixture(0);
+    let source = document(records.clone());
+    assert_eq!(source.constraints.len(), 4);
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(&pattern, &source)
+            .expect("the two-core source is structurally valid")
+            .is_none(),
+        "the source must require detached construction",
+    );
+    assert!(
+        construct_pair_plus_singleton_star_exact_assignment_v1(&pattern, &source).is_none(),
+        "the existing one-core family must not absorb two coupled cores",
+    );
+    let pattern_before = pattern.clone();
+    let source_before = source.clone();
+    let direct = construct_two_pair_core_singleton_star_exact_assignment_v1(&pattern, &source)
+        .expect("the unique two-core decomposition must construct");
+    let composed = construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &source)
+        .expect("the component compositor must admit the two-core family");
+    assert_eq!(pattern, pattern_before);
+    assert_eq!(source, source_before);
+    assert_eq!(direct.pattern().edges, pattern.edges);
+    assert_eq!(composed.pattern().edges, pattern.edges);
+    assert_eq!(
+        position_bits(direct.pattern()),
+        position_bits(composed.pattern())
+    );
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(direct.pattern(), &source)
+            .expect("the constructed two-core component remains structurally valid")
+            .is_some(),
+    );
+    for external in external_vertices {
+        let before = pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == external)
+            .expect("external source vertex");
+        let after = direct
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == external)
+            .expect("external constructed vertex");
+        assert_eq!(before.position.x.to_bits(), after.position.x.to_bits());
+        assert_eq!(before.position.y.to_bits(), after.position.y.to_bits());
+    }
+
+    let baseline = position_bits(composed.pattern());
+    let mut reordered_pattern = pattern.clone();
+    reordered_pattern.vertices.reverse();
+    reordered_pattern.edges.reverse();
+    for order in [[0, 1, 2, 3], [3, 2, 1, 0], [2, 3, 0, 1], [1, 0, 3, 2]] {
+        let reordered_source = document(order.map(|index| records[index].clone()));
+        let reordered = construct_bounded_singleton_composition_exact_assignment_v1(
+            &reordered_pattern,
+            &reordered_source,
+        )
+        .expect("constraint and pattern storage order must not select another decomposition");
+        assert_eq!(baseline, position_bits(reordered.pattern()));
+    }
+}
+
+#[test]
+fn two_pair_cores_plus_twelve_leaves_reach_sixteen_and_seventeen_fails_closed() {
+    let (pattern, records, _) = two_pair_core_star_fixture(12);
+    let sixteen = document(records);
+    assert_eq!(
+        sixteen.constraints.len(),
+        MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    );
+    let assignment = construct_two_pair_core_singleton_star_exact_assignment_v1(&pattern, &sixteen)
+        .expect("two cores plus twelve independent leaves must reach sixteen");
+    let composed = construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &sixteen)
+        .expect("the public compositor must admit the sixteen-record two-core family");
+    assert_eq!(
+        assignment.certificate().constraint_count(),
+        MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    );
+    assert_eq!(
+        composed.certificate().constraint_count(),
+        MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
+    );
+    assert_eq!(
+        position_bits(assignment.pattern()),
+        position_bits(composed.pattern()),
+    );
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(
+            assignment.pattern(),
+            &sixteen,
+        )
+        .expect("the sixteen-record two-core component remains valid")
+        .is_some(),
+    );
+
+    let articulation = pattern.edges[0].end;
+    let mut builder = FixtureBuilder {
+        vertices: pattern.vertices.clone(),
+        edges: pattern.edges.clone(),
+    };
+    let seventeenth_end = builder.vertex(900.0, 901.0);
+    let seventeenth_edge = builder.edge(articulation, seventeenth_end);
+    let seventeen_pattern = builder.finish();
+    let mut seventeen = sixteen;
+    seventeen
+        .constraints
+        .push(record(GeometricConstraintKindV1::FixedLength {
+            edge: seventeenth_edge,
+            length_mm: 20.0,
+        }));
+    assert!(
+        construct_two_pair_core_singleton_star_exact_assignment_v1(&seventeen_pattern, &seventeen,)
+            .is_none(),
+        "the two-core classifier must reject seventeen before enumeration",
+    );
+    assert!(
+        construct_bounded_singleton_composition_exact_assignment_v1(
+            &seventeen_pattern,
+            &seventeen,
+        )
+        .is_none(),
+        "the public bounded compositor must preserve the sixteen-record ceiling",
+    );
+}
+
+#[test]
+fn two_pair_core_structure_rejects_non_single_articulations_and_leaf_coupling() {
+    let (pattern, records, _) = two_pair_core_star_fixture(0);
+
+    let mut detached_builder = FixtureBuilder {
+        vertices: pattern.vertices.clone(),
+        edges: pattern.edges.clone(),
+    };
+    let detached_start = detached_builder.vertex(100.0, 101.0);
+    let detached_end = detached_builder.vertex(103.0, 105.0);
+    let detached = detached_builder.edge(detached_start, detached_end);
+    let detached_pattern = detached_builder.finish();
+    let mut detached_records = records.clone();
+    detached_records.push(record(GeometricConstraintKindV1::Horizontal {
+        edge: detached,
+    }));
+    assert!(
+        construct_two_pair_core_singleton_star_exact_assignment_v1(
+            &detached_pattern,
+            &document(detached_records),
+        )
+        .is_none(),
+        "a leaf with no core articulation is outside the connected family",
+    );
+
+    let first_start = pattern.edges[0].start;
+    let second_end = pattern.edges[1].end;
+    let mut two_vertex_builder = FixtureBuilder {
+        vertices: pattern.vertices.clone(),
+        edges: pattern.edges.clone(),
+    };
+    let two_vertex_leaf = two_vertex_builder.edge(first_start, second_end);
+    let two_vertex_pattern = two_vertex_builder.finish();
+    let mut two_vertex_records = records.clone();
+    two_vertex_records.push(record(GeometricConstraintKindV1::FixedLength {
+        edge: two_vertex_leaf,
+        length_mm: 6.0,
+    }));
+    assert!(
+        construct_two_pair_core_singleton_star_exact_assignment_v1(
+            &two_vertex_pattern,
+            &document(two_vertex_records),
+        )
+        .is_none(),
+        "a leaf meeting the core union twice is not single-articulation",
+    );
+
+    let articulation = pattern.edges[0].end;
+    let mut coupled_builder = FixtureBuilder {
+        vertices: pattern.vertices.clone(),
+        edges: pattern.edges.clone(),
+    };
+    let shared_outside = coupled_builder.vertex(200.0, 201.0);
+    let line_end = coupled_builder.vertex(205.0, 209.0);
+    let first_leaf = coupled_builder.edge(articulation, shared_outside);
+    let second_leaf_line = coupled_builder.edge(articulation, line_end);
+    let coupled_pattern = coupled_builder.finish();
+    let mut coupled_records = records;
+    coupled_records.push(record(GeometricConstraintKindV1::FixedLength {
+        edge: first_leaf,
+        length_mm: 7.0,
+    }));
+    coupled_records.push(record(GeometricConstraintKindV1::PointOnLine {
+        vertex: shared_outside,
+        line_edge: second_leaf_line,
+    }));
+    assert!(
+        construct_two_pair_core_singleton_star_exact_assignment_v1(
+            &coupled_pattern,
+            &document(coupled_records),
+        )
+        .is_none(),
+        "leaves sharing a non-core vertex must fail closed",
+    );
+}
+
+#[test]
+fn two_pair_cores_require_exactly_one_shared_vertex_and_one_unique_decomposition() {
+    let mut shared_two = FixtureBuilder::default();
+    let first = shared_two.vertex(0.0, 0.0);
+    let second = shared_two.vertex(3.0, 4.0);
+    let third = shared_two.vertex(8.0, 1.0);
+    let fourth = shared_two.vertex(9.0, 7.0);
+    let first_edge = shared_two.edge(first, second);
+    let second_edge = shared_two.edge(first, third);
+    let third_edge = shared_two.edge(second, fourth);
+    let shared_two_pattern = shared_two.finish();
+    let shared_two_document = document([
+        record(GeometricConstraintKindV1::Horizontal { edge: first_edge }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: first_edge,
+            length_mm: 2.0,
+        }),
+        record(GeometricConstraintKindV1::EqualLength {
+            first_edge: second_edge,
+            second_edge: third_edge,
+        }),
+        record(GeometricConstraintKindV1::FixedLength {
+            edge: second_edge,
+            length_mm: 3.0,
+        }),
+    ]);
+    assert!(
+        construct_two_pair_core_singleton_star_exact_assignment_v1(
+            &shared_two_pattern,
+            &shared_two_document,
+        )
+        .is_none(),
+        "two core unions sharing two vertices must not be admitted",
+    );
+
+    let mut ambiguous = FixtureBuilder::default();
+    let center = ambiguous.vertex(10.0, 10.0);
+    let mut ambiguous_records = Vec::new();
+    for ordinal in 0..4 {
+        let end = ambiguous.vertex(20.0 + ordinal as f64, 30.0 + ordinal as f64);
+        let edge = ambiguous.edge(center, end);
+        ambiguous_records.push(record(GeometricConstraintKindV1::Horizontal { edge }));
+    }
+    let ambiguous_pattern = ambiguous.finish();
+    assert!(
+        construct_two_pair_core_singleton_star_exact_assignment_v1(
+            &ambiguous_pattern,
+            &document(ambiguous_records),
+        )
+        .is_none(),
+        "multiple complete disjoint pair-core decompositions are ambiguous",
+    );
+
+    let (non_finite_pattern, mut non_finite_records, _) = two_pair_core_star_fixture(0);
+    match &mut non_finite_records[1].constraint {
+        GeometricConstraintKindV1::FixedLength { length_mm, .. } => *length_mm = f64::NAN,
+        _ => unreachable!(),
+    }
+    assert!(
+        construct_two_pair_core_singleton_star_exact_assignment_v1(
+            &non_finite_pattern,
+            &document(non_finite_records),
+        )
+        .is_none(),
+        "non-finite input must fail before constructive authority",
+    );
+}
+
+#[test]
+fn all_four_two_pair_core_offsets_can_be_exhausted_by_real_geometry() {
+    let (pattern, records, _) = two_pair_core_star_fixture(0);
+    let source = document(records);
+    let baseline = construct_two_pair_core_singleton_star_exact_assignment_v1(&pattern, &source)
+        .expect("unblocked two-core fixture must construct");
+    let core_vertices = [
+        pattern.edges[0].start,
+        pattern.edges[0].end,
+        pattern.edges[1].end,
+    ];
+    assert!(baseline.pattern().vertices.iter().any(|vertex| {
+        core_vertices.contains(&vertex.id) && vertex.position == Point2::new(0.0, 0.0)
+    }));
+    let offsets = [
+        Point2::new(0.0, 0.0),
+        Point2::new(16.0, 32.0),
+        Point2::new(-16.0, 8.0),
+        Point2::new(1024.0, -512.0),
+    ];
+    let (moving_vertex, base_point) = pattern
+        .vertices
+        .iter()
+        .filter_map(|before| {
+            baseline
+                .pattern()
+                .vertices
+                .iter()
+                .find(|after| after.id == before.id)
+                .filter(|after| {
+                    offsets.iter().all(|offset| {
+                        before.position
+                            != Point2::new(after.position.x + offset.x, after.position.y + offset.y)
+                    })
+                })
+                .map(|after| (before.id, after.position))
+        })
+        .next()
+        .expect("the unsatisfied fixture moves at least one vertex away from all offsets");
+    let mut blocked = FixtureBuilder {
+        vertices: pattern.vertices.clone(),
+        edges: pattern.edges.clone(),
+    };
+    for offset in offsets {
+        let blocker = blocked.vertex(base_point.x + offset.x, base_point.y + offset.y);
+        blocked.edge(moving_vertex, blocker);
+    }
+    let blocked_pattern = blocked.finish();
+    assert!(
+        construct_two_pair_core_singleton_star_exact_assignment_v1(&blocked_pattern, &source)
+            .is_none(),
+        "real connector collapses must exhaust exactly the four fixed translations",
+    );
 }
 
 #[test]

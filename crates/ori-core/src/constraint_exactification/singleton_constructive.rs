@@ -134,11 +134,12 @@ pub fn construct_three_constraint_exact_assignment_v1(
 /// Canonically ordered referenced-vertex components are assembled
 /// progressively. One-record components use singleton templates, exactly
 /// two-record components can fall back to the existing sound pair templates,
-/// and an exactly three-record component can use the unique ordinary-pair plus
-/// single-articulation singleton-leaf template. Other larger components retain
-/// the bit-identical singleton merge. The complete production residual
-/// verifier must re-certify the merged candidate before an observational-only
-/// assignment is returned.
+/// and a three- or four-record component can use a unique ordinary pair plus
+/// independent singleton leaves that each meet it at one articulation. A
+/// four-record component can alternatively use two record-disjoint ordinary
+/// pair cores whose reference sets share exactly one articulation. The
+/// complete production residual verifier must re-certify the merged candidate
+/// before an observational-only assignment is returned.
 ///
 /// Unsupported templates, any shared-coordinate disagreement, direct
 /// conflicts, invalid geometry, and any nonzero full-document residual return
@@ -159,10 +160,14 @@ pub fn construct_four_constraint_exact_assignment_v1(
 /// derived from every explicit vertex role and both endpoints of every
 /// referenced edge. One-record components use the singleton constructor;
 /// exactly two-record components can use the existing ordinary
-/// crease-pattern pair constructor after an incompatible singleton merge. An
-/// exactly three-record component can additionally use one unique ordinary
-/// pair joined to a singleton leaf at exactly one referenced articulation
-/// vertex. Other larger components retain the bit-identical singleton rule.
+/// crease-pattern pair constructor after an incompatible singleton merge. A
+/// three-through-sixteen-record component can additionally use one unique
+/// ordinary pair joined to independent singleton leaves, each at exactly one
+/// pair-referenced articulation vertex. A four-through-sixteen-record
+/// component can alternatively use two record-disjoint ordinary pair cores
+/// joined at exactly one articulation, plus independent singleton leaves that
+/// each meet the core union at exactly one articulation. Other unsupported
+/// connected shapes retain only the bit-identical singleton rule.
 /// Every component and the final candidate are independently checked by the
 /// production binary64 residual verifier.
 ///
@@ -173,14 +178,19 @@ pub fn construct_four_constraint_exact_assignment_v1(
 /// same failed pair is not retried as a component.
 ///
 /// The explicit sixteen-record ceiling bounds both memory and work. With
-/// `N <= 16` records, `P` two-record components, and `T` admitted three-record
-/// components with `2P + 3T <= N`, the
+/// `N <= 16` records, `P` two-record components, `S` admitted one-core star
+/// components, and `D` admitted two-core components with
+/// `2P + 3S + 4D <= N`, the
 /// conservative worst case is 138 bounded preparation-or-verification passes
 /// and 112 full-pattern clones: `5N`/`4N` from singleton attempts,
-/// `6P`/`5P` from pair attempts, `5T`/`4T` from three-record attempts, at most
-/// eight component merge verification/clones, and the whole-document
-/// preparation/final verifier. A two-record component remains the dominant
-/// per-record cost, and there is no combinatorial assignment search.
+/// `6P`/`5P` from pair attempts, `5S`/`4S` from one-core attempts, and at most
+/// `10D`/`8D` from a failed one-core attempt followed by a two-core attempt,
+/// plus eight component merge verification/clones and the whole-document
+/// preparation/final verifier. One-core classification is capped at 120 pair
+/// and 1,680 leaf templates; two-core classification is capped at 7,140 core
+/// combinations and 85,680 leaf templates. Pair components remain the
+/// dominant full-verifier cost per record. Template classification is a fixed
+/// canonical enumeration and never becomes solver or assignment search.
 ///
 /// Documents outside the two-through-sixteen range, unsupported templates,
 /// shared-coordinate disagreement, exhaustion of fixed translations, direct

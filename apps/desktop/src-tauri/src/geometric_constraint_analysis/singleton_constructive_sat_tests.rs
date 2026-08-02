@@ -567,6 +567,155 @@ fn connected_pair_plus_singleton_leaf_publishes_only_detached_exact_sat() {
 }
 
 #[test]
+fn connected_pair_plus_two_singleton_leaves_crosses_native_as_detached_exact_sat() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(0.0, 0.0);
+    let articulation = fixture.vertex(3.0, 4.0);
+    let first_leaf_end = fixture.vertex(8.0, 1.0);
+    let second_leaf_end = fixture.vertex(9.0, 7.0);
+    let pair_edge = fixture.edge(first_start, articulation);
+    let first_leaf = fixture.edge(articulation, first_leaf_end);
+    let second_leaf = fixture.edge(articulation, second_leaf_end);
+    let pattern = CreasePattern {
+        vertices: fixture.vertices,
+        edges: fixture.edges,
+    };
+    let document = document([
+        GeometricConstraintKindV1::Horizontal { edge: pair_edge },
+        GeometricConstraintKindV1::FixedLength {
+            edge: pair_edge,
+            length_mm: 2.0,
+        },
+        GeometricConstraintKindV1::FixedLength {
+            edge: first_leaf,
+            length_mm: 3.0,
+        },
+        GeometricConstraintKindV1::FixedLength {
+            edge: second_leaf,
+            length_mm: 5.0,
+        },
+    ]);
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(&pattern, &document)
+            .expect("the pair-plus-two-leaves source is structurally valid")
+            .is_none(),
+        "the source must not already satisfy the connected four-record document",
+    );
+    let pattern_before = pattern.clone();
+    let document_before = document.clone();
+
+    let result = analyze_geometric_constraint_document(&pattern, &document);
+    assert_eq!(result, expected_positive_document(4, 4));
+    assert_eq!(pattern, pattern_before);
+    assert_eq!(document, document_before);
+    let encoded =
+        serde_json::to_value(&result).expect("serialize pair-plus-two-singleton-leaves SAT result");
+    let object = encoded
+        .as_object()
+        .expect("the tagged four-record star SAT response is an object");
+    assert_eq!(object.len(), 8);
+    assert_eq!(
+        object.get("evidence_kind"),
+        Some(&serde_json::json!("detached_constructed_assignment")),
+    );
+    for forbidden in ["pattern", "vertices", "positions", "assignment"] {
+        assert!(
+            !object.contains_key(forbidden),
+            "four-record star coordinates must not cross the DTO as {forbidden}",
+        );
+    }
+
+    let assignment =
+        ori_core::construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &document)
+            .expect("the bounded pair-plus-two-leaves constructor must produce an exact witness");
+    assert_constructed_sat_publication_rechecks_cancel_and_deadline(
+        &document,
+        assignment.certificate(),
+    );
+}
+
+#[test]
+fn connected_two_pair_cores_cross_native_only_as_detached_exact_sat() {
+    let mut fixture = FixtureBuilder::default();
+    let first_start = fixture.vertex(0.0, 0.0);
+    let articulation = fixture.vertex(3.0, 4.0);
+    let second_end = fixture.vertex(8.0, 1.0);
+    let external_start = fixture.vertex(40.0, 5.0);
+    let external_end = fixture.vertex(44.0, 9.0);
+    let first_core = fixture.edge(first_start, articulation);
+    let second_core = fixture.edge(articulation, second_end);
+    fixture.edge(external_start, external_end);
+    let pattern = CreasePattern {
+        vertices: fixture.vertices,
+        edges: fixture.edges,
+    };
+    let document = document([
+        GeometricConstraintKindV1::Horizontal { edge: first_core },
+        GeometricConstraintKindV1::FixedLength {
+            edge: first_core,
+            length_mm: 2.0,
+        },
+        GeometricConstraintKindV1::Vertical { edge: second_core },
+        GeometricConstraintKindV1::FixedLength {
+            edge: second_core,
+            length_mm: 3.0,
+        },
+    ]);
+    assert!(
+        certify_binary64_exact_geometric_constraint_satisfaction_v1(&pattern, &document)
+            .expect("the two-core DTO source is structurally valid")
+            .is_none(),
+        "the native fixture must require detached construction",
+    );
+    let pattern_before = pattern.clone();
+    let document_before = document.clone();
+
+    let result = analyze_geometric_constraint_document(&pattern, &document);
+    assert_eq!(result, expected_positive_document(4, 4));
+    assert_eq!(pattern, pattern_before);
+    assert_eq!(document, document_before);
+    let encoded = serde_json::to_value(&result).expect("serialize two-core SAT result");
+    let object = encoded
+        .as_object()
+        .expect("the tagged two-core SAT response is an object");
+    assert_eq!(object.len(), 8);
+    assert_eq!(
+        object.get("evidence_kind"),
+        Some(&serde_json::json!("detached_constructed_assignment")),
+    );
+    for forbidden in ["pattern", "vertices", "positions", "assignment"] {
+        assert!(
+            !object.contains_key(forbidden),
+            "two-core coordinates must not cross the DTO as {forbidden}",
+        );
+    }
+
+    let assignment =
+        ori_core::construct_bounded_singleton_composition_exact_assignment_v1(&pattern, &document)
+            .expect("the native two-core constructor must produce an exact witness");
+    assert_eq!(assignment.pattern().edges, pattern.edges);
+    for external in [external_start, external_end] {
+        let before = pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == external)
+            .expect("external source vertex");
+        let after = assignment
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == external)
+            .expect("external constructed vertex");
+        assert_eq!(before.position.x.to_bits(), after.position.x.to_bits());
+        assert_eq!(before.position.y.to_bits(), after.position.y.to_bits());
+    }
+    assert_constructed_sat_publication_rechecks_cancel_and_deadline(
+        &document,
+        assignment.certificate(),
+    );
+}
+
+#[test]
 fn eight_pair_components_publish_at_sixteen_and_seventeen_falls_through() {
     let mut fixture = FixtureBuilder::default();
     let mut constraints = Vec::new();

@@ -9,7 +9,10 @@ use super::{
         MAX_BOUNDED_SINGLETON_COMPOSITION_CONSTRAINTS_V1,
         construct_single_constraint_exact_assignment_v1,
     },
-    three_record_component_constructive::construct_pair_plus_singleton_leaf_exact_assignment_v1,
+    three_record_component_constructive::{
+        construct_pair_plus_singleton_star_exact_assignment_v1,
+        construct_two_pair_core_singleton_star_exact_assignment_v1,
+    },
 };
 use crate::{
     ConstraintPreflightV1, GeometricConstraintLimitsV1,
@@ -32,8 +35,11 @@ pub(super) const MAX_BOUNDED_COMPONENT_FULL_PATTERN_CLONES_V1: usize = 112;
 /// components first retain the original bit-identical singleton merge; an
 /// exactly two-record component may additionally use the existing ordinary
 /// crease-pattern pair constructor when the singleton merge is incompatible.
-/// An exactly three-record component may use the narrow ordinary-pair plus
-/// single-articulation singleton-leaf constructor.
+/// A three-through-sixteen-record component may use the narrow ordinary-pair
+/// plus independent single-articulation singleton-leaf star constructor. A
+/// four-through-sixteen-record component may additionally use two
+/// record-disjoint ordinary-pair cores joined at exactly one articulation,
+/// plus independent singleton leaves.
 ///
 /// Each completed component is assembled on the progressively certified
 /// candidate. This makes every later component constructor validate all
@@ -42,23 +48,31 @@ pub(super) const MAX_BOUNDED_COMPONENT_FULL_PATTERN_CLONES_V1: usize = 112;
 /// A final full-document exact certificate remains the sole authority that can
 /// escape.
 ///
-/// For `N <= 16`, `P` two-record components, and `T` admitted three-record
-/// components, the conservative worst case remains at most 138 bounded
-/// preparation-or-verification passes and 112 full-pattern clones:
+/// For `N <= 16`, `P` two-record components, `S` attempted three-record
+/// one-core stars, and `D` attempted four-or-more-record special components,
+/// the conservative worst case remains at most
+/// 138 bounded preparation-or-verification passes and 112 full-pattern clones:
 ///
 /// - `N` singleton attempts, each with one preparation and at most four
 ///   verifier-backed candidates (`5N` passes and `4N` clones);
 /// - `P` pair attempts, each with one preparation and at most five
 ///   verifier-backed candidates (`6P` passes and `5P` clones);
-/// - `T` three-record attempts, each with one preparation and at most four
-///   verifier-backed candidates (`5T` passes and `4T` clones);
+/// - `S` star attempts, each with one preparation and at most four
+///   verifier-backed candidates (`5S` passes and `4S` clones); classification
+///   is separately bounded by 120 pair and 1,680 leaf templates;
+/// - `D` two-core attempts may follow a failed one-core attempt, so together
+///   they consume at most `10D` passes and `8D` clones; two-core classification
+///   is separately bounded by 120 pair candidates, 7,140 pair-core
+///   combinations, and 85,680 leaf classifications;
 /// - at most eight multi-singleton component merge verifications/clones; and
 /// - one whole-document preparation plus one final full verification.
 ///
-/// Since `2P + 3T <= N`, a two-record component remains the dominant cost per
-/// record. The special two-record whole-document pair prepass is never retried
-/// as a component pair, so it remains below the same global envelope. No
-/// residual-only algebraic overlay participates in this crease-pattern path.
+/// Since `2P + 3S + 4D <= N`, pair attempts remain dominant per record:
+/// `6/2 > 10/4 > 5/3` passes and `5/2 > 8/4 > 4/3` clones. Thus the original
+/// `5N + 3N + 8 + 2 = 138` pass and `4N + 2.5N + 8 = 112` clone envelopes
+/// remain valid. The special two-record whole-document pair prepass is never
+/// retried as a component pair. No residual-only algebraic overlay participates
+/// in this crease-pattern path.
 pub(super) fn construct_bounded_component_exact_assignment_v1(
     pattern: &CreasePattern,
     document: &GeometricConstraintDocumentV1,
@@ -115,9 +129,23 @@ pub(super) fn construct_bounded_component_exact_assignment_v1(
                 component,
             )
             .or_else(|| {
-                (component.record_indices.len() == 3)
+                (component.record_indices.len() >= 3)
                     .then(|| {
-                        construct_pair_plus_singleton_leaf_exact_assignment_v1(
+                        construct_pair_plus_singleton_star_exact_assignment_v1(
+                            base,
+                            &component_document,
+                        )
+                    })
+                    .flatten()
+                    .map(CurrentRuntimeExactConstraintAssignmentV1::into_pattern)
+                    .filter(|candidate| {
+                        candidate_changes_only(base, candidate, &component.referenced_vertices)
+                    })
+            })
+            .or_else(|| {
+                (component.record_indices.len() >= 4)
+                    .then(|| {
+                        construct_two_pair_core_singleton_star_exact_assignment_v1(
                             base,
                             &component_document,
                         )

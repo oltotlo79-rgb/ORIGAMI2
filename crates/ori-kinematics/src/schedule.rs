@@ -14,6 +14,12 @@ use crate::{
     MaterialHingeGraphGeometry, OutwardIntervalV1,
 };
 
+mod dyadic_workspace_v2;
+
+pub(crate) use dyadic_workspace_v2::{
+    CycleScheduleDyadicEvaluationErrorV2, CycleScheduleDyadicWorkspaceBoundV2,
+};
+
 // The bound is deliberately below the 53-bit exact-coefficient budget. At the
 // largest supported dyadic endpoint the generated denominator is
 // 8_192 * 16 = 131_072, and the largest derivative-certificate square remains

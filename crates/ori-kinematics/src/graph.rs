@@ -23,6 +23,7 @@ mod coaxial_profile_lattice;
 mod common_articulation_decomposition_v2;
 mod common_articulation_pose;
 mod dense_grid;
+mod dyadic_workspace_v2;
 mod exact_common_effective_generator_sign;
 mod exact_common_split_pair_effective_generator_sign;
 mod exact_cut_carrier;

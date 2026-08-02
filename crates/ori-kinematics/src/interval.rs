@@ -69,12 +69,12 @@ impl IntervalRigidTransformV1 {
         max_work: usize,
     ) -> Result<Self, OutwardIntervalErrorV1> {
         let rotation = IntervalRotationMatrixV1::from_unit_axis_degrees(axis, degrees, max_work)?;
-        let point: [OutwardIntervalV1; 3] = point
-            .map(OutwardIntervalV1::from_rounded)
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .try_into()
-            .map_err(|_| OutwardIntervalErrorV1::InvalidEndpoint)?;
+        let [point_x, point_y, point_z] = point;
+        let point = [
+            OutwardIntervalV1::from_rounded(point_x)?,
+            OutwardIntervalV1::from_rounded(point_y)?,
+            OutwardIntervalV1::from_rounded(point_z)?,
+        ];
         let rotated = rotation.apply(point, max_work)?;
         let mut translation = point;
         for index in 0..3 {
@@ -647,5 +647,28 @@ mod tests {
         for (actual, expected) in twice.entries()[0].iter().zip([-1.0, 0.0, 0.0]) {
             assert!(actual.lower() <= expected && expected <= actual.upper());
         }
+    }
+
+    #[test]
+    fn about_axis_converts_fixed_point_without_heap_materialization() {
+        let transform = IntervalRigidTransformV1::about_axis(
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            OutwardIntervalV1::new(90.0, 90.0).unwrap(),
+            2_048,
+        )
+        .unwrap();
+        for (actual, expected) in transform.translation().iter().zip([1.0, -1.0, 0.0]) {
+            assert!(actual.lower() <= expected && expected <= actual.upper());
+        }
+        assert_eq!(
+            IntervalRigidTransformV1::about_axis(
+                [0.0, 0.0, 1.0],
+                [f64::NAN, 0.0, 0.0],
+                OutwardIntervalV1::new(90.0, 90.0).unwrap(),
+                2_048,
+            ),
+            Err(OutwardIntervalErrorV1::InvalidEndpoint)
+        );
     }
 }

@@ -42,6 +42,10 @@ pub(super) fn n34_fixture_v2() -> &'static OrdinaryFixtureV2 {
     N34_FIXTURE.get_or_init(|| ordinary_fixture_v2(miura_fixture_v2_with_profile(N34, N34)))
 }
 
+pub(super) fn fresh_n33_fixture_v2() -> OrdinaryFixtureV2 {
+    ordinary_fixture_v2(miura_fixture_v2())
+}
+
 fn ordinary_fixture_v2(fixture: MiuraFixtureV2) -> OrdinaryFixtureV2 {
     let schedule = nonstationary_schedule_v2(&fixture);
     let pose = fixture

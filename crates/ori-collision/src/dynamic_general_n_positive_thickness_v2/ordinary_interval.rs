@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 mod binding;
 mod geometry;
 mod partition;
+mod relief_aggregate;
 mod resources;
 
 const ORDINARY_INTERVAL_MODEL_ID_V2: &str =
@@ -49,7 +50,7 @@ pub(super) enum OrdinaryIntervalErrorV2 {
     DeadlineExceeded,
 }
 
-/// Canonical unordered pair used only inside the future Phase 3D aggregation
+/// Canonical unordered pair used only inside the sealed Phase 3E aggregation
 /// boundary. It has no public constructor or accessor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct OrdinaryIntervalFacePairV2 {

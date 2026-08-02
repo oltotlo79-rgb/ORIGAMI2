@@ -14,10 +14,22 @@ mod preflight;
 
 pub(super) use preflight::preflight_resources_v2;
 
-pub(super) fn validate_input_v2<'a>(
-    input: &OrdinaryIntervalInputV2<'a>,
+pub(super) struct InputResourcePreflightV2 {
+    pub(super) resources: OrdinaryIntervalResourcesV2,
+    schedule_workspace_bound: CycleScheduleDyadicWorkspaceBoundV2,
+    interval_transform_workspace_bound: IntervalFaceTransformWorkspaceBoundV2,
+    session_resource_bound:
+        ori_kinematics::CommonArticulationDynamicClosureIntervalTransformSessionResourcesV2,
+}
+
+/// Validates the live ordinary input and computes every resource bound used by
+/// the ordinary kernel, but deliberately stops before constructing the bridge
+/// interval-transform session.  The whole-parent aggregate uses this boundary
+/// to reject its own combined-memory caps before any session allocation.
+pub(super) fn preflight_input_resources_v2(
+    input: &OrdinaryIntervalInputV2<'_>,
     checkpoint: &mut impl FnMut() -> Result<(), OrdinaryIntervalStopV2>,
-) -> Result<ValidatedInputV2<'a>, OrdinaryIntervalErrorV2> {
+) -> Result<InputResourcePreflightV2, OrdinaryIntervalErrorV2> {
     validate_limits_v2(input.limits)?;
     if !input.paper_thickness_mm.is_finite()
         || input.paper_thickness_mm <= 0.0
@@ -122,11 +134,24 @@ pub(super) fn validate_input_v2<'a>(
         interval_transform_workspace_bound.checked_resources(),
         session_resource_bound,
     )?;
+    Ok(InputResourcePreflightV2 {
+        resources,
+        schedule_workspace_bound,
+        interval_transform_workspace_bound,
+        session_resource_bound,
+    })
+}
+
+pub(super) fn validate_input_v2<'a>(
+    input: &OrdinaryIntervalInputV2<'a>,
+    checkpoint: &mut impl FnMut() -> Result<(), OrdinaryIntervalStopV2>,
+) -> Result<ValidatedInputV2<'a>, OrdinaryIntervalErrorV2> {
+    let preflight = preflight_input_resources_v2(input, checkpoint)?;
     validate_excluded_pair_order_v2(input.excluded_shared_pairs, checkpoint)?;
     let excluded_shared_pair_digest = super::geometry::validate_exact_shared_pair_registry_v2(
         input.geometry,
         input.excluded_shared_pairs,
-        resources.charged_shared_feature_membership_tests,
+        preflight.resources.charged_shared_feature_membership_tests,
         checkpoint,
     )?;
     let audit_binding = super::binding::audit_binding_v2(input.audit, checkpoint)?;
@@ -157,15 +182,15 @@ pub(super) fn validate_input_v2<'a>(
             },
         )
         .map_err(map_bridge_error_v2)?;
-    if interval_transform_session.resources() != session_resource_bound {
+    if interval_transform_session.resources() != preflight.session_resource_bound {
         return Err(OrdinaryIntervalErrorV2::InvalidInput);
     }
     Ok(ValidatedInputV2 {
         audit_binding,
         excluded_shared_pair_digest,
-        resources,
-        schedule_workspace_bound,
-        interval_transform_workspace_bound,
+        resources: preflight.resources,
+        schedule_workspace_bound: preflight.schedule_workspace_bound,
+        interval_transform_workspace_bound: preflight.interval_transform_workspace_bound,
         interval_transform_session,
     })
 }

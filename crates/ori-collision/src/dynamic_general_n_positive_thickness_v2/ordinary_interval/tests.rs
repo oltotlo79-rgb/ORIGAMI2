@@ -4,6 +4,12 @@
 mod kernel_tests;
 #[path = "tests/negative.rs"]
 mod negative;
+#[path = "tests/relief_aggregate_tests.rs"]
+mod relief_aggregate_tests;
+#[path = "tests/relief_resource_tests.rs"]
+mod relief_resource_tests;
+#[path = "tests/relief_support.rs"]
+mod relief_support;
 #[path = "tests/support.rs"]
 mod support;
 #[path = "tests/workspace_tests.rs"]

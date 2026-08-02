@@ -2,11 +2,11 @@
 //!
 //! Nothing in this module is a public certificate or an authorization
 //! boundary.  The ordinary-pair interval result is deliberately retained as
-//! process-local proof material for the later shared-feature relief
-//! aggregation theorem.
+//! process-local proof material. Shared-feature relief and its exhaustive
+//! whole-parent aggregation remain sealed in the same private boundary.
 
 #[allow(
     dead_code,
-    reason = "the Phase 3D relief aggregator is the first production consumer"
+    reason = "the sealed general-N proof is intentionally not a public authority"
 )]
 mod ordinary_interval;

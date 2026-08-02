@@ -331,6 +331,8 @@ N=32実fixtureの資源値は、3×3 Miura block（9 face / 12 hinge）と31個�
 
 Phase3Bでは、既存static/V1 clearance・GeneralCell/Compact transport・既存public struct literalを不変にし、additive sibling `CommonArticulationDynamicClosureClearance*V2`を追加した。caller-owned opaque bridgeをissue/revalidationごとに完全replayし、canonical全cross-block pair registryとblock/face/pair/retained/temporary/publication/aggregateの7有限上限をfail-closedで照合する。N=33非静止0.5°→1.5°のissue/replayとN=34 parent face `273`、全exact/one-short、foreign bridge・parent fixed face、canonical・duplicate・同一長wrong-pair・coverage不一致、cancel/deadlineを固定した。結果は`WholeParentPositiveThicknessEvidenceUnavailable`の`Unpromoted`だけで、Debug-only、Clone/serde/V1変換/Deref/bridge・leaf accessor/authorizationを持たず、continuous motion、collision clearance、layer transport、project mutation、Apply、viewerを認可しない。native `ori-collision` lib 726/726 PASSでもSIM-010部分実装、MUST集計85 / 2 / 0、全体81.96%（表示82.0%）と82.29%（表示82.3%）候補のremote CI発効条件は変更しない。
 
+Phase3D/3Eでは、一般N非静止closureの全dyadic leafを同一world interval axisで評価するexact sessionと、whole-parentの全unordered face pairに対する通常strict SAT・共有hinge有限軸strip・共有vertex half-plane wedgeをcrate-privateに実装した。N=33/N=34のparent pair 34,980/37,128は、通常34,256/36,382とshared 724/746へfreshに完全分類され、全policy、strict境界、input/resources、foreign/ABA、cancel/deadlineを再認証する。N=33/N=34の最終hash/logical workは4,669 / 99,552,577と4,807 / 102,614,747で、Rust 1.90 WSL focused 5/5とstrict static gatesを通過した。evidenceはprivate・redacted Debug・非Clone・非serde・非認可で、public certificateやApply/viewer/export/project mutationに未接続のため、SIM-010部分実装、MUST集計85 / 2 / 0、現行81.96%（表示82.0%）と82.29%（表示82.3%）候補のremote CI発効条件は変更しない。
+
 ## 折り手順
 
 | ID | 状態 | 現在の根拠・不足 |

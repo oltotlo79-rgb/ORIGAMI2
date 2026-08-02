@@ -805,7 +805,7 @@ test('CI cache action is pinned to the verified Node.js 24 release', () => {
   assert.doesNotMatch(workflow, /actions\/cache@0057852bfaa89/u)
   assert.match(workflow, /# v6\.1\.0 \(Node\.js 24\)/u)
   const rustJob = workflow.slice(workflow.indexOf('\n  rust:'), workflow.indexOf('\n  windows-bundle:'))
-  assert.match(rustJob, /key: test-profile-opt2-v1/u)
+  assert.match(rustJob, /key: test-opt2-line-tables-v2/u)
   assert.match(rustJob, /cache-on-failure: true/u)
 })
 
@@ -846,7 +846,7 @@ test('CI process-isolates collision and desktop regressions with a pinned verifi
   )
   assert.match(
     rustJob,
-    /packages=\(\s+ori-numeric\s+ori-domain\s+ori-geometry\s+ori-topology\s+ori-kinematics\s+ori-foldability\s+ori-collision/u,
+    /packages=\(\s+ori-collision\s+ori-numeric\s+ori-domain\s+ori-geometry\s+ori-topology\s+ori-kinematics\s+ori-foldability/u,
   )
   assert.match(
     rustJob,

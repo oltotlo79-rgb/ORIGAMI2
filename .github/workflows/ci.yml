@@ -423,12 +423,18 @@ jobs:
     # before its downstream lifecycle, export, and Clippy gates could start.
     timeout-minutes: 240
     # Preserve fail-closed test semantics while optimizing the exact same test
-    # executables. These are Cargo's existing test-profile defaults except for
-    # opt-level, so assertions and implicit overflow checks stay enabled.
+    # executables. Assertions and overflow checks remain enabled, and compact
+    # line tables retain file/line backtraces without full debugger metadata.
     env:
       CARGO_PROFILE_TEST_OPT_LEVEL: "2"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
       CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"
       CARGO_PROFILE_TEST_OVERFLOW_CHECKS: "true"
+      # Keep backtrace file/line information without retaining full debugger
+      # metadata. Clippy uses the dev profile, so keep its separately compiled
+      # artifacts and cache free of full debugger metadata as well.
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -447,18 +453,20 @@ jobs:
           tool: nextest@0.9.140
           checksum: true
           fallback: none
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        with:
-          # Keep the optimized test-profile cache distinct and retain compiled
-          # dependencies even when a later exhaustive test reaches the job cap.
-          key: test-profile-opt2-v1
-          cache-on-failure: true
+      # RUSTFLAGS participates in both Cargo fingerprints and rust-cache's
+      # environment hash, so it must be fixed before cache restoration.
       - name: Link the Windows Rust test harness to the static MSVC runtime
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           "RUSTFLAGS=-C target-feature=+crt-static" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Keep the compact optimized profiles distinct and retain compiled
+          # dependencies even when a later exhaustive test reaches the job cap.
+          key: test-opt2-line-tables-v2
+          cache-on-failure: true
       - run: cargo fmt --all -- --check
       - name: Rust tests
         id: rust-tests
@@ -490,13 +498,13 @@ jobs:
           }
           if [ "$RUNNER_OS" = "Windows" ]; then
             packages=(
+              ori-collision
               ori-numeric
               ori-domain
               ori-geometry
               ori-topology
               ori-kinematics
               ori-foldability
-              ori-collision
               ori-core
               ori-formats
               ori-instructions
@@ -524,10 +532,10 @@ jobs:
                 cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
             fi
           else
-            run_component workspace-core-excluding-collision-debug \
-              cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast
             run_component ori-collision-process-isolated-debug \
               cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4
+            run_component workspace-core-excluding-collision-debug \
+              cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast
             run_component origami2-desktop-release-lib \
               cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4
             run_component origami2-desktop-event-schema-debug \

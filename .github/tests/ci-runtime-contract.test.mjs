@@ -20,13 +20,23 @@ test('CI keeps exactly the three reviewed workflows', () => {
       .sort(),
     ['ci.yml', 'release-windows.yml', 'release.yml'],
   )
+  assert.doesNotMatch(readFileSync(workflowPath, 'utf8'), /paths-ignore:/u)
 })
 
 test('CI fixes the optimized fail-closed Rust profile and process-isolated commands', () => {
   const rustJob = rustJobSource()
   assert.match(rustJob, /CARGO_PROFILE_TEST_OPT_LEVEL: "2"/u)
+  assert.match(rustJob, /CARGO_PROFILE_TEST_DEBUG: "line-tables-only"/u)
   assert.match(rustJob, /CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: "true"/u)
   assert.match(rustJob, /CARGO_PROFILE_TEST_OVERFLOW_CHECKS: "true"/u)
+  assert.match(rustJob, /CARGO_PROFILE_DEV_DEBUG: "line-tables-only"/u)
+  assert.match(rustJob, /CARGO_INCREMENTAL: "0"/u)
+  assert.doesNotMatch(rustJob, /CARGO_PROFILE_DEV_OPT_LEVEL/u)
+
+  const staticRuntime = rustJob.indexOf('Link the Windows Rust test harness to the static MSVC runtime')
+  const rustCache = rustJob.indexOf('uses: Swatinem/rust-cache@')
+  assert.ok(staticRuntime >= 0 && rustCache > staticRuntime)
+  assert.match(rustJob, /key: test-opt2-line-tables-v2/u)
 
   const installAction = 'taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60'
   assert.equal(rustJob.split(installAction).length - 1, 1)
@@ -41,6 +51,7 @@ test('CI fixes the optimized fail-closed Rust profile and process-isolated comma
   assert.ok(windowsStart >= 0 && macosStart > windowsStart && summaryStart > macosStart)
   const windowsCommands = rustJob.slice(windowsStart, macosStart)
   const macosCommands = rustJob.slice(macosStart, summaryStart)
+  assert.ok(windowsCommands.indexOf('ori-collision') < windowsCommands.indexOf('ori-numeric'))
   assert.match(
     windowsCommands,
     /cargo nextest run -p "\$package" --locked --all-targets --no-fail-fast --test-threads=4/u,
@@ -52,6 +63,10 @@ test('CI fixes the optimized fail-closed Rust profile and process-isolated comma
   assert.match(
     macosCommands,
     /cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4/u,
+  )
+  assert.ok(
+    macosCommands.indexOf('run_component ori-collision-process-isolated-debug')
+      < macosCommands.indexOf('run_component workspace-core-excluding-collision-debug'),
   )
   assert.match(
     macosCommands,

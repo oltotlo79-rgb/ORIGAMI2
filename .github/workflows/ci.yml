@@ -497,8 +497,15 @@ jobs:
             )
             core_failed=0
             for package in "${packages[@]}"; do
-              run_component "$package" \
-                cargo test -p "$package" --locked --all-targets --no-fail-fast
+              if [ "$package" = "ori-collision" ]; then
+                # This crate intentionally exercises process-global proof and
+                # resource ledgers. Its frozen regression contract is serial.
+                run_component "$package" \
+                  cargo test -p "$package" --locked --all-targets --no-fail-fast -- --test-threads=1
+              else
+                run_component "$package" \
+                  cargo test -p "$package" --locked --all-targets --no-fail-fast
+              fi
               if [ "$last_component_status" -ne 0 ]; then
                 core_failed=1
                 break
@@ -506,15 +513,17 @@ jobs:
             done
             if [ "$core_failed" -eq 0 ]; then
               run_component origami2-desktop-release-lib \
-                cargo test -p origami2-desktop --release --locked --lib --no-fail-fast
+                cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1
               run_component origami2-desktop-event-schema-debug \
                 cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
             fi
           else
-            run_component workspace-core-debug \
-              cargo test --workspace --exclude origami2-desktop --locked --all-targets --no-fail-fast
+            run_component workspace-core-excluding-collision-debug \
+              cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast
+            run_component ori-collision-serial-debug \
+              cargo test -p ori-collision --locked --all-targets --no-fail-fast -- --test-threads=1
             run_component origami2-desktop-release-lib \
-              cargo test -p origami2-desktop --release --locked --lib --no-fail-fast
+              cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1
             run_component origami2-desktop-event-schema-debug \
               cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
           fi

@@ -834,6 +834,27 @@ test('CI preserves the active Rust component across a job timeout', () => {
   assert.match(rustJob, /::notice title=Rust component completed::%s status=%s/u)
 })
 
+test('CI serializes only the process-global Rust regression suites on both OSes', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const rustJob = workflow.slice(workflow.indexOf('\n  rust:'), workflow.indexOf('\n  windows-bundle:'))
+  assert.match(
+    rustJob,
+    /if \[ "\$package" = "ori-collision" \]; then[\s\S]*?cargo test -p "\$package" --locked --all-targets --no-fail-fast -- --test-threads=1/u,
+  )
+  assert.match(
+    rustJob,
+    /cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u,
+  )
+  assert.match(
+    rustJob,
+    /cargo test -p ori-collision --locked --all-targets --no-fail-fast -- --test-threads=1/u,
+  )
+  assert.equal(
+    rustJob.match(/cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1/gu)?.length,
+    2,
+  )
+})
+
 test('CI retains bounded browser accessibility evidence only on failure', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const smoke = readFileSync(

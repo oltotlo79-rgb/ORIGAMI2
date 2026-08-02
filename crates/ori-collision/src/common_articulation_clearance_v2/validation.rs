@@ -71,6 +71,14 @@ pub(super) fn validate_input_v2(
         return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
     }
 
+    // This is allocation-free and must precede both the schedule binding and
+    // the stationary solve peak calculation below: each comparison is
+    // meaningful only for a geometry/audit pair with the declared carrier
+    // shape.  Retain this as the first binding check so an audit-only
+    // substitution reports its specific mismatch rather than a derived
+    // schedule mismatch.
+    audit_matches_geometry_v2(input.geometry, input.audit, checkpoint)?;
+
     // Reject a foreign schedule/fixed-face tuple before the stationary-only
     // workspace gate.  Otherwise a missing live derivative is misclassified
     // as a resource-envelope failure even though the retained nested proof
@@ -97,11 +105,6 @@ pub(super) fn validate_input_v2(
     if !stationary_single_leaf_closure_contract_v2(input) {
         return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
     }
-
-    // This is allocation-free and must precede the stationary solve peak
-    // calculation below: `checked_solve_closed_peak_bytes_v1` is meaningful
-    // only for a geometry/audit pair with the declared carrier shape.
-    audit_matches_geometry_v2(input.geometry, input.audit, checkpoint)?;
 
     let raw_pair_candidates = actual.raw_cross_block_pair_candidates_v2();
     let canonical_pair_count = actual.canonical_cross_block_pairs_v2();

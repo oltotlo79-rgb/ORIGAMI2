@@ -442,6 +442,11 @@ jobs:
           toolchain: 1.90.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Keep the optimized test-profile cache distinct and retain compiled
+          # dependencies even when a later exhaustive test reaches the job cap.
+          key: test-profile-opt2-v1
+          cache-on-failure: true
       - name: Link the Windows Rust test harness to the static MSVC runtime
         if: runner.os == 'Windows'
         shell: pwsh

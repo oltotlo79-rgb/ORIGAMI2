@@ -4,6 +4,8 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 const [statusInput, manifestInput, idsInput] = process.argv.slice(2)
 const fail = (message) => { throw new Error(`requirements traceability: ${message}`) }
+const MAX_EVIDENCE_PER_REQUIREMENT = 128
+const MAX_BOUNDARY_TEXT_LENGTH = 1024
 if (!statusInput || !manifestInput || !idsInput || !process.env.REQUIREMENTS_EVIDENCE_ROOT) fail('root and three input files are required')
 const root = realpathSync(process.env.REQUIREMENTS_EVIDENCE_ROOT)
 try {
@@ -67,7 +69,7 @@ for (const entry of manifest.requirements) {
     if (!/^[0-9a-f]{40}$/u.test(commit)) fail(`commit id must be a full SHA-1: ${entry.id}`)
     try { execFileSync('git', ['-C', root, 'merge-base', '--is-ancestor', commit, 'HEAD'], { stdio: 'ignore' }) } catch { fail(`commit is not an ancestor of HEAD: ${entry.id}`) }
   }
-  if (!Array.isArray(entry.evidence) || entry.evidence.length > 64) fail(`invalid evidence count: ${entry.id}`)
+  if (!Array.isArray(entry.evidence) || entry.evidence.length > MAX_EVIDENCE_PER_REQUIREMENT) fail(`invalid evidence count: ${entry.id}`)
   const identities = new Set()
   const kinds = new Set()
   for (const evidence of entry.evidence) {
@@ -89,7 +91,7 @@ for (const entry of manifest.requirements) {
     if (!historicallyBound && evidence.kind !== 'documentation') fail(`selector is not bound to a listed commit: ${entry.id}`)
   }
   for (const [label, values] of [['limitations', entry.limitations], ['missingAcceptance', entry.missingAcceptance]]) {
-    if (!Array.isArray(values) || values.length > 16 || values.some((value) => typeof value !== 'string' || value.length < 3 || value.length > 500)) fail(`invalid ${label}: ${entry.id}`)
+    if (!Array.isArray(values) || values.length > 16 || values.some((value) => typeof value !== 'string' || value.length < 3 || value.length > MAX_BOUNDARY_TEXT_LENGTH)) fail(`invalid ${label}: ${entry.id}`)
   }
   if (entry.status === '実装済み') {
     if (entry.commits.length < 1 || !kinds.has('production-symbol') || (!kinds.has('test') && !kinds.has('contract'))) fail(`implemented requirement lacks production and executable evidence: ${entry.id}`)

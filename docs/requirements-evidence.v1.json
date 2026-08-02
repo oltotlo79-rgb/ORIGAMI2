@@ -519,7 +519,7 @@
         }
       ],
       "limitations": [
-        "Semantic MUS v4 covers 24 variants. Detached SAT classifies 2..16 records as a pair, one pair plus independent singleton leaves, or two record-disjoint pair cores sharing one articulation plus independent leaves. External overlap and ambiguous decompositions fail closed. Caps are 120 pairs, 1,680 one-core leaf checks, 7,140 core combinations, and 85,680 two-core leaf checks. Exhaustion and 17+ records are Unknown. Coordinates stay private; no mutation authority is granted."
+        "Semantic MUS v4 covers 24 variants. Detached SAT partitions 2..16 records by residual vertices. Two-record components may use pair templates. A 3..16-record connected component may use one unique ordinary pair plus 1..14 independent singleton leaves. A 4..16-record component may alternatively use two record-disjoint ordinary pair cores sharing exactly one articulation plus 0..12 independent leaves, each sharing exactly one core-union articulation. Four translations are tried. Pair/core-external leaf overlap and ambiguous decompositions fail closed. Classification is capped at 120 pairs, 1,680 one-core leaf checks, 7,140 core combinations, and 85,680 two-core leaf checks; component and document residuals are recertified. Exhaustion is Unknown, never UNSAT. At 17+ detached SAT is skipped. Coordinates stay private; mutation is never authorized."
       ],
       "missingAcceptance": [
         "Complete SAT/UNSAT and general semantic MUS discovery for arbitrary combinations of all 11 constraint kinds, including seventeen or more records, unsupported connected components outside the bit-compatible, one-core-star, and two-core-star families, arbitrary-length parallel components, and generic or non-star angle topologies."
@@ -2217,6 +2217,16 @@
         },
         {
           "kind": "test",
+          "path": "test-support/four_bay_cycle.rs",
+          "selector": "pub fn eight_bay_opposite_bifold_pattern()"
+        },
+        {
+          "kind": "test",
+          "path": "test-support/four_bay_cycle.rs",
+          "selector": "pub fn ten_bay_opposite_bifold_pattern()"
+        },
+        {
+          "kind": "test",
           "path": "apps/desktop/src-tauri/src/stacked_fold_blockwise_cycle_tests.rs",
           "selector": "fn bounded_multi_block_current_cycle_arity_matches_certified_boundary()"
         },
@@ -2238,7 +2248,27 @@
         {
           "kind": "test",
           "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
+          "selector": "fn bounded_extended_opposite_bifold_fixtures_are_simple_convex_and_locally_flat_foldable()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
+          "selector": "fn exact_nine_extended_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
+          "selector": "fn exact_ten_extended_opposite_bifold_fixture_is_simple_convex_and_locally_flat_foldable()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
           "selector": "fn exact_ten_separated_opposite_bifolds_issue_canonical_closure()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn exact_ten_block_resource_envelope_passes_and_each_one_short_limit_fails_closed()"
         },
         {
           "kind": "production-symbol",
@@ -2248,12 +2278,37 @@
         {
           "kind": "test",
           "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
+          "selector": "fn default_block_cap_preserves_eight_block_compatibility_while_hard_cap_is_ten()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
           "selector": "fn exact_ten_block_resource_envelope_passes_and_every_one_short_limit_fails_closed_v1()"
         },
         {
           "kind": "test",
           "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
+          "selector": "fn actual_eleven_block_clearance_input_is_rejected_by_the_hard_arity_cap_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
           "selector": "fn exact_ten_lower_path_issues_and_revalidates_without_crossing_permission_boundary_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_clearance/tests.rs",
+          "selector": "fn exact_ten_lower_path_tamper_and_stops_fail_exact_revalidation_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/separated_even_single_vertex_opposite_pair_blocks.rs",
+          "selector": "fn exact_eight_through_ten_parent_cardinality_is_bounded_before_decomposition()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path/tests/multi_cycle_authority_tests.rs",
+          "selector": "fn bounded_opposite_bifold_selector_rejects_ten_before_fixture_construction()"
         },
         {
           "kind": "test",
@@ -2266,6 +2321,11 @@
           "selector": "fn build_overlap_pairs_with_exact_bounds_pruning<"
         },
         {
+          "kind": "test",
+          "path": "crates/ori-foldability/src/facewise/tests.rs",
+          "selector": "fn exact_bounds_pair_pruning_preserves_canonical_pairs_and_reduces_exact_work()"
+        },
+        {
           "kind": "production-symbol",
           "path": "crates/ori-foldability/src/facewise.rs",
           "selector": "fn split_owned_convex_polygon_by_line<"
@@ -2274,6 +2334,16 @@
           "kind": "production-symbol",
           "path": "crates/ori-foldability/src/facewise.rs",
           "selector": "fn build_overlap_cells_with_supporting_line_deduplication_inner<"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-foldability/src/facewise/tests.rs",
+          "selector": "fn propagated_face_candidates_exactly_classify_multiway_and_contact_regions()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-foldability/src/facewise/tests.rs",
+          "selector": "fn owned_split_reuses_only_strictly_one_sided_inputs_and_preserves_exact_outputs()"
         },
         {
           "kind": "test",
@@ -2301,6 +2371,11 @@
           "selector": "export function LayerOrderViewer({"
         },
         {
+          "kind": "test",
+          "path": "apps/desktop/tests/globalFlatFoldabilityPanel.dom.test.tsx",
+          "selector": "labels the XZ schematic honestly and keeps SVG shapes non-interactive"
+        },
+        {
           "kind": "production-symbol",
           "path": "crates/ori-collision/src/common_articulation_clearance.rs",
           "selector": "pub fn issue_common_articulation_clearance_extension_prerequisite_v1("
@@ -2323,7 +2398,32 @@
         {
           "kind": "test",
           "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn legacy_two_through_ten_binding_and_revalidation_bytes_remain_frozen()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_eleven_and_twelve_bind_actual_and_configured_caps_in_order()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_foreign_pose_instance_fails_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_exact_resource_envelope_and_invalid_or_overflow_limits_fail_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
           "selector": "fn extension_hard_thirty_two_boundary_is_inclusive_and_fails_closed_above()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-kinematics/src/graph/common_articulation_pose.rs",
+          "selector": "fn extension_issuance_and_revalidation_honor_cancel_and_deadline()"
         },
         {
           "kind": "production-symbol",
@@ -2338,7 +2438,27 @@
         {
           "kind": "test",
           "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_rejects_each_cap_and_actual_source_mismatch_independently_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
           "selector": "fn staged_extension_hard_thirty_two_is_inclusive_and_other_arities_fail_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_partition_is_order_invariant_and_exact_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_revalidation_rejects_all_live_binding_drift_v1()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition/common_articulation_extension_tests.rs",
+          "selector": "fn staged_extension_rejects_foreign_and_cross_cap_prerequisites_v1()"
         },
         {
           "kind": "test",
@@ -2460,10 +2580,10 @@
         "Commit 45986496df5eb889a88fc32d56273f131e6e12c0 adds only a separately typed, non-authorizing 11..=32 pose authority. Its [11, configured cap, actual] u64LE binding, 2..=10 frozen legacy corpus, resource/foreign-pose/cancel/deadline failures do not raise pose/clearance caps or authorize clearance, staged/final transport, project mutation, Apply, or viewer.",
         "Commit 97623508ab1774d8ea7e594a9c71ef15acaafbb7 adds only a separately typed, non-authorizing 11..=32 clearance prerequisite. Its [11, configured cap, actual] u64LE binding, old-production 2..=10 clearance goldens, whole-parent prerequisite, resource/live-drift/stop failures do not connect to staged/final transport, project mutation, Apply, or viewer.",
         "Commit cf30d9c901f153c5dde01280218f32fdd32c8856 adds only a separately typed, non-authorizing 11..=32 staged extension authority. It binds [11, configured cap, actual] u64LE with revalidated pose and clearance prerequisites while legacy 2..=10 paths remain unchanged. Invalid/resource/cap/count/partition/live-drift/cancel/deadline failures do not connect it to final or desktop paths, project mutation, Apply, or viewer.",
-        "Commit be34d05e adds ContinuousLayerPathExtension V2 and CompleteMultiBlockPositiveLayer V2 boundaries. A sealed N=32 fixture replays its compact assignment at zero nodes, issues and exact-revalidates complete/final evidence, matches its binding oracle, accepts all six exact resource envelopes, and rejects every one-short plus replay, foreign, live, partition, source, target, and stop boundary. All six V2 authorizations remain false; legacy V1, N=2..10, and desktop paths are unchanged.",
-        "The N=32 conformance has F=257 and H=384 from 9 faces/12 hinges per block and 31 shared material faces. It distinguishes 32,896 parent pairs, 40,176 raw clearance candidates, and 31,744 deduplicated cross-block pairs. The factor-8 envelopes are pose 18,072 logical/56,304 bytes and clearance 9,154,601 logical/2,347,648 bytes with 32-byte pair records; exact and one-short bounds are tested. General-N compact issuance starts at N>=33 and grants no downstream authority.",
-        "Commit b7a4bc72 preserves logical transitivity while replacing cubic retained constraints with compact cell families, checkpointed streaming, transitive closure, and rollback search. Commit be34d05e seals the N=32 32,896-variable, 4,112-byte assignment and registry receipts into regression evidence and replays it at zero search nodes; temporary extractors are absent. This is not arbitrary-topology, dynamic positive-thickness, or downstream authority.",
-        "Commits 7e2e1247 and bd3e9940 add the canonical-3x3-Miura variable-N prerequisite at N=33 and N=34/cap=40; clearance stays Unpromoted. Commit be34d05e separately proves stationary whole-parent positive-thickness at N=33 only for the exact live source/profile/transport/parent-admission/limits tuple at bit-identical +0 pose. Pair evidence absence is Unpromoted; malformed, resource, and stop failures are errors. All six authorizations stay false, so this is not final SIM-010 authority.",
+        "Commit be34d05ead8211129126a0a784414caf63ce2f30 establishes separately typed CommonArticulationContinuousLayerPathExtension*V2 and CompleteMultiBlockPositiveLayer*V2 boundaries. A sealed actual-32/configured-32 live fixture replays its compact assignment at zero search nodes, issues complete and final evidence, matches an independent binding oracle, exact-revalidates, accepts all six exact resource envelopes, and rejects every one-short plus replay/foreign/live/partition/source/target/cancel/deadline boundary. Each V2 type's six authorization predicates remain false. Legacy V1 final behavior, including its existing three true predicates, plus 2..=10 and desktop paths remain unchanged.",
+        "The checked N=32 conformance is F=257 and H=384 from 9 faces/12 hinges per block with 31 shared material faces; it distinguishes 32,896 parent unordered pairs, 40,176 raw clearance candidates, and 31,744 deduplicated cross-block registry pairs. The factor-8 formula yields pose 18,072 logical / 56,304 bytes and clearance 9,154,601 logical / 2,347,648 bytes with 32-byte pair records, and the actual-32 final V2 fixture checks its exact/one-short envelopes. General-N compact V2 issuance still begins at actual N >= 33; no continuous motion, collision clearance, layer transport, project mutation, Apply, or viewer authority follows.",
+        "Commit b7a4bc72 keeps the complete logical transitivity count while replacing cubic retained constraints with compact cell families, checkpointed streaming, maintained transitive closure, and rollback search. Its original N=32 evidence was a manual fixture-only acceptance. Commit be34d05ead8211129126a0a784414caf63ce2f30 seals the 32,896-variable, 4,112-byte assignment and fixed registry/assignment receipts into ordinary regression evidence and replays it at zero search nodes in the actual-32 final V2 issuer; temporary extractors and diagnostics are absent. This still is not arbitrary-topology, dynamic positive-thickness, or downstream authority.",
+        "Commits 7e2e1247 and bd3e9940 establish the separately typed canonical-3x3-Miura variable-N transport prerequisite at actual N=33 and N=34/configured cap=40; that clearance prerequisite remains Unpromoted. Commit be34d05ead8211129126a0a784414caf63ce2f30 adds a different profile-bound stationary whole-parent positive-thickness outcome whose canonical N=33 path reaches Proven only for an exact live source/profile/transport/parent-admission/limits tuple at the bit-identical +0 pose. PairEvidenceUnavailable alone maps to Unpromoted; malformed/resource/stop failures remain errors. The stationary certificate and outcome each expose six false authorization predicates, so this is not nonstationary, arbitrary-topology, collision-clearance, transport, mutation, Apply, viewer, or final SIM-010 authority.",
         "PreparedSupportingLine prioritizes globally supporting lines with canonical-ordinal ties and allocation-free unstable sorting; canonical overlap-cell and final ExactStorage signatures remain compatible with the unprioritized and independent classifiers."
       ],
       "missingAcceptance": [

@@ -82,6 +82,15 @@ test('requirements traceability binds every status to ancestral code and executa
     const noProduction = structuredClone(manifest)
     noProduction.requirements[0].evidence[0].kind = 'documentation'
     assert.throws(() => verify(noProduction), /lacks production and executable evidence/u)
+    const tooManyEvidence = structuredClone(manifest)
+    tooManyEvidence.requirements[0].evidence = Array.from(
+      { length: 129 },
+      (_, index) => ({ kind: 'test', path: 'tests/app.test.ts', selector: `production behavior ${index}` }),
+    )
+    assert.throws(() => verify(tooManyEvidence), /invalid evidence count/u)
+    const oversizedLimitation = structuredClone(manifest)
+    oversizedLimitation.requirements[1].limitations = ['x'.repeat(1025)]
+    assert.throws(() => verify(oversizedLimitation), /invalid limitations/u)
     const foreignCommit = structuredClone(manifest)
     foreignCommit.requirements[0].commits = ['0'.repeat(40)]
     assert.throws(() => verify(foreignCommit), /not an ancestor/u)

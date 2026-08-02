@@ -14,12 +14,18 @@ use crate::{
     MaterialHingeGraphGeometry, OutwardIntervalV1,
 };
 
+mod closed_dyadic_boundary_v2;
 mod dyadic_endpoint;
 mod dyadic_workspace_v2;
 mod restriction_workspace_v2;
 
 use dyadic_endpoint::ordinary_dyadic_chebyshev_interval_v2;
 
+pub use closed_dyadic_boundary_v2::{
+    CANONICAL_CYCLE_SCHEDULE_CLOSED_DYADIC_BOUNDARY_EVIDENCE_MODEL_ID_V2,
+    CanonicalCycleScheduleClosedDyadicBoundaryEvidenceV2, CycleScheduleClosedDyadicBoundaryErrorV2,
+    CycleScheduleClosedDyadicBoundaryResourceBoundV2, CycleScheduleClosedDyadicBoundaryStopV2,
+};
 pub(crate) use dyadic_workspace_v2::ExactParallelCutProfileErrorV2;
 pub use dyadic_workspace_v2::{
     CycleScheduleDyadicEvaluationErrorV2, CycleScheduleDyadicEvaluationStopV2,

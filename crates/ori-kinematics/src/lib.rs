@@ -172,7 +172,10 @@ pub use interval::{
     atan_interval_v1, sin_cos_degrees_interval_v1,
 };
 pub use schedule::{
-    CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2, CanonicalCycleScheduleV1,
+    CANONICAL_CYCLE_SCHEDULE_CLOSED_DYADIC_BOUNDARY_EVIDENCE_MODEL_ID_V2,
+    CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2, CanonicalCycleScheduleClosedDyadicBoundaryEvidenceV2,
+    CanonicalCycleScheduleV1, CycleScheduleClosedDyadicBoundaryErrorV2,
+    CycleScheduleClosedDyadicBoundaryResourceBoundV2, CycleScheduleClosedDyadicBoundaryStopV2,
     CycleScheduleDyadicEvaluationErrorV2, CycleScheduleDyadicEvaluationStopV2,
     CycleScheduleDyadicWorkspaceBoundV2, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
     CycleSchedulePrepareErrorV1, CycleScheduleRestrictionErrorV1, CycleScheduleRestrictionStopV1,

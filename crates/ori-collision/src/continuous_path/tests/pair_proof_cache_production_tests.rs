@@ -7,6 +7,9 @@ fn model4_penetrating_exact_pair_is_fail_closed_and_never_published() {
     use std::time::{Duration, Instant};
 
     const THICKNESS_MM: f64 = 3.0;
+    // This test validates cache equivalence, not deadline expiry.  The exact
+    // model-4 kernel can exceed 30 seconds when the full suite loads the host.
+    const NON_DEADLINE_TIMEOUT: Duration = Duration::from_secs(300);
 
     let model = branched_triangle_model(6, false);
     let (moving, initial) = zero_tree_pose(&model);
@@ -50,7 +53,7 @@ fn model4_penetrating_exact_pair_is_fail_closed_and_never_published() {
         limits,
         &runtime,
         &capture,
-        crate::ProofCacheOperationControlV1::new(None, Instant::now() + Duration::from_secs(30)),
+        crate::ProofCacheOperationControlV1::new(None, Instant::now() + NON_DEADLINE_TIMEOUT),
     )
     .expect("real cold model-4 diagnosis");
     assert_eq!(cold, uncached);
@@ -75,7 +78,7 @@ fn model4_penetrating_exact_pair_is_fail_closed_and_never_published() {
         limits,
         &runtime,
         &capture,
-        crate::ProofCacheOperationControlV1::new(None, Instant::now() + Duration::from_secs(30)),
+        crate::ProofCacheOperationControlV1::new(None, Instant::now() + NON_DEADLINE_TIMEOUT),
     )
     .expect("repeated fail-closed model-4 diagnosis");
     assert_eq!(repeated, cold);
@@ -104,7 +107,7 @@ fn model4_penetrating_exact_pair_is_fail_closed_and_never_published() {
         nondefault_limits,
         &runtime,
         &capture,
-        crate::ProofCacheOperationControlV1::new(None, Instant::now() + Duration::from_secs(30)),
+        crate::ProofCacheOperationControlV1::new(None, Instant::now() + NON_DEADLINE_TIMEOUT),
     )
     .expect("non-default limits bypass cache without changing the result");
     assert_eq!(
@@ -143,7 +146,7 @@ fn model4_penetrating_exact_pair_is_fail_closed_and_never_published() {
             &capture,
             crate::ProofCacheOperationControlV1::new(
                 None,
-                Instant::now() + Duration::from_secs(30),
+                Instant::now() + NON_DEADLINE_TIMEOUT,
             ),
         ),
         Err(StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable)
@@ -200,7 +203,7 @@ fn model4_penetrating_exact_pair_is_fail_closed_and_never_published() {
             &capture,
             crate::ProofCacheOperationControlV1::new(
                 None,
-                Instant::now() + Duration::from_secs(30),
+                Instant::now() + NON_DEADLINE_TIMEOUT,
             ),
         )
         .expect("non-default pair-kernel limit bypasses the cache");

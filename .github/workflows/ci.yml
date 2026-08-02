@@ -419,7 +419,9 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    # The unchanged full Rust suite exceeded 160 minutes on both hosted OSes
+    # before its downstream lifecycle, export, and Clippy gates could start.
+    timeout-minutes: 240
     # Preserve fail-closed test semantics while optimizing the exact same test
     # executables. These are Cargo's existing test-profile defaults except for
     # opt-level, so assertions and implicit overflow checks stay enabled.

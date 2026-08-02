@@ -372,10 +372,17 @@ impl FinalExtensionFixtureV2 {
 }
 
 fn prepare_final_extension_fixture_v2(block_count: usize) -> FinalExtensionFixtureV2 {
-    let base = prepare_extension_miura_clearance_fixture_in_namespace_v2(
+    prepare_final_extension_fixture_in_namespace_v2(
         block_count,
         crate::miura_cactus_test_support::canonical_general_n_miura_namespace_v2(),
-    );
+    )
+}
+
+fn prepare_final_extension_fixture_in_namespace_v2(
+    block_count: usize,
+    namespace: ori_domain::ProjectId,
+) -> FinalExtensionFixtureV2 {
+    let base = prepare_extension_miura_clearance_fixture_in_namespace_v2(block_count, namespace);
     let local = analyze_local_flat_foldability(&base.paper, &base.pattern);
     let (source, global_work_counts, compact_source_authority) = if block_count
         == COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_EXTENSION_MAX_BLOCKS_V2
@@ -980,7 +987,10 @@ fn final_extension_cap_replay_and_cross_cap_prerequisites_fail_closed_v2() {
 #[test]
 fn final_extension_rejects_foreign_live_inputs_and_partition_or_source_drift_v2() {
     let fixture = prepare_final_extension_fixture_v2(11);
-    let foreign = prepare_final_extension_fixture_v2(11);
+    let foreign = prepare_final_extension_fixture_in_namespace_v2(
+        11,
+        ori_domain::ProjectId::schema_namespace([0xf3; 16]),
+    );
     let authority = issue_final_extension_v2(&fixture, 11);
     let block_sources = fixture.block_source_refs_v2();
     let baseline = fixture.revalidation_input_v2(11, &block_sources);
@@ -1013,8 +1023,11 @@ fn final_extension_rejects_foreign_live_inputs_and_partition_or_source_drift_v2(
             ..baseline
         },
     ];
-    for input in drifted {
-        assert!(authority.revalidate_v2(input).is_err());
+    for (drift_index, input) in drifted.into_iter().enumerate() {
+        assert!(
+            authority.revalidate_v2(input).is_err(),
+            "foreign live-input drift {drift_index} must fail closed"
+        );
     }
 
     let replayed_source = (*fixture.source).clone();

@@ -66,6 +66,14 @@ pub const COMMON_ARTICULATION_POSITIVE_THICKNESS_GRAPH_EXTENSION_MAX_UNORDERED_F
 pub const COMMON_ARTICULATION_POSITIVE_THICKNESS_GRAPH_EXTENSION_MAX_SHARED_FEATURE_PAIRS_V1:
     usize = 32_896;
 
+// This ceiling is checked before any per-boundary geometry work.  Together
+// with the face-pair caps above, it bounds the outer scans and the exact prism
+// SAT work: a pair can have at most 66_565 candidate axes, each projecting at
+// most 1_024 extruded vertices.  The 256-vertex envelope admits the largest
+// current rational-cycle fixtures (the 32-bay outer ring has 162 vertices)
+// while preserving a fixed, fail-closed resource limit.
+const POSITIVE_THICKNESS_GRAPH_MAX_FACE_BOUNDARY_VERTICES_V1: usize = 256;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PositiveThicknessGraphLimitsV1 {
     pub max_unordered_face_pairs: usize,
@@ -236,6 +244,15 @@ fn check_shared_feature_pair_limit_v1(
     Ok(())
 }
 
+fn check_positive_thickness_graph_face_boundary_vertex_count_v1(
+    boundary_vertex_count: usize,
+) -> Result<(), PositiveThicknessGraphProofErrorV1> {
+    if boundary_vertex_count > POSITIVE_THICKNESS_GRAPH_MAX_FACE_BOUNDARY_VERTICES_V1 {
+        return Err(PositiveThicknessGraphProofErrorV1::ResourceLimit);
+    }
+    Ok(())
+}
+
 fn exact_input_rational_v1(value: f64) -> Result<BigRational, PositiveThicknessGraphProofErrorV1> {
     BigRational::from_float(value).ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)
 }
@@ -369,9 +386,8 @@ fn prove_positive_thickness_graph_geometry_with_max_faces_and_admission_checkpoi
                 .face_boundary_vertices(*second)
                 .filter(|boundary| boundary.len() >= 3)
                 .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
-            if first_boundary.len() > 64 || second_boundary.len() > 64 {
-                return Err(PositiveThicknessGraphProofErrorV1::ResourceLimit);
-            }
+            check_positive_thickness_graph_face_boundary_vertex_count_v1(first_boundary.len())?;
+            check_positive_thickness_graph_face_boundary_vertex_count_v1(second_boundary.len())?;
             let mut shared = Vec::new();
             shared
                 .try_reserve_exact(2)
@@ -637,6 +653,22 @@ mod tests {
     use ori_topology::{FaceExtractionInput, analyze_faces};
 
     use super::*;
+
+    #[test]
+    fn positive_thickness_graph_face_boundary_vertex_cap_is_inclusive_and_fail_closed_v1() {
+        assert_eq!(
+            check_positive_thickness_graph_face_boundary_vertex_count_v1(
+                POSITIVE_THICKNESS_GRAPH_MAX_FACE_BOUNDARY_VERTICES_V1,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_positive_thickness_graph_face_boundary_vertex_count_v1(
+                POSITIVE_THICKNESS_GRAPH_MAX_FACE_BOUNDARY_VERTICES_V1 + 1,
+            ),
+            Err(PositiveThicknessGraphProofErrorV1::ResourceLimit)
+        );
+    }
 
     #[test]
     fn common_articulation_extension_limits_are_fixed_hard_and_fail_closed_v1() {

@@ -71,6 +71,22 @@ pub(super) fn validate_input_v2(
         return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
     }
 
+    // Reject a foreign schedule/fixed-face tuple before the stationary-only
+    // workspace gate.  Otherwise a missing live derivative is misclassified
+    // as a resource-envelope failure even though the retained nested proof
+    // rejects the same tuple as malformed input.  This binding comparison is
+    // allocation-free and therefore preserves the pre-allocation boundary.
+    if !input
+        .parent_schedule
+        .matches_binding(input.geometry, input.audit, input.parent_fixed_face)
+    {
+        return Err(CommonArticulationClearanceErrorV2::WholeParentClosure(
+            CommonArticulationWholeParentClosureErrorV2::BlockClosureSet(
+                ori_kinematics::CommonArticulationBlockClosureSetErrorV2::InvalidInput,
+            ),
+        ));
+    }
+
     // The current general-N clearance boundary has a complete physical
     // workspace proof only for the stationary, single-leaf V1 route.  A
     // non-stationary schedule can enter V1's adaptive dyadic prover, whose

@@ -6421,15 +6421,27 @@ fn rectangular_dense_samples_do_not_mint_continuous_authority() {
                     let pose = geometry
                         .solve_closed(&audit, fixed, &angles, 1.0e-8)
                         .unwrap();
-                    prove_positive_thickness_graph_geometry_v1(
-                    &geometry,
-                    &pose,
-                    thickness,
-                    PositiveThicknessGraphLimitsV1::default(),
-                )
-                .unwrap_or_else(|error| {
-                    panic!("{columns}x{rows}, thickness {thickness}, progress {progress}: {error:?}")
-                });
+                    let static_proof = prove_positive_thickness_graph_geometry_v1(
+                        &geometry,
+                        &pose,
+                        thickness,
+                        PositiveThicknessGraphLimitsV1::default(),
+                    );
+                    if progress.to_bits() == 0.0_f64.to_bits() {
+                        assert!(
+                            static_proof.is_ok(),
+                            "{columns}x{rows}, thickness {thickness}, stationary sample: {static_proof:?}"
+                        );
+                    } else {
+                        assert!(
+                            matches!(
+                                static_proof,
+                                Err(crate::PositiveThicknessGraphProofErrorV1::PairEvidenceUnavailable)
+                            ),
+                            "{columns}x{rows}, thickness {thickness}, progress {progress}: \
+                             non-stationary dense samples require an explicit strict prism separator"
+                        );
+                    }
                 }
                 let diagnostic = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
                     &geometry, &audit, fixed, &schedule, &closure, thickness, 1,
@@ -6896,13 +6908,14 @@ fn sixty_degree_axis_rank_four_dense_graph_remains_exact_and_fail_closed() {
             assert!(diagnostic.continuous_certificate_model_id().is_some());
             assert_eq!(diagnostic.pair_work(), 36);
         }
-        assert!(
-            diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
-                &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
-            )
-            .continuous_certificate_model_id()
-            .is_none()
+        let thick_stationary = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
         );
+        assert!(
+            thick_stationary.continuous_certificate_model_id().is_some(),
+            "an exact stationary extrusion remains separated in-plane without an arbitrary hinge-length cutoff",
+        );
+        assert_eq!(thick_stationary.pair_work(), 36);
         let foreign = MaterialHingeGraphGeometry::prepare(
             &pattern,
             &paper,
@@ -7033,13 +7046,14 @@ fn parametric_oblique_rank_four_carriers_preserve_static_positive_authority() {
             assert!(diagnostic.continuous_certificate_model_id().is_some());
             assert_eq!(diagnostic.pair_work(), 36);
         }
-        assert!(
-            diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
-                &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
-            )
-            .continuous_certificate_model_id()
-            .is_none()
+        let thick_stationary = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
         );
+        assert!(
+            thick_stationary.continuous_certificate_model_id().is_some(),
+            "an exact stationary extrusion remains separated in-plane without an arbitrary hinge-length cutoff",
+        );
+        assert_eq!(thick_stationary.pair_work(), 36);
     }
 }
 
@@ -7805,18 +7819,19 @@ fn miura_rank_four_fixture_keeps_stationary_global_layer_authority() {
         );
         assert!(certificate.is_for(&geometry, &audit, fixed, &schedule, &closure, thickness));
     }
-    assert!(
-        diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
-            &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
-        )
-        .continuous_certificate_model_id()
-        .is_none()
+    let thick_stationary = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+        &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
     );
+    assert!(
+        thick_stationary.continuous_certificate_model_id().is_some(),
+        "an exact stationary extrusion remains separated in-plane without an arbitrary hinge-length cutoff",
+    );
+    assert_eq!(thick_stationary.pair_work(), expected_pairs);
     assert!(
         certify_canonical_positive_thickness_cycle_schedule_path_v1(
             &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
         )
-        .is_none()
+        .is_some()
     );
     let bound_certificate = certify_canonical_positive_thickness_cycle_schedule_path_v1(
         &geometry, &audit, fixed, &schedule, &closure, 0.1, 1,

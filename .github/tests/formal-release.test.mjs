@@ -5,6 +5,7 @@ import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, 
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
+import './ci-runtime-contract.test.mjs'
 import { validateReleaseArchiveEntries } from '../scripts/release_archive_contract.mjs'
 import { buildDependencyPolicy } from '../scripts/dependency_policy.mjs'
 

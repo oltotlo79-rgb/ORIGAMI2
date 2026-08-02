@@ -649,7 +649,10 @@ jobs:
           retention-days: 7
 
   windows-bundle:
-    needs: [frontend, rust]
+    # Produce an installable diagnostic artifact as soon as the frontend gate
+    # passes. Release promotion still requires both Rust matrix jobs to pass in
+    # the same run, so this does not grant release authority to a red run.
+    needs: [frontend]
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -749,7 +752,9 @@ jobs:
           retention-days: 7
 
   macos-bundle:
-    needs: [frontend, rust]
+    # Keep the app artifact available while the exhaustive Rust matrix runs;
+    # the independent release verifier still requires all seven CI jobs.
+    needs: [frontend]
     runs-on: macos-latest
     timeout-minutes: 30
     steps:

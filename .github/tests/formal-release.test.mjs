@@ -803,6 +803,27 @@ test('CI cache action is pinned to the verified Node.js 24 release', () => {
   assert.equal(workflow.split(pinned).length - 1, 2)
   assert.doesNotMatch(workflow, /actions\/cache@0057852bfaa89/u)
   assert.match(workflow, /# v6\.1\.0 \(Node\.js 24\)/u)
+  const rustJob = workflow.slice(workflow.indexOf('\n  rust:'), workflow.indexOf('\n  windows-bundle:'))
+  assert.match(rustJob, /key: test-profile-opt2-v1/u)
+  assert.match(rustJob, /cache-on-failure: true/u)
+})
+
+test('CI produces diagnostic bundles without weakening same-run release authority', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const windowsStart = workflow.indexOf('\n  windows-bundle:')
+  const macosStart = workflow.indexOf('\n  macos-bundle:')
+  const windowsBundle = workflow.slice(windowsStart, macosStart)
+  const macosBundle = workflow.slice(macosStart)
+  assert.match(windowsBundle, /needs: \[frontend\]/u)
+  assert.match(macosBundle, /needs: \[frontend\]/u)
+  assert.doesNotMatch(windowsBundle, /needs:[^\n]*rust/u)
+  assert.doesNotMatch(macosBundle, /needs:[^\n]*rust/u)
+
+  const verifier = readFileSync(join(root, '.github/scripts/verify_release_ci.mjs'), 'utf8')
+  assert.match(verifier, /'rust \(macos-latest\)'/u)
+  assert.match(verifier, /'rust \(windows-latest\)'/u)
+  assert.match(verifier, /'macos-bundle'/u)
+  assert.match(verifier, /'windows-bundle'/u)
 })
 
 test('CI retains bounded browser accessibility evidence only on failure', () => {

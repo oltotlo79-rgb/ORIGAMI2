@@ -1704,6 +1704,24 @@ fn four_to_sixteen_face_positive_thickness_fans_cover_every_pair_and_hinge() {
         )
         .unwrap();
         let pose = fixture.model.solve(Some(root), &angles).unwrap();
+        if face_count == 16 && !reverse_source {
+            let first_root_pose = fixture
+                .model
+                .solve(Some(fixture.model.face_ids()[0]), &angles)
+                .unwrap();
+            assert!(matches!(
+                prove_static_collision_geometry(
+                    &fixture.model,
+                    &first_root_pose,
+                    0.1,
+                    StaticCollisionLimits {
+                        max_shared_hinge_solid_diagnostics: 14,
+                        ..StaticCollisionLimits::default()
+                    },
+                ),
+                Err(StaticCollisionError::ResourceLimitExceeded)
+            ));
+        }
         let expected_pairs = face_count * (face_count - 1) / 2;
         let diagnostic = diagnose_static_collision_geometry(
             &fixture.model,
@@ -1737,36 +1755,6 @@ fn four_to_sixteen_face_positive_thickness_fans_cover_every_pair_and_hinge() {
         assert_eq!(proof.expected_shared_hinges(), face_count - 1);
         assert_eq!(proof.analyzed_shared_hinges(), face_count - 1);
     }
-}
-
-#[test]
-fn shared_hinge_registry_one_over_limit_fails_before_pair_classification() {
-    let fixture = triangle_fan_fixture(16, false);
-    let angles = CanonicalHingeAngles::new(
-        fixture
-            .hinges
-            .iter()
-            .copied()
-            .map(|hinge| HingeAngle::new(hinge, 0.0).unwrap())
-            .collect(),
-    )
-    .unwrap();
-    let pose = fixture
-        .model
-        .solve(Some(fixture.model.face_ids()[0]), &angles)
-        .unwrap();
-    assert!(matches!(
-        prove_static_collision_geometry(
-            &fixture.model,
-            &pose,
-            0.1,
-            StaticCollisionLimits {
-                max_shared_hinge_solid_diagnostics: 14,
-                ..StaticCollisionLimits::default()
-            },
-        ),
-        Err(StaticCollisionError::ResourceLimitExceeded)
-    ));
 }
 
 #[test]

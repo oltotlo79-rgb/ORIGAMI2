@@ -278,7 +278,7 @@ pub(super) fn exact_transport_limits_for_live_n33_source_v2(
         &fixture.clearance_fixture.decomposition,
         &fixture.clearance_fixture.profile,
         source.provenance.source,
-        direct_source_caps,
+        direct_source_caps.into(),
         &mut || Ok(()),
     )?;
     let measured = super::resource::transport_resource_totals_v2(

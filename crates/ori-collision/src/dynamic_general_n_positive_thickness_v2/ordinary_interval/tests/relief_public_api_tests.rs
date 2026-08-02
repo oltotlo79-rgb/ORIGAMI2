@@ -18,61 +18,10 @@ use crate::{
 use super::super::relief_aggregate::ReliefAggregateLimitsV2;
 use super::super::{OrdinaryIntervalLimitsV2, public_adapter::DirectClearanceEvidenceV2};
 use super::relief_support::{ReliefFixtureInputV2, generous_relief_limits_v2, relief_policies_v2};
-use super::support::{N33, N34, OrdinaryFixtureV2, n33_fixture_v2, n34_fixture_v2};
+use super::support::{N34, OrdinaryFixtureV2, n33_fixture_v2, n34_fixture_v2};
 
 #[test]
-fn n33_replays_full_public_proof_and_n34_issues_without_a_pair_registry() {
-    let fixture = n33_fixture_v2();
-    let policies = relief_policies_v2(fixture);
-    let limits = public_limits_v2(fixture);
-    let certificate = prove_common_articulation_dynamic_general_n_relieved_clearance_v2(
-        public_input_v2(fixture, &policies, limits),
-    )
-    .expect("direct N33 relieved-clearance certificate");
-    assert_public_summary_v2(&certificate, N33, (34_980, 34_256, 396, 328));
-
-    let mut replay_polls = 0usize;
-    certificate
-        .revalidate_with_checkpoint_v2(revalidation_input_v2(fixture, &policies, limits), || {
-            replay_polls += 1;
-            Ok(())
-        })
-        .expect("full N33 public replay");
-    assert!(
-        replay_polls > 1_000,
-        "revalidation must rerun derivation, bridge, ordinary, and relief work"
-    );
-    for stop in [
-        CommonArticulationDynamicGeneralNRelievedClearanceStopV2::Cancelled,
-        CommonArticulationDynamicGeneralNRelievedClearanceStopV2::DeadlineExceeded,
-    ] {
-        let replay = certificate.revalidate_with_checkpoint_v2(
-            revalidation_input_v2(fixture, &policies, limits),
-            || Err(stop),
-        );
-        assert!(matches!(
-            (stop, replay),
-            (
-                CommonArticulationDynamicGeneralNRelievedClearanceStopV2::Cancelled,
-                Err(CommonArticulationDynamicGeneralNRelievedClearanceErrorV2::Cancelled)
-            ) | (
-                CommonArticulationDynamicGeneralNRelievedClearanceStopV2::DeadlineExceeded,
-                Err(CommonArticulationDynamicGeneralNRelievedClearanceErrorV2::DeadlineExceeded)
-            )
-        ));
-    }
-
-    // This remains a valid resource envelope, so the full private proof
-    // succeeds before the public outer-limit binding rejects the replay.
-    let drifted_limits = CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2 {
-        max_publication_bytes: limits.max_publication_bytes + 1,
-        ..limits
-    };
-    assert_eq!(
-        certificate.revalidate_v2(revalidation_input_v2(fixture, &policies, drifted_limits,)),
-        Err(CommonArticulationDynamicGeneralNRelievedClearanceErrorV2::CertificateBindingMismatch)
-    );
-
+fn n34_issues_without_a_pair_registry() {
     let fixture = n34_fixture_v2();
     let policies = relief_policies_v2(fixture);
     let limits = public_limits_v2(fixture);
@@ -178,7 +127,7 @@ fn assert_public_summary_v2(
     }
 }
 
-fn public_input_v2<'a>(
+pub(crate) fn public_input_v2<'a>(
     fixture: &'a OrdinaryFixtureV2,
     policies: &'a ReliefFixtureInputV2,
     limits: CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
@@ -201,7 +150,7 @@ fn public_input_v2<'a>(
     }
 }
 
-fn revalidation_input_v2<'a>(
+pub(crate) fn revalidation_input_v2<'a>(
     fixture: &'a OrdinaryFixtureV2,
     policies: &'a ReliefFixtureInputV2,
     limits: CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
@@ -225,7 +174,7 @@ fn revalidation_input_v2<'a>(
     }
 }
 
-fn public_limits_v2(
+pub(crate) fn public_limits_v2(
     fixture: &OrdinaryFixtureV2,
 ) -> CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2 {
     let ordinary = super::support::strict_limits_v2(fixture);

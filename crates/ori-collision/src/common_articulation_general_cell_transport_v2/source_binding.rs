@@ -9,6 +9,7 @@ use ori_foldability::{
 };
 use sha2::{Digest, Sha256};
 
+use super::validation::AuthenticatedLayerSourceLimitsV2;
 use super::*;
 mod equality;
 mod membership;
@@ -70,7 +71,7 @@ pub(super) fn source_digest_and_metrics_v2(
     decomposition: &CanonicalMaterialEdgeBlockDecompositionV2,
     profile: &CommonArticulationResourceProfileV2,
     expected_provenance: ori_foldability::GlobalFlatFoldabilityProvenance,
-    limits: CommonArticulationGeneralCellTransportLimitsV2,
+    limits: AuthenticatedLayerSourceLimitsV2,
     checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationGeneralCellTransportStopV2>,
 ) -> Result<([u8; 32], SourceMetricsV2), CommonArticulationGeneralCellTransportErrorV2> {
     checkpoint_v2(checkpoint)?;
@@ -80,13 +81,16 @@ pub(super) fn source_digest_and_metrics_v2(
         || source.provenance.source.identity_namespace.is_none()
         || source.provenance.source.source_fingerprint.is_none()
         || source.material_faces.len() != geometry.face_ids().len()
-        || source.material_faces.len() > limits.max_material_faces
         || source.folded_faces.len() != source.material_faces.len()
+    {
+        return Err(CommonArticulationGeneralCellTransportErrorV2::SourceBindingMismatch);
+    }
+    if source.material_faces.len() > limits.max_material_faces
         || source.folded_faces.len() > limits.max_folded_faces
         || source.overlap_cells.len() > limits.max_overlap_cells
         || source.face_pair_orders.len() > limits.max_face_pair_orders
     {
-        return Err(CommonArticulationGeneralCellTransportErrorV2::SourceBindingMismatch);
+        return Err(source_cap_error_v2(limits));
     }
 
     validate_source_retained_cap_v2(source, limits.max_source_retained_bytes, checkpoint)?;
@@ -121,6 +125,12 @@ pub(super) fn source_digest_and_metrics_v2(
         charged_source_bytes: limits.max_source_retained_bytes,
         traversal_work,
     };
+    if limits.enforce_derived_caps_during_source_scan
+        && (metrics.layer_records > limits.max_layer_records
+            || metrics.boundary_vertices > limits.max_boundary_vertices)
+    {
+        return Err(CommonArticulationGeneralCellTransportErrorV2::ResourceLimit);
+    }
     let digest = source_digest_v2(source, checkpoint)?;
     checkpoint_v2(checkpoint)?;
     Ok((digest, metrics))
@@ -163,14 +173,17 @@ fn validate_material_faces_v2(
 
 fn validate_global_order_v2(
     source: &LayerOrderSnapshot,
-    limits: CommonArticulationGeneralCellTransportLimitsV2,
+    limits: AuthenticatedLayerSourceLimitsV2,
     checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationGeneralCellTransportStopV2>,
 ) -> Result<usize, CommonArticulationGeneralCellTransportErrorV2> {
     let Some(order) = source.global_bottom_to_top.as_deref() else {
         return Ok(0);
     };
-    if order.len() != source.material_faces.len() || order.len() > limits.max_global_order_faces {
+    if order.len() != source.material_faces.len() {
         return Err(CommonArticulationGeneralCellTransportErrorV2::SourceBindingMismatch);
+    }
+    if order.len() > limits.max_global_order_faces {
+        return Err(source_cap_error_v2(limits));
     }
     for (index, face) in order.iter().enumerate() {
         checkpoint_v2(checkpoint)?;
@@ -181,6 +194,19 @@ fn validate_global_order_v2(
         }
     }
     Ok(order.len())
+}
+
+const fn source_cap_error_v2(
+    limits: AuthenticatedLayerSourceLimitsV2,
+) -> CommonArticulationGeneralCellTransportErrorV2 {
+    match limits.cap_error_policy {
+        super::validation::SourceCapErrorPolicyV2::SourceBindingMismatch => {
+            CommonArticulationGeneralCellTransportErrorV2::SourceBindingMismatch
+        }
+        super::validation::SourceCapErrorPolicyV2::ResourceLimit => {
+            CommonArticulationGeneralCellTransportErrorV2::ResourceLimit
+        }
+    }
 }
 
 fn validate_folded_faces_v2(

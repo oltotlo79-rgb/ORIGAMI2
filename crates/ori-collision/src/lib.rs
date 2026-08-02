@@ -279,6 +279,7 @@ pub use common_articulation_dynamic_general_n_relieved_clearance_v2::{
 };
 pub use common_articulation_general_cell_transport_v2::{
     COMMON_ARTICULATION_COMPACT_PAIR_GENERAL_CELL_TRANSPORT_MODEL_ID_V2,
+    COMMON_ARTICULATION_DYNAMIC_GENERAL_N_RELIEVED_SOURCE_ORDER_COVERAGE_MODEL_ID_V2,
     COMMON_ARTICULATION_GENERAL_CELL_TRANSPORT_MODEL_ID_V2,
     COMMON_ARTICULATION_GENERAL_CELL_TRANSPORT_UNPROMOTED_MODEL_ID_V2,
     COMMON_ARTICULATION_PROFILE_BOUND_WHOLE_PARENT_POSITIVE_THICKNESS_MODEL_ID_V2,
@@ -291,6 +292,12 @@ pub use common_articulation_general_cell_transport_v2::{
     CommonArticulationCompactPairGeneralCellTransportPrerequisiteV2,
     CommonArticulationCompactPairGeneralCellTransportResourcesV2,
     CommonArticulationCompactPairGeneralCellTransportRevalidationInputV2,
+    CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2,
+    CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2,
+    CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageInputV2,
+    CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
+    CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageRevalidationInputV2,
+    CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageStopV2,
     CommonArticulationGeneralCellTransportErrorV2, CommonArticulationGeneralCellTransportInputV2,
     CommonArticulationGeneralCellTransportLimitsV2,
     CommonArticulationGeneralCellTransportOutcomeV2,
@@ -309,6 +316,8 @@ pub use common_articulation_general_cell_transport_v2::{
     issue_common_articulation_compact_pair_general_cell_transport_prerequisite_with_checkpoint_v2,
     issue_common_articulation_general_cell_transport_prerequisite_v2,
     issue_common_articulation_general_cell_transport_prerequisite_with_checkpoint_v2,
+    prove_common_articulation_dynamic_general_n_relieved_source_order_coverage_v2,
+    prove_common_articulation_dynamic_general_n_relieved_source_order_coverage_with_checkpoint_v2,
     prove_common_articulation_profile_bound_whole_parent_positive_thickness_v2,
     prove_common_articulation_profile_bound_whole_parent_positive_thickness_with_checkpoint_v2,
 };

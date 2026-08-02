@@ -470,12 +470,14 @@ pub fn issue_common_articulation_general_cell_transport_prerequisite_with_checkp
 }
 
 mod compact_pair_source;
+mod dynamic_relieved_source_coverage;
 mod resource;
 mod source_binding;
 mod validation;
 mod whole_parent_positive_thickness;
 
 pub use compact_pair_source::*;
+pub use dynamic_relieved_source_coverage::*;
 pub use whole_parent_positive_thickness::*;
 
 use resource::{TransportResourceWorkV2, checked_transport_resource_work_v2};

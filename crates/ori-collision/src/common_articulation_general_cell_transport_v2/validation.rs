@@ -26,6 +26,57 @@ pub(super) struct ValidatedTransportInputV2 {
     pub(super) whole_parent_closure_limits: CommonArticulationWholeParentClosureLimitsV2,
 }
 
+/// Source-only caps shared by the stationary observation and the dynamic
+/// relieved-clearance coverage boundary. Keeping this type private prevents a
+/// source scan from being mistaken for a transport theorem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AuthenticatedLayerSourceLimitsV2 {
+    pub(super) max_blocks: usize,
+    pub(super) max_source_retained_bytes: usize,
+    pub(super) max_material_faces: usize,
+    pub(super) max_folded_faces: usize,
+    pub(super) max_overlap_cells: usize,
+    pub(super) max_face_pair_orders: usize,
+    pub(super) max_global_order_faces: usize,
+    pub(super) max_layer_records: usize,
+    pub(super) max_boundary_vertices: usize,
+    pub(super) max_logical_work: usize,
+    pub(super) cap_error_policy: SourceCapErrorPolicyV2,
+    pub(super) enforce_derived_caps_during_source_scan: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SourceCapErrorPolicyV2 {
+    SourceBindingMismatch,
+    ResourceLimit,
+}
+
+impl From<CommonArticulationGeneralCellTransportLimitsV2> for AuthenticatedLayerSourceLimitsV2 {
+    fn from(value: CommonArticulationGeneralCellTransportLimitsV2) -> Self {
+        Self {
+            max_blocks: value.max_blocks,
+            max_source_retained_bytes: value.max_source_retained_bytes,
+            max_material_faces: value.max_material_faces,
+            max_folded_faces: value.max_folded_faces,
+            max_overlap_cells: value.max_overlap_cells,
+            max_face_pair_orders: value.max_face_pair_orders,
+            max_global_order_faces: value.max_global_order_faces,
+            max_layer_records: value.max_layer_records,
+            max_boundary_vertices: value.max_boundary_vertices,
+            max_logical_work: value.max_logical_work,
+            cap_error_policy: SourceCapErrorPolicyV2::SourceBindingMismatch,
+            enforce_derived_caps_during_source_scan: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ValidatedAuthenticatedLayerSourceV2 {
+    pub(super) digest: [u8; 32],
+    pub(super) provenance: ori_foldability::GlobalFlatFoldabilityProvenance,
+    pub(super) metrics: SourceMetricsV2,
+}
+
 pub(super) fn validate_input_v2(
     input: &CommonArticulationGeneralCellTransportRevalidationInputV2<'_>,
     checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationGeneralCellTransportStopV2>,
@@ -59,22 +110,17 @@ pub(super) fn validate_input_v2(
     // reads immutable transport inputs and is not contingent on clearance
     // success, so this ordering prevents a cheap source failure from buying a
     // full N-block clearance traversal.
-    if !input.source_authority.is_current_v2() {
-        return Err(CommonArticulationGeneralCellTransportErrorV2::SourceBindingMismatch);
-    }
-    let source_provenance = input.source_authority.provenance_v2();
-    if !geometry_matches_source_provenance_v2(input.geometry, source_provenance) {
-        return Err(CommonArticulationGeneralCellTransportErrorV2::SourceBindingMismatch);
-    }
-    let (source_digest, source_metrics) = source_binding::source_digest_and_metrics_v2(
-        input.source_authority.layer_order_snapshot_v2(),
+    let source = validate_authenticated_layer_source_v2(
         input.geometry,
         input.decomposition,
         input.profile,
-        source_provenance,
-        input.limits,
+        &input.source_authority,
+        input.limits.into(),
         checkpoint,
     )?;
+    let source_digest = source.digest;
+    let source_provenance = source.provenance;
+    let source_metrics = source.metrics;
 
     // The sealed prerequisite retains its complete clearance replay envelope.
     // Admit that envelope against transport caps before asking it to regenerate
@@ -135,6 +181,39 @@ pub(super) fn validate_input_v2(
         resource,
         limits: input.limits,
         whole_parent_closure_limits: input.whole_parent_closure_limits,
+    })
+}
+
+/// Reauthenticates and scans one sealed layer source without depending on the
+/// stationary clearance prerequisite retained by the original V2 path.
+pub(super) fn validate_authenticated_layer_source_v2(
+    geometry: &MaterialHingeGraphGeometry,
+    decomposition: &CanonicalMaterialEdgeBlockDecompositionV2,
+    profile: &CommonArticulationResourceProfileV2,
+    source_authority: &GlobalFlatLayerOrderSourceAuthorityV2<'_>,
+    limits: AuthenticatedLayerSourceLimitsV2,
+    checkpoint: &mut impl FnMut() -> Result<(), CommonArticulationGeneralCellTransportStopV2>,
+) -> Result<ValidatedAuthenticatedLayerSourceV2, CommonArticulationGeneralCellTransportErrorV2> {
+    if !source_authority.is_current_v2() {
+        return Err(CommonArticulationGeneralCellTransportErrorV2::SourceBindingMismatch);
+    }
+    let provenance = source_authority.provenance_v2();
+    if !geometry_matches_source_provenance_v2(geometry, provenance) {
+        return Err(CommonArticulationGeneralCellTransportErrorV2::SourceBindingMismatch);
+    }
+    let (digest, metrics) = source_binding::source_digest_and_metrics_v2(
+        source_authority.layer_order_snapshot_v2(),
+        geometry,
+        decomposition,
+        profile,
+        provenance,
+        limits,
+        checkpoint,
+    )?;
+    Ok(ValidatedAuthenticatedLayerSourceV2 {
+        digest,
+        provenance,
+        metrics,
     })
 }
 

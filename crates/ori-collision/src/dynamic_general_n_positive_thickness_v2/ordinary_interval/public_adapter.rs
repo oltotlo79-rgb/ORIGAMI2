@@ -65,7 +65,7 @@ impl std::fmt::Debug for DirectClearanceEvidenceV2 {
 
 impl DirectClearanceEvidenceV2 {
     pub(crate) fn matches_v2(&self, candidate: &Self) -> bool {
-        self.issuer_geometry == candidate.issuer_geometry
+        same_issuer_geometry_v2(&self.issuer_geometry, &candidate.issuer_geometry)
             && self.adapter_binding == candidate.adapter_binding
             && self.actual_block_count == candidate.actual_block_count
             && self.total_face_pairs == candidate.total_face_pairs
@@ -98,6 +98,16 @@ impl DirectClearanceEvidenceV2 {
     pub(crate) const fn aggregate_peak_bytes_v2(&self) -> usize {
         self.aggregate_peak_bytes
     }
+}
+
+fn same_issuer_geometry_v2(
+    retained: &MaterialHingeGraphInstanceV1,
+    candidate: &MaterialHingeGraphInstanceV1,
+) -> bool {
+    // Preserve the identity semantics owned by the opaque issuer handle. This
+    // boundary deliberately does not reinterpret that identity as structural
+    // geometry equality.
+    retained == candidate
 }
 
 pub(crate) fn prove_with_checkpoint_v2(
@@ -321,5 +331,28 @@ const fn map_relief_error_v2(error: ReliefAggregateErrorV2) -> AdapterErrorV2 {
         }
         ReliefAggregateErrorV2::Cancelled => AdapterErrorV2::Cancelled,
         ReliefAggregateErrorV2::DeadlineExceeded => AdapterErrorV2::DeadlineExceeded,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common_articulation_clearance_v2::test_support::golden_n33_miura_fixture_v2;
+
+    #[test]
+    fn phase3g_issuer_identity_rejects_a_fresh_same_shape_geometry_instance() {
+        let retained = golden_n33_miura_fixture_v2();
+        let fresh = golden_n33_miura_fixture_v2();
+        assert_eq!(retained.geometry.face_ids(), fresh.geometry.face_ids());
+        assert_eq!(
+            retained.geometry.fold_model_fingerprint_v1(),
+            fresh.geometry.fold_model_fingerprint_v1()
+        );
+
+        let retained_issuer = retained.geometry.instance_anchor_v1();
+        let same_issuer = retained_issuer.clone();
+        let fresh_issuer = fresh.geometry.instance_anchor_v1();
+        assert!(same_issuer_geometry_v2(&retained_issuer, &same_issuer));
+        assert!(!same_issuer_geometry_v2(&retained_issuer, &fresh_issuer));
     }
 }

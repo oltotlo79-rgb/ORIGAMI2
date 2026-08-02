@@ -22,31 +22,31 @@ pub(super) const N33: usize = 33;
 pub(super) const N34: usize = 34;
 const INTERVAL_TRANSFORM_OPERATIONAL_WORK_CAP: usize = 1 << 20;
 
-pub(super) struct OrdinaryFixtureV2 {
-    pub fixture: MiuraFixtureV2,
-    pub schedule: CanonicalCycleScheduleV1,
-    pub pose: ClosedMaterialHingeGraphPose,
-    pub common_pose: CommonArticulationPoseAuthorityV2,
-    pub bridge: CommonArticulationDynamicClosureBridgeV2,
-    pub excluded_shared_pairs: Vec<OrdinaryIntervalFacePairV2>,
+pub(crate) struct OrdinaryFixtureV2 {
+    pub(crate) fixture: MiuraFixtureV2,
+    pub(crate) schedule: CanonicalCycleScheduleV1,
+    pub(crate) pose: ClosedMaterialHingeGraphPose,
+    pub(crate) common_pose: CommonArticulationPoseAuthorityV2,
+    pub(crate) bridge: CommonArticulationDynamicClosureBridgeV2,
+    pub(super) excluded_shared_pairs: Vec<OrdinaryIntervalFacePairV2>,
 }
 
 static N33_FIXTURE: OnceLock<OrdinaryFixtureV2> = OnceLock::new();
 static N34_FIXTURE: OnceLock<OrdinaryFixtureV2> = OnceLock::new();
 
-pub(super) fn n33_fixture_v2() -> &'static OrdinaryFixtureV2 {
+pub(crate) fn n33_fixture_v2() -> &'static OrdinaryFixtureV2 {
     N33_FIXTURE.get_or_init(|| ordinary_fixture_v2(miura_fixture_v2()))
 }
 
-pub(super) fn n34_fixture_v2() -> &'static OrdinaryFixtureV2 {
+pub(crate) fn n34_fixture_v2() -> &'static OrdinaryFixtureV2 {
     N34_FIXTURE.get_or_init(|| ordinary_fixture_v2(miura_fixture_v2_with_profile(N34, N34)))
 }
 
-pub(super) fn fresh_n33_fixture_v2() -> OrdinaryFixtureV2 {
+pub(crate) fn fresh_n33_fixture_v2() -> OrdinaryFixtureV2 {
     ordinary_fixture_v2(miura_fixture_v2())
 }
 
-fn ordinary_fixture_v2(fixture: MiuraFixtureV2) -> OrdinaryFixtureV2 {
+pub(crate) fn ordinary_fixture_v2(fixture: MiuraFixtureV2) -> OrdinaryFixtureV2 {
     let schedule = nonstationary_schedule_v2(&fixture);
     let pose = fixture
         .geometry

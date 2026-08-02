@@ -335,6 +335,8 @@ Phase3D/3Eでは、一般N非静止closureの全dyadic leafを同一world interv
 
 Phase3Fでは、shared face-pair registryをpublic inputから排除して内部導出し、private Phase3E whole-parent証拠をadditive public `CommonArticulationDynamicGeneralNRelievedClearanceCertificateV2`へ封印した。N>=33/profile内の場合だけbridge・ordinary・shared relief・aggregateをissue/revalidationごとに完全replayし、全live tuple・policy・limitを二重bindingで照合する。certificateはtransparent private one-field・非Clone・非serde・非Deref・非変換・redacted Debugで、raw evidence/registry/bindingとproject mutation・Apply・viewer・export authorityを公開しない。N=33/N=34 replay、outer resource・valid binding drift・stop、Rust 1.90 WSL focused 2/2、compile-fail doctest 9/9、strict static gatesを通過した。下流利用権限は未接続のため、SIM-010部分実装、MUST集計85 / 2 / 0、現行81.96%（表示82.0%）と82.29%（表示82.3%）候補のremote CI発効条件は変更しない。
 
+Phase3Gは、N>=33のauthenticated flat sourceに含まれる全directional face pairが、retained Phase3Fのcanonical all-unordered-face-pair relieved-clearance domainに属することだけを示すnarrow coverage boundaryである。N33 genuine source positive、standalone Phase3F N34 positiveとN33-source/N34-live rejection、semantic-equal source replay、foreign/stale source、same-shape issuer ABA、finite resource、stop、opaque APIを証拠化した。genuine N34 source assetは存在しないためtestでもauthorityを捏造しない。source directionの経路内維持、layer transport、continuous motion/collision authority、mutation、Apply、viewer、exportは未達かつ全て非認可のままである。N33 integration 1/1、compile-fail 8件を含む全doctest、all-target Clippy `-D warnings`、locked check、format、diff-checkを通過したが、SIM-010完成には数えず、MUST集計85 / 2 / 0、現行81.96%（表示82.0%）と82.29%（表示82.3%）候補のremote CI発効条件を変更しない。
+
 ## 折り手順
 
 | ID | 状態 | 現在の根拠・不足 |

@@ -297,4 +297,4 @@ fn checkpoint_v2(
 
 #[cfg(test)]
 #[path = "ordinary_interval/tests.rs"]
-mod tests;
+pub(crate) mod tests;

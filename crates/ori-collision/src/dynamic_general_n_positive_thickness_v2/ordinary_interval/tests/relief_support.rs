@@ -8,12 +8,12 @@ use super::super::relief_aggregate::*;
 use super::support::{OrdinaryFixtureV2, input_v2, strict_limits_v2};
 
 #[derive(Clone)]
-pub(super) struct ReliefFixtureInputV2 {
-    pub hinge: Vec<HingeReliefPolicyRecordV1>,
-    pub vertex: Vec<VertexReliefPolicyRecordV1>,
+pub(crate) struct ReliefFixtureInputV2 {
+    pub(crate) hinge: Vec<HingeReliefPolicyRecordV1>,
+    pub(crate) vertex: Vec<VertexReliefPolicyRecordV1>,
 }
 
-pub(super) fn relief_policies_v2(fixture: &OrdinaryFixtureV2) -> ReliefFixtureInputV2 {
+pub(crate) fn relief_policies_v2(fixture: &OrdinaryFixtureV2) -> ReliefFixtureInputV2 {
     let geometry = &fixture.fixture.geometry;
     let thickness = fixture.fixture.paper.thickness_mm;
     let mut hinge = geometry

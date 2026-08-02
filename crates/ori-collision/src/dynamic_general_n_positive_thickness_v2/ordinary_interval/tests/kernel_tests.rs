@@ -382,11 +382,28 @@ fn n33_n34_nonzero_general_n_kernel_resources_binding_and_stops() {
     );
 
     let mut substituted = n33.excluded_shared_pairs.clone();
-    substituted[0] = OrdinaryIntervalFacePairV2::new(
-        n33.fixture.geometry.face_ids()[0],
-        n33.fixture.geometry.face_ids()[2],
-    )
-    .unwrap();
+    let replaced = substituted[0];
+    let faces = n33.fixture.geometry.face_ids();
+    let replacement = (0..faces.len())
+        .flat_map(|first| {
+            (first + 1..faces.len()).map(move |second| {
+                OrdinaryIntervalFacePairV2::new(faces[first], faces[second])
+                    .expect("distinct canonical faces")
+            })
+        })
+        .find(|pair| {
+            n33.excluded_shared_pairs
+                .binary_search_by(|candidate| compare_pair_v2(candidate, pair))
+                .is_err()
+        })
+        .expect("fixture has an ordinary pair");
+    assert_ne!(replacement, replaced);
+    assert!(
+        substituted[1..]
+            .binary_search_by(|candidate| compare_pair_v2(candidate, &replacement))
+            .is_err()
+    );
+    substituted[0] = replacement;
     substituted.sort_unstable_by(compare_pair_v2);
     let substituted_input = OrdinaryIntervalInputV2 {
         excluded_shared_pairs: &substituted,

@@ -1594,6 +1594,18 @@ fn positive_thickness_exact_prism_safe_proof_admits_shared_hinge_with_finite_bou
         ),
         Err(StaticCollisionError::PairEvidenceUnavailable { .. })
     ));
+    assert_eq!(
+        diagnose_static_collision_geometry(
+            &model,
+            &pose,
+            0.1,
+            StaticCollisionLimits {
+                max_shared_hinge_solid_diagnostics: 0,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        Err(StaticCollisionError::ResourceLimitExceeded)
+    );
 }
 
 #[test]
@@ -1897,30 +1909,6 @@ fn zero_thickness_shared_hinge_full_fold_is_flat_stack_without_layer_order() {
             }
         }
     }
-}
-
-#[test]
-fn shared_hinge_solid_diagnostic_has_an_explicit_public_resource_gate() {
-    let (model, hinge) = triangular_shared_hinge_400mm_fixture(EdgeKind::Mountain, false, false);
-    let angles = CanonicalHingeAngles::new(vec![
-        HingeAngle::new(hinge, 10.0).expect("valid hinge angle"),
-    ])
-    .expect("canonical hinge angle");
-    let pose = model
-        .solve(Some(model.face_ids()[0]), &angles)
-        .expect("triangular hinge pose");
-    assert_eq!(
-        diagnose_static_collision_geometry(
-            &model,
-            &pose,
-            0.1,
-            StaticCollisionLimits {
-                max_shared_hinge_solid_diagnostics: 0,
-                ..StaticCollisionLimits::default()
-            },
-        ),
-        Err(StaticCollisionError::ResourceLimitExceeded)
-    );
 }
 
 #[test]

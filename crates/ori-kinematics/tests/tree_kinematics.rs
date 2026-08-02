@@ -175,6 +175,47 @@ fn single_fold_fixture(assignment: FoldAssignment) -> FoldFixture {
     extract_fixture(vertices, edges, boundary, vec![fold])
 }
 
+#[test]
+fn material_graph_source_namespace_requires_complete_canonical_components_v1() {
+    let fixture = single_fold_fixture(FoldAssignment::Mountain);
+    let geometry = MaterialHingeGraphGeometry::prepare(
+        &fixture.pattern,
+        &fixture.paper,
+        &fixture.topology,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("canonical material graph");
+    assert_eq!(
+        geometry.source_identity_namespace_v1(),
+        Some(fixture_project_id())
+    );
+
+    let mut foreign_origin = fixture.topology.clone();
+    foreign_origin.material_components[0].sheet_origin = ProjectId::new();
+    let geometry = MaterialHingeGraphGeometry::prepare(
+        &fixture.pattern,
+        &fixture.paper,
+        &foreign_origin,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("component metadata does not invalidate observation geometry");
+    assert_eq!(geometry.source_identity_namespace_v1(), None);
+
+    let mut duplicate_membership = fixture.topology.clone();
+    let duplicate_face = duplicate_membership.material_components[0].faces[0];
+    duplicate_membership.material_components[0]
+        .faces
+        .push(duplicate_face);
+    let geometry = MaterialHingeGraphGeometry::prepare(
+        &fixture.pattern,
+        &fixture.paper,
+        &duplicate_membership,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("component metadata does not invalidate observation geometry");
+    assert_eq!(geometry.source_identity_namespace_v1(), None);
+}
+
 fn non_commuting_fixture() -> FoldFixture {
     let vertices = vec![
         vertex(1, 0.0, 0.0),

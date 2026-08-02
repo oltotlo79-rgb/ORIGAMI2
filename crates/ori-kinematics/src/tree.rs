@@ -3,7 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, VertexId};
+use ori_domain::{
+    CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, VertexId,
+};
 use ori_geometry::{SegmentIntersection, polygon_signed_double_area, segment_intersection};
 use ori_topology::{
     CanonicalFaceKeyError, EdgeIncidence, EffectiveCutMaterialSnapshotDiagnosticV1, FaceAdjacency,
@@ -446,6 +448,8 @@ impl MaterialTreeDyadicFaceIntervalRegistryV1 {
 pub struct MaterialHingeGraphGeometry {
     issuer: Arc<()>,
     fold_model_fingerprint_v1: Option<[u8; 32]>,
+    source_revision_v1: Option<u64>,
+    source_identity_namespace_v1: Option<ProjectId>,
     face_ids: Vec<FaceId>,
     hinges: Vec<TreeHinge>,
     positions: HashMap<VertexId, Point3>,
@@ -856,6 +860,8 @@ impl MaterialHingeGraphGeometry {
         Self {
             issuer: Arc::new(()),
             fold_model_fingerprint_v1: self.fold_model_fingerprint_v1,
+            source_revision_v1: self.source_revision_v1,
+            source_identity_namespace_v1: self.source_identity_namespace_v1,
             face_ids,
             hinges,
             positions: self.positions.clone(),
@@ -940,6 +946,8 @@ impl MaterialHingeGraphGeometry {
         Ok(Self {
             issuer: Arc::new(()),
             fold_model_fingerprint_v1: self.fold_model_fingerprint_v1,
+            source_revision_v1: self.source_revision_v1,
+            source_identity_namespace_v1: self.source_identity_namespace_v1,
             face_ids,
             hinges,
             positions,
@@ -952,6 +960,8 @@ impl MaterialHingeGraphGeometry {
         Self {
             issuer: Arc::new(()),
             fold_model_fingerprint_v1: None,
+            source_revision_v1: None,
+            source_identity_namespace_v1: None,
             face_ids,
             hinges,
             positions: HashMap::new(),
@@ -978,11 +988,15 @@ impl MaterialHingeGraphGeometry {
             })
             .collect::<Result<Vec<_>, KinematicsError>>()?;
         let prepared = prepare_material_graph(pattern, paper, topology, &positions, limits)?;
+        let source_identity_namespace_v1 =
+            validated_material_identity_namespace_v1(topology, limits);
         Ok(Self {
             issuer: Arc::new(()),
             fold_model_fingerprint_v1: Some(
                 ori_foldability::fold_model_fingerprint_v1(pattern, paper).0,
             ),
+            source_revision_v1: Some(topology.source_revision),
+            source_identity_namespace_v1,
             face_ids: prepared.face_ids,
             hinges: prepared.hinges,
             positions: prepared.positions,
@@ -1001,6 +1015,23 @@ impl MaterialHingeGraphGeometry {
     #[must_use]
     pub const fn fold_model_fingerprint_v1(&self) -> Option<[u8; 32]> {
         self.fold_model_fingerprint_v1
+    }
+
+    /// Revision label of the topology revalidated when this geometry was
+    /// prepared. Synthetic geometry has no source revision and must fail
+    /// closed at provenance-sensitive boundaries.
+    #[must_use]
+    pub const fn source_revision_v1(&self) -> Option<u64> {
+        self.source_revision_v1
+    }
+
+    /// Identity namespace independently recovered from a complete, canonical
+    /// material-component registry. Missing, inconsistent, duplicated, or
+    /// foreign component membership fails closed as `None` without making
+    /// observation-only geometry preparation incompatible with older inputs.
+    #[must_use]
+    pub const fn source_identity_namespace_v1(&self) -> Option<ProjectId> {
+        self.source_identity_namespace_v1
     }
 
     #[must_use]
@@ -1989,6 +2020,55 @@ fn check_raw_resource_counts(
         )?;
     }
     Ok(())
+}
+
+/// Recovers the UUID-v5 namespace only when material-component provenance is
+/// a bounded, exact partition of the validated face registry. This is kept
+/// separate from geometry acceptance: legacy snapshots without component
+/// provenance remain observable, but cannot cross provenance-sensitive proof
+/// boundaries.
+fn validated_material_identity_namespace_v1(
+    topology: &TopologySnapshot,
+    limits: TreeKinematicsLimits,
+) -> Option<ProjectId> {
+    if topology.faces.is_empty()
+        || topology.faces.len() > limits.max_faces
+        || topology.material_components.is_empty()
+        || topology.material_components.len() > limits.max_faces
+    {
+        return None;
+    }
+
+    let namespace = topology.material_components.first()?.sheet_origin;
+    let mut component_face_count = 0_usize;
+    for component in &topology.material_components {
+        if component.sheet_origin != namespace {
+            return None;
+        }
+        component_face_count = component_face_count.checked_add(component.faces.len())?;
+        if component_face_count > limits.max_faces {
+            return None;
+        }
+    }
+    if component_face_count != topology.faces.len() {
+        return None;
+    }
+
+    let mut unclaimed_faces = HashSet::new();
+    unclaimed_faces.try_reserve(topology.faces.len()).ok()?;
+    for face in &topology.faces {
+        if face.id != FaceId::derive_v5(namespace, &face.key.0) || !unclaimed_faces.insert(face.id) {
+            return None;
+        }
+    }
+    for component in &topology.material_components {
+        for face in &component.faces {
+            if !unclaimed_faces.remove(face) {
+                return None;
+            }
+        }
+    }
+    unclaimed_faces.is_empty().then_some(namespace)
 }
 
 fn unique_positions(
@@ -3223,6 +3303,8 @@ mod tests {
     fn synthetic_graph_geometry_has_no_fold_model_binding_v1() {
         let geometry = MaterialHingeGraphGeometry::new_for_test(Vec::new(), Vec::new());
         assert_eq!(geometry.fold_model_fingerprint_v1(), None);
+        assert_eq!(geometry.source_revision_v1(), None);
+        assert_eq!(geometry.source_identity_namespace_v1(), None);
     }
 
     fn interval_test_angles_v1(edges: [EdgeId; 2], values: [f64; 2]) -> CanonicalHingeAngles {

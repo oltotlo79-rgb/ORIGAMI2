@@ -90,13 +90,6 @@ pub use common_articulation_block_closure_set_v2::{
     prove_common_articulation_block_closure_set_v2,
     prove_common_articulation_block_closure_set_with_checkpoint_v2,
 };
-pub use common_articulation_whole_parent_closure_v2::{
-    COMMON_ARTICULATION_WHOLE_PARENT_CLOSURE_MODEL_ID_V2,
-    CommonArticulationWholeParentClosureErrorV2, CommonArticulationWholeParentClosureInputV2,
-    CommonArticulationWholeParentClosureLimitsV2, CommonArticulationWholeParentClosureStopV2,
-    CommonArticulationWholeParentClosureV2, prove_common_articulation_whole_parent_closure_v2,
-    prove_common_articulation_whole_parent_closure_with_checkpoint_v2,
-};
 pub use common_articulation_pose_v2::{
     COMMON_ARTICULATION_POSE_MODEL_ID_V2, CommonArticulationHingeAngleBitsV2,
     CommonArticulationPoseAuthorityV2, CommonArticulationPoseBlockRestrictionRefV2,
@@ -107,6 +100,13 @@ pub use common_articulation_pose_v2::{
 pub use common_articulation_resource_profile::{
     COMMON_ARTICULATION_RESOURCE_PROFILE_MODEL_ID_V2, CommonArticulationCanonicalMiuraResourcesV2,
     CommonArticulationResourceProfileErrorV2, CommonArticulationResourceProfileV2,
+};
+pub use common_articulation_whole_parent_closure_v2::{
+    COMMON_ARTICULATION_WHOLE_PARENT_CLOSURE_MODEL_ID_V2,
+    CommonArticulationWholeParentClosureErrorV2, CommonArticulationWholeParentClosureInputV2,
+    CommonArticulationWholeParentClosureLimitsV2, CommonArticulationWholeParentClosureStopV2,
+    CommonArticulationWholeParentClosureV2, prove_common_articulation_whole_parent_closure_v2,
+    prove_common_articulation_whole_parent_closure_with_checkpoint_v2,
 };
 pub use dyadic_pose_graph::{
     DyadicPoseGraphGenerationErrorV1, DyadicPoseGraphLimitsV1, DyadicPoseGraphTransitionV1,

@@ -2057,7 +2057,8 @@ fn validated_material_identity_namespace_v1(
     let mut unclaimed_faces = HashSet::new();
     unclaimed_faces.try_reserve(topology.faces.len()).ok()?;
     for face in &topology.faces {
-        if face.id != FaceId::derive_v5(namespace, &face.key.0) || !unclaimed_faces.insert(face.id) {
+        if face.id != FaceId::derive_v5(namespace, &face.key.0) || !unclaimed_faces.insert(face.id)
+        {
             return None;
         }
     }

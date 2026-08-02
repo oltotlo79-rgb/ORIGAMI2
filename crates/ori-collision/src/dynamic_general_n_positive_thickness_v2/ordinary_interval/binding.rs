@@ -55,6 +55,8 @@ pub(super) fn binding_fingerprint_v2(
         run.accepted_leaf_count,
         run.processed_interval_node_count,
         run.certified_ordinary_pair_leaf_count,
+        run.root_lower_boundary_accepted_leaf_count,
+        run.root_upper_boundary_accepted_leaf_count,
         validated.resources.face_count,
         validated.resources.hinge_count,
         validated.resources.boundary_vertex_occurrences,

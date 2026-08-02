@@ -34,7 +34,53 @@ pub(super) fn validate_coverage_v2(
     >,
 ) -> Result<ValidatedCoverageV2, CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2>
 {
-    preflight_limits_v2(&live, limits)?;
+    preflight_limits_v2(clearance, &live, limits)?;
+    validate_coverage_after_preflight_v2(clearance, live, source_authority, limits, checkpoint)
+}
+
+pub(super) fn validate_coverage_replay_v2(
+    clearance: &CommonArticulationDynamicGeneralNRelievedClearanceCertificateV2,
+    retained_limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
+    retained_source: SourceMetricsV2,
+    live: CommonArticulationDynamicGeneralNRelievedClearanceRevalidationInputV2<'_>,
+    source_authority: &GlobalFlatLayerOrderSourceAuthorityV2<'_>,
+    limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
+    checkpoint: &mut impl FnMut() -> Result<
+        (),
+        CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageStopV2,
+    >,
+) -> Result<ValidatedCoverageV2, CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2>
+{
+    preflight_limits_v2(clearance, &live, limits)?;
+    // Preserve Phase 3G's resource-error precedence without rescanning the
+    // source: every retained actual/required value is already sealed, and the
+    // declared aggregate equation is O(1). One-short caps fail here; only a
+    // resource-sufficient policy drift reaches the exact identity check.
+    checked_coverage_resources_v2(
+        clearance.actual_block_count_v2(),
+        clearance.replay_aggregate_peak_cap_v2(),
+        retained_source,
+        limits,
+    )?;
+    if !super::coverage_limits_match_v2(retained_limits, limits) {
+        return Err(
+            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::CertificateBindingMismatch,
+        );
+    }
+    validate_coverage_after_preflight_v2(clearance, live, source_authority, limits, checkpoint)
+}
+
+fn validate_coverage_after_preflight_v2(
+    clearance: &CommonArticulationDynamicGeneralNRelievedClearanceCertificateV2,
+    live: CommonArticulationDynamicGeneralNRelievedClearanceRevalidationInputV2<'_>,
+    source_authority: &GlobalFlatLayerOrderSourceAuthorityV2<'_>,
+    limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
+    checkpoint: &mut impl FnMut() -> Result<
+        (),
+        CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageStopV2,
+    >,
+) -> Result<ValidatedCoverageV2, CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2>
+{
     let mut source_checkpoint = || checkpoint().map_err(map_coverage_stop_to_transport_v2);
     let source = validate_authenticated_layer_source_v2(
         live.geometry,
@@ -75,6 +121,7 @@ pub(super) fn validate_coverage_v2(
 }
 
 fn preflight_limits_v2(
+    clearance: &CommonArticulationDynamicGeneralNRelievedClearanceCertificateV2,
     live: &CommonArticulationDynamicGeneralNRelievedClearanceRevalidationInputV2<'_>,
     limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
 ) -> Result<(), CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2> {
@@ -94,9 +141,16 @@ fn preflight_limits_v2(
         || limits.max_blocks != configured
         || live.decomposition.actual_block_count_v2() != actual
         || live.geometry.face_ids().len() != live.profile.actual_v2().face_count_v2()
+        || checked_declared_aggregate_peak_v2(clearance.replay_aggregate_peak_cap_v2(), limits)?
+            > limits.max_aggregate_peak_bytes
     {
         return Err(
             CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::ResourceLimit,
+        );
+    }
+    if !clearance.replay_limits_match_v2(live.limits) {
+        return Err(
+            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::CertificateBindingMismatch,
         );
     }
     Ok(())
@@ -110,7 +164,7 @@ fn coverage_resources_v2(
 {
     checked_coverage_resources_v2(
         clearance.actual_block_count_v2(),
-        clearance.aggregate_peak_bytes_upper_bound_v2(),
+        clearance.replay_aggregate_peak_cap_v2(),
         source,
         limits,
     )
@@ -118,29 +172,18 @@ fn coverage_resources_v2(
 
 fn checked_coverage_resources_v2(
     actual_block_count: usize,
-    clearance_peak_bytes: usize,
+    clearance_replay_peak_bytes_upper_bound: usize,
     source: SourceMetricsV2,
     limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
 ) -> Result<CoverageResourcesV2, CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2>
 {
     let publication_bytes =
         size_of::<CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2>();
-    // `publication_bytes` contains the resident original Phase 3F certificate
-    // and the complete outer seal. `clearance_peak_bytes` is Phase 3F's proof
-    // peak, including its newly generated candidate evidence. Adding the two
-    // therefore charges both simultaneously during replay. The borrowed source
-    // remains caller-resident throughout that replay, so its complete charged
-    // bytes are additive rather than one arm of the phase maximum. The 1 KiB
-    // shell/workspace charge is also additive: it conservatively keeps the
-    // authority/input shells, SHA-256 state, validated metrics, and checkpoint
-    // stack resident instead of relying on a phase-local stack definition.
-    let aggregate_peak_bytes = publication_bytes
-        .checked_add(source.charged_source_bytes)
-        .and_then(|value| value.checked_add(COVERAGE_WORKSPACE_BYTES_V2))
-        .and_then(|value| value.checked_add(clearance_peak_bytes))
-        .ok_or(
-            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::ResourceLimit,
-        )?;
+    // The replay bound is policy-based, not retained-actual-based: a foreign
+    // candidate can consume any source and Phase 3F peak admitted by the exact
+    // retained caps before failing its semantic binding.
+    let aggregate_peak_bytes =
+        checked_declared_aggregate_peak_v2(clearance_replay_peak_bytes_upper_bound, limits)?;
     if actual_block_count > limits.max_blocks
         || source.charged_source_bytes > limits.max_source_retained_bytes
         || source.material_faces > limits.max_material_faces
@@ -161,10 +204,21 @@ fn checked_coverage_resources_v2(
     Ok(CoverageResourcesV2 {
         source_logical_work: source.traversal_work,
         source_retained_bytes: source.charged_source_bytes,
-        clearance_peak_bytes,
+        clearance_replay_peak_bytes_upper_bound,
         publication_bytes,
         aggregate_peak_bytes,
     })
+}
+
+fn checked_declared_aggregate_peak_v2(
+    clearance_replay_peak_bytes_upper_bound: usize,
+    limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
+) -> Result<usize, CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2> {
+    size_of::<CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2>()
+        .checked_add(limits.max_source_retained_bytes)
+        .and_then(|value| value.checked_add(COVERAGE_WORKSPACE_BYTES_V2))
+        .and_then(|value| value.checked_add(clearance_replay_peak_bytes_upper_bound))
+        .ok_or(CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::ResourceLimit)
 }
 
 fn revalidate_clearance_v2(
@@ -224,7 +278,7 @@ fn coverage_binding_v2(
         source.metrics.traversal_work,
         resources.source_logical_work,
         resources.source_retained_bytes,
-        resources.clearance_peak_bytes,
+        resources.clearance_replay_peak_bytes_upper_bound,
         resources.publication_bytes,
         resources.aggregate_peak_bytes,
     ] {
@@ -373,97 +427,5 @@ const fn map_clearance_error_v2(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resource_equation_accepts_exact_and_rejects_every_one_short_cap() {
-        let source = SourceMetricsV2 {
-            material_faces: 11,
-            folded_faces: 12,
-            overlap_cells: 13,
-            face_pair_orders: 14,
-            global_order_faces: 15,
-            layer_records: 16,
-            boundary_vertices: 17,
-            boundary_layer_products: 18,
-            projected_source_bytes: 96,
-            charged_source_bytes: 128,
-            traversal_work: 19,
-        };
-        let publication =
-            size_of::<CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2>();
-        let clearance_peak = 2_048;
-        let aggregate = publication + 128 + COVERAGE_WORKSPACE_BYTES_V2 + clearance_peak;
-        let exact = CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2 {
-            max_blocks: 33,
-            max_source_retained_bytes: 128,
-            max_material_faces: 11,
-            max_folded_faces: 12,
-            max_overlap_cells: 13,
-            max_face_pair_orders: 14,
-            max_global_order_faces: 15,
-            max_layer_records: 16,
-            max_boundary_vertices: 17,
-            max_source_logical_work: 19,
-            max_publication_bytes: publication,
-            max_aggregate_peak_bytes: aggregate,
-        };
-        let resources = checked_coverage_resources_v2(33, clearance_peak, source, exact)
-            .expect("exact resource envelope");
-        assert_eq!(resources.aggregate_peak_bytes, aggregate);
-
-        for field in 0..12 {
-            let mut one_short = exact;
-            let cap = match field {
-                0 => &mut one_short.max_blocks,
-                1 => &mut one_short.max_source_retained_bytes,
-                2 => &mut one_short.max_material_faces,
-                3 => &mut one_short.max_folded_faces,
-                4 => &mut one_short.max_overlap_cells,
-                5 => &mut one_short.max_face_pair_orders,
-                6 => &mut one_short.max_global_order_faces,
-                7 => &mut one_short.max_layer_records,
-                8 => &mut one_short.max_boundary_vertices,
-                9 => &mut one_short.max_source_logical_work,
-                10 => &mut one_short.max_publication_bytes,
-                11 => &mut one_short.max_aggregate_peak_bytes,
-                _ => unreachable!(),
-            };
-            *cap -= 1;
-            assert_eq!(
-                checked_coverage_resources_v2(33, clearance_peak, source, one_short),
-                Err(CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::ResourceLimit),
-                "cap {field} one-short"
-            );
-        }
-    }
-
-    #[test]
-    fn coverage_stop_mapping_is_exact() {
-        for (stop, expected) in [
-            (
-                CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageStopV2::Cancelled,
-                CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::Cancelled,
-            ),
-            (
-                CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageStopV2::DeadlineExceeded,
-                CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::DeadlineExceeded,
-            ),
-        ] {
-            assert_eq!(checkpoint_v2(&mut || Err(stop)), Err(expected));
-        }
-    }
-
-    #[test]
-    fn phase3g_preserves_phase3f_certificate_binding_mismatch() {
-        let mismatch =
-            CommonArticulationDynamicGeneralNRelievedClearanceErrorV2::CertificateBindingMismatch;
-        assert_eq!(
-            map_clearance_error_v2(mismatch),
-            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::Clearance(
-                mismatch
-            )
-        );
-    }
-}
+#[path = "validation/tests.rs"]
+mod tests;

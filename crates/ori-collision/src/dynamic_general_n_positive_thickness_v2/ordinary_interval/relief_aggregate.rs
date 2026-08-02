@@ -134,8 +134,29 @@ pub(super) struct WholeParentPositiveThicknessEvidenceV2 {
     ordinary_pairs: usize,
     shared_hinge_pairs: usize,
     shared_vertex_pairs: usize,
+    closed_domain_boundary_coverage: ClosedDyadicDomainBoundaryCoverageV2,
     resources: ReliefAggregateResourcesV2,
     limits: ReliefAggregateLimitsV2,
+}
+
+/// Aggregate-only counts proving that each outer point of the canonical
+/// closed dyadic domain belongs to an accepted leaf in both independent
+/// positive-thickness partitions. No leaf descriptor is retained or exposed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClosedDyadicDomainBoundaryCoverageV2 {
+    pub(crate) ordinary_lower_accepted_leaves: usize,
+    pub(crate) ordinary_upper_accepted_leaves: usize,
+    pub(crate) shared_relief_lower_accepted_leaves: usize,
+    pub(crate) shared_relief_upper_accepted_leaves: usize,
+}
+
+impl ClosedDyadicDomainBoundaryCoverageV2 {
+    pub(crate) const fn is_complete_v2(self) -> bool {
+        self.ordinary_lower_accepted_leaves == 1
+            && self.ordinary_upper_accepted_leaves == 1
+            && self.shared_relief_lower_accepted_leaves == 1
+            && self.shared_relief_upper_accepted_leaves == 1
+    }
 }
 
 /// Narrow one-way seal consumed by the crate-private public adapter. It omits
@@ -147,6 +168,7 @@ pub(super) struct WholeParentPositiveThicknessAdapterSealV2 {
     pub(super) ordinary_pairs: usize,
     pub(super) shared_hinge_pairs: usize,
     pub(super) shared_vertex_pairs: usize,
+    pub(super) closed_domain_boundary_coverage: ClosedDyadicDomainBoundaryCoverageV2,
     pub(super) aggregate_peak_bytes: usize,
 }
 
@@ -155,9 +177,17 @@ struct SharedReliefEvidenceV2 {
     shared_pair_digest: [u8; 32],
     policy_digest: [u8; 32],
     partition_digest: [u8; 32],
+    root_lower_boundary_accepted_leaf_count: usize,
+    root_upper_boundary_accepted_leaf_count: usize,
     binding: [u8; 32],
     resources: ReliefAggregateResourcesV2,
     limits: ReliefAggregateLimitsV2,
+}
+
+struct ReliefPartitionRunV2 {
+    digest: [u8; 32],
+    root_lower_boundary_accepted_leaf_count: usize,
+    root_upper_boundary_accepted_leaf_count: usize,
 }
 
 impl std::fmt::Debug for WholeParentPositiveThicknessEvidenceV2 {
@@ -232,6 +262,7 @@ pub(super) fn into_public_adapter_seal_v2(
         ordinary_pairs: evidence.ordinary_pairs,
         shared_hinge_pairs: evidence.shared_hinge_pairs,
         shared_vertex_pairs: evidence.shared_vertex_pairs,
+        closed_domain_boundary_coverage: evidence.closed_domain_boundary_coverage,
         aggregate_peak_bytes: evidence.resources.aggregate_peak_bytes,
     }
 }
@@ -359,6 +390,15 @@ pub(super) fn prove_whole_parent_positive_thickness_with_checkpoint_v2(
     {
         return Err(ReliefAggregateErrorV2::InvalidInput);
     }
+    let closed_domain_boundary_coverage = ClosedDyadicDomainBoundaryCoverageV2 {
+        ordinary_lower_accepted_leaves: ordinary.root_lower_boundary_accepted_leaf_count,
+        ordinary_upper_accepted_leaves: ordinary.root_upper_boundary_accepted_leaf_count,
+        shared_relief_lower_accepted_leaves: relief.root_lower_boundary_accepted_leaf_count,
+        shared_relief_upper_accepted_leaves: relief.root_upper_boundary_accepted_leaf_count,
+    };
+    if !closed_domain_boundary_coverage.is_complete_v2() {
+        return Err(ReliefAggregateErrorV2::InvalidInput);
+    }
     let aggregate_binding = binding::aggregate_binding_v2(&input, &ordinary, &relief)?;
     relief_checkpoint_v2(&mut checkpoint)?;
     Ok(WholeParentPositiveThicknessEvidenceV2 {
@@ -371,6 +411,7 @@ pub(super) fn prove_whole_parent_positive_thickness_with_checkpoint_v2(
         ordinary_pairs: ordinary.resources.ordinary_face_pairs,
         shared_hinge_pairs: relief.resources.shared_hinge_pairs,
         shared_vertex_pairs: relief.resources.shared_vertex_pairs,
+        closed_domain_boundary_coverage,
         resources: relief.resources,
         limits: input.limits,
     })
@@ -382,15 +423,17 @@ fn prove_shared_relief_with_checkpoint_v2(
     checkpoint: &mut impl FnMut() -> Result<(), OrdinaryIntervalStopV2>,
 ) -> Result<SharedReliefEvidenceV2, ReliefAggregateErrorV2> {
     let mut validated = classification::validate_relief_input_v2(&input, checkpoint)?;
-    let partition_digest = geometry::prove_relief_partition_v2(&input, &mut validated, checkpoint)?;
+    let partition = geometry::prove_relief_partition_v2(&input, &mut validated, checkpoint)?;
     relief_checkpoint_v2(checkpoint)?;
     resources::finish_resource_accounting_v2(&input, ordinary_resources, &mut validated.resources)?;
-    let binding = binding::relief_binding_v2(&input, &validated, partition_digest)?;
+    let binding = binding::relief_binding_v2(&input, &validated, &partition)?;
     Ok(SharedReliefEvidenceV2 {
         issuer_geometry: input.ordinary.geometry.instance_anchor_v1(),
         shared_pair_digest: validated.shared_pair_digest,
         policy_digest: validated.policy_digest,
-        partition_digest,
+        partition_digest: partition.digest,
+        root_lower_boundary_accepted_leaf_count: partition.root_lower_boundary_accepted_leaf_count,
+        root_upper_boundary_accepted_leaf_count: partition.root_upper_boundary_accepted_leaf_count,
         binding,
         resources: validated.resources,
         limits: input.limits,

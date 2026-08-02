@@ -141,7 +141,7 @@ pub(super) fn exact_coverage_limits_v2(
     let aggregate = publication
         + source_retained
         + COVERAGE_WORKSPACE_BYTES_V2
-        + clearance.aggregate_peak_bytes_upper_bound_v2();
+        + clearance.replay_aggregate_peak_cap_v2();
     CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2 {
         max_blocks: fixture.fixture.profile.configured_max_blocks_v2(),
         max_source_retained_bytes: source_retained,
@@ -173,6 +173,75 @@ pub(super) fn replay_input_v2<'a>(
         source_authority: source,
         limits,
     }
+}
+
+pub(super) fn exact_endpoint_limits_v2(
+    coverage: &CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2,
+) -> CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2 {
+    let retained_coverage_bytes =
+        size_of::<CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2>();
+    let publication_bytes = size_of::<
+        CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteV2,
+    >();
+    let delegated_replay_peak_bytes = retained_coverage_bytes
+        .checked_add(coverage.limits.max_source_retained_bytes)
+        .and_then(|value| value.checked_add(super::super::COVERAGE_WORKSPACE_BYTES_V2))
+        .and_then(|value| value.checked_add(coverage.clearance.replay_aggregate_peak_cap_v2()))
+        .expect("checked Phase 3H delegated replay peak");
+    let aggregate_peak_bytes = delegated_replay_peak_bytes
+        + (publication_bytes - retained_coverage_bytes)
+        + super::super::closed_dyadic_endpoint_positive_thickness::PROMOTION_WORKSPACE_BYTES_V2;
+    CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2 {
+        max_blocks: coverage.limits.max_blocks,
+        max_retained_coverage_bytes: retained_coverage_bytes,
+        max_promotion_logical_work:
+            super::super::closed_dyadic_endpoint_positive_thickness::PROMOTION_LOGICAL_WORK_V2,
+        max_promotion_workspace_bytes:
+            super::super::closed_dyadic_endpoint_positive_thickness::PROMOTION_WORKSPACE_BYTES_V2,
+        max_publication_bytes: publication_bytes,
+        max_aggregate_peak_bytes: aggregate_peak_bytes,
+    }
+}
+
+pub(super) fn endpoint_replay_input_v2<'a>(
+    fixture: &'a OrdinaryFixtureV2,
+    policies: &'a ReliefFixtureInputV2,
+    public_limits: CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
+    source: &'a GlobalFlatLayerOrderSourceAuthorityV2<'a>,
+    coverage_limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
+    endpoint_limits:
+        CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2,
+) -> CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteRevalidationInputV2<
+    'a,
+>{
+    CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteRevalidationInputV2 {
+        coverage_replay: replay_input_v2(
+            fixture,
+            policies,
+            public_limits,
+            source,
+            coverage_limits,
+        ),
+        limits: endpoint_limits,
+    }
+}
+
+pub(super) fn set_endpoint_limit_v2(
+    mut limits:
+        CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2,
+    field: usize,
+    value: usize,
+) -> CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2 {
+    match field {
+        0 => limits.max_blocks = value,
+        1 => limits.max_retained_coverage_bytes = value,
+        2 => limits.max_promotion_logical_work = value,
+        3 => limits.max_promotion_workspace_bytes = value,
+        4 => limits.max_publication_bytes = value,
+        5 => limits.max_aggregate_peak_bytes = value,
+        _ => unreachable!(),
+    }
+    limits
 }
 
 pub(super) fn limit_value_v2(

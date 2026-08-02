@@ -30,7 +30,12 @@ const COVERAGE_WORKSPACE_BYTES_V2: usize = 1_024;
 
 mod validation;
 
-use validation::{checkpoint_v2, validate_coverage_v2};
+#[path = "dynamic_relieved_source_coverage/closed_dyadic_endpoint_positive_thickness.rs"]
+mod closed_dyadic_endpoint_positive_thickness;
+
+pub use closed_dyadic_endpoint_positive_thickness::*;
+
+use validation::{checkpoint_v2, validate_coverage_replay_v2, validate_coverage_v2};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageStopV2 {
@@ -112,7 +117,7 @@ pub struct CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageRevalidat
 pub(super) struct CoverageResourcesV2 {
     source_logical_work: usize,
     source_retained_bytes: usize,
-    clearance_peak_bytes: usize,
+    clearance_replay_peak_bytes_upper_bound: usize,
     publication_bytes: usize,
     aggregate_peak_bytes: usize,
 }
@@ -270,8 +275,10 @@ impl CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2 {
         >,
     ) -> Result<(), CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2> {
         checkpoint_v2(&mut checkpoint)?;
-        let validated = validate_coverage_v2(
+        let validated = validate_coverage_replay_v2(
             &self.clearance,
+            self.limits,
+            self.source_metrics,
             input.live,
             input.source_authority,
             input.limits,
@@ -281,7 +288,6 @@ impl CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2 {
             || self.source_provenance != validated.source.provenance
             || self.source_metrics != validated.source.metrics
             || self.resources != validated.resources
-            || !coverage_limits_match_v2(self.limits, input.limits)
             || self.binding_fingerprint != validated.binding_fingerprint
         {
             checkpoint_v2(&mut checkpoint)?;

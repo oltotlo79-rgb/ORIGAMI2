@@ -6,7 +6,7 @@ pub(super) fn prove_relief_partition_v2(
     input: &ReliefAggregateInputV2<'_>,
     validated: &mut ValidatedReliefV2<'_>,
     checkpoint: &mut impl FnMut() -> Result<(), OrdinaryIntervalStopV2>,
-) -> Result<[u8; 32], ReliefAggregateErrorV2> {
+) -> Result<ReliefPartitionRunV2, ReliefAggregateErrorV2> {
     let mut pending = Vec::new();
     pending
         .try_reserve_exact(input.limits.max_collision_leaves)
@@ -16,6 +16,8 @@ pub(super) fn prove_relief_partition_v2(
     }
     pending.push(DyadicLeafV2 { depth: 0, index: 0 });
     let mut live_leaves = 1usize;
+    let mut root_lower_boundary_accepted_leaf_count = 0usize;
+    let mut root_upper_boundary_accepted_leaf_count = 0usize;
     let mut hash = Sha256::new();
     hash.update(b"origami2/dynamic-general-n/shared-relief-partition/v2");
     while let Some(leaf) = pending.pop() {
@@ -32,6 +34,21 @@ pub(super) fn prove_relief_partition_v2(
                     .accepted_interval_leaves
                     .checked_add(1)
                     .ok_or(ReliefAggregateErrorV2::ResourceLimit)?;
+                if leaf.index == 0 {
+                    root_lower_boundary_accepted_leaf_count =
+                        root_lower_boundary_accepted_leaf_count
+                            .checked_add(1)
+                            .ok_or(ReliefAggregateErrorV2::ResourceLimit)?;
+                }
+                let leaf_denominator = 1_u64
+                    .checked_shl(leaf.depth)
+                    .ok_or(ReliefAggregateErrorV2::ResourceLimit)?;
+                if leaf.index.checked_add(1) == Some(leaf_denominator) {
+                    root_upper_boundary_accepted_leaf_count =
+                        root_upper_boundary_accepted_leaf_count
+                            .checked_add(1)
+                            .ok_or(ReliefAggregateErrorV2::ResourceLimit)?;
+                }
                 resources::charge_v2(
                     &mut validated.resources.hash_work,
                     2,
@@ -70,7 +87,10 @@ pub(super) fn prove_relief_partition_v2(
             }
         }
     }
-    if validated.resources.accepted_interval_leaves != live_leaves {
+    if validated.resources.accepted_interval_leaves != live_leaves
+        || root_lower_boundary_accepted_leaf_count != 1
+        || root_upper_boundary_accepted_leaf_count != 1
+    {
         return Err(ReliefAggregateErrorV2::InvalidInput);
     }
     if validated.resources.certified_shared_pair_leaf_count
@@ -85,10 +105,18 @@ pub(super) fn prove_relief_partition_v2(
         .map_err(map_ordinary_error_v2)?;
     resources::charge_v2(
         &mut validated.resources.hash_work,
-        2,
+        4,
         input.limits.max_hash_work,
     )?;
-    Ok(hash.finalize().into())
+    update_usize_v2(&mut hash, root_lower_boundary_accepted_leaf_count)
+        .map_err(map_ordinary_error_v2)?;
+    update_usize_v2(&mut hash, root_upper_boundary_accepted_leaf_count)
+        .map_err(map_ordinary_error_v2)?;
+    Ok(ReliefPartitionRunV2 {
+        digest: hash.finalize().into(),
+        root_lower_boundary_accepted_leaf_count,
+        root_upper_boundary_accepted_leaf_count,
+    })
 }
 
 fn prove_leaf_v2(

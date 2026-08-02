@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn relief_binding_v2(
     input: &ReliefAggregateInputV2<'_>,
     validated: &ValidatedReliefV2<'_>,
-    partition_digest: [u8; 32],
+    partition: &ReliefPartitionRunV2,
 ) -> Result<[u8; 32], ReliefAggregateErrorV2> {
     let mut hash = Sha256::new();
     hash.update(RELIEF_MODEL_ID_V2.as_bytes());
@@ -19,10 +19,14 @@ pub(super) fn relief_binding_v2(
     hash.update(validated.ordinary.audit_binding);
     hash.update(validated.shared_pair_digest);
     hash.update(validated.policy_digest);
-    hash.update(partition_digest);
+    hash.update(partition.digest);
     hash.update(input.ordinary.fixed_face.canonical_bytes());
     hash.update(input.ordinary.paper_thickness_mm.to_bits().to_le_bytes());
     hash.update(input.ordinary.closure_tolerance.to_bits().to_le_bytes());
+    update_usize_v2(&mut hash, partition.root_lower_boundary_accepted_leaf_count)
+        .map_err(map_ordinary_error_v2)?;
+    update_usize_v2(&mut hash, partition.root_upper_boundary_accepted_leaf_count)
+        .map_err(map_ordinary_error_v2)?;
     hash_limits_v2(&mut hash, input.limits)?;
     hash_resources_v2(&mut hash, validated.resources)?;
     Ok(hash.finalize().into())

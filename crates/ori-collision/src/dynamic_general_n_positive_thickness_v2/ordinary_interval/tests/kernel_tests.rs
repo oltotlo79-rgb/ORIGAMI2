@@ -1,4 +1,5 @@
 use super::super::*;
+use super::binding_assertions::assert_ordinary_binding_covers_boundary_and_resource_fields_v2;
 use super::negative::assert_overlapping_ordinary_pair_is_not_certified_v2;
 use super::support::{
     N33, N34, bridge_revalidation_input_v2, input_v2, n33_fixture_v2, n34_fixture_v2,
@@ -260,54 +261,11 @@ fn n33_n34_nonzero_general_n_kernel_resources_binding_and_stops() {
     assert_eq!(evidence33.resources.hinge_count, 12 * N33);
     assert!(evidence33.resources.ordinary_face_pairs > 0);
     assert!(evidence33.certified_ordinary_pair_leaf_count > 0);
-
-    let run33 = ProofRunV2 {
-        collision_partition_digest: evidence33.collision_partition_digest,
-        accepted_leaf_count: evidence33.accepted_leaf_count,
-        processed_interval_node_count: evidence33.processed_interval_node_count,
-        maximum_accepted_depth: evidence33.maximum_accepted_depth,
-        certified_ordinary_pair_leaf_count: evidence33.certified_ordinary_pair_leaf_count,
-    };
-    let base_binding = binding::binding_fingerprint_v2(&input33, &validated33, &run33).unwrap();
-    assert_eq!(base_binding, evidence33.binding_fingerprint);
-    macro_rules! resource_binding_drift {
-        ($field:ident) => {{
-            validated33.resources.$field += 1;
-            assert_ne!(
-                binding::binding_fingerprint_v2(&input33, &validated33, &run33).unwrap(),
-                base_binding,
-                "resource field {} must be bound",
-                stringify!($field)
-            );
-            validated33.resources.$field -= 1;
-        }};
-    }
-    resource_binding_drift!(charged_bridge_retained_bytes);
-    resource_binding_drift!(charged_bridge_revalidation_peak_bytes);
-    resource_binding_drift!(charged_schedule_retained_bytes);
-    resource_binding_drift!(charged_session_shell_bytes);
-    resource_binding_drift!(charged_session_steady_retained_bytes);
-    resource_binding_drift!(charged_bridge_revalidation_phase_peak_bytes);
-    resource_binding_drift!(charged_bridge_partition_search_work);
-    resource_binding_drift!(charged_leaf_wrapper_overhead_bytes);
-    resource_binding_drift!(charged_leaf_retained_bytes);
-    macro_rules! limit_binding_drift {
-        ($field:ident) => {{
-            let mut changed = input33;
-            changed.limits.$field += 1;
-            assert_ne!(
-                binding::binding_fingerprint_v2(&changed, &validated33, &run33).unwrap(),
-                base_binding,
-                "limit field {} must be bound",
-                stringify!($field)
-            );
-        }};
-    }
-    limit_binding_drift!(max_bridge_retained_bytes);
-    limit_binding_drift!(max_bridge_revalidation_peak_bytes);
-    limit_binding_drift!(max_schedule_retained_bytes);
-    limit_binding_drift!(max_session_shell_bytes);
-    limit_binding_drift!(max_bridge_partition_search_work_per_node);
+    assert_ordinary_binding_covers_boundary_and_resource_fields_v2(
+        input33,
+        &mut validated33,
+        &evidence33,
+    );
 
     let mut one_short_schedule = limits33;
     one_short_schedule.max_schedule_evaluation_workspace_bytes -= 1;

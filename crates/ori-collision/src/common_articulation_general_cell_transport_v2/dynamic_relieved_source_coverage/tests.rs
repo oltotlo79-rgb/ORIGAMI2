@@ -10,6 +10,8 @@ use super::{
 mod integration;
 #[path = "tests/pair_scanner.rs"]
 mod pair_scanner;
+#[path = "tests/policy_assertions.rs"]
+mod policy_assertions;
 #[path = "tests/support.rs"]
 mod support;
 

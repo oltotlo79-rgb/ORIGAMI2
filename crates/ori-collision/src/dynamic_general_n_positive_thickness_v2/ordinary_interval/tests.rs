@@ -1,5 +1,7 @@
 //! Focused tests for the private ordinary-pair kernel and its workspace seams.
 
+#[path = "tests/binding_assertions.rs"]
+mod binding_assertions;
 #[path = "tests/kernel_tests.rs"]
 mod kernel_tests;
 #[path = "tests/negative.rs"]

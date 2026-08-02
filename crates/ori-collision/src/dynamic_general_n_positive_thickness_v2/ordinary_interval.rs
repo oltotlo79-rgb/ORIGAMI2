@@ -174,6 +174,8 @@ pub(super) struct OrdinaryIntervalEvidenceV2 {
     processed_interval_node_count: usize,
     maximum_accepted_depth: u32,
     certified_ordinary_pair_leaf_count: usize,
+    root_lower_boundary_accepted_leaf_count: usize,
+    root_upper_boundary_accepted_leaf_count: usize,
     resources: OrdinaryIntervalResourcesV2,
     limits: OrdinaryIntervalLimitsV2,
 }
@@ -223,6 +225,8 @@ pub(super) struct ProofRunV2 {
     processed_interval_node_count: usize,
     maximum_accepted_depth: u32,
     certified_ordinary_pair_leaf_count: usize,
+    root_lower_boundary_accepted_leaf_count: usize,
+    root_upper_boundary_accepted_leaf_count: usize,
 }
 
 pub(super) fn prove_ordinary_interval_clearance_v2(
@@ -258,6 +262,8 @@ pub(super) fn prove_ordinary_interval_clearance_with_checkpoint_v2(
         processed_interval_node_count: run.processed_interval_node_count,
         maximum_accepted_depth: run.maximum_accepted_depth,
         certified_ordinary_pair_leaf_count: run.certified_ordinary_pair_leaf_count,
+        root_lower_boundary_accepted_leaf_count: run.root_lower_boundary_accepted_leaf_count,
+        root_upper_boundary_accepted_leaf_count: run.root_upper_boundary_accepted_leaf_count,
         resources: validated.resources,
         limits: input.limits,
     })

@@ -2,6 +2,7 @@
 
 use std::mem::size_of;
 
+pub(crate) use super::relief_aggregate::ClosedDyadicDomainBoundaryCoverageV2;
 use super::relief_aggregate::{
     ReliefAggregateErrorV2, ReliefAggregateInputV2, ReliefAggregateLimitsV2,
     WholeParentPositiveThicknessAdapterSealV2, into_public_adapter_seal_v2,
@@ -49,6 +50,9 @@ pub(crate) struct DirectClearanceEvidenceV2 {
     ordinary_face_pairs: usize,
     shared_hinge_pairs: usize,
     shared_vertex_pairs: usize,
+    closed_domain_boundary_coverage: ClosedDyadicDomainBoundaryCoverageV2,
+    limits_binding: [u8; 32],
+    replay_aggregate_peak_cap: usize,
     aggregate_peak_bytes: usize,
 }
 
@@ -72,6 +76,9 @@ impl DirectClearanceEvidenceV2 {
             && self.ordinary_face_pairs == candidate.ordinary_face_pairs
             && self.shared_hinge_pairs == candidate.shared_hinge_pairs
             && self.shared_vertex_pairs == candidate.shared_vertex_pairs
+            && self.closed_domain_boundary_coverage == candidate.closed_domain_boundary_coverage
+            && self.limits_binding == candidate.limits_binding
+            && self.replay_aggregate_peak_cap == candidate.replay_aggregate_peak_cap
             && self.aggregate_peak_bytes == candidate.aggregate_peak_bytes
     }
 
@@ -97,6 +104,25 @@ impl DirectClearanceEvidenceV2 {
 
     pub(crate) const fn aggregate_peak_bytes_v2(&self) -> usize {
         self.aggregate_peak_bytes
+    }
+
+    pub(crate) const fn closed_domain_boundary_coverage_v2(
+        &self,
+    ) -> ClosedDyadicDomainBoundaryCoverageV2 {
+        self.closed_domain_boundary_coverage
+    }
+
+    pub(crate) fn replay_limits_match_v2(
+        &self,
+        limits: CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
+    ) -> bool {
+        adapter_binding::public_limits_binding_v2(limits)
+            .is_ok_and(|candidate| candidate == self.limits_binding)
+            && limits.max_aggregate_peak_bytes == self.replay_aggregate_peak_cap
+    }
+
+    pub(crate) const fn replay_aggregate_peak_cap_v2(&self) -> usize {
+        self.replay_aggregate_peak_cap
     }
 }
 
@@ -258,7 +284,7 @@ fn finish_adapter_v2(
     if aggregate_peak_bytes > input.limits.max_aggregate_peak_bytes {
         return Err(AdapterErrorV2::ResourceLimit);
     }
-    let adapter_binding = adapter_binding::adapter_binding_v2(
+    let (adapter_binding, limits_binding) = adapter_binding::adapter_binding_v2(
         input,
         &seal,
         preflight.actual_block_count,
@@ -274,6 +300,9 @@ fn finish_adapter_v2(
         ordinary_face_pairs: seal.ordinary_pairs,
         shared_hinge_pairs: seal.shared_hinge_pairs,
         shared_vertex_pairs: seal.shared_vertex_pairs,
+        closed_domain_boundary_coverage: seal.closed_domain_boundary_coverage,
+        limits_binding,
+        replay_aggregate_peak_cap: input.limits.max_aggregate_peak_bytes,
         aggregate_peak_bytes,
     })
 }

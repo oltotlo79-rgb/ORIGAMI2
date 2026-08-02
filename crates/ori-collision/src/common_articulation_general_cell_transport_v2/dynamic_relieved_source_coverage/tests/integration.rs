@@ -3,6 +3,9 @@ use ori_foldability::GlobalFlatFoldabilityLimits;
 
 use super::super::super::n33_compact_pair_assignment_fixture_v2::n33_compact_pair_assignment_v2;
 use super::super::*;
+use super::policy_assertions::{
+    assert_endpoint_preflight_limits_and_entry_stops_v2, assert_preflight_limits_and_entry_stops_v2,
+};
 use super::support::*;
 use crate::common_articulation_clearance_v2::test_support::golden_n33_miura_fixture_v2;
 use crate::dynamic_general_n_positive_thickness_v2::ordinary_interval::tests::{
@@ -32,10 +35,10 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
     // These direct Phase 3F assertions used to issue a second N33
     // certificate in its public-API test. Keeping them immediately before
     // consumption preserves that coverage while sharing this golden issuer.
-    // The valid-limit drift below completes the private Phase 3F proof before
-    // rejecting its outer binding, and coverage issuance subsequently runs a
-    // same-live successful Phase 3F replay. A third direct success replay here
-    // would exercise the identical expensive path without a distinct gate.
+    // Direct Phase 3F revalidation preserves its established resource-error
+    // precedence and therefore performs the full proof before rejecting a
+    // valid policy drift. Coverage issuance and the final Phase 3H replay
+    // retain the distinct expensive success paths.
     for stop in [
         CommonArticulationDynamicGeneralNRelievedClearanceStopV2::Cancelled,
         CommonArticulationDynamicGeneralNRelievedClearanceStopV2::DeadlineExceeded,
@@ -59,14 +62,18 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
         max_publication_bytes: public_limits.max_publication_bytes + 1,
         ..public_limits
     };
+    let mut phase3f_limit_drift_polls = 0usize;
     assert_eq!(
-        clearance.revalidate_v2(revalidation_input_v2(
-            &fixture,
-            &policies,
-            drifted_phase3f_limits,
-        )),
+        clearance.revalidate_with_checkpoint_v2(
+            revalidation_input_v2(&fixture, &policies, drifted_phase3f_limits),
+            || {
+                phase3f_limit_drift_polls += 1;
+                Ok(())
+            },
+        ),
         Err(CommonArticulationDynamicGeneralNRelievedClearanceErrorV2::CertificateBindingMismatch)
     );
+    assert!(phase3f_limit_drift_polls > 100);
 
     let live_source = LiveGlobalInputV2::for_fixture_v2(&fixture);
     let (variable_count, registry, direction_bits) = n33_compact_pair_assignment_v2();
@@ -133,18 +140,6 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
     let fresh_authority = compact
         .revalidate_live_source_v2(live_source.input(&fixture), source_limits)
         .expect("fresh semantic-equal source authority");
-    let mut full_polls = 0usize;
-    certificate
-        .revalidate_with_checkpoint_v2(
-            replay_input_v2(&fixture, &policies, public_limits, &fresh_authority, limits),
-            || {
-                full_polls += 1;
-                Ok(())
-            },
-        )
-        .expect("fresh semantic-equal source remains valid");
-    assert!(full_polls > 100);
-
     assert_preflight_limits_and_entry_stops_v2(
         &certificate,
         &fixture,
@@ -153,6 +148,202 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
         &fresh_authority,
         limits,
     );
+    let drifted_coverage_limits =
+        CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2 {
+            max_aggregate_peak_bytes: limits.max_aggregate_peak_bytes + 1,
+            ..limits
+        };
+    let mut phase3g_policy_polls = 0usize;
+    assert_eq!(
+        certificate.revalidate_with_checkpoint_v2(
+            replay_input_v2(
+                &fixture,
+                &policies,
+                public_limits,
+                &fresh_authority,
+                drifted_coverage_limits,
+            ),
+            || {
+                phase3g_policy_polls += 1;
+                Ok(())
+            },
+        ),
+        Err(CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::CertificateBindingMismatch)
+    );
+    assert_eq!(phase3g_policy_polls, 1, "Phase 3G outer drift is fail-fast");
+    let drifted_clearance_limits = CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2 {
+        max_aggregate_peak_bytes: public_limits.max_aggregate_peak_bytes + 1,
+        ..public_limits
+    };
+    let mut phase3f_policy_polls = 0usize;
+    assert_eq!(
+        certificate.revalidate_with_checkpoint_v2(
+            replay_input_v2(
+                &fixture,
+                &policies,
+                drifted_clearance_limits,
+                &fresh_authority,
+                limits,
+            ),
+            || {
+                phase3f_policy_polls += 1;
+                Ok(())
+            },
+        ),
+        Err(CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::CertificateBindingMismatch)
+    );
+    assert_eq!(phase3f_policy_polls, 1, "Phase 3F drift is fail-fast");
+
+    let endpoint_limits = exact_endpoint_limits_v2(&certificate);
+    let endpoint = prove_common_articulation_dynamic_general_n_closed_dyadic_endpoint_positive_thickness_prerequisite_v2(
+        CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteInputV2 {
+            coverage: certificate,
+            limits: endpoint_limits,
+        },
+    )
+    .expect("Phase 3G promotes to closed-dyadic-boundary coverage without replay");
+    assert_eq!(endpoint.actual_block_count_v2(), 33);
+    assert_eq!(endpoint.material_face_count_v2(), 265);
+    assert_eq!(endpoint.source_order_pair_count_v2(), 34_980);
+    assert_eq!(endpoint.closed_dyadic_domain_boundary_count_v2(), 2);
+    assert!(endpoint.both_closed_dyadic_domain_boundaries_covered_by_positive_thickness_v2());
+    assert_eq!(
+        endpoint.retained_coverage_bytes_v2(),
+        endpoint_limits.max_retained_coverage_bytes
+    );
+    assert_eq!(
+        endpoint.promotion_logical_work_v2(),
+        endpoint_limits.max_promotion_logical_work
+    );
+    assert_eq!(
+        endpoint.publication_bytes_v2(),
+        endpoint_limits.max_publication_bytes
+    );
+    assert_eq!(
+        endpoint.aggregate_peak_bytes_upper_bound_v2(),
+        endpoint_limits.max_aggregate_peak_bytes
+    );
+    assert!(!endpoint.authorizes_continuous_motion());
+    assert!(!endpoint.authorizes_collision_clearance());
+    assert!(!endpoint.authorizes_layer_transport());
+    assert!(!endpoint.authorizes_project_mutation());
+    assert!(!endpoint.authorizes_apply());
+    assert!(!endpoint.authorizes_viewer());
+    assert!(!endpoint.authorizes_export());
+    let endpoint_debug = format!("{endpoint:?}");
+    for secret in [
+        "boundary_coverage",
+        "accepted_leaves",
+        "binding_fingerprint",
+        "clearance",
+        "source_digest",
+    ] {
+        assert!(!endpoint_debug.contains(secret), "Debug leaked {secret}");
+    }
+
+    // This replaces the former successful Phase 3G replay above: Phase 3H
+    // delegates exactly that replay, so the golden test adds no full proof run.
+    let mut full_polls = 0usize;
+    endpoint
+        .revalidate_with_checkpoint_v2(
+            endpoint_replay_input_v2(
+                &fixture,
+                &policies,
+                public_limits,
+                &fresh_authority,
+                limits,
+                endpoint_limits,
+            ),
+            || {
+                full_polls += 1;
+                Ok(())
+            },
+        )
+        .expect("fresh semantic-equal source preserves the endpoint prerequisite");
+    assert!(full_polls > 100);
+    assert_endpoint_preflight_limits_and_entry_stops_v2(
+        &endpoint,
+        &fixture,
+        &policies,
+        public_limits,
+        &fresh_authority,
+        limits,
+        endpoint_limits,
+    );
+    let drifted_endpoint_limits =
+        CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2 {
+            max_aggregate_peak_bytes: endpoint_limits.max_aggregate_peak_bytes + 1,
+            ..endpoint_limits
+        };
+    let mut endpoint_policy_polls = 0usize;
+    assert_eq!(
+        endpoint.revalidate_with_checkpoint_v2(
+            endpoint_replay_input_v2(
+                &fixture,
+                &policies,
+                public_limits,
+                &fresh_authority,
+                limits,
+                drifted_endpoint_limits,
+            ),
+            || {
+                endpoint_policy_polls += 1;
+                Ok(())
+            },
+        ),
+        Err(CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteErrorV2::CertificateBindingMismatch),
+        "valid Phase 3H outer policy drift fails before delegated replay"
+    );
+    assert_eq!(endpoint_policy_polls, 1);
+    let drifted_coverage_limits =
+        CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2 {
+            max_publication_bytes: limits.max_publication_bytes + 1,
+            ..limits
+        };
+    let mut endpoint_nested_coverage_polls = 0usize;
+    assert_eq!(
+        endpoint.revalidate_with_checkpoint_v2(
+            endpoint_replay_input_v2(
+                &fixture,
+                &policies,
+                public_limits,
+                &fresh_authority,
+                drifted_coverage_limits,
+                endpoint_limits,
+            ),
+            || {
+                endpoint_nested_coverage_polls += 1;
+                Ok(())
+            },
+        ),
+        Err(CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteErrorV2::CertificateBindingMismatch),
+        "nested Phase 3G policy drift fails before delegated replay"
+    );
+    assert_eq!(endpoint_nested_coverage_polls, 1);
+    let drifted_clearance_limits = CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2 {
+        max_publication_bytes: public_limits.max_publication_bytes + 1,
+        ..public_limits
+    };
+    let mut endpoint_nested_clearance_polls = 0usize;
+    assert_eq!(
+        endpoint.revalidate_with_checkpoint_v2(
+            endpoint_replay_input_v2(
+                &fixture,
+                &policies,
+                drifted_clearance_limits,
+                &fresh_authority,
+                limits,
+                endpoint_limits,
+            ),
+            || {
+                endpoint_nested_clearance_polls += 1;
+                Ok(())
+            },
+        ),
+        Err(CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteErrorV2::CertificateBindingMismatch),
+        "nested Phase 3F policy drift fails before delegated replay"
+    );
+    assert_eq!(endpoint_nested_clearance_polls, 1);
 
     let foreign_live = super::super::super::test_support::small_live_global_input_v2();
     let foreign_report = analyze_global_flat_foldability(
@@ -164,22 +355,24 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
         .layer_order_source_authority_v2()
         .expect("foreign sealed source");
     assert_eq!(
-        certificate.revalidate_v2(replay_input_v2(
+        endpoint.revalidate_v2(endpoint_replay_input_v2(
             &fixture,
             &policies,
             public_limits,
             &foreign_authority,
             limits,
+            endpoint_limits,
         )),
-        Err(
+        Err(CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteErrorV2::Coverage(
             CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::SourceBindingMismatch
-        )
+        ))
     );
 
     // The existing Phase 3F public-API test supplies the standalone genuine
     // N34 positive. This repository has no genuine N34 source asset, so this
-    // retained N33 coverage seal must fail against N34 live state rather than
-    // manufacturing an authority for the test.
+    // retained N33 coverage identity cannot match the N34 live/policy tuple.
+    // Phase 3H rejects that tuple at the exact replay-policy boundary and does
+    // not manufacture a genuine N34 source authority for the test.
     let n34 = n34_fixture_v2();
     let n34_policies = relief_policies_v2(n34);
     let n34_public_limits = public_limits_v2(n34);
@@ -188,16 +381,15 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
         ..limits
     };
     assert_eq!(
-        certificate.revalidate_v2(replay_input_v2(
+        endpoint.revalidate_v2(endpoint_replay_input_v2(
             n34,
             &n34_policies,
             n34_public_limits,
             &fresh_authority,
             n34_limits,
+            endpoint_limits,
         )),
-        Err(
-            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::SourceBindingMismatch
-        )
+        Err(CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteErrorV2::CertificateBindingMismatch)
     );
 }
 
@@ -228,51 +420,5 @@ fn assert_phase3f_public_summary_v2(
         "vertex_policies",
     ] {
         assert!(!debug.contains(secret), "Debug leaked {secret}");
-    }
-}
-
-fn assert_preflight_limits_and_entry_stops_v2(
-    certificate: &CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2,
-    fixture: &crate::dynamic_general_n_positive_thickness_v2::ordinary_interval::tests::support::OrdinaryFixtureV2,
-    policies: &crate::dynamic_general_n_positive_thickness_v2::ordinary_interval::tests::relief_support::ReliefFixtureInputV2,
-    public_limits: CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
-    authority: &ori_foldability::GlobalFlatLayerOrderSourceAuthorityV2<'_>,
-    limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
-) {
-    for field in 0..12 {
-        for invalid in [0, usize::MAX] {
-            assert_eq!(
-                certificate.revalidate_v2(replay_input_v2(
-                    fixture,
-                    policies,
-                    public_limits,
-                    authority,
-                    set_limit_v2(limits, field, invalid),
-                )),
-                Err(
-                    CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::ResourceLimit
-                ),
-                "limit {field} rejects {invalid}"
-            );
-        }
-    }
-    for (stop, expected) in [
-        (
-            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageStopV2::Cancelled,
-            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::Cancelled,
-        ),
-        (
-            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageStopV2::DeadlineExceeded,
-            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::DeadlineExceeded,
-        ),
-    ] {
-        assert_eq!(
-            certificate.revalidate_with_checkpoint_v2(
-                replay_input_v2(fixture, policies, public_limits, authority, limits),
-                || Err(stop),
-            ),
-            Err(expected),
-            "entry stop mapping"
-        );
     }
 }

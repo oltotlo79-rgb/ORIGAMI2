@@ -23,6 +23,8 @@ pub(super) fn prove_partition_v2(
     let mut processed_interval_node_count = 0usize;
     let mut maximum_accepted_depth = 0u32;
     let mut certified_ordinary_pair_leaf_count = 0usize;
+    let mut root_lower_boundary_accepted_leaf_count = 0usize;
+    let mut root_upper_boundary_accepted_leaf_count = 0usize;
     let mut partition_hash = Sha256::new();
     partition_hash.update(b"origami2/dynamic-general-n/ordinary-collision-partition/v2");
     while let Some(leaf) = pending.pop() {
@@ -40,6 +42,21 @@ pub(super) fn prove_partition_v2(
                 certified_ordinary_pair_leaf_count = certified_ordinary_pair_leaf_count
                     .checked_add(resources.ordinary_face_pairs)
                     .ok_or(OrdinaryIntervalErrorV2::ResourceLimit)?;
+                if leaf.index == 0 {
+                    root_lower_boundary_accepted_leaf_count =
+                        root_lower_boundary_accepted_leaf_count
+                            .checked_add(1)
+                            .ok_or(OrdinaryIntervalErrorV2::ResourceLimit)?;
+                }
+                let leaf_denominator = 1_u64
+                    .checked_shl(leaf.depth)
+                    .ok_or(OrdinaryIntervalErrorV2::ResourceLimit)?;
+                if leaf.index.checked_add(1) == Some(leaf_denominator) {
+                    root_upper_boundary_accepted_leaf_count =
+                        root_upper_boundary_accepted_leaf_count
+                            .checked_add(1)
+                            .ok_or(OrdinaryIntervalErrorV2::ResourceLimit)?;
+                }
                 partition_hash.update(leaf.depth.to_le_bytes());
                 partition_hash.update(leaf.index.to_le_bytes());
             }
@@ -79,6 +96,8 @@ pub(super) fn prove_partition_v2(
         }
     }
     if accepted_leaf_count != live_leaf_count
+        || root_lower_boundary_accepted_leaf_count != 1
+        || root_upper_boundary_accepted_leaf_count != 1
         || certified_ordinary_pair_leaf_count
             != accepted_leaf_count
                 .checked_mul(resources.ordinary_face_pairs)
@@ -88,11 +107,15 @@ pub(super) fn prove_partition_v2(
     }
     update_usize_v2(&mut partition_hash, accepted_leaf_count)?;
     update_usize_v2(&mut partition_hash, certified_ordinary_pair_leaf_count)?;
+    update_usize_v2(&mut partition_hash, root_lower_boundary_accepted_leaf_count)?;
+    update_usize_v2(&mut partition_hash, root_upper_boundary_accepted_leaf_count)?;
     Ok(ProofRunV2 {
         collision_partition_digest: partition_hash.finalize().into(),
         accepted_leaf_count,
         processed_interval_node_count,
         maximum_accepted_depth,
         certified_ordinary_pair_leaf_count,
+        root_lower_boundary_accepted_leaf_count,
+        root_upper_boundary_accepted_leaf_count,
     })
 }

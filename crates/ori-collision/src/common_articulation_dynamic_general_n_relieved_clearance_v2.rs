@@ -246,6 +246,30 @@ impl CommonArticulationDynamicGeneralNRelievedClearanceCertificateV2 {
         true
     }
 
+    /// Crate-private theorem seal for a stricter downstream proof promotion.
+    /// It exposes aggregate boundary counts only inside `ori-collision`; no
+    /// dyadic leaf descriptor or partition digest crosses the public facade.
+    pub(crate) const fn closed_dyadic_domain_boundary_coverage_seal_v2(
+        &self,
+    ) -> public_adapter::ClosedDyadicDomainBoundaryCoverageV2 {
+        self.evidence.closed_domain_boundary_coverage_v2()
+    }
+
+    /// Checks the complete replay resource policy without running geometry.
+    /// This is crate-private so downstream promotion can reject policy drift
+    /// before entering an expensive proof while exposing no retained limits.
+    pub(crate) fn replay_limits_match_v2(
+        &self,
+        limits: CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
+    ) -> bool {
+        self.evidence.replay_limits_match_v2(limits)
+    }
+
+    /// Maximum aggregate peak admitted by the retained exact replay policy.
+    pub(crate) const fn replay_aggregate_peak_cap_v2(&self) -> usize {
+        self.evidence.replay_aggregate_peak_cap_v2()
+    }
+
     pub fn revalidate_v2(
         &self,
         input: CommonArticulationDynamicGeneralNRelievedClearanceRevalidationInputV2<'_>,

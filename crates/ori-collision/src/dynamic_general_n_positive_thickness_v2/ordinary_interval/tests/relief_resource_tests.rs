@@ -6,10 +6,9 @@ use super::relief_support::{
 };
 use super::support::{N33, n33_fixture_v2};
 
-fn n33_charged_resources_v2(input: ReliefAggregateInputV2<'_>) -> ReliefAggregateResourcesV2 {
-    let evidence =
-        prove_whole_parent_positive_thickness_v2(input).expect("generous N33 whole-parent proof");
-    let (_, _, _, _, resources) = inspect_whole_parent_evidence_for_test_v2(&evidence);
+fn n33_shared_relief_resources_v2(input: ReliefAggregateInputV2<'_>) -> ReliefAggregateResourcesV2 {
+    let resources = prove_shared_relief_for_test_v2(input)
+        .expect("generous N33 shared-relief resource measurement");
     assert!(resources.shared_pairs > 0);
     assert!(resources.sqrt_calls > 0);
     assert!(resources.aggregate_peak_bytes > 0);
@@ -53,7 +52,7 @@ fn n33_resource_contract_exact_replay_and_one_short_preflights() {
     let policies = relief_policies_v2(fixture);
     let generous = generous_relief_limits_v2(fixture);
     let base = relief_input_v2(fixture, &policies, generous);
-    let expected = n33_charged_resources_v2(base);
+    let expected = n33_shared_relief_resources_v2(base);
     let exact = exact_n33_limits_v2(generous, expected);
     assert_eq!(preflight_n33_v2(base, exact), Ok(()));
 

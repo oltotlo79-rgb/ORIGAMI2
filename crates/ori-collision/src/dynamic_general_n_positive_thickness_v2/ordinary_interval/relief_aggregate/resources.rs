@@ -349,7 +349,8 @@ fn charged_hash_work_v2(
         })
         .and_then(|value| value.checked_add(vertex_incident_face_occurrences))
         // Three variable registry counts, then two fields for every possible
-        // accepted leaf and two final partition counters.
+        // accepted leaf and four final partition counters (leaf/pair totals
+        // plus the two authenticated outer-boundary coverage counts).
         .and_then(|value| value.checked_add(3))
         .and_then(|value| {
             input
@@ -358,6 +359,6 @@ fn charged_hash_work_v2(
                 .checked_mul(2)
                 .and_then(|work| value.checked_add(work))
         })
-        .and_then(|value| value.checked_add(2))
+        .and_then(|value| value.checked_add(4))
         .ok_or(ReliefAggregateErrorV2::ResourceLimit)
 }

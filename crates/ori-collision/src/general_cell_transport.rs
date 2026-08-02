@@ -169,10 +169,11 @@ pub fn prepare_regular_quad_petal_schedules_v1(
     schedules.try_reserve_exact(3).ok()?;
     let first_stage_denominators = candidate.stage_endpoints[0].map(|(_, denominator)| denominator);
     let [first, second, third] = first_stage_denominators;
-    let has_degree_four_completion = geometry.hinges().len() == 4
-        && ((first == second && second != third)
-            || (first == third && first != second)
-            || (second == third && first != second));
+    let equal_pair_count = [first == second, first == third, second == third]
+        .into_iter()
+        .filter(|equal| *equal)
+        .count();
+    let has_degree_four_completion = geometry.hinges().len() == 4 && equal_pair_count == 1;
     for targets in candidate.stage_endpoints {
         let mut entries = Vec::new();
         entries.try_reserve_exact(geometry.hinges().len()).ok()?;

@@ -3849,8 +3849,8 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
         };
         let ordinary_analytic_blocking_bypass = !has_sampled_layer_admission
             && ((zero_thickness && analytic_single_hinge_topology)
-                || (zero_thickness && analytic_collinear_tree_topology)
-                || (zero_thickness && interval_two_hinge_chain_topology)
+                || analytic_collinear_tree_topology
+                || interval_two_hinge_chain_topology
                 || narrow_shared_hinge_classified);
         if snapshot.has_prominent_blocking_hold()
             && !sampled_layer_order_admitted

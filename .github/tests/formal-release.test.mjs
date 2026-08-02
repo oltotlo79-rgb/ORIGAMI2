@@ -834,20 +834,42 @@ test('CI preserves the active Rust component across a job timeout', () => {
   assert.match(rustJob, /::notice title=Rust component completed::%s status=%s/u)
 })
 
-test('CI serializes only the process-global Rust regression suites on both OSes', () => {
+test('CI process-isolates the collision regressions with a pinned verified nextest', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const rustJob = workflow.slice(workflow.indexOf('\n  rust:'), workflow.indexOf('\n  windows-bundle:'))
+  const installAction = 'taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60'
+  assert.equal(rustJob.split(installAction).length - 1, 1)
   assert.match(
     rustJob,
-    /if \[ "\$package" = "ori-collision" \]; then[\s\S]*?cargo test -p "\$package" --locked --all-targets --no-fail-fast -- --test-threads=1/u,
+    /uses: taiki-e\/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2\.85\.7[\s\S]*?tool: nextest@0\.9\.140[\s\S]*?checksum: true[\s\S]*?fallback: none/u,
+  )
+  assert.match(
+    rustJob,
+    /packages=\(\s+ori-numeric\s+ori-domain\s+ori-geometry\s+ori-topology\s+ori-kinematics\s+ori-foldability\s+ori-collision/u,
+  )
+  assert.match(
+    rustJob,
+    /if \[ "\$package" = "ori-collision" \]; then[\s\S]*?cargo nextest run -p "\$package" --locked --all-targets --no-fail-fast --test-threads=4/u,
+  )
+  assert.match(
+    rustJob,
+    /cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4/u,
   )
   assert.match(
     rustJob,
     /cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast/u,
   )
-  assert.match(
+  assert.doesNotMatch(
     rustJob,
-    /cargo test -p ori-collision --locked --all-targets --no-fail-fast -- --test-threads=1/u,
+    /cargo test -p (?:"\$package"|ori-collision) --locked --all-targets --no-fail-fast -- --test-threads=1/u,
+  )
+  assert.equal(
+    rustJob.match(/cargo nextest run -p (?:"\$package"|ori-collision) --locked --all-targets --no-fail-fast --test-threads=4/gu)?.length,
+    2,
+  )
+  assert.doesNotMatch(
+    rustJob,
+    /cargo nextest run -p (?:"\$package"|ori-collision)[^\r\n]*--test-threads=1/u,
   )
   assert.equal(
     rustJob.match(/cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1/gu)?.length,

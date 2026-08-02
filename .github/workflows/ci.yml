@@ -441,6 +441,12 @@ jobs:
         with:
           toolchain: 1.90.0
           components: rustfmt, clippy
+      - name: Install pinned process-isolated Rust test runner
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: nextest@0.9.140
+          checksum: true
+          fallback: none
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           # Keep the optimized test-profile cache distinct and retain compiled
@@ -498,10 +504,10 @@ jobs:
             core_failed=0
             for package in "${packages[@]}"; do
               if [ "$package" = "ori-collision" ]; then
-                # This crate intentionally exercises process-global proof and
-                # resource ledgers. Its frozen regression contract is serial.
+                # Preserve every target while isolating process-global proof
+                # and resource ledgers per test instead of serializing 700+ tests.
                 run_component "$package" \
-                  cargo test -p "$package" --locked --all-targets --no-fail-fast -- --test-threads=1
+                  cargo nextest run -p "$package" --locked --all-targets --no-fail-fast --test-threads=4
               else
                 run_component "$package" \
                   cargo test -p "$package" --locked --all-targets --no-fail-fast
@@ -520,8 +526,8 @@ jobs:
           else
             run_component workspace-core-excluding-collision-debug \
               cargo test --workspace --exclude origami2-desktop --exclude ori-collision --locked --all-targets --no-fail-fast
-            run_component ori-collision-serial-debug \
-              cargo test -p ori-collision --locked --all-targets --no-fail-fast -- --test-threads=1
+            run_component ori-collision-process-isolated-debug \
+              cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4
             run_component origami2-desktop-release-lib \
               cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1
             run_component origami2-desktop-event-schema-debug \

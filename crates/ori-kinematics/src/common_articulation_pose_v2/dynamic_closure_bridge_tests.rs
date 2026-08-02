@@ -223,6 +223,11 @@ fn n33_nonstationary_bridge_is_opaque_replayable_and_resource_exact() {
     ))
     .expect("N33 ordinary nonstationary bridge");
     assert_eq!(bridge.actual_block_count_v2(), N33_BLOCKS);
+    let bridge_debug = format!("{bridge:?}");
+    assert!(!bridge_debug.contains("parent_closure"));
+    assert!(!bridge_debug.contains("parent_schedule"));
+    assert!(!bridge_debug.contains("partition"));
+    assert!(!bridge_debug.contains("binding_fingerprint"));
     assert_ne!(bridge.binding_fingerprint_v2(), [0; 32]);
     assert!(bridge.retained_bytes_upper_bound_v2() > 0);
     assert!(bridge.issuance_peak_bytes_upper_bound_v2() > 0);

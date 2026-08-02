@@ -1,4 +1,71 @@
 use super::*;
+use crate::CycleSchedulePrepareErrorV1;
+
+#[test]
+fn root_angle_range_overapproximation_is_split_instead_of_rejected() {
+    let mut fixture = nonstationary_exact_tree_fixture();
+    let edge = fixture.geometry.hinges()[0].edge();
+    let schedule_limits = CycleScheduleLimitsV1 {
+        max_hinges: 1,
+        max_degree: 2,
+        max_coefficient_bits: 53,
+        max_work: 4_096,
+    };
+    fixture.ordinary = CanonicalCycleScheduleV1::prepare(
+        &fixture.geometry,
+        &fixture.audit,
+        fixture.fixed_face,
+        [-1.0, 1.0],
+        vec![CycleScheduleEntryInputV1 {
+            edge,
+            initial_angle_degrees_bits: 1.1_f64.to_bits(),
+            // 0.5*T0 + 0.5*T2 == x^2. The function is in range, while
+            // dependency-losing root Clenshaw intervals cross below zero.
+            chebyshev_coefficients: vec![
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 2,
+                },
+                RationalCoefficientV1 {
+                    numerator: 0,
+                    denominator: 1,
+                },
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 2,
+                },
+            ],
+        }],
+        schedule_limits,
+    )
+    .unwrap();
+    fixture.schedule_limits = schedule_limits;
+    let bound = fixture
+        .ordinary
+        .checked_dyadic_workspace_upper_bound_v2(8, schedule_limits)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .ordinary
+            .evaluate_angle_box_dyadic_with_workspace_v2(
+                0,
+                0,
+                schedule_limits,
+                bound,
+                bound.peak_bytes(),
+            )
+            .unwrap_err(),
+        CycleScheduleDyadicEvaluationErrorV2::Prepare(CycleSchedulePrepareErrorV1::AngleRange)
+    );
+    let mut limits = generous_limits(schedule_limits);
+    limits.max_depth = 8;
+    limits.max_leaves = 256;
+    limits.max_schedule_evaluation_workspace_bytes = bound.peak_bytes() + 1;
+    let material = issue(&fixture, &fixture.ordinary, limits)
+        .expect("overprovisioned schedule cap remains an upper-bound policy");
+    assert!(material.partition().len() > 1);
+    assert!(material.has_nonempty_canonical_complete_partition_v2());
+}
 
 #[test]
 fn every_usize_max_limit_is_rejected_as_resource_limit() {
@@ -54,6 +121,63 @@ fn every_usize_max_limit_is_rejected_as_resource_limit() {
                 DyadicIntervalClosureErrorV1::InvalidInput
             ))
         ));
+    }
+}
+
+#[test]
+fn finite_preflight_rejects_one_short_and_invalid_schedule_limits_before_binding_scans() {
+    let fixture = fixture();
+    let base = generous_limits(fixture.schedule_limits);
+    let schedule_bound = fixture
+        .exact
+        .checked_dyadic_workspace_upper_bound_v2(base.max_depth, fixture.schedule_limits)
+        .unwrap();
+
+    let mut cases = Vec::new();
+    let mut one_short_workspace = base;
+    one_short_workspace.max_schedule_evaluation_workspace_bytes = schedule_bound.peak_bytes() - 1;
+    cases.push(one_short_workspace);
+    let mut invalid_schedule_limit = base;
+    invalid_schedule_limit.schedule_limits.max_hinges = fixture.schedule_limits.max_hinges - 1;
+    cases.push(invalid_schedule_limit);
+
+    for limits in cases {
+        let mut schedule_polls = 0usize;
+        let _ = fixture
+            .exact
+            .checked_dyadic_workspace_upper_bound_with_checkpoint_v2(
+                limits.max_depth,
+                limits.schedule_limits,
+                || {
+                    schedule_polls += 1;
+                    Ok(())
+                },
+            );
+        let mut polls = 0usize;
+        let result = fixture
+            .geometry
+            .prove_dyadic_schedule_closure_with_workspace_and_checkpoint_v2(
+                &fixture.audit,
+                fixture.fixed_face,
+                &fixture.exact,
+                1.0e-8,
+                limits,
+                || {
+                    polls += 1;
+                    Ok(())
+                },
+            );
+        assert!(matches!(
+            result,
+            Err(DyadicIntervalClosureControlErrorV1::Closure(
+                DyadicIntervalClosureErrorV1::ResourceLimit
+            ))
+        ));
+        assert_eq!(
+            polls,
+            schedule_polls + 1,
+            "resource preflight must precede binding scans"
+        );
     }
 }
 

@@ -43,6 +43,8 @@
 //! }
 //! ```
 
+use std::fmt;
+
 use ori_domain::FaceId;
 use thiserror::Error;
 
@@ -59,6 +61,16 @@ use crate::{
     ClosedMaterialHingeGraphPose, CommonArticulationPoseAuthorityV2,
     CommonArticulationResourceProfileV2, CycleScheduleLimitsV1, MaterialHingeGraphAudit,
     MaterialHingeGraphGeometry,
+};
+
+mod interval_transform_session_v2;
+
+pub use interval_transform_session_v2::{
+    CommonArticulationDynamicClosureIntervalTransformLeafErrorV2,
+    CommonArticulationDynamicClosureIntervalTransformLeafResourcesV2,
+    CommonArticulationDynamicClosureIntervalTransformLeafV2,
+    CommonArticulationDynamicClosureIntervalTransformSessionResourcesV2,
+    CommonArticulationDynamicClosureIntervalTransformSessionV2,
 };
 
 /// Cooperative stop requested while issuing or replaying an opaque bridge.
@@ -147,10 +159,26 @@ pub struct CommonArticulationDynamicClosureBridgeRevalidationInputV2<'a> {
 
 /// Opaque, non-authorizing owner of a workspace-bounded dynamic closure
 /// bundle.  It deliberately implements only `Debug`.
-#[derive(Debug)]
 #[repr(transparent)]
 pub struct CommonArticulationDynamicClosureBridgeV2 {
     bundle: CommonArticulationDynamicClosureBundleV2,
+}
+
+impl fmt::Debug for CommonArticulationDynamicClosureBridgeV2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommonArticulationDynamicClosureBridgeV2")
+            .field("actual_block_count", &self.actual_block_count_v2())
+            .field(
+                "retained_bytes_upper_bound",
+                &self.retained_bytes_upper_bound_v2(),
+            )
+            .field(
+                "revalidation_peak_bytes_upper_bound",
+                &self.revalidation_peak_bytes_upper_bound_v2(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 // The public transport must add no uncharged retained state around the bundle
@@ -161,6 +189,20 @@ const _: [(); std::mem::align_of::<CommonArticulationDynamicClosureBundleV2>()] 
     [(); std::mem::align_of::<CommonArticulationDynamicClosureBridgeV2>()];
 
 impl CommonArticulationDynamicClosureBridgeV2 {
+    const fn parent_schedule_retained_cap_v2(&self) -> usize {
+        self.bundle.policy_v2().max_parent_schedule_retained_bytes
+    }
+
+    const fn parent_partition_leaf_count_v2(&self) -> usize {
+        self.bundle.resources().charged_parent_leaves
+    }
+
+    fn parent_partition_leaf_coordinates_v2(&self, position: usize) -> Option<(u32, u64)> {
+        self.bundle
+            .parent_leaf_descriptor(position)
+            .map(|leaf| (leaf.depth(), leaf.index()))
+    }
+
     #[must_use]
     pub const fn binding_fingerprint_v2(&self) -> [u8; 32] {
         self.bundle.binding_fingerprint_v2()

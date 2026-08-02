@@ -14,12 +14,16 @@ use crate::{
     MaterialHingeGraphGeometry, OutwardIntervalV1,
 };
 
+mod dyadic_endpoint;
 mod dyadic_workspace_v2;
 mod restriction_workspace_v2;
 
-pub(crate) use dyadic_workspace_v2::{
-    CycleScheduleDyadicEvaluationErrorV2, CycleScheduleDyadicWorkspaceBoundV2,
-    ExactParallelCutProfileErrorV2,
+use dyadic_endpoint::ordinary_dyadic_chebyshev_interval_v2;
+
+pub(crate) use dyadic_workspace_v2::ExactParallelCutProfileErrorV2;
+pub use dyadic_workspace_v2::{
+    CycleScheduleDyadicEvaluationErrorV2, CycleScheduleDyadicEvaluationStopV2,
+    CycleScheduleDyadicWorkspaceBoundV2,
 };
 pub(crate) use restriction_workspace_v2::{
     CycleScheduleRestrictionWorkspaceErrorV2, CycleScheduleRestrictionWorkspaceLimitsV2,
@@ -2691,12 +2695,7 @@ impl CanonicalCycleScheduleV1 {
             if self.entries.is_empty() {
                 return Err(CycleSchedulePrepareErrorV1::InvalidInput);
             }
-            let scale = leaf_count as f64;
-            let x = OutwardIntervalV1::new(
-                -1.0 + 2.0 * index as f64 / scale,
-                -1.0 + 2.0 * (index + 1) as f64 / scale,
-            )
-            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+            let x = ordinary_dyadic_chebyshev_interval_v2(depth, index)?;
             let mut angles = try_schedule_vec_with_capacity_v1(self.entries.len())?;
             for entry in &self.entries {
                 let zero = OutwardIntervalV1::new(0.0, 0.0)

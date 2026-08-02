@@ -32,6 +32,7 @@ mod exact_common_effective_generator_sign;
 mod exact_common_split_pair_effective_generator_sign;
 mod exact_cut_carrier;
 mod exact_generator_word;
+mod interval_transform_workspace_v2;
 mod separated_even_single_vertex_opposite_pair_blocks;
 
 #[allow(unused_imports)]
@@ -67,6 +68,11 @@ pub use exact_common_split_pair_effective_generator_sign::{
     ExactCommonSplitPairEffectiveGeneratorSignLimitsV1,
     ExactCommonSplitPairEffectiveGeneratorSignV1,
     prove_exact_common_split_pair_effective_generator_sign_v1,
+};
+pub(crate) use interval_transform_workspace_v2::WorkspaceBoundedMaterialFaceTransformRegistryV2;
+pub use interval_transform_workspace_v2::{
+    IntervalFaceTransformWorkspaceBoundV2, IntervalFaceTransformWorkspaceErrorV2,
+    IntervalFaceTransformWorkspaceLimitsV2, IntervalFaceTransformWorkspaceResourcesV2,
 };
 
 use block_cut_cardinal_rotation_group::block_cut_cardinal_rotation_group_cycle_closure_premises_v1;

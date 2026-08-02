@@ -66,6 +66,12 @@ const CLEARANCE_PAIR_BYTES_V2: usize = 32;
 const CLEARANCE_BASE_BYTES_V2: usize = 1_024;
 const CLEARANCE_FACE_BYTES_V2: usize = 128;
 const CLEARANCE_HINGE_BYTES_V2: usize = 32;
+// `CommonArticulationBlockClosureSetV2` retains one private record per block.
+// The record owns two already-charged V1 observations plus a fixed binding
+// header. Keep a deliberately roomy public-boundary charge for that header;
+// the dynamic schedule/closure payload is charged separately below.
+const CLEARANCE_REVALIDATION_BLOCK_RECORD_BYTES_UPPER_BOUND_V2: usize = 512;
+const CLEARANCE_REVALIDATION_BASE_BYTES_V2: usize = 1_024;
 // Covers checkpoint-pollable raw/local heap sorts, local dedup, explicit
 // write-index compaction, and sorted local-pair membership.  The explicit
 // factor keeps V2 resource accounting ahead of the implementation without an
@@ -618,7 +624,7 @@ use validation::{
 
 #[cfg(test)]
 #[path = "common_articulation_clearance_v2/test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "common_articulation_clearance_v2/tests.rs"]

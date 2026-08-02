@@ -1915,6 +1915,17 @@ pub struct MaterialHingeGraphAudit {
 }
 
 impl MaterialHingeGraphAudit {
+    /// Returns the audit shell plus every owned vector allocation.
+    #[must_use]
+    pub fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(std::mem::size_of::<FaceId>().checked_mul(self.faces.capacity())?)?
+            .checked_add(
+                std::mem::size_of::<EdgeId>().checked_mul(self.spanning_hinges.capacity())?,
+            )?
+            .checked_add(std::mem::size_of::<EdgeId>().checked_mul(self.closure_hinges.capacity())?)
+    }
+
     /// Validates connectivity and deterministically partitions hinges into a
     /// canonical spanning tree and the remaining loop-closure constraints.
     pub fn prepare(

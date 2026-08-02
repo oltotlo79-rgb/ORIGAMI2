@@ -71,36 +71,21 @@ pub(super) fn validate_input_v2(
         return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
     }
 
+    // The current general-N clearance boundary has a complete physical
+    // workspace proof only for the stationary, single-leaf V1 route.  A
+    // non-stationary schedule can enter V1's adaptive dyadic prover, whose
+    // rational-evaluation and worklist workspace is intentionally not yet a
+    // V2 byte-bounded public contract.  Reject that route before pair or
+    // nested-proof materialization rather than treating retained certificate
+    // bytes as a substitute for its peak workspace.
+    if !stationary_single_leaf_closure_contract_v2(input) {
+        return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
+    }
+
+    // This is allocation-free and must precede the stationary solve peak
+    // calculation below: `checked_solve_closed_peak_bytes_v1` is meaningful
+    // only for a geometry/audit pair with the declared carrier shape.
     audit_matches_geometry_v2(input.geometry, input.audit, checkpoint)?;
-    revalidate_common_pose_v2(
-        input.common_pose,
-        CommonArticulationPoseInputV2 {
-            geometry: input.geometry,
-            pose: input.pose,
-            decomposition: input.decomposition,
-            paper_thickness_mm: input.paper_thickness_mm,
-            profile: input.profile,
-        },
-        checkpoint,
-    )?;
-    revalidate_whole_parent_closure_v2(
-        input.whole_parent_closure,
-        CommonArticulationWholeParentClosureInputV2 {
-            geometry: input.geometry,
-            audit: input.audit,
-            pose: input.pose,
-            parent_fixed_face: input.parent_fixed_face,
-            parent_schedule: input.parent_schedule,
-            decomposition: input.decomposition,
-            common_pose: input.common_pose,
-            paper_thickness_mm: input.paper_thickness_mm,
-            closure_tolerance: input.closure_tolerance,
-            profile: input.profile,
-            block_closure_set: input.block_closure_set,
-            limits: input.whole_parent_closure_limits,
-        },
-        checkpoint,
-    )?;
 
     let raw_pair_candidates = actual.raw_cross_block_pair_candidates_v2();
     let canonical_pair_count = actual.canonical_cross_block_pairs_v2();
@@ -159,6 +144,53 @@ pub(super) fn validate_input_v2(
     {
         return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
     }
+
+    // The retained profile field is the complete V2 clearance allocation
+    // envelope, not merely the pair-registry allocation. Revalidation first
+    // materializes fresh pose and closure candidates, so reject caller-supplied
+    // closure ceilings that could exceed that envelope before any nested
+    // candidate begins allocating. The phases are sequential; only their
+    // maximum is live at once.
+    let revalidation_workspace_bytes = clearance_revalidation_workspace_upper_bound_v2(
+        actual.pose_retained_bytes_v2(),
+        actual_block_count,
+        face_count,
+        hinge_count,
+        input,
+    )?;
+    if revalidation_workspace_bytes > storage_bytes_upper_bound {
+        return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
+    }
+
+    revalidate_common_pose_v2(
+        input.common_pose,
+        CommonArticulationPoseInputV2 {
+            geometry: input.geometry,
+            pose: input.pose,
+            decomposition: input.decomposition,
+            paper_thickness_mm: input.paper_thickness_mm,
+            profile: input.profile,
+        },
+        checkpoint,
+    )?;
+    revalidate_whole_parent_closure_v2(
+        input.whole_parent_closure,
+        CommonArticulationWholeParentClosureInputV2 {
+            geometry: input.geometry,
+            audit: input.audit,
+            pose: input.pose,
+            parent_fixed_face: input.parent_fixed_face,
+            parent_schedule: input.parent_schedule,
+            decomposition: input.decomposition,
+            common_pose: input.common_pose,
+            paper_thickness_mm: input.paper_thickness_mm,
+            closure_tolerance: input.closure_tolerance,
+            profile: input.profile,
+            block_closure_set: input.block_closure_set,
+            limits: input.whole_parent_closure_limits,
+        },
+        checkpoint,
+    )?;
 
     let audit_binding = audit_binding_fingerprint_v2(input.audit, checkpoint)?;
     Ok(ValidatedInputV2 {
@@ -296,8 +328,11 @@ fn canonical_within_block_pairs_v2(
         .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
     let mut local_pairs = Vec::new();
     local_pairs
-        .try_reserve(capacity)
+        .try_reserve_exact(capacity)
         .map_err(|_| CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    if local_pairs.capacity() > capacity {
+        return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
+    }
     for block in blocks {
         checkpoint_v2(checkpoint)?;
         let faces = block.geometry().face_ids();
@@ -486,6 +521,9 @@ pub(crate) fn enumerate_canonical_cross_block_pairs_v2(
     pairs
         .try_reserve_exact(raw_pair_candidates)
         .map_err(|_| CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    if pairs.capacity() > raw_pair_candidates {
+        return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
+    }
     for first in 0..blocks.len() {
         checkpoint_v2(checkpoint)?;
         let first_faces = blocks[first].geometry().face_ids();
@@ -634,6 +672,172 @@ fn clearance_storage_bytes_v2(
         .and_then(|value| value.checked_add(CLEARANCE_BASE_BYTES_V2))
         .and_then(|value| value.checked_add(face_count.checked_mul(CLEARANCE_FACE_BYTES_V2)?))
         .and_then(|value| value.checked_add(hinge_count.checked_mul(CLEARANCE_HINGE_BYTES_V2)?))
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)
+}
+
+/// Bounds the dynamic allocations retained by one fresh V2 revalidation
+/// candidate. This deliberately uses the submitted closure ceilings rather
+/// than the already-retained observations: revalidation must fail before a
+/// permissive caller limit can make an oversized candidate live.
+///
+/// The V2 candidate phases are sequential: common-pose replay, all-block
+/// replay, and parent-closure replay. The all-block candidate is the only
+/// phase that retains both its block records and their schedule/closure
+/// payloads. The two edge vectors coexist while complete parent coverage is
+/// checked. Per-block payload limits are charged once more because the
+/// current item has been materialized before a total-limit rejection can run.
+fn clearance_revalidation_workspace_upper_bound_v2(
+    pose_retained_bytes: usize,
+    actual_block_count: usize,
+    face_count: usize,
+    hinge_count: usize,
+    input: &CommonArticulationClearanceInputV2<'_>,
+) -> Result<usize, CommonArticulationClearanceErrorV2> {
+    let limits = input.whole_parent_closure_limits;
+    let block = limits.block_closure_set_limits;
+    let block_closure_bytes = dyadic_closure_allocation_upper_bound_v2(
+        block.per_block_closure_limits.max_leaves,
+        CANONICAL_MIURA_HINGES_PER_BLOCK_V2,
+    )?;
+    let parent_closure_bytes = dyadic_closure_allocation_upper_bound_v2(
+        limits.parent_closure_limits.max_leaves,
+        hinge_count,
+    )?;
+    if block_closure_bytes > block.max_block_closure_bytes
+        || parent_closure_bytes > limits.max_parent_closure_bytes
+    {
+        return Err(CommonArticulationClearanceErrorV2::ResourceLimit);
+    }
+    let block_dyadic_peak =
+        input
+            .decomposition
+            .blocks()
+            .iter()
+            .try_fold(0usize, |maximum, block| {
+                stationary_single_leaf_dyadic_peak_bytes_v2(block.geometry(), block.audit())
+                    .map(|peak| maximum.max(peak))
+            })?;
+    let parent_dyadic_peak =
+        stationary_single_leaf_dyadic_peak_bytes_v2(input.geometry, input.audit)?;
+    let block_record_headers = actual_block_count
+        .checked_mul(CLEARANCE_REVALIDATION_BLOCK_RECORD_BYTES_UPPER_BOUND_V2)
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    let edge_coverage_vectors = hinge_count
+        .checked_mul(size_of::<ori_domain::EdgeId>())
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    let articulation_faces = actual_block_count
+        .checked_mul(size_of::<FaceId>())
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    let block_candidate = CLEARANCE_REVALIDATION_BASE_BYTES_V2
+        // Restriction can materialize the current block schedule before its
+        // own per-block retained-byte comparison; the source schedule is the
+        // finite outer ceiling for that transient clone.
+        .checked_add(block.max_parent_schedule_bytes)
+        .and_then(|bytes| bytes.checked_add(block.max_total_block_schedule_bytes))
+        .and_then(|bytes| bytes.checked_add(block.max_block_schedule_bytes))
+        .and_then(|bytes| bytes.checked_add(block.max_total_block_closure_bytes))
+        .and_then(|bytes| bytes.checked_add(block.max_block_closure_bytes))
+        // Retained closure ceilings above cover published proof payloads. This
+        // independent term covers the stationary issuer's live
+        // `evaluate(0) + solve_closed` workspace before its single leaf can
+        // become part of a record.
+        .and_then(|bytes| bytes.checked_add(block_dyadic_peak))
+        .and_then(|bytes| bytes.checked_add(block_record_headers))
+        .and_then(|bytes| bytes.checked_add(edge_coverage_vectors))
+        .and_then(|bytes| bytes.checked_add(articulation_faces))
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    // The parent schedule is borrowed, but its submitted ceiling is charged
+    // alongside the fresh parent certificate so the envelope remains valid
+    // if a later V2 parent reissuer materializes that schedule.
+    let parent_candidate = CLEARANCE_REVALIDATION_BASE_BYTES_V2
+        .checked_add(limits.max_parent_schedule_bytes)
+        .and_then(|bytes| bytes.checked_add(limits.max_parent_closure_bytes))
+        .and_then(|bytes| bytes.checked_add(parent_dyadic_peak))
+        .and_then(|bytes| bytes.checked_add(face_count.checked_mul(size_of::<FaceId>())?))
+        .and_then(|bytes| {
+            bytes.checked_add(hinge_count.checked_mul(size_of::<ori_domain::EdgeId>())?)
+        })
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    Ok(pose_retained_bytes
+        .max(block_candidate)
+        .max(parent_candidate))
+}
+
+/// Returns whether the submitted V2 closure configuration is in the only V1
+/// dyadic route whose complete workspace is presently included in the
+/// clearance byte envelope.
+///
+/// A stationary parent schedule restricts to stationary block schedules
+/// because restriction copies the exact edge profiles rather than evaluating
+/// or synthesizing new motion.  The canonical N>=33 block shapes also fail
+/// every multi-leaf special premise by their cardinality before allocation,
+/// so V1 deterministically takes its stationary single-leaf path.
+fn stationary_single_leaf_closure_contract_v2(
+    input: &CommonArticulationClearanceInputV2<'_>,
+) -> bool {
+    let limits = input.whole_parent_closure_limits;
+    let block_limits = limits.block_closure_set_limits.per_block_closure_limits;
+    let parent_limits = limits.parent_closure_limits;
+    block_limits.max_depth == 0
+        && block_limits.max_leaves == 1
+        && parent_limits.max_depth == 0
+        && parent_limits.max_leaves == 1
+        && input.geometry.hinges().iter().all(|hinge| {
+            input
+                .parent_schedule
+                .derivative_bound(hinge.edge())
+                .is_some_and(|bound| bound.to_bits() == 0.0_f64.to_bits())
+        })
+}
+
+/// Physical peak for V1's stationary dyadic path under the preceding
+/// single-leaf contract.  `solve_closed` already reports its internal maps,
+/// vectors, allocator slack, and returned pose.  The schedule evaluation that
+/// supplies that solve is live at the same time, while the final one-leaf
+/// dyadic certificate is produced only after the pose is discarded.
+pub(super) fn stationary_single_leaf_dyadic_peak_bytes_v2(
+    geometry: &ori_kinematics::MaterialHingeGraphGeometry,
+    audit: &ori_kinematics::MaterialHingeGraphAudit,
+) -> Result<usize, CommonArticulationClearanceErrorV2> {
+    let hinge_count = geometry.hinges().len();
+    let evaluated_angles_bytes = hinge_count
+        .checked_mul(size_of::<ori_kinematics::HingeAngle>())
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    let solve_peak = geometry
+        .checked_solve_closed_peak_bytes_v1(audit)
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    let stationary_solve_peak = evaluated_angles_bytes
+        .checked_add(solve_peak)
+        .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    let single_leaf_retained = dyadic_closure_allocation_upper_bound_v2(1, hinge_count)?;
+    Ok(stationary_solve_peak.max(single_leaf_retained))
+}
+
+/// Maximum dynamically retained payload of one V1 dyadic candidate under its
+/// public leaf and hinge limits. The V1 issuer checks its retained-byte limit
+/// after construction, so this is also checked before invoking it from V2.
+fn dyadic_closure_allocation_upper_bound_v2(
+    max_leaves: usize,
+    hinge_count: usize,
+) -> Result<usize, CommonArticulationClearanceErrorV2> {
+    let leaf = size_of::<(
+        u32,
+        u64,
+        ori_kinematics::MaterialHingeIntervalClosureCertificateV1,
+    )>()
+    .checked_add(
+        hinge_count
+            .checked_mul(size_of::<ori_domain::EdgeId>())
+            .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?,
+    )
+    .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?;
+    size_of::<ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1>()
+        .checked_add(
+            max_leaves
+                .checked_mul(leaf)
+                .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)?,
+        )
         .ok_or(CommonArticulationClearanceErrorV2::ResourceLimit)
 }
 

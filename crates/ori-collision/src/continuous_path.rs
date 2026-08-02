@@ -13,7 +13,9 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use ori_domain::{EdgeId, FaceId};
 use ori_foldability::LayerOrderSnapshot;
 use ori_kinematics::{
-    CanonicalEdgeBlockLimitsV1, CanonicalHingeAngles,
+    COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1, CanonicalEdgeBlockLimitsV1,
+    CanonicalHingeAngles, CanonicalMaterialEdgeBlockDecompositionV1,
     DyadicMaterialHingeIntervalClosureCertificateV1, GeneratedMultiHingePathCandidateV1,
     HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry, MaterialHingeGraphInstanceV1,
     MaterialTreeKinematicsModel, MaterialTreePose,
@@ -24,11 +26,13 @@ use crate::cayley::{
     prepare_positive_thickness_exact_endpoint_session_v2,
     prepare_swept_tree_hinge_thickness_boundaries_v1,
 };
+use crate::graph_positive_thickness::prove_common_articulation_positive_thickness_graph_geometry_extension_v1;
 use crate::{
-    CooperativeOperationControlV1, CooperativeOperationStopV1, HingeReliefLinearAngleScheduleV1,
-    HingeReliefPolicyLimitsV1, HingeReliefPolicyRecordV1,
-    NativeHingeReliefLocalIntervalCertificateV1, NativeHingeReliefPrerequisiteV1,
-    PositiveThicknessGraphLimitsV1, StaticCollisionDiagnosticSnapshot, StaticCollisionLimits,
+    CommonArticulationPositiveThicknessGraphExtensionLimitsV1, CooperativeOperationControlV1,
+    CooperativeOperationStopV1, HingeReliefLinearAngleScheduleV1, HingeReliefPolicyLimitsV1,
+    HingeReliefPolicyRecordV1, NativeHingeReliefLocalIntervalCertificateV1,
+    NativeHingeReliefPrerequisiteV1, PositiveThicknessGraphLimitsV1,
+    StaticCollisionDiagnosticSnapshot, StaticCollisionLimits,
     diagnose_static_collision_geometry_with_control_v1,
     prepare_positive_thickness_pair_separation_v1, prepare_single_hinge_thickness_boundary_v1,
     prove_positive_thickness_graph_geometry_v1, revalidate_hinge_relief_local_intervals_v1,
@@ -37,6 +41,7 @@ use crate::{
     static_collision::prepare_positive_thickness_tree_endpoint_topology_memo_v1,
 };
 
+pub(crate) mod common_articulation_positive_thickness_v2;
 mod initial_sample_layer_admission;
 mod layered_chain_common;
 mod layered_five_face_chain;
@@ -44,6 +49,19 @@ mod layered_four_face_chain;
 mod layered_three_face;
 mod multi_hinge_union;
 mod pair_proof_cache;
+pub use common_articulation_positive_thickness_v2::{
+    ADMITTED_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V2,
+    AdmittedPositiveThicknessContinuousCertificateV2,
+    AdmittedPositiveThicknessContinuousRevalidationInputV2,
+    AdmittedPositiveThicknessCycleSchedulePathInputV2,
+    COMMON_ARTICULATION_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_EXTENSION_MODEL_ID_V2,
+    CommonArticulationPositiveThicknessContinuousCertificateExtensionV2,
+    CommonArticulationPositiveThicknessContinuousRevalidationInputV2,
+    CommonArticulationPositiveThicknessCycleSchedulePathExtensionInputV2,
+    certify_admitted_positive_thickness_cycle_schedule_path_v2,
+    certify_common_articulation_positive_thickness_cycle_schedule_path_extension_v2,
+    certify_common_articulation_positive_thickness_cycle_schedule_path_extension_with_control_v2,
+};
 pub use initial_sample_layer_admission::{
     NativeStackedFoldInitialSampleLayerAdmissionV1, StackedFoldInitialLayerOrderSourceV1,
     prepare_stacked_fold_initial_sample_layer_admission_v1,
@@ -4304,6 +4322,194 @@ impl PositiveThicknessContinuousCertificateV1 {
     }
 }
 
+pub const COMMON_ARTICULATION_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_EXTENSION_MODEL_ID_V1:
+    &str = "common_articulation_positive_thickness_continuous_certificate_extension_v1";
+
+/// Opaque 11..=32 common-articulation positive-thickness certificate.
+///
+/// The private legacy certificate is retained only as proof material. No
+/// conversion or inner accessor is exposed, so this extension cannot enter a
+/// legacy clearance, transport, staged, final, Apply, or viewer route.
+///
+/// ```compile_fail
+/// use ori_collision::{
+///     CommonArticulationPositiveThicknessContinuousCertificateExtensionV1,
+///     PositiveThicknessContinuousCertificateV1,
+/// };
+///
+/// fn legacy(_: PositiveThicknessContinuousCertificateV1) {}
+/// fn cannot_enter_legacy(
+///     extension: CommonArticulationPositiveThicknessContinuousCertificateExtensionV1,
+/// ) {
+///     legacy(extension);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use ori_collision::CommonArticulationPositiveThicknessContinuousCertificateExtensionV1;
+///
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<CommonArticulationPositiveThicknessContinuousCertificateExtensionV1>();
+/// ```
+#[derive(Clone)]
+pub struct CommonArticulationPositiveThicknessContinuousCertificateExtensionV1 {
+    inner: PositiveThicknessContinuousCertificateV1,
+    configured_max_blocks: usize,
+    actual_block_count: usize,
+    decomposition_binding: [u8; 32],
+    graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+    binding_fingerprint: [u8; 32],
+}
+
+/// Exact live tuple used to revalidate the separately typed 11..=32
+/// positive-thickness extension certificate.
+#[derive(Clone, Copy)]
+pub struct CommonArticulationPositiveThicknessContinuousRevalidationInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub decomposition: &'a CanonicalMaterialEdgeBlockDecompositionV1,
+    pub configured_max_blocks: usize,
+    pub fixed_face: FaceId,
+    pub schedule: &'a ori_kinematics::CanonicalCycleScheduleV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub paper_thickness_mm: f64,
+    pub graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+}
+
+impl std::fmt::Debug for CommonArticulationPositiveThicknessContinuousCertificateExtensionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommonArticulationPositiveThicknessContinuousCertificateExtensionV1")
+            .field("model_id", &self.model_id())
+            .field("configured_max_blocks", &self.configured_max_blocks)
+            .field("actual_block_count", &self.actual_block_count)
+            .field("binding_fingerprint", &self.binding_fingerprint)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CommonArticulationPositiveThicknessContinuousCertificateExtensionV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        COMMON_ARTICULATION_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_EXTENSION_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn configured_max_blocks_v1(&self) -> usize {
+        self.configured_max_blocks
+    }
+
+    #[must_use]
+    pub const fn actual_block_count_v1(&self) -> usize {
+        self.actual_block_count
+    }
+
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding_fingerprint
+    }
+
+    /// The extension retains only fixed-size issuer material.
+    #[must_use]
+    pub const fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
+
+    #[must_use]
+    pub fn is_for_v1(
+        &self,
+        input: CommonArticulationPositiveThicknessContinuousRevalidationInputV1<'_>,
+    ) -> bool {
+        if self.graph_limits != input.graph_limits {
+            return false;
+        }
+        let Some(scope) = common_articulation_positive_thickness_graph_scope_v1(
+            input.geometry,
+            input.decomposition,
+            input.configured_max_blocks,
+            input.graph_limits,
+        ) else {
+            return false;
+        };
+        self.configured_max_blocks == scope.configured_max_blocks
+            && self.actual_block_count == scope.actual_block_count
+            && self.decomposition_binding == scope.decomposition_binding
+            && self.inner.is_for(
+                input.geometry,
+                input.audit,
+                input.fixed_face,
+                input.schedule,
+                input.closure,
+                input.paper_thickness_mm,
+            )
+            && self.binding_fingerprint
+                == common_articulation_positive_thickness_continuous_extension_binding_v1(
+                    &self.inner,
+                    scope,
+                )
+    }
+
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_collision_clearance(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_layer_transport(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_viewer(&self) -> bool {
+        false
+    }
+}
+
+fn common_articulation_positive_thickness_continuous_extension_binding_v1(
+    inner: &PositiveThicknessContinuousCertificateV1,
+    scope: CommonArticulationPositiveThicknessScopeV1,
+) -> [u8; 32] {
+    use sha2::Digest as _;
+
+    let mut hash = sha2::Sha256::new();
+    hash.update(
+        COMMON_ARTICULATION_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_EXTENSION_MODEL_ID_V1
+            .as_bytes(),
+    );
+    for value in [
+        COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1,
+        scope.configured_max_blocks,
+        scope.actual_block_count,
+        scope.limits.max_unordered_face_pairs,
+        scope.limits.max_shared_feature_pairs,
+        inner.proof_leaf_count,
+        inner.pair_work,
+    ] {
+        hash.update((value as u64).to_le_bytes());
+    }
+    hash.update(scope.decomposition_binding);
+    hash.update(inner.fixed_face.canonical_bytes());
+    hash.update(inner.schedule_hash);
+    hash.update(inner.closure_hash);
+    hash.update(inner.thickness_bits.to_le_bytes());
+    hash.finalize().into()
+}
+
 /// A cooperative stop observed while issuing a canonical multi-cycle
 /// positive-thickness authority.  This is deliberately distinct from a
 /// bounded-proof resource result: callers may retry a cancelled generation
@@ -4761,6 +4967,118 @@ pub fn diagnose_collective_cycle_path_v1(
     }
 }
 
+#[derive(Clone, Copy)]
+enum PositiveThicknessGraphProofScopeV1<'a> {
+    Legacy,
+    CommonArticulationExtension(CommonArticulationPositiveThicknessGraphExtensionLimitsV1),
+    CommonArticulationAdmittedExtensionV2 {
+        limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+        shared_contact: &'a crate::CommonArticulationAdmittedSharedFeatureContactCertificateV2,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct CommonArticulationPositiveThicknessScopeV1 {
+    configured_max_blocks: usize,
+    actual_block_count: usize,
+    decomposition_binding: [u8; 32],
+    limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+}
+
+pub(crate) fn common_articulation_decomposition_binding_v1(
+    decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
+) -> [u8; 32] {
+    use sha2::Digest as _;
+
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"common_articulation_positive_thickness_decomposition_scope_v1");
+    let limits = decomposition.limits();
+    for value in [
+        limits.max_blocks,
+        limits.max_faces_per_block,
+        limits.max_hinges_per_block,
+        decomposition.blocks().len(),
+        decomposition.articulation_faces().len(),
+    ] {
+        hash.update((value as u64).to_le_bytes());
+    }
+    for face in decomposition.articulation_faces() {
+        hash.update(face.canonical_bytes());
+    }
+    for block in decomposition.blocks() {
+        hash.update((block.geometry().hinges().len() as u64).to_le_bytes());
+        for hinge in block.geometry().hinges() {
+            hash.update(hinge.edge().canonical_bytes());
+        }
+        hash.update((block.geometry().face_ids().len() as u64).to_le_bytes());
+        for face in block.geometry().face_ids() {
+            hash.update(face.canonical_bytes());
+        }
+    }
+    hash.finalize().into()
+}
+
+fn common_articulation_positive_thickness_graph_scope_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
+    configured_max_blocks: usize,
+    limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+) -> Option<CommonArticulationPositiveThicknessScopeV1> {
+    let actual_block_count = decomposition.blocks().len();
+    if !decomposition.is_for_geometry(geometry)
+        || !(COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1
+            ..=COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1)
+            .contains(&configured_max_blocks)
+        || !(COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1..=configured_max_blocks)
+            .contains(&actual_block_count)
+    {
+        return None;
+    }
+    Some(CommonArticulationPositiveThicknessScopeV1 {
+        configured_max_blocks,
+        actual_block_count,
+        decomposition_binding: common_articulation_decomposition_binding_v1(decomposition),
+        limits,
+    })
+}
+
+fn positive_thickness_graph_geometry_is_proven_in_scope_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    pose: &ori_kinematics::ClosedMaterialHingeGraphPose,
+    paper_thickness_mm: f64,
+    scope: PositiveThicknessGraphProofScopeV1<'_>,
+) -> bool {
+    match scope {
+        PositiveThicknessGraphProofScopeV1::Legacy => prove_positive_thickness_graph_geometry_v1(
+            geometry,
+            pose,
+            paper_thickness_mm,
+            PositiveThicknessGraphLimitsV1::default(),
+        )
+        .is_ok(),
+        PositiveThicknessGraphProofScopeV1::CommonArticulationExtension(limits) => {
+            prove_common_articulation_positive_thickness_graph_geometry_extension_v1(
+                geometry,
+                pose,
+                paper_thickness_mm,
+                limits,
+            )
+            .is_ok()
+        }
+        PositiveThicknessGraphProofScopeV1::CommonArticulationAdmittedExtensionV2 {
+            limits,
+            shared_contact,
+        } => crate::graph_positive_thickness::prove_common_articulation_admitted_positive_thickness_graph_geometry_prevalidated_v2(
+            geometry,
+            pose,
+            paper_thickness_mm,
+            limits,
+            shared_contact,
+        )
+        .is_ok(),
+    }
+}
+
 /// Conservatively certifies zero-thickness clearance for the exact same
 /// per-hinge schedule already carrying a full-domain closure certificate.
 /// This remains observation-only and never authorizes mutation.
@@ -4803,6 +5121,7 @@ pub fn diagnose_scheduled_positive_thickness_cycle_path_v1(
         Some(paper_thickness_mm),
         None,
         None,
+        PositiveThicknessGraphProofScopeV1::Legacy,
     )
 }
 
@@ -4828,6 +5147,7 @@ pub fn diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
         Some(paper_thickness_mm),
         None,
         None,
+        PositiveThicknessGraphProofScopeV1::Legacy,
     )
 }
 
@@ -4878,6 +5198,110 @@ pub fn certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1(
     Option<PositiveThicknessContinuousCertificateV1>,
     CanonicalPositiveThicknessCyclePathControlErrorV1,
 > {
+    certify_canonical_positive_thickness_cycle_schedule_path_in_scope_with_control_v1(
+        geometry,
+        audit,
+        fixed_face,
+        schedule,
+        closure,
+        paper_thickness_mm,
+        interval_count,
+        control,
+        PositiveThicknessGraphProofScopeV1::Legacy,
+    )
+}
+
+/// Exact live inputs for the separately typed 11..=32 positive-thickness
+/// continuous certificate extension.
+#[derive(Clone, Copy)]
+pub struct CommonArticulationPositiveThicknessCycleSchedulePathExtensionInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub decomposition: &'a CanonicalMaterialEdgeBlockDecompositionV1,
+    pub configured_max_blocks: usize,
+    pub fixed_face: FaceId,
+    pub schedule: &'a ori_kinematics::CanonicalCycleScheduleV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub paper_thickness_mm: f64,
+    pub interval_count: usize,
+    pub graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+}
+
+/// Mints the separately typed common-articulation certificate after exact
+/// canonical-decomposition and configured-cap admission.
+pub fn certify_common_articulation_positive_thickness_cycle_schedule_path_extension_v1(
+    input: CommonArticulationPositiveThicknessCycleSchedulePathExtensionInputV1<'_>,
+) -> Option<CommonArticulationPositiveThicknessContinuousCertificateExtensionV1> {
+    certify_common_articulation_positive_thickness_cycle_schedule_path_extension_with_control_v1(
+        input,
+        &CooperativeOperationControlV1::unbounded(),
+    )
+    .ok()
+    .flatten()
+}
+
+/// Controlled form of
+/// [`certify_common_articulation_positive_thickness_cycle_schedule_path_extension_v1`].
+pub fn certify_common_articulation_positive_thickness_cycle_schedule_path_extension_with_control_v1(
+    input: CommonArticulationPositiveThicknessCycleSchedulePathExtensionInputV1<'_>,
+    control: &CooperativeOperationControlV1<'_>,
+) -> Result<
+    Option<CommonArticulationPositiveThicknessContinuousCertificateExtensionV1>,
+    CanonicalPositiveThicknessCyclePathControlErrorV1,
+> {
+    canonical_positive_cycle_checkpoint_v1(control)?;
+    let Some(scope) = common_articulation_positive_thickness_graph_scope_v1(
+        input.geometry,
+        input.decomposition,
+        input.configured_max_blocks,
+        input.graph_limits,
+    ) else {
+        return Ok(None);
+    };
+    let inner = certify_canonical_positive_thickness_cycle_schedule_path_in_scope_with_control_v1(
+        input.geometry,
+        input.audit,
+        input.fixed_face,
+        input.schedule,
+        input.closure,
+        input.paper_thickness_mm,
+        input.interval_count,
+        control,
+        PositiveThicknessGraphProofScopeV1::CommonArticulationExtension(input.graph_limits),
+    )?;
+    canonical_positive_cycle_checkpoint_v1(control)?;
+    Ok(inner.map(|inner| {
+        let binding_fingerprint =
+            common_articulation_positive_thickness_continuous_extension_binding_v1(&inner, scope);
+        CommonArticulationPositiveThicknessContinuousCertificateExtensionV1 {
+            inner,
+            configured_max_blocks: scope.configured_max_blocks,
+            actual_block_count: scope.actual_block_count,
+            decomposition_binding: scope.decomposition_binding,
+            graph_limits: scope.limits,
+            binding_fingerprint,
+        }
+    }))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the private issuer shares the exact legacy inputs, explicit graph scope, and cooperative control"
+)]
+fn certify_canonical_positive_thickness_cycle_schedule_path_in_scope_with_control_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+    interval_count: usize,
+    control: &CooperativeOperationControlV1<'_>,
+    graph_scope: PositiveThicknessGraphProofScopeV1<'_>,
+) -> Result<
+    Option<PositiveThicknessContinuousCertificateV1>,
+    CanonicalPositiveThicknessCyclePathControlErrorV1,
+> {
     canonical_positive_cycle_checkpoint_v1(control)?;
     if interval_count == 0
         || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
@@ -4913,6 +5337,7 @@ pub fn certify_canonical_positive_thickness_cycle_schedule_path_with_control_v1(
         Some(paper_thickness_mm),
         Some(control),
         groups.as_ref(),
+        graph_scope,
     );
     canonical_positive_cycle_checkpoint_v1(control)?;
     Ok((diagnostic.continuous_certificate_model_id()
@@ -4949,6 +5374,7 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
         None,
         None,
         None,
+        PositiveThicknessGraphProofScopeV1::Legacy,
     )
 }
 
@@ -4966,6 +5392,7 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
     paper_thickness_mm: Option<f64>,
     operation_control: Option<&CooperativeOperationControlV1<'_>>,
     _precomputed_local_symmetric_groups: Option<&HashMap<FaceId, usize>>,
+    graph_scope: PositiveThicknessGraphProofScopeV1<'_>,
 ) -> StackedFoldCyclePathDiagnosticV1 {
     let failed = || StackedFoldCyclePathDiagnosticV1 {
         certified: false,
@@ -5014,6 +5441,7 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
     let Some(derivative_sum) = derivative_sum else {
         return failed();
     };
+    let mut initial_positive_graph_proven = false;
     if let Some(thickness) = paper_thickness_mm {
         if !operation_is_current() {
             return failed();
@@ -5025,16 +5453,15 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         else {
             return failed();
         };
-        if prove_positive_thickness_graph_geometry_v1(
+        if !positive_thickness_graph_geometry_is_proven_in_scope_v1(
             geometry,
             &initial_pose,
             thickness,
-            PositiveThicknessGraphLimitsV1::default(),
-        )
-        .is_err()
-        {
+            graph_scope,
+        ) {
             return failed();
         }
+        initial_positive_graph_proven = true;
         if !operation_is_current() {
             return failed();
         }
@@ -5146,13 +5573,13 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         let Ok(pose) = geometry.solve_closed(audit, fixed_face, &angles, 1.0e-9) else {
             return failed();
         };
-        if prove_positive_thickness_graph_geometry_v1(
-            geometry,
-            &pose,
-            thickness,
-            PositiveThicknessGraphLimitsV1::default(),
-        )
-        .is_ok()
+        if initial_positive_graph_proven
+            || positive_thickness_graph_geometry_is_proven_in_scope_v1(
+                geometry,
+                &pose,
+                thickness,
+                graph_scope,
+            )
         {
             if !operation_is_current() {
                 return failed();
@@ -5237,14 +5664,12 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
                 else {
                     return failed();
                 };
-                if prove_positive_thickness_graph_geometry_v1(
+                if !positive_thickness_graph_geometry_is_proven_in_scope_v1(
                     geometry,
                     &exact_pose,
                     thickness,
-                    PositiveThicknessGraphLimitsV1::default(),
-                )
-                .is_err()
-                {
+                    graph_scope,
+                ) {
                     return failed();
                 }
                 if !operation_is_current() {

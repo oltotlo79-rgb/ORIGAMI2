@@ -22,8 +22,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    CooperativeOperationControlV1, CooperativeOperationStopV1,
-    PositiveThicknessContinuousCertificateV1,
+    CommonArticulationPositiveThicknessContinuousCertificateExtensionV2,
+    CommonArticulationPositiveThicknessContinuousRevalidationInputV2,
+    CommonArticulationPositiveThicknessGraphExtensionLimitsV1, CooperativeOperationControlV1,
+    CooperativeOperationStopV1, PositiveThicknessContinuousCertificateV1,
 };
 
 pub const COMMON_ARTICULATION_CLEARANCE_PREREQUISITE_MODEL_ID_V1: &str =
@@ -37,6 +39,13 @@ pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_GAP_MODEL_ID_V1: &str =
 pub const COMMON_ARTICULATION_CLEARANCE_MAX_BLOCKS_V1: usize = 10;
 pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_MIN_BLOCKS_V1: usize = 11;
 pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_BLOCKS_V1: usize = 32;
+pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_FACES_V1: usize = 257;
+/// Every unordered pair in a 257-face parent, not the smaller fixture registry.
+pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_CROSS_BLOCK_PAIRS_V1: usize = 32_896;
+/// Exact hard-envelope work under the declared extension caps:
+/// `32 + 65_536 + 257 + 384 + 32 + 3*65_536 + 2*32_896
+/// + 17*65_536 + 16*32_896`.
+pub const COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_WORK_V1: usize = 1_969_089;
 pub const COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1: usize = 256;
 pub const COMMON_ARTICULATION_CLEARANCE_MAX_CROSS_BLOCK_PAIRS_V1: usize =
     COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1 * (COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1 - 1)
@@ -97,10 +106,10 @@ impl CommonArticulationClearanceExtensionLimitsV1 {
         }
         Some(Self {
             max_blocks,
-            max_faces: COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1,
-            max_cross_block_pairs: COMMON_ARTICULATION_CLEARANCE_MAX_CROSS_BLOCK_PAIRS_V1,
+            max_faces: COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_FACES_V1,
+            max_cross_block_pairs: COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_CROSS_BLOCK_PAIRS_V1,
             max_pair_candidates: COMMON_ARTICULATION_CLEARANCE_MAX_PAIR_CANDIDATES_V1,
-            max_work: COMMON_ARTICULATION_CLEARANCE_MAX_WORK_V1,
+            max_work: COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_WORK_V1,
             max_storage_bytes: COMMON_ARTICULATION_CLEARANCE_MAX_STORAGE_BYTES_V1,
         })
     }
@@ -227,11 +236,13 @@ pub struct CommonArticulationClearanceExtensionInputV1<'a> {
     pub schedule_limits: CycleScheduleLimitsV1,
     pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
     pub paper_thickness_mm: f64,
+    pub positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
     pub submitted_cross_block_pairs: &'a [CommonArticulationCrossBlockFacePairV1],
     /// As in the legacy prerequisite, only one certificate for the complete
     /// parent geometry is accepted. Per-block certificates are not a
     /// substitute for cross-block open-interval clearance.
-    pub whole_parent_continuous: Option<PositiveThicknessContinuousCertificateV1>,
+    pub whole_parent_continuous:
+        Option<CommonArticulationPositiveThicknessContinuousCertificateExtensionV2>,
     pub limits: CommonArticulationClearanceExtensionLimitsV1,
 }
 
@@ -248,6 +259,7 @@ pub struct CommonArticulationClearanceExtensionRevalidationInputV1<'a> {
     pub schedule_limits: CycleScheduleLimitsV1,
     pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
     pub paper_thickness_mm: f64,
+    pub positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
     pub limits: CommonArticulationClearanceExtensionLimitsV1,
 }
 
@@ -612,11 +624,13 @@ impl CommonArticulationClearanceOutcomeV1 {
 #[derive(Debug)]
 pub struct CommonArticulationClearanceExtensionPrerequisiteV1 {
     issuer_pose: ClosedMaterialHingeGraphPose,
-    whole_parent_continuous: PositiveThicknessContinuousCertificateV1,
+    whole_parent_continuous: CommonArticulationPositiveThicknessContinuousCertificateExtensionV2,
+    whole_parent_continuous_binding: [u8; 32],
     common_pose_binding: [u8; 32],
     schedule_binding: [u8; 32],
     closure_binding: [u8; 32],
     paper_thickness_bits: u64,
+    positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
     common_pose_limits: CommonArticulationPoseExtensionLimitsV1,
     schedule_limits: CycleScheduleLimitsV1,
     limits: CommonArticulationClearanceExtensionLimitsV1,
@@ -650,6 +664,24 @@ impl CommonArticulationClearanceExtensionPrerequisiteV1 {
     #[must_use]
     pub const fn actual_block_count_v1(&self) -> usize {
         self.actual_block_count
+    }
+
+    #[must_use]
+    pub const fn positive_graph_limits_v1(
+        &self,
+    ) -> CommonArticulationPositiveThicknessGraphExtensionLimitsV1 {
+        self.positive_graph_limits
+    }
+
+    #[must_use]
+    pub const fn whole_parent_continuous_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.whole_parent_continuous_binding
+    }
+
+    #[must_use]
+    pub fn parent_graph_admission_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.whole_parent_continuous
+            .parent_graph_admission_binding_fingerprint_v2()
     }
 
     #[must_use]
@@ -725,6 +757,7 @@ impl CommonArticulationClearanceExtensionPrerequisiteV1 {
             schedule_limits: input.schedule_limits,
             closure: input.closure,
             paper_thickness_mm: input.paper_thickness_mm,
+            positive_graph_limits: input.positive_graph_limits,
             submitted_cross_block_pairs: &self.cross_block_pairs,
             whole_parent_continuous: Some(self.whole_parent_continuous.clone()),
             limits: input.limits,
@@ -735,13 +768,16 @@ impl CommonArticulationClearanceExtensionPrerequisiteV1 {
         let schedule_binding = input.schedule.certificate_binding_fingerprint_v2();
         let closure_binding = input.closure.partition_binding_fingerprint_v2();
         let paper_thickness_bits = input.paper_thickness_mm.to_bits();
+        let whole_parent_continuous_binding = self.whole_parent_continuous.binding_fingerprint_v2();
         let actual_block_count = input.decomposition.blocks().len();
         let binding_fingerprint =
             clearance_extension_binding_fingerprint_v1(&ClearanceExtensionBindingMaterialV1 {
                 common_pose_binding,
                 schedule_binding,
                 closure_binding,
+                whole_parent_continuous_binding,
                 paper_thickness_bits,
+                positive_graph_limits: input.positive_graph_limits,
                 common_pose_limits: input.common_pose_limits,
                 schedule_limits: input.schedule_limits,
                 limits: input.limits,
@@ -755,6 +791,8 @@ impl CommonArticulationClearanceExtensionPrerequisiteV1 {
             || self.schedule_binding != schedule_binding
             || self.closure_binding != closure_binding
             || self.paper_thickness_bits != paper_thickness_bits
+            || self.whole_parent_continuous_binding != whole_parent_continuous_binding
+            || self.positive_graph_limits != input.positive_graph_limits
             || self.common_pose_limits != input.common_pose_limits
             || self.schedule_limits != input.schedule_limits
             || self.limits != input.limits
@@ -763,13 +801,21 @@ impl CommonArticulationClearanceExtensionPrerequisiteV1 {
             || self.logical_work != validated.logical_work
             || self.storage_bytes_upper_bound != validated.storage_bytes_upper_bound
             || self.binding_fingerprint != binding_fingerprint
-            || !self.whole_parent_continuous.is_for(
-                input.geometry,
-                input.audit,
-                input.pose.fixed_face(),
-                input.schedule,
-                input.closure,
-                input.paper_thickness_mm,
+            || !self.whole_parent_continuous.is_for_v2(
+                CommonArticulationPositiveThicknessContinuousRevalidationInputV2 {
+                    geometry: input.geometry,
+                    audit: input.audit,
+                    decomposition: input.decomposition,
+                    configured_max_blocks: input.limits.max_blocks,
+                    fixed_face: input.pose.fixed_face(),
+                    schedule: input.schedule,
+                    closure: input.closure,
+                    paper_thickness_mm: input.paper_thickness_mm,
+                    graph_limits: input.positive_graph_limits,
+                    parent_graph_admission: self
+                        .whole_parent_continuous
+                        .retained_parent_graph_admission_v2(),
+                },
             )
         {
             return Err(CommonArticulationClearanceErrorV1::WholeParentContinuousProofMismatch);
@@ -1098,12 +1144,19 @@ fn issue_common_articulation_clearance_extension_prerequisite_with_checkpoint_v1
         ));
     }
 
+    let whole_parent_continuous_binding = input
+        .whole_parent_continuous
+        .as_ref()
+        .ok_or(CommonArticulationClearanceErrorV1::WholeParentContinuousProofMismatch)?
+        .binding_fingerprint_v2();
     let binding_fingerprint =
         clearance_extension_binding_fingerprint_v1(&ClearanceExtensionBindingMaterialV1 {
             common_pose_binding,
             schedule_binding,
             closure_binding,
+            whole_parent_continuous_binding,
             paper_thickness_bits,
+            positive_graph_limits: input.positive_graph_limits,
             common_pose_limits: input.common_pose_limits,
             schedule_limits: input.schedule_limits,
             limits: input.limits,
@@ -1119,10 +1172,12 @@ fn issue_common_articulation_clearance_extension_prerequisite_with_checkpoint_v1
         Box::new(CommonArticulationClearanceExtensionPrerequisiteV1 {
             issuer_pose: input.pose.clone(),
             whole_parent_continuous,
+            whole_parent_continuous_binding,
             common_pose_binding,
             schedule_binding,
             closure_binding,
             paper_thickness_bits,
+            positive_graph_limits: input.positive_graph_limits,
             common_pose_limits: input.common_pose_limits,
             schedule_limits: input.schedule_limits,
             limits: input.limits,
@@ -1233,13 +1288,19 @@ fn validate_clearance_extension_input_v1(
     let unsupported_reason = if source_angles.is_none() {
         Some(CommonArticulationClearanceUnsupportedReasonV1::CanonicalSourcePoseUnavailable)
     } else if let Some(continuous) = input.whole_parent_continuous.as_ref() {
-        if !continuous.is_for(
-            input.geometry,
-            input.audit,
-            input.pose.fixed_face(),
-            input.schedule,
-            input.closure,
-            input.paper_thickness_mm,
+        if !continuous.is_for_v2(
+            CommonArticulationPositiveThicknessContinuousRevalidationInputV2 {
+                geometry: input.geometry,
+                audit: input.audit,
+                decomposition: input.decomposition,
+                configured_max_blocks: input.limits.max_blocks,
+                fixed_face: input.pose.fixed_face(),
+                schedule: input.schedule,
+                closure: input.closure,
+                paper_thickness_mm: input.paper_thickness_mm,
+                graph_limits: input.positive_graph_limits,
+                parent_graph_admission: continuous.retained_parent_graph_admission_v2(),
+            },
         ) {
             return Err(CommonArticulationClearanceErrorV1::WholeParentContinuousProofMismatch);
         }
@@ -1404,10 +1465,11 @@ fn validate_clearance_extension_limits_v1(
     if !(COMMON_ARTICULATION_CLEARANCE_EXTENSION_MIN_BLOCKS_V1
         ..=COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_BLOCKS_V1)
         .contains(&limits.max_blocks)
-        || limits.max_faces > COMMON_ARTICULATION_CLEARANCE_MAX_FACES_V1
-        || limits.max_cross_block_pairs > COMMON_ARTICULATION_CLEARANCE_MAX_CROSS_BLOCK_PAIRS_V1
+        || limits.max_faces > COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_FACES_V1
+        || limits.max_cross_block_pairs
+            > COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_CROSS_BLOCK_PAIRS_V1
         || limits.max_pair_candidates > COMMON_ARTICULATION_CLEARANCE_MAX_PAIR_CANDIDATES_V1
-        || limits.max_work > COMMON_ARTICULATION_CLEARANCE_MAX_WORK_V1
+        || limits.max_work > COMMON_ARTICULATION_CLEARANCE_EXTENSION_MAX_WORK_V1
         || limits.max_storage_bytes > COMMON_ARTICULATION_CLEARANCE_MAX_STORAGE_BYTES_V1
     {
         return Err(CommonArticulationClearanceErrorV1::ResourceLimit);
@@ -1671,7 +1733,9 @@ struct ClearanceExtensionBindingMaterialV1<'a> {
     common_pose_binding: [u8; 32],
     schedule_binding: [u8; 32],
     closure_binding: [u8; 32],
+    whole_parent_continuous_binding: [u8; 32],
     paper_thickness_bits: u64,
+    positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
     common_pose_limits: CommonArticulationPoseExtensionLimitsV1,
     schedule_limits: CycleScheduleLimitsV1,
     limits: CommonArticulationClearanceExtensionLimitsV1,
@@ -1694,8 +1758,11 @@ fn clearance_extension_binding_fingerprint_v1(
     hash.update(material.common_pose_binding);
     hash.update(material.schedule_binding);
     hash.update(material.closure_binding);
+    hash.update(material.whole_parent_continuous_binding);
     hash.update(material.paper_thickness_bits.to_be_bytes());
     for value in [
+        material.positive_graph_limits.max_unordered_face_pairs,
+        material.positive_graph_limits.max_shared_feature_pairs,
         material.common_pose_limits.max_blocks,
         material.common_pose_limits.max_faces,
         material.common_pose_limits.max_hinges,

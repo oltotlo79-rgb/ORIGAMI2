@@ -1,11 +1,16 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 pub const GLOBAL_FLAT_LAYER_ORDER_PAIR_REGISTRY_DOMAIN_V2: &[u8] =
     b"origami2/general-n-layer-pair-registry/v1";
+pub const GLOBAL_FLAT_LAYER_ORDER_COMPACT_PAIR_ASSIGNMENT_DOMAIN_V2: &[u8] =
+    b"origami2/general-n-layer-pair-assignment/v2";
 
 pub const DEFAULT_MAX_COMPACT_PAIR_ASSIGNMENT_BYTES_V2: usize = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_COMPACT_LAYER_ORDER_RETAINED_BYTES_V2: usize = 128 * 1024 * 1024;
 pub const DEFAULT_MAX_COMPACT_LAYER_ORDER_PEAK_BYTES_V2: usize = 256 * 1024 * 1024;
+
+const COMPACT_PAIR_ASSIGNMENT_DIGEST_CHUNK_BYTES_V2: usize = 4 * 1024;
 
 /// Untrusted compact direction assignment bound to one canonical live pair
 /// registry. Bit `i` is little-endian within its byte. A set bit means that
@@ -97,6 +102,7 @@ pub struct GlobalFlatLayerOrderCompactPairAssignmentAuthorityV2 {
     work_counts: GlobalFlatFoldabilityWorkCounts,
     variable_count: usize,
     variable_registry_sha256: [u8; 32],
+    direction_assignment_sha256: [u8; 32],
     limits: GlobalFlatLayerOrderCompactPairAssignmentLimitsV2,
     resources: GlobalFlatLayerOrderCompactPairAssignmentResourcesV2,
     _authority_seal: GlobalFlatLayerOrderCompactPairAssignmentSealV2,
@@ -129,6 +135,13 @@ impl GlobalFlatLayerOrderCompactPairAssignmentAuthorityV2 {
     #[must_use]
     pub const fn variable_registry_sha256_v2(&self) -> [u8; 32] {
         self.variable_registry_sha256
+    }
+
+    /// Domain-separated binding of the exact canonical registry declaration
+    /// and packed direction bytes supplied to the no-search issuer.
+    #[must_use]
+    pub const fn direction_assignment_sha256_v2(&self) -> [u8; 32] {
+        self.direction_assignment_sha256
     }
 
     #[must_use]
@@ -227,6 +240,14 @@ pub fn issue_global_flat_layer_order_from_compact_pair_assignment_with_observer_
             assignment_bytes,
         ));
     }
+    // Reject the allocation-free lower-bound envelope before hashing any
+    // assignment bytes or asking live-source validation to allocate.
+    let direction_assignment_sha256 = compact_pair_assignment_sha256_with_observer_v2(
+        input.variable_count,
+        input.variable_registry_sha256,
+        input.direction_bits_le,
+        observer,
+    )?;
 
     let mut validation_peak =
         LiveValidationPeakLedgerV2::new(assignment_bytes, limits.max_peak_bytes);
@@ -371,6 +392,7 @@ pub fn issue_global_flat_layer_order_from_compact_pair_assignment_with_observer_
         work_counts,
         variable_count: input.variable_count,
         variable_registry_sha256: input.variable_registry_sha256,
+        direction_assignment_sha256,
         limits,
         resources: GlobalFlatLayerOrderCompactPairAssignmentResourcesV2 {
             compact_assignment_bytes: assignment_bytes,
@@ -382,6 +404,75 @@ pub fn issue_global_flat_layer_order_from_compact_pair_assignment_with_observer_
         },
         _authority_seal: GlobalFlatLayerOrderCompactPairAssignmentSealV2,
     })
+}
+
+/// Computes the canonical compact-assignment binding used by the opaque
+/// authority. Malformed lengths, non-zero spare tail bits, and values that
+/// cannot be encoded as stable `u64` fields have no binding.
+#[must_use]
+pub fn global_flat_layer_order_compact_pair_assignment_sha256_v2(
+    variable_count: usize,
+    variable_registry_sha256: [u8; 32],
+    direction_bits_le: &[u8],
+) -> Option<[u8; 32]> {
+    let expected_bytes = facewise::compact_assignment_byte_len_v2(variable_count)?;
+    if direction_bits_le.len() != expected_bytes
+        || facewise::compact_assignment_has_nonzero_tail_v2(direction_bits_le, variable_count)
+    {
+        return None;
+    }
+    let variable_count = u64::try_from(variable_count).ok()?;
+    let assignment_bytes = u64::try_from(direction_bits_le.len()).ok()?;
+    let mut hash = Sha256::new();
+    hash.update(GLOBAL_FLAT_LAYER_ORDER_COMPACT_PAIR_ASSIGNMENT_DOMAIN_V2);
+    hash.update(variable_count.to_le_bytes());
+    hash.update(variable_registry_sha256);
+    hash.update(assignment_bytes.to_le_bytes());
+    hash.update(direction_bits_le);
+    Some(hash.finalize().into())
+}
+
+fn compact_pair_assignment_sha256_with_observer_v2<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    variable_count: usize,
+    variable_registry_sha256: [u8; 32],
+    direction_bits_le: &[u8],
+    observer: &mut O,
+) -> Result<[u8; 32], GlobalFlatLayerOrderCompactPairAssignmentErrorV2> {
+    let variable_count = u64::try_from(variable_count)
+        .map_err(|_| GlobalFlatLayerOrderCompactPairAssignmentErrorV2::InvalidLimits)?;
+    let assignment_bytes = u64::try_from(direction_bits_le.len())
+        .map_err(|_| GlobalFlatLayerOrderCompactPairAssignmentErrorV2::InvalidLimits)?;
+    let mut hash = Sha256::new();
+    hash.update(GLOBAL_FLAT_LAYER_ORDER_COMPACT_PAIR_ASSIGNMENT_DOMAIN_V2);
+    hash.update(variable_count.to_le_bytes());
+    hash.update(variable_registry_sha256);
+    hash.update(assignment_bytes.to_le_bytes());
+    for chunk in direction_bits_le.chunks(COMPACT_PAIR_ASSIGNMENT_DIGEST_CHUNK_BYTES_V2) {
+        compact_pair_assignment_digest_checkpoint_v2(observer)?;
+        hash.update(chunk);
+    }
+    compact_pair_assignment_digest_checkpoint_v2(observer)?;
+    Ok(hash.finalize().into())
+}
+
+fn compact_pair_assignment_digest_checkpoint_v2<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    observer: &mut O,
+) -> Result<(), GlobalFlatLayerOrderCompactPairAssignmentErrorV2> {
+    match observer.checkpoint() {
+        GlobalFlatFoldabilityCheckpoint::Continue => Ok(()),
+        GlobalFlatFoldabilityCheckpoint::DeadlineReached => Err(
+            GlobalFlatLayerOrderCompactPairAssignmentErrorV2::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::TimeLimitReached {
+                    phase: GlobalFlatFoldabilityPhase::VerifyingCertificate,
+                },
+            },
+        ),
+        GlobalFlatFoldabilityCheckpoint::Cancelled => {
+            Err(GlobalFlatLayerOrderCompactPairAssignmentErrorV2::Execution(
+                GlobalFlatFoldabilityExecutionError::Cancelled,
+            ))
+        }
+    }
 }
 
 fn compact_pair_assignment_limits_are_finite_v2(

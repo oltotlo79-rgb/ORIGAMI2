@@ -6,7 +6,8 @@ use super::test_support::{
 use super::validation::{
     canonical_pair_budget_v2, cross_block_pairs_equal_with_checkpoint_v2, dedup_sorted_pairs_v2,
     filter_pairs_not_local_v2, heap_sort_pairs_and_count_comparisons_v2,
-    raw_pair_candidate_budget_v2, validate_submitted_pairs_v2,
+    raw_pair_candidate_budget_v2, stationary_single_leaf_dyadic_peak_bytes_v2,
+    validate_submitted_pairs_v2,
 };
 use super::*;
 use ori_domain::ProjectId;
@@ -247,6 +248,152 @@ fn n33_issues_an_unpromoted_profile_bound_prerequisite() {
     prerequisite
         .revalidate_v2(fixture.revalidation_input())
         .expect("same exact live V2 inputs");
+}
+
+#[test]
+fn clearance_revalidation_rejects_oversized_candidate_limits_before_replay() {
+    let fixture = miura_fixture_v2();
+    let storage = fixture.profile.actual_v2().clearance_storage_bytes_v2();
+    let oversized_limits = ori_kinematics::CommonArticulationWholeParentClosureLimitsV2 {
+        block_closure_set_limits: ori_kinematics::CommonArticulationBlockClosureSetLimitsV2 {
+            max_total_block_schedule_bytes: storage,
+            ..fixture.whole_parent_closure_limits.block_closure_set_limits
+        },
+        ..fixture.whole_parent_closure_limits
+    };
+    assert_eq!(
+        issue_common_articulation_clearance_prerequisite_v2(CommonArticulationClearanceInputV2 {
+            whole_parent_closure_limits: oversized_limits,
+            ..fixture.input()
+        })
+        .expect_err("oversized revalidation candidate must fail before nested replay"),
+        CommonArticulationClearanceErrorV2::ResourceLimit,
+    );
+
+    let prerequisite = issue_common_articulation_clearance_prerequisite_v2(fixture.input())
+        .expect("baseline N33 prerequisite");
+    assert_eq!(
+        prerequisite
+            .as_unpromoted_v2()
+            .revalidate_v2(CommonArticulationClearanceRevalidationInputV2 {
+                whole_parent_closure_limits: oversized_limits,
+                ..fixture.revalidation_input()
+            })
+            .expect_err("oversized replay candidate must fail before nested replay"),
+        CommonArticulationClearanceErrorV2::ResourceLimit,
+    );
+}
+
+#[test]
+fn stationary_single_leaf_workspace_is_charged_and_nonstationary_routes_fail_closed() {
+    let fixture = miura_fixture_v2();
+    let parent_peak =
+        stationary_single_leaf_dyadic_peak_bytes_v2(&fixture.geometry, &fixture.audit)
+            .expect("canonical N33 stationary solve has a bounded peak");
+    assert!(
+        parent_peak > fixture.whole_parent_closure.parent_closure_bytes_v2(),
+        "the physical peak must include evaluate(0) plus solve_closed workspace, not only the retained leaf"
+    );
+
+    let mut entries = fixture
+        .geometry
+        .hinges()
+        .iter()
+        .map(|hinge| ori_kinematics::CycleScheduleEntryInputV1 {
+            edge: hinge.edge(),
+            // At u=0, x=-1 and the degree-one Chebyshev term cancels this
+            // initial angle, so the live pose remains the all-zero fixture.
+            initial_angle_degrees_bits: 1.0_f64.to_bits(),
+            chebyshev_coefficients: vec![
+                ori_kinematics::RationalCoefficientV1 {
+                    numerator: 0,
+                    denominator: 1,
+                },
+                ori_kinematics::RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                },
+            ],
+        })
+        .collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+    let nonstationary = ori_kinematics::CanonicalCycleScheduleV1::prepare(
+        &fixture.geometry,
+        &fixture.audit,
+        fixture.parent_fixed_face,
+        [0.0, 1.0],
+        entries,
+        ori_kinematics::CycleScheduleLimitsV1 {
+            max_hinges: fixture.geometry.hinges().len(),
+            max_degree: 1,
+            max_coefficient_bits: 1,
+            max_work: fixture.geometry.hinges().len() * 2,
+        },
+    )
+    .expect("bounded nonstationary test schedule");
+
+    assert_eq!(
+        issue_common_articulation_clearance_prerequisite_v2(CommonArticulationClearanceInputV2 {
+            parent_schedule: &nonstationary,
+            ..fixture.input()
+        })
+        .expect_err("adaptive/nonstationary V1 workspace is not admitted by this V2 boundary"),
+        CommonArticulationClearanceErrorV2::ResourceLimit,
+    );
+
+    let prerequisite = issue_common_articulation_clearance_prerequisite_v2(fixture.input())
+        .expect("stationary N33 baseline");
+    assert_eq!(
+        prerequisite
+            .as_unpromoted_v2()
+            .revalidate_v2(CommonArticulationClearanceRevalidationInputV2 {
+                parent_schedule: &nonstationary,
+                ..fixture.revalidation_input()
+            })
+            .expect_err("replay must reject the same unbounded route before nested issuance"),
+        CommonArticulationClearanceErrorV2::ResourceLimit,
+    );
+}
+
+#[test]
+fn stationary_workspace_contract_rejects_multi_leaf_dyadic_limits_before_replay() {
+    let fixture = miura_fixture_v2();
+    let parent_multi_leaf = ori_kinematics::CommonArticulationWholeParentClosureLimitsV2 {
+        parent_closure_limits: ori_kinematics::DyadicIntervalClosureLimitsV1 {
+            max_leaves: 2,
+            ..fixture.whole_parent_closure_limits.parent_closure_limits
+        },
+        ..fixture.whole_parent_closure_limits
+    };
+    let block_nonzero_depth = ori_kinematics::CommonArticulationWholeParentClosureLimitsV2 {
+        block_closure_set_limits: ori_kinematics::CommonArticulationBlockClosureSetLimitsV2 {
+            per_block_closure_limits: ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                max_depth: 1,
+                ..fixture
+                    .whole_parent_closure_limits
+                    .block_closure_set_limits
+                    .per_block_closure_limits
+            },
+            ..fixture.whole_parent_closure_limits.block_closure_set_limits
+        },
+        ..fixture.whole_parent_closure_limits
+    };
+
+    for (label, limits) in [
+        ("parent multi-leaf", parent_multi_leaf),
+        ("block adaptive depth", block_nonzero_depth),
+    ] {
+        assert_eq!(
+            issue_common_articulation_clearance_prerequisite_v2(
+                CommonArticulationClearanceInputV2 {
+                    whole_parent_closure_limits: limits,
+                    ..fixture.input()
+                },
+            )
+            .expect_err(label),
+            CommonArticulationClearanceErrorV2::ResourceLimit,
+        );
+    }
 }
 
 #[test]

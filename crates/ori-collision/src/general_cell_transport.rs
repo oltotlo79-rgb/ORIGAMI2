@@ -1,18 +1,36 @@
 use ori_domain::Point2;
 use ori_foldability::{FoldedFaceOrientation, LayerOrderSnapshot};
 use ori_kinematics::{
-    CanonicalCycleScheduleV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
-    DyadicMaterialHingeIntervalClosureCertificateV1, HalfAngleRationalEntryInputV1,
-    MaterialHingeGraphAudit, MaterialHingeGraphGeometry, MaterialHingeGraphInstanceV1, Point3,
-    RationalCoefficientV1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1,
+    COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1, CanonicalCycleScheduleV1,
+    CanonicalMaterialEdgeBlockDecompositionV1, CycleScheduleLimitsV1,
+    DyadicIntervalClosureLimitsV1, DyadicMaterialHingeIntervalClosureCertificateV1,
+    HalfAngleRationalEntryInputV1, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+    MaterialHingeGraphInstanceV1, Point3, RationalCoefficientV1,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{CooperativeOperationStopV1, PositiveThicknessContinuousCertificateV1};
+use crate::{
+    CommonArticulationPositiveThicknessContinuousCertificateExtensionV2,
+    CommonArticulationPositiveThicknessContinuousRevalidationInputV2,
+    CommonArticulationPositiveThicknessGraphExtensionLimitsV1, CooperativeOperationStopV1,
+    PositiveThicknessContinuousCertificateV1,
+};
+
+mod admitted_transport_v2;
+pub(crate) use admitted_transport_v2::AdmittedGeneralCellTransportRetainedEvidenceV2;
+pub use admitted_transport_v2::{
+    ADMITTED_GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V2, AdmittedGeneralCellTransportInputV2,
+    AdmittedGeneralMultiFaceCellTransportProofV2,
+    certify_admitted_general_multi_face_cell_transport_v2,
+};
 
 pub const GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1: &str =
     "general_multi_face_positive_thickness_cell_transport_v1";
+pub const COMMON_ARTICULATION_GENERAL_MULTI_FACE_CELL_TRANSPORT_EXTENSION_MODEL_ID_V1: &str =
+    "common_articulation_general_multi_face_cell_transport_extension_v1";
+pub const GENERAL_CELL_TRANSPORT_TOLERANCE_V1: f64 = 1.0e-9;
 
 /// The currently proved chain classes contain at most three contiguous
 /// transports. Longer arbitrary chains have no public completeness theorem and
@@ -371,6 +389,9 @@ pub fn issue_regular_quad_petal_chained_authority_v1(
     schedule_limits: CycleScheduleLimitsV1,
     closure_limits: DyadicIntervalClosureLimitsV1,
 ) -> Option<RegularQuadPetalChainedAuthorityV1> {
+    if tolerance.to_bits() != GENERAL_CELL_TRANSPORT_TOLERANCE_V1.to_bits() {
+        return None;
+    }
     let completion_candidates = degree_four_petal_completion_candidates_v1(geometry, hinges);
     let candidate_storage_bytes = std::mem::size_of::<RegularQuadPetalCandidateIteratorV1>()
         .checked_add(
@@ -639,6 +660,17 @@ pub fn preflight_general_cell_transport_peak_bytes_v1(
     Ok(())
 }
 
+fn validate_positive_thickness_separation_v1(
+    separation: f64,
+    paper_thickness_mm: f64,
+    radial_bifold_family: bool,
+) -> Result<(), GeneralCellTransportErrorV1> {
+    if separation < paper_thickness_mm && !radial_bifold_family {
+        return Err(GeneralCellTransportErrorV1::Crossing);
+    }
+    Ok(())
+}
+
 pub struct GeneralCellTransportInputV1<'a> {
     pub geometry: &'a MaterialHingeGraphGeometry,
     pub audit: &'a MaterialHingeGraphAudit,
@@ -648,6 +680,23 @@ pub struct GeneralCellTransportInputV1<'a> {
     pub positive_continuous: &'a PositiveThicknessContinuousCertificateV1,
     pub paper_thickness_mm: f64,
     pub tolerance: f64,
+    pub limits: GeneralCellTransportLimitsV1,
+}
+
+/// Exact live inputs for the separately typed 11..=32 whole-parent cell
+/// transport extension.
+pub struct CommonArticulationGeneralCellTransportExtensionInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub decomposition: &'a CanonicalMaterialEdgeBlockDecompositionV1,
+    pub configured_max_blocks: usize,
+    pub source: &'a LayerOrderSnapshot,
+    pub schedule: &'a CanonicalCycleScheduleV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub positive_continuous:
+        &'a CommonArticulationPositiveThicknessContinuousCertificateExtensionV2,
+    pub positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+    pub paper_thickness_mm: f64,
     pub limits: GeneralCellTransportLimitsV1,
 }
 
@@ -1001,6 +1050,320 @@ impl GeneralMultiFaceCellTransportProofV1 {
     }
 }
 
+/// Opaque whole-parent cell-transport proof for the separately scoped
+/// common-articulation extension.
+///
+/// Its retained legacy proof is issuer-private material only. There is no
+/// conversion, dereference, or inner accessor, so this type cannot be routed
+/// through a legacy staged/final, desktop, Apply, or viewer boundary.
+///
+/// ```compile_fail
+/// use ori_collision::{
+///     CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1,
+///     GeneralMultiFaceCellTransportProofV1,
+/// };
+/// fn legacy(_: GeneralMultiFaceCellTransportProofV1) {}
+/// fn cannot_route(value: CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1) {
+///     legacy(value);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use ori_collision::CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1;
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1>();
+/// ```
+///
+/// ```compile_fail
+/// use ori_collision::CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1;
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1>();
+/// ```
+pub struct CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1 {
+    inner: GeneralMultiFaceCellTransportProofV1,
+    positive_continuous: CommonArticulationPositiveThicknessContinuousCertificateExtensionV2,
+    configured_max_blocks: usize,
+    actual_block_count: usize,
+    decomposition_binding: [u8; 32],
+    positive_binding: [u8; 32],
+    positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+    tolerance_bits: u64,
+    binding_fingerprint: [u8; 32],
+}
+
+impl std::fmt::Debug for CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1")
+            .field("model_id", &self.model_id())
+            .field("configured_max_blocks", &self.configured_max_blocks)
+            .field("actual_block_count", &self.actual_block_count)
+            .field("binding_fingerprint", &self.binding_fingerprint)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        COMMON_ARTICULATION_GENERAL_MULTI_FACE_CELL_TRANSPORT_EXTENSION_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn configured_max_blocks_v1(&self) -> usize {
+        self.configured_max_blocks
+    }
+
+    #[must_use]
+    pub const fn actual_block_count_v1(&self) -> usize {
+        self.actual_block_count
+    }
+
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding_fingerprint
+    }
+
+    #[must_use]
+    pub fn parent_graph_admission_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.positive_continuous
+            .parent_graph_admission_binding_fingerprint_v2()
+    }
+
+    #[must_use]
+    pub fn transition_hashes_v1(&self) -> &[[u8; 32]] {
+        self.inner.transition_hashes()
+    }
+
+    #[must_use]
+    pub fn target_order_hash_v1(&self) -> [u8; 32] {
+        self.inner.target_order_hash()
+    }
+
+    #[must_use]
+    pub const fn pair_order_count_v1(&self) -> usize {
+        self.inner.pair_order_count
+    }
+
+    #[must_use]
+    pub const fn paper_thickness_mm_v1(&self) -> f64 {
+        f64::from_bits(self.inner.thickness_bits)
+    }
+
+    #[must_use]
+    pub fn checked_deep_retained_bytes_v1(&self) -> Option<usize> {
+        let shell_and_inline_positive = std::mem::size_of::<Self>()
+            .checked_sub(std::mem::size_of::<GeneralMultiFaceCellTransportProofV1>())?;
+        let positive_dynamic = self
+            .positive_continuous
+            .checked_deep_retained_bytes_v2()?
+            .checked_sub(std::mem::size_of::<
+                CommonArticulationPositiveThicknessContinuousCertificateExtensionV2,
+            >())?;
+        self.inner
+            .checked_deep_retained_bytes_v1()?
+            .checked_add(shell_and_inline_positive)?
+            .checked_add(positive_dynamic)
+    }
+
+    #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "extension revalidation requires every exact live issuer binding"
+    )]
+    pub fn is_for_v1(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
+        configured_max_blocks: usize,
+        source: &LayerOrderSnapshot,
+        schedule: &CanonicalCycleScheduleV1,
+        closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+        thickness: f64,
+        positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+    ) -> bool {
+        self.is_for_with_checkpoint_v1(
+            geometry,
+            audit,
+            decomposition,
+            configured_max_blocks,
+            source,
+            schedule,
+            closure,
+            thickness,
+            positive_graph_limits,
+            || Ok(()),
+        )
+        .unwrap_or(false)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "extension revalidation requires every exact live issuer binding and a checkpoint"
+    )]
+    pub(crate) fn is_for_with_checkpoint_v1(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
+        configured_max_blocks: usize,
+        source: &LayerOrderSnapshot,
+        schedule: &CanonicalCycleScheduleV1,
+        closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+        thickness: f64,
+        positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+        mut checkpoint: impl FnMut() -> Result<(), CooperativeOperationStopV1>,
+    ) -> Result<bool, CooperativeOperationStopV1> {
+        checkpoint()?;
+        let Some((actual_block_count, decomposition_binding)) =
+            common_articulation_general_transport_scope_v1(
+                geometry,
+                decomposition,
+                configured_max_blocks,
+            )
+        else {
+            return Ok(false);
+        };
+        if self.configured_max_blocks != configured_max_blocks
+            || self.actual_block_count != actual_block_count
+            || self.decomposition_binding != decomposition_binding
+            || self.positive_graph_limits != positive_graph_limits
+            || self.tolerance_bits != GENERAL_CELL_TRANSPORT_TOLERANCE_V1.to_bits()
+            || self.positive_binding != self.positive_continuous.binding_fingerprint_v2()
+            || !self.positive_continuous.is_for_v2(
+                CommonArticulationPositiveThicknessContinuousRevalidationInputV2 {
+                    geometry,
+                    audit,
+                    decomposition,
+                    configured_max_blocks,
+                    fixed_face: closure.fixed_face(),
+                    schedule,
+                    closure,
+                    paper_thickness_mm: thickness,
+                    graph_limits: positive_graph_limits,
+                    parent_graph_admission: self
+                        .positive_continuous
+                        .retained_parent_graph_admission_v2(),
+                },
+            )
+        {
+            return Ok(false);
+        }
+        checkpoint()?;
+        if !self.inner.is_for_with_checkpoint_v1(
+            geometry,
+            source,
+            schedule,
+            closure,
+            thickness,
+            &mut checkpoint,
+        )? {
+            return Ok(false);
+        }
+        checkpoint()?;
+        Ok(self.binding_fingerprint
+            == common_articulation_general_transport_extension_binding_v1(
+                &self.inner,
+                configured_max_blocks,
+                actual_block_count,
+                decomposition_binding,
+                self.positive_binding,
+                positive_graph_limits,
+                self.tolerance_bits,
+            ))
+    }
+
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_collision_clearance(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_layer_transport(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_viewer(&self) -> bool {
+        false
+    }
+}
+
+fn common_articulation_general_transport_scope_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    decomposition: &CanonicalMaterialEdgeBlockDecompositionV1,
+    configured_max_blocks: usize,
+) -> Option<(usize, [u8; 32])> {
+    let actual_block_count = decomposition.blocks().len();
+    if !decomposition.is_for_geometry(geometry)
+        || !(COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1
+            ..=COMMON_ARTICULATION_POSE_EXTENSION_MAX_BLOCKS_V1)
+            .contains(&configured_max_blocks)
+        || !(COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1..=configured_max_blocks)
+            .contains(&actual_block_count)
+    {
+        return None;
+    }
+    Some((
+        actual_block_count,
+        crate::continuous_path::common_articulation_decomposition_binding_v1(decomposition),
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the domain-separated binding records every extension scope and retained proof field"
+)]
+fn common_articulation_general_transport_extension_binding_v1(
+    inner: &GeneralMultiFaceCellTransportProofV1,
+    configured_max_blocks: usize,
+    actual_block_count: usize,
+    decomposition_binding: [u8; 32],
+    positive_binding: [u8; 32],
+    positive_graph_limits: CommonArticulationPositiveThicknessGraphExtensionLimitsV1,
+    tolerance_bits: u64,
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(COMMON_ARTICULATION_GENERAL_MULTI_FACE_CELL_TRANSPORT_EXTENSION_MODEL_ID_V1);
+    for value in [
+        COMMON_ARTICULATION_POSE_EXTENSION_MIN_BLOCKS_V1,
+        configured_max_blocks,
+        actual_block_count,
+        positive_graph_limits.max_unordered_face_pairs,
+        positive_graph_limits.max_shared_feature_pairs,
+        inner.pair_order_count,
+        inner.checkpoint_hashes.len(),
+    ] {
+        hash.update((value as u64).to_le_bytes());
+    }
+    hash.update(decomposition_binding);
+    hash.update(positive_binding);
+    hash.update(inner.schedule_hash);
+    hash.update(inner.closure_hash);
+    hash.update(inner.thickness_bits.to_le_bytes());
+    hash.update(tolerance_bits.to_le_bytes());
+    for checkpoint in &inner.checkpoint_hashes {
+        hash.update(checkpoint);
+    }
+    hash.finalize().into()
+}
+
 fn layer_order_snapshot_equal_with_checkpoint_v1(
     expected: &LayerOrderSnapshot,
     actual: &LayerOrderSnapshot,
@@ -1112,6 +1475,120 @@ pub fn certify_general_multi_face_cell_transport_v1(
     )
 }
 
+/// Mints the separately typed 11..=32 whole-parent transport proof without
+/// widening the legacy proof type or its 128 MiB source/peak envelope.
+pub fn certify_common_articulation_general_multi_face_cell_transport_extension_v1(
+    input: CommonArticulationGeneralCellTransportExtensionInputV1<'_>,
+) -> Result<
+    CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1,
+    GeneralCellTransportErrorV1,
+> {
+    let positive_continuous = input.positive_continuous;
+    positive_continuous.issue_general_transport_extension_v2(input)
+}
+
+pub(crate) fn certify_common_articulation_general_transport_with_scoped_positive_material_v2(
+    input: CommonArticulationGeneralCellTransportExtensionInputV1<'_>,
+    positive_material: crate::continuous_path::common_articulation_positive_thickness_v2::CommonArticulationPositiveThicknessScopedMaterialV2<
+        '_,
+    >,
+) -> Result<
+    CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1,
+    GeneralCellTransportErrorV1,
+> {
+    if !std::ptr::eq(input.positive_continuous, positive_material.scope()) {
+        return Err(GeneralCellTransportErrorV1::BindingMismatch);
+    }
+    let Some((actual_block_count, decomposition_binding)) =
+        common_articulation_general_transport_scope_v1(
+            input.geometry,
+            input.decomposition,
+            input.configured_max_blocks,
+        )
+    else {
+        return Err(GeneralCellTransportErrorV1::BindingMismatch);
+    };
+    if !positive_material.scope().is_for_v2(
+        CommonArticulationPositiveThicknessContinuousRevalidationInputV2 {
+            geometry: input.geometry,
+            audit: input.audit,
+            decomposition: input.decomposition,
+            configured_max_blocks: input.configured_max_blocks,
+            fixed_face: input.closure.fixed_face(),
+            schedule: input.schedule,
+            closure: input.closure,
+            paper_thickness_mm: input.paper_thickness_mm,
+            graph_limits: input.positive_graph_limits,
+            parent_graph_admission: positive_material
+                .scope()
+                .retained_parent_graph_admission_v2(),
+        },
+    ) {
+        return Err(GeneralCellTransportErrorV1::BindingMismatch);
+    }
+    let outer_shell_delta =
+        std::mem::size_of::<CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1>()
+            .checked_sub(std::mem::size_of::<GeneralMultiFaceCellTransportProofV1>())
+            .ok_or(GeneralCellTransportErrorV1::ResourceLimit)?;
+    let positive_dynamic = positive_material
+        .scope()
+        .checked_deep_retained_bytes_v2()
+        .and_then(|bytes| {
+            bytes.checked_sub(std::mem::size_of::<
+                CommonArticulationPositiveThicknessContinuousCertificateExtensionV2,
+            >())
+        })
+        .ok_or(GeneralCellTransportErrorV1::ResourceLimit)?;
+    let outer_delta = outer_shell_delta
+        .checked_add(positive_dynamic)
+        .ok_or(GeneralCellTransportErrorV1::ResourceLimit)?;
+    let maximum_inner_peak = ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES
+        .checked_sub(outer_delta)
+        .ok_or(GeneralCellTransportErrorV1::ResourceLimit)?;
+    let inner = certify_general_multi_face_cell_transport_with_peak_limit_v1(
+        GeneralCellTransportInputV1 {
+            geometry: input.geometry,
+            audit: input.audit,
+            source: input.source,
+            schedule: input.schedule,
+            closure: input.closure,
+            positive_continuous: positive_material.inner(),
+            paper_thickness_mm: input.paper_thickness_mm,
+            tolerance: GENERAL_CELL_TRANSPORT_TOLERANCE_V1,
+            limits: input.limits,
+        },
+        maximum_inner_peak,
+    )?;
+    let positive_binding = positive_material.scope().binding_fingerprint_v2();
+    let binding_fingerprint = common_articulation_general_transport_extension_binding_v1(
+        &inner,
+        input.configured_max_blocks,
+        actual_block_count,
+        decomposition_binding,
+        positive_binding,
+        input.positive_graph_limits,
+        GENERAL_CELL_TRANSPORT_TOLERANCE_V1.to_bits(),
+    );
+    let proof = CommonArticulationGeneralMultiFaceCellTransportProofExtensionV1 {
+        inner,
+        positive_continuous: positive_material.scope().clone(),
+        configured_max_blocks: input.configured_max_blocks,
+        actual_block_count,
+        decomposition_binding,
+        positive_binding,
+        positive_graph_limits: input.positive_graph_limits,
+        tolerance_bits: GENERAL_CELL_TRANSPORT_TOLERANCE_V1.to_bits(),
+        binding_fingerprint,
+    };
+    if proof
+        .checked_deep_retained_bytes_v1()
+        .is_none_or(|bytes| bytes > ori_foldability::DEFAULT_MAX_CERTIFICATE_BYTES)
+    {
+        return Err(GeneralCellTransportErrorV1::ResourceLimit);
+    }
+    Ok(proof)
+}
+
 fn certify_general_multi_face_cell_transport_with_peak_limit_v1(
     input: GeneralCellTransportInputV1<'_>,
     maximum_peak_bytes: usize,
@@ -1126,8 +1603,7 @@ fn certify_general_multi_face_cell_transport_with_peak_limit_v1(
     )?;
     if !input.paper_thickness_mm.is_finite()
         || input.paper_thickness_mm <= 0.0
-        || !input.tolerance.is_finite()
-        || input.tolerance < 0.0
+        || input.tolerance.to_bits() != GENERAL_CELL_TRANSPORT_TOLERANCE_V1.to_bits()
         || !input.positive_continuous.is_for(
             input.geometry,
             input.audit,
@@ -1278,7 +1754,7 @@ fn certify_general_multi_face_cell_transport_with_peak_limit_v1(
                 input.audit,
                 input.closure.fixed_face(),
                 &angles,
-                input.tolerance.max(1.0e-12),
+                GENERAL_CELL_TRANSPORT_TOLERANCE_V1,
             )
             .map_err(|error| {
                 if error == ori_kinematics::KinematicsError::ResourceLimitExceeded {
@@ -1368,11 +1844,11 @@ fn certify_general_multi_face_cell_transport_with_peak_limit_v1(
                             + (offset_world[1] - lower[1]).powi(2)
                             + (offset_world[2] - lower[2]).powi(2))
                         .sqrt();
-                        if separation + input.tolerance < input.paper_thickness_mm
-                            && !radial_bifold_family
-                        {
-                            return Err(GeneralCellTransportErrorV1::Crossing);
-                        }
+                        validate_positive_thickness_separation_v1(
+                            separation,
+                            input.paper_thickness_mm,
+                            radial_bifold_family,
+                        )?;
                         *lower = offset_world;
                     }
                 }
@@ -1544,6 +2020,26 @@ mod tests {
         assert_eq!(
             preflight_general_cell_transport_source_retention_v1(4_096, 4_095),
             Err(GeneralCellTransportErrorV1::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn canonical_tolerance_never_admits_sub_thickness_separation() {
+        assert_eq!(
+            validate_positive_thickness_separation_v1(
+                1.0 - GENERAL_CELL_TRANSPORT_TOLERANCE_V1,
+                1.0,
+                false,
+            ),
+            Err(GeneralCellTransportErrorV1::Crossing),
+        );
+        assert_eq!(
+            validate_positive_thickness_separation_v1(1.0, 1.0, false),
+            Ok(()),
+        );
+        assert_eq!(
+            validate_positive_thickness_separation_v1(0.0, 1.0, true),
+            Ok(()),
         );
     }
 

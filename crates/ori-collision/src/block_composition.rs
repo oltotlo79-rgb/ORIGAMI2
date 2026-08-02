@@ -30,7 +30,21 @@ use crate::{
     GeneralMultiFaceCellTransportProofV1, PositiveThicknessContinuousCertificateV1,
 };
 
+mod common_articulation_complete_v2;
 mod common_articulation_extension;
+mod common_articulation_final_extension;
+
+pub use common_articulation_complete_v2::{
+    ADMITTED_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V2, AdmittedMultiBlockPositiveLayerInputV2,
+    COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MAX_FACE_PAIR_TESTS_V2,
+    COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MAX_LOGICAL_WORK_V2,
+    COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MAX_RETAINED_BYTES_V2,
+    CompleteMultiBlockPositiveLayerAuthorityV2, CompleteMultiBlockPositiveLayerErrorV2,
+    CompleteMultiBlockPositiveLayerInputV2, CompleteMultiBlockPositiveLayerLimitsV2,
+    CompleteMultiBlockPositiveLayerResourcesV2, CompleteMultiBlockPositiveLayerRevalidationInputV2,
+    issue_complete_multi_block_positive_layer_authority_v2,
+    issue_complete_multi_block_positive_layer_authority_with_control_v2,
+};
 
 pub use common_articulation_extension::{
     COMMON_ARTICULATION_BLOCK_COMPOSED_PATH_EXTENSION_MAX_BLOCKS_V1,
@@ -42,6 +56,17 @@ pub use common_articulation_extension::{
     CommonArticulationBlockComposedPathExtensionRevalidationInputV1,
     issue_common_articulation_block_composed_path_extension_authority_v1,
     issue_common_articulation_block_composed_path_extension_authority_with_control_v1,
+};
+pub use common_articulation_final_extension::{
+    COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_EXTENSION_MAX_BLOCKS_V2,
+    COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_EXTENSION_MIN_BLOCKS_V2,
+    COMMON_ARTICULATION_CONTINUOUS_LAYER_PATH_EXTENSION_MODEL_ID_V2,
+    CommonArticulationContinuousLayerPathExtensionAuthorityV2,
+    CommonArticulationContinuousLayerPathExtensionErrorV2,
+    CommonArticulationContinuousLayerPathExtensionInputV2,
+    CommonArticulationContinuousLayerPathExtensionRevalidationInputV2,
+    issue_common_articulation_continuous_layer_path_extension_authority_v2,
+    issue_common_articulation_continuous_layer_path_extension_authority_with_control_v2,
 };
 
 pub const BLOCK_COMPOSED_PATH_MODEL_ID_V1: &str = "block_composed_path_authority_v1";
@@ -3491,7 +3516,8 @@ mod tests {
         multi_block_count_supported_v1,
     };
     use crate::{
-        CooperativeOperationControlV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
+        CooperativeOperationControlV1, GENERAL_CELL_TRANSPORT_TOLERANCE_V1,
+        GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
         certify_canonical_positive_thickness_cycle_schedule_path_v1,
         certify_general_multi_face_cell_transport_v1,
     };
@@ -4840,7 +4866,7 @@ mod tests {
                         closure,
                         positive_continuous: &positive,
                         paper_thickness_mm: thickness,
-                        tolerance: 1.0e-8,
+                        tolerance: GENERAL_CELL_TRANSPORT_TOLERANCE_V1,
                         limits: GeneralCellTransportLimitsV1 {
                             max_transitions: closure.leaves().len() + 1,
                             max_cells: 1_000_000,
@@ -5442,7 +5468,7 @@ mod tests {
                             closure,
                             positive_continuous: &positive,
                             paper_thickness_mm: thickness,
-                            tolerance: 1.0e-8,
+                            tolerance: GENERAL_CELL_TRANSPORT_TOLERANCE_V1,
                             limits: GeneralCellTransportLimitsV1 {
                                 max_transitions: closure.leaves().len() + 1,
                                 max_cells: 1_000_000,

@@ -88,7 +88,39 @@ pub fn three_three_by_three_miura_blocks_with_document() -> ThreeMiuraBlocksWith
 )]
 pub fn miura_block_chain_with_document(block_count: usize) -> MiuraPatternFixture {
     assert!((3..=10).contains(&block_count));
-    let namespace = ProjectId::new();
+    three_by_three_miura_block_chain_with_document(block_count)
+}
+
+#[allow(
+    dead_code,
+    reason = "the shared fixture module is included by test targets with different case subsets"
+)]
+pub fn canonical_general_n_miura_namespace_v2() -> ProjectId {
+    ProjectId::schema_namespace([
+        0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d, 0x49, 0x32, 0x5f, 0x4e, 0x5f, 0x56, 0x32, 0, 0, 2,
+    ])
+}
+
+#[allow(
+    dead_code,
+    reason = "the shared fixture module is included by test targets with different case subsets"
+)]
+pub fn miura_block_extension_chain_with_document_in_namespace_v2(
+    block_count: usize,
+    namespace: ProjectId,
+) -> MiuraPatternFixture {
+    assert!((11..=32).contains(&block_count));
+    three_by_three_miura_block_chain_with_document_in_namespace_v2(block_count, namespace)
+}
+
+fn three_by_three_miura_block_chain_with_document(block_count: usize) -> MiuraPatternFixture {
+    three_by_three_miura_block_chain_with_document_in_namespace_v2(block_count, ProjectId::new())
+}
+
+fn three_by_three_miura_block_chain_with_document_in_namespace_v2(
+    block_count: usize,
+    namespace: ProjectId,
+) -> MiuraPatternFixture {
     let combined = (0..block_count)
         .flat_map(|index| {
             let x = i8::try_from(index * 2).expect("bounded block x");

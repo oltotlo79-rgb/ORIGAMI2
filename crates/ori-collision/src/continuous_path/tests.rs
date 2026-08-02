@@ -1778,7 +1778,7 @@ fn three_by_three_blocks_issue_canonical_blockwise_closure() {
             closure,
             positive_continuous: positive,
             paper_thickness_mm: 0.1,
-            tolerance: 1.0e-8,
+            tolerance: crate::GENERAL_CELL_TRANSPORT_TOLERANCE_V1,
             limits: crate::GeneralCellTransportLimitsV1 {
                 max_transitions: closure.leaves().len() + 1,
                 max_cells: 1_000_000,
@@ -2170,15 +2170,8 @@ fn eight_bay_real_geometry_admits_closure_but_not_sampled_clearance_authority() 
     let reversed_candidate =
         ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(rs, &ri, &rr).unwrap();
     assert!(
-        crate::certify_scheduled_cycle_transition_v1(
-            &rg,
-            &ra,
-            rf,
-            &reversed_candidate,
-            &rc,
-            32,
-        )
-        .is_none()
+        crate::certify_scheduled_cycle_transition_v1(&rg, &ra, rf, &reversed_candidate, &rc, 32,)
+            .is_none()
     );
     for thickness in [0.1, 1.0, 3.0] {
         assert_eq!(
@@ -2277,15 +2270,8 @@ fn sixteen_bay_geometry_closes_at_exact_caps_without_sampled_clearance_authority
     let reversed_candidate =
         ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(rs, &ri, &rr).unwrap();
     assert!(
-        crate::certify_scheduled_cycle_transition_v1(
-            &rg,
-            &ra,
-            rf,
-            &reversed_candidate,
-            &rc,
-            32,
-        )
-        .is_none()
+        crate::certify_scheduled_cycle_transition_v1(&rg, &ra, rf, &reversed_candidate, &rc, 32,)
+            .is_none()
     );
     for thickness in [0.1, 1.0, 3.0] {
         assert_eq!(
@@ -7943,6 +7929,21 @@ fn miura_rank_four_fixture_keeps_stationary_global_layer_authority() {
         },),
         Err(crate::GeneralCellTransportErrorV1::ResourceLimit)
     ));
+    assert_eq!(
+        crate::certify_general_multi_face_cell_transport_v1(crate::GeneralCellTransportInputV1 {
+            geometry: &geometry,
+            audit: &audit,
+            source,
+            schedule: &schedule,
+            closure: &closure,
+            positive_continuous: &bound_certificate,
+            paper_thickness_mm: 0.1,
+            tolerance: 1.0e9,
+            limits: cell_limits,
+        },)
+        .expect_err("non-model tolerance must fail closed"),
+        crate::GeneralCellTransportErrorV1::BindingMismatch,
+    );
     let bound_cell_proof =
         crate::certify_general_multi_face_cell_transport_v1(crate::GeneralCellTransportInputV1 {
             geometry: &geometry,

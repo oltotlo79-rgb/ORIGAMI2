@@ -18,24 +18,63 @@ use ori_kinematics::{
 };
 use ori_topology::{FaceExtractionInput, analyze_faces};
 
-pub(super) struct MiuraFixtureV2 {
-    pub(super) geometry: MaterialHingeGraphGeometry,
-    pub(super) audit: MaterialHingeGraphAudit,
-    pub(super) pose: ClosedMaterialHingeGraphPose,
-    pub(super) decomposition: CanonicalMaterialEdgeBlockDecompositionV2,
-    pub(super) common_pose: CommonArticulationPoseAuthorityV2,
-    pub(super) profile: CommonArticulationResourceProfileV2,
-    pub(super) parent_fixed_face: FaceId,
-    pub(super) parent_schedule: CanonicalCycleScheduleV1,
-    pub(super) closure_tolerance: f64,
-    pub(super) block_closure_set: CommonArticulationBlockClosureSetV2,
-    pub(super) whole_parent_closure: CommonArticulationWholeParentClosureV2,
-    pub(super) whole_parent_closure_limits: CommonArticulationWholeParentClosureLimitsV2,
-    pub(super) pairs: Vec<CommonArticulationCrossBlockFacePairV2>,
+pub(crate) struct MiuraFixtureV2 {
+    /// Retained exact source only for bounded test-only provenance mutation.
+    /// The helper below regenerates topology rather than retaining or cloning
+    /// a second unbounded topology snapshot.
+    pub(crate) pattern: CreasePattern,
+    pub(crate) paper: Paper,
+    pub(crate) geometry: MaterialHingeGraphGeometry,
+    pub(crate) audit: MaterialHingeGraphAudit,
+    pub(crate) pose: ClosedMaterialHingeGraphPose,
+    pub(crate) decomposition: CanonicalMaterialEdgeBlockDecompositionV2,
+    pub(crate) common_pose: CommonArticulationPoseAuthorityV2,
+    pub(crate) profile: CommonArticulationResourceProfileV2,
+    pub(crate) parent_fixed_face: FaceId,
+    pub(crate) parent_schedule: CanonicalCycleScheduleV1,
+    pub(crate) closure_tolerance: f64,
+    pub(crate) block_closure_set: CommonArticulationBlockClosureSetV2,
+    pub(crate) whole_parent_closure: CommonArticulationWholeParentClosureV2,
+    pub(crate) whole_parent_closure_limits: CommonArticulationWholeParentClosureLimitsV2,
+    pub(crate) pairs: Vec<CommonArticulationCrossBlockFacePairV2>,
 }
 
 impl MiuraFixtureV2 {
-    pub(super) fn input(&self) -> CommonArticulationClearanceInputV2<'_> {
+    /// Rebuilds the N=33 geometry after changing only material-component
+    /// origin metadata. Pattern, paper, source revision, face registry, and
+    /// fold-model fingerprint remain those of this fixture.
+    pub(crate) fn geometry_with_tampered_component_origin_for_test(
+        &self,
+        foreign_origin: ProjectId,
+    ) -> MaterialHingeGraphGeometry {
+        let namespace = self
+            .geometry
+            .source_identity_namespace_v1()
+            .expect("canonical test geometry namespace");
+        let mut topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: namespace,
+            source_revision: self
+                .geometry
+                .source_revision_v1()
+                .expect("canonical test geometry revision"),
+            paper: &self.paper,
+            pattern: &self.pattern,
+        })
+        .snapshot
+        .expect("canonical N=33 topology");
+        for component in &mut topology.material_components {
+            component.sheet_origin = foreign_origin;
+        }
+        MaterialHingeGraphGeometry::prepare(
+            &self.pattern,
+            &self.paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("material-origin metadata does not invalidate geometry observation")
+    }
+
+    pub(crate) fn input(&self) -> CommonArticulationClearanceInputV2<'_> {
         CommonArticulationClearanceInputV2 {
             geometry: &self.geometry,
             audit: &self.audit,
@@ -54,7 +93,7 @@ impl MiuraFixtureV2 {
         }
     }
 
-    pub(super) fn revalidation_input(&self) -> CommonArticulationClearanceRevalidationInputV2<'_> {
+    pub(crate) fn revalidation_input(&self) -> CommonArticulationClearanceRevalidationInputV2<'_> {
         CommonArticulationClearanceRevalidationInputV2 {
             geometry: &self.geometry,
             audit: &self.audit,
@@ -73,11 +112,11 @@ impl MiuraFixtureV2 {
     }
 }
 
-pub(super) fn miura_fixture_v2() -> MiuraFixtureV2 {
+pub(crate) fn miura_fixture_v2() -> MiuraFixtureV2 {
     miura_fixture_v2_with_profile(33, 33)
 }
 
-pub(super) fn golden_n33_miura_fixture_v2() -> MiuraFixtureV2 {
+pub(crate) fn golden_n33_miura_fixture_v2() -> MiuraFixtureV2 {
     miura_fixture_v2_with_profile_and_namespace(
         33,
         33,
@@ -222,6 +261,8 @@ pub(super) fn miura_fixture_v2_with_profile_and_namespace(
     )
     .expect("canonical pair registry");
     MiuraFixtureV2 {
+        pattern,
+        paper,
         geometry,
         audit,
         pose,

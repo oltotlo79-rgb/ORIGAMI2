@@ -29,16 +29,20 @@ fn direct_extension_clearance_binding_v1(
     hash.update(authority.common_pose_binding_fingerprint_v1());
     hash.update(authority.schedule_binding_fingerprint_v1());
     hash.update(authority.closure_binding_fingerprint_v1());
+    hash.update(authority.whole_parent_continuous_binding_fingerprint_v1());
     hash.update(authority.paper_thickness_mm_v1().to_bits().to_be_bytes());
+    let graph_limits = authority.positive_graph_limits_v1();
     for value in [
+        graph_limits.max_unordered_face_pairs,
+        graph_limits.max_shared_feature_pairs,
         common_pose_limits.max_blocks,
         common_pose_limits.max_faces,
         common_pose_limits.max_hinges,
         common_pose_limits.max_work,
         common_pose_limits.max_retained_bytes,
-        CycleScheduleLimitsV1::default().max_hinges,
-        CycleScheduleLimitsV1::default().max_degree,
-        CycleScheduleLimitsV1::default().max_work,
+        fixture.schedule_limits.max_hinges,
+        fixture.schedule_limits.max_degree,
+        fixture.schedule_limits.max_work,
         limits.max_blocks,
         limits.max_faces,
         limits.max_cross_block_pairs,
@@ -48,11 +52,7 @@ fn direct_extension_clearance_binding_v1(
     ] {
         hash.update((value as u64).to_be_bytes());
     }
-    hash.update(
-        CycleScheduleLimitsV1::default()
-            .max_coefficient_bits
-            .to_be_bytes(),
-    );
+    hash.update(fixture.schedule_limits.max_coefficient_bits.to_be_bytes());
     hash.update((authority.cross_block_pairs_v1().len() as u64).to_be_bytes());
     for pair in authority.cross_block_pairs_v1() {
         hash.update(pair.first().canonical_bytes());
@@ -173,7 +173,7 @@ fn extension_hard_thirty_two_boundary_is_inclusive_and_other_caps_fail_closed_v1
             &eleven_pose,
             pose_extension_limits_v1(32),
             &ten.pairs,
-            Some(ten.positive.clone()),
+            Some(eleven.positive_extension_v2(32)),
             clearance_extension_limits_v1(32),
         ))
         .expect_err("ten blocks are below the extension minimum"),
@@ -192,7 +192,7 @@ fn extension_hard_thirty_two_boundary_is_inclusive_and_other_caps_fail_closed_v1
                 &valid_pose,
                 pose_extension_limits_v1(11),
                 &eleven.pairs,
-                Some(eleven.positive.clone()),
+                Some(eleven.positive_extension_v2(11)),
                 invalid,
             ))
             .expect_err("invalid explicit extension cap"),
@@ -218,7 +218,7 @@ fn extension_exact_resource_envelope_passes_and_every_one_short_limit_fails_v1()
         &pose,
         pose_extension_limits_v1(11),
         &fixture.pairs,
-        Some(fixture.positive.clone()),
+        Some(fixture.positive_extension_v2(11)),
         exact,
     ))
     .expect("exact extension clearance resource envelope");
@@ -255,7 +255,7 @@ fn extension_exact_resource_envelope_passes_and_every_one_short_limit_fails_v1()
                 &pose,
                 pose_extension_limits_v1(11),
                 &fixture.pairs,
-                Some(fixture.positive.clone()),
+                Some(fixture.positive_extension_v2(11)),
                 limits,
             ))
             .expect_err("one-short extension clearance resource"),
@@ -290,7 +290,7 @@ fn extension_exact_resource_envelope_passes_and_every_one_short_limit_fails_v1()
                 &pose,
                 pose_extension_limits_v1(11),
                 &fixture.pairs,
-                Some(fixture.positive.clone()),
+                Some(fixture.positive_extension_v2(11)),
                 overflow,
             ))
             .expect_err("overflowing extension clearance limit"),
@@ -316,7 +316,7 @@ fn extension_pair_registry_pose_cap_and_whole_parent_provenance_fail_closed_v1()
             &pose,
             pose_limits,
             &fixture.pairs[..fixture.pairs.len() - 1],
-            Some(fixture.positive.clone()),
+            Some(fixture.positive_extension_v2(11)),
             limits,
         )),
         Err(CommonArticulationClearanceErrorV1::CrossBlockPairCoverageMismatch { .. })
@@ -329,7 +329,7 @@ fn extension_pair_registry_pose_cap_and_whole_parent_provenance_fail_closed_v1()
             &pose,
             pose_limits,
             &duplicate,
-            Some(fixture.positive.clone()),
+            Some(fixture.positive_extension_v2(11)),
             limits,
         ))
         .expect_err("duplicate extension pair"),
@@ -346,7 +346,7 @@ fn extension_pair_registry_pose_cap_and_whole_parent_provenance_fail_closed_v1()
             &pose,
             pose_limits,
             &extra,
-            Some(fixture.positive.clone()),
+            Some(fixture.positive_extension_v2(11)),
             limits,
         )),
         Err(CommonArticulationClearanceErrorV1::CrossBlockPairCoverageMismatch { .. })
@@ -359,7 +359,7 @@ fn extension_pair_registry_pose_cap_and_whole_parent_provenance_fail_closed_v1()
             &foreign_pose,
             pose_limits,
             &fixture.pairs,
-            Some(fixture.positive.clone()),
+            Some(fixture.positive_extension_v2(11)),
             limits,
         ))
         .expect_err("foreign extension pose issuer"),
@@ -372,7 +372,7 @@ fn extension_pair_registry_pose_cap_and_whole_parent_provenance_fail_closed_v1()
             &pose,
             pose_limits,
             &fixture.pairs,
-            Some(foreign.positive.clone()),
+            Some(foreign.positive_extension_v2(11)),
             limits,
         ))
         .expect_err("foreign whole-parent extension certificate"),
@@ -390,7 +390,7 @@ fn extension_pair_registry_pose_cap_and_whole_parent_provenance_fail_closed_v1()
                 &pose,
                 foreign_pose_limits,
                 &fixture.pairs,
-                Some(fixture.positive.clone()),
+                Some(fixture.positive_extension_v2(11)),
                 foreign_clearance_limits,
             ))
             .expect_err("inconsistent extension cap"),
@@ -549,7 +549,7 @@ fn extension_issuance_and_revalidation_stop_at_entry_midpoint_and_final_v1() {
             &pose,
             pose_limits,
             &fixture.pairs,
-            Some(fixture.positive.clone()),
+            Some(fixture.positive_extension_v2(11)),
             limits,
         ),
         &mut || {
@@ -571,7 +571,7 @@ fn extension_issuance_and_revalidation_stop_at_entry_midpoint_and_final_v1() {
                         &pose,
                         pose_limits,
                         &fixture.pairs,
-                        Some(fixture.positive.clone()),
+                        Some(fixture.positive_extension_v2(11)),
                         limits,
                     ),
                     &mut || {
@@ -633,7 +633,7 @@ fn extension_issuance_and_revalidation_stop_at_entry_midpoint_and_final_v1() {
                 &pose,
                 pose_limits,
                 &fixture.pairs,
-                Some(fixture.positive.clone()),
+                Some(fixture.positive_extension_v2(11)),
                 limits,
             ),
             &CooperativeOperationControlV1::new(
@@ -650,7 +650,7 @@ fn extension_issuance_and_revalidation_stop_at_entry_midpoint_and_final_v1() {
                 &pose,
                 pose_limits,
                 &fixture.pairs,
-                Some(fixture.positive.clone()),
+                Some(fixture.positive_extension_v2(11)),
                 limits,
             ),
             &CooperativeOperationControlV1::new(Some(&active), Instant::now()),

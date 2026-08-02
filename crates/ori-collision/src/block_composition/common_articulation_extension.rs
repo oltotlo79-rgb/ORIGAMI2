@@ -18,7 +18,8 @@ use super::{
 use crate::{
     CommonArticulationClearanceErrorV1, CommonArticulationClearanceExtensionLimitsV1,
     CommonArticulationClearanceExtensionPrerequisiteV1,
-    CommonArticulationClearanceExtensionRevalidationInputV1, CooperativeOperationControlV1,
+    CommonArticulationClearanceExtensionRevalidationInputV1,
+    CommonArticulationPositiveThicknessGraphExtensionLimitsV1, CooperativeOperationControlV1,
     CooperativeOperationStopV1,
 };
 
@@ -147,6 +148,19 @@ impl CommonArticulationBlockComposedPathExtensionAuthorityV1 {
     }
 
     #[must_use]
+    pub const fn positive_graph_limits_v1(
+        &self,
+    ) -> CommonArticulationPositiveThicknessGraphExtensionLimitsV1 {
+        self.clearance.positive_graph_limits_v1()
+    }
+
+    #[must_use]
+    pub fn parent_graph_admission_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.clearance
+            .parent_graph_admission_binding_fingerprint_v2()
+    }
+
+    #[must_use]
     pub const fn configured_max_blocks_v1(&self) -> usize {
         self.configured_max_blocks
     }
@@ -224,6 +238,7 @@ impl CommonArticulationBlockComposedPathExtensionAuthorityV1 {
                     schedule_limits: input.schedule_limits,
                     closure: input.closure,
                     paper_thickness_mm: input.paper_thickness_mm,
+                    positive_graph_limits: self.clearance.positive_graph_limits_v1(),
                     limits: input.clearance_limits,
                 },
                 control,
@@ -363,6 +378,7 @@ fn issue_common_articulation_block_composed_path_extension_authority_with_checkp
                 schedule_limits: input.schedule_limits,
                 closure: input.closure,
                 paper_thickness_mm: input.paper_thickness_mm,
+                positive_graph_limits: input.clearance.positive_graph_limits_v1(),
                 limits: input.clearance_limits,
             },
             control,

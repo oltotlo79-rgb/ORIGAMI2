@@ -8,6 +8,7 @@ use ori_topology::{
     analyze_local_flat_foldability, extract_faces_strict,
 };
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 
 use super::*;
 
@@ -117,7 +118,7 @@ fn canonical_n33_compact_source_with_namespace_v2(
         paper: &paper,
         pattern: &pattern,
     })
-    .expect("genuine N33 Miura topology");
+    .expect("genuine fixed-namespace Miura topology");
     let local = analyze_local_flat_foldability(&paper, &pattern);
     (namespace, paper, pattern, topology, local)
 }
@@ -209,107 +210,35 @@ fn compact_miura_pattern_v2(cells: &[(i8, i8)], namespace: ProjectId) -> (Crease
     )
 }
 
-const N33_COMPACT_BITS_HEX_V2: &str = concat!(
-    "321219000020040080800800410800501401000080844000c20c008000108000209fbf5fcfff7f6f33ffce3fef7297f9ffdf69ff65df73ef77efff3df6cfeaff",
-    "ef7b0000000000000000000000000000000000000000000000000000000000000000c06ce4004288138981522220862140607f0400002012720f08b324202242",
-    "116a84ccdfafe4ffbfb7997fa79b73b983ecffe7b4dd326fb1f79bf7ff1afb67f5fff76d04000000400000000110000010000020020000000980008010000000",
-    "200000001000000000010000044000004000000000000000200002004000000000000000f8fffbfffffffffffffffffffff7ffffffffffffffffffffffffffff",
-    "fffffffffff7fbfbffff6de6dffde75fff32ffff3bedbfed7beefffefdbfc7fe59fdffff9fc8000000250200a5440008428080b60800004024241e1066084004",
-    "842004000100000000000000000000000000000000000000000000000000000000000000deafe4f7b9b7197aa79b73b9036cfee7a489226bb1f78137ff02fb62",
-    "55bbd76de4000288138981522220842140607f0400002012720f083324202242116a840000000004000010000100000100002200000090000800880100000002",
-    "0000801c4008712231504a06c4300408ec8f0000044442ee01619604444428428d103f92d2e34e62e0940e8e610a10d81f1100088c85dc03c23c0b8c8a50845e",
-    "21bfffffffffe7ffff7ffefd3ffbfffff3ffdfffe7feffdfffffeeffffffffff0800001000004040040020040020880000004042200060060000000840000007",
-    "10429c480c949201310c0102fb2300000191907b4098250111118a5023e4484a8f3b8981533a38862940607f4400203016720f08f32c302a42117a8504000008",
-    "000020200200100200104500000020211000300300000004200000000040000000011100801000802002000000098100801900000020000100000400251202a5",
-    "4440084280c0fe0800004024a41e10660840048422d400f9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff2fa93dee2d065ee9e458a6",
-    "0089fd312180c858ec3d60ccb3c0a808c5e835fafdfff736f3effef32f7799ffff9df65ff63df77ffffedf63ffacfeffff2721c489c440291910c31420b03f02",
-    "00101009b9078459121815a108bd42e6ffbfb7997fa79f77b98bfcffefb4ffb2efb9f7bbf7ff1efb67f5fff77dfeff7b9bf977fa7997bbc8ffff4efb2ffb1e7b",
-    "bf7bffefb17f56ff7fdf13429c480c949201310c0102fb2300000191907b4098250111118a5023c4ff7f6f33ffce3fef7297f9ffdf69ff65df73ef77efff3df6",
-    "cfeafffffbffffdf66feff7ffef53ff3ffbfd3fedbfee7feefdffffbec9fd5ffffff00a04442a0940808410810d81e0100008884c403c20c01888010841a20ed",
-    "716f31f04a27c7320548ec8f090144c662ef01639e0546452846af517adc480c94d2c1314c0102fb2302008191907b4098658151118ad02b648f7b8b81573a39",
-    "962940627f4c082032167b0f58f32c302b42317a8df6b8931838a59363980224f6c784002263a1f78031cf02a32214a15728c489c440291110c21020b03f0200",
-    "001009b9078419121011a10835423ef73673ef74732e7780cdff9c3451642df63ef0e65f605fac6af7ba3d6e24064ae9a018a60081fd1101808048c83d20cc92",
-    "c0a80845e815224e24064ae98018a60081fd1100808048c83d20cc92c0a80845e81512371203a574500c5380c0fe8800404024e41e10664960548422f40ac189",
-    "c440291110c21020b03f0200001009b9078419021011a1083542b8b71978a59373b90264fec78480226bb1f78035df02fb6214a3d7ad7b9bb977ba39973bc8e6",
-    "7f4e9b28b2167b1f78f32fb02f56bd7bdfdedbccbfd3cdb9dc41f6ff73da6699b7d8fbcdfb7f8dfdb3fafffb1600004000000000000000000000000002200000",
-    "04000000000000804442a0940808610810d81f0100008884d403c20c01888050841a20040080840800410800501401000080844000c20c008000108000206f33",
-    "ffee3fff7297f9ffdf69ff65df73fff7efff3df6cfeaffffff480c94d201314c0102fb2300000191907b4098258151118ad02b04000002220004210040510400",
-    "0000120201083300000040000280901838a58363980204f6470400022321f78030cf02a32214a15788c4c0299d1cc31420b13f260410190bbd078c79161815a1",
-    "08bd423ff7fffff3afffd9ffff9ffffffe3ff7fffffeff77ffffffffff070048890010840000451100000048481420cc0080080001080022065ee9e458a60089",
-    "fd312180c858ec3d60ccb3c0a808c5e8353af3fffff3afff99ffff9df6dff63ff77ffffeff67ffacfeffff0740291100821020b03d0200001009890784190210",
-    "01210835401878a59373990264fec784802263b1f78035df02fb2214a3d7ecfffffff9f7fffdffffefffffff9ffbffffffffffffffffffffffffffcfbfff67ff",
-    "ff7ffefffbffdcfffffbffdffdffffffff3f504a0484300408ec8f0000004442ee01618600444428428d10a0940808410810d81e0100008884c403c20c018880",
-    "10841a20feff7ffef53ffbfffff3ffdbffe7feefdfffffec9fdfffffffffff3ffffe9ffdfffff9ffefff73ffffefff7ff7ffffffff7fbdd3cdb9dc0136ff73d2",
-    "4491b5d8fbc09b7f817db1aaddebb677ba39973bc0e67f4e9a28b2167b1f78f32fb02f56b57bdd7aa59373b90364fec7a481226bb1f78137ff02fb6215a3d7ed",
-    "3bdd9ccb1d64fb3fa74d96598bbd4fbcff17d817abdebf6fa5440008420080b60800000024241e10660040048420040049e9e018a60081fd110180c048c83d20",
-    "ccb2c0a80845e815020000000000000000000000000000008000000000000000a074722c5380c4fe981040642cf61e30e65960548422f40abdfffceb7fe6ff7f",
-    "a7fdb7fdcffddfbffff7d83fabffffff2102401002001445000000202110803003002000042000483a39973b40e67f4c1a28b2167b1f78f32fb02f56317add12",
-    "01200801008a22000000901008409801001000021000e43ffffa9ff9ffdf69ff6dff73fff7efff7df6cfeaffffff7ffee52ef3ffbfd3fecbbee7feefdfff7bec",
-    "9fd5ffffff0800000800001001000080044000c00c000000100000003fef7217f9ffdf69ff65df73ef77efff3df6cfeaffeffb01314c0102fb2300000191907b",
-    "4098258151118ad02b2420862140607f0400202012720f08b324202242116a8400000002000000000000000110000002000000000000c09ccb5d64ff3fa7fd96",
-    "798fbddfbcfff7d83fabffbf6f732e7780ccff983451642df63ef0e65f605fac6af5bae518a60081fd112180c058c83d60ccb3c0a80845e815fadffff7ffffbf",
-    "ffffff7feeffffffffffffffffffffffeffffbffffdfffffff3ff7ffffffffffffffffffff17c31420b03f0200101009b9078459121815a108bd4262980204f6",
-    "470400022221f780304b02a32214a15708042140607b0400002012120f083304200242106a80b8dc45f6ff77da7fd9f7d8fbddfb7f8ffdb3fafffbf67297f9ff",
-    "df69ff65df73ef77efff3df6cfeaffffff650a90d91f13028a8cc5de03d63c0bec8a508c5ea3610810d81f0100008884dc03c20c09888850841a21200400208a",
-    "00000040422000610600000008400080ffefffff7fffffffffdcffffffffffffffffffff9f2940627f4c082032167b0f18f32c302a42117a85fecffefffffcff",
-    "f7ffb9fffff7ffbffbffffffffff5de6ff7fa7fd977dcffddfbffff7d83fabffffff4380c0fe0800004024a41e10660840048422d40081000000110000004808",
-    "0400cc00000000010000a00099ff3121a0c85aec3d60cdb7c0be08c5e8757b99ffff9df6dff63df77ffffedf63ffacfeffff1720b03f0200101009b907845912",
-    "1815a108bd420264fec7a481226bb1f78137df02fb6214a3d72d0000000000000010000100200000000000000064feff77da7fdbf7dcfffdfb7f8ffdb3faffff",
-    "1fd9ffcf69bb65de63ef37efff35f6cfeaffef5bfffffffbffffffe7feffdffffffefffffffffffffffffffffffffffffffffffffffffffffffff9ffdf69ff65",
-    "df73ef77efff3df6cfeaffef7b36ff73da4491b5d8fbc09b7f817db1eaddfbf6ffffcfffffff9ffbff7ffffffbffffffffffffffefb4ffb6ffb9fffbf7ff3ffb",
-    "67f5ffff3fa02d02000010098907841902100121080140ccff983451642df63ef0e65f605fac6af5bafdff3bedbfec7becfdeefdbfc7fe59fdff7d8ffd312180",
-    "c058c83d60ccb3c0a80845e815cafe981050642cf61eb0e65960578462f41afd3fa74d96798bbddfbcffd7d83fabdfbf6fffe7b4c9226bb1f78977ff02fb62d5",
-    "fbf76d7b0400002012120f083304200242102a808822000000901008409801000000021000e08f090145c662ef016b9e05f6452846af591001000080844000c0",
-    "0c000000100000001401000080844401c20c008880108400208f0000004442e201618600444028420d9022000000909068409801001110821000440400000012",
-    "0201003300000040000200440000002221f180304300222004210008020000000880000010000000000000009cf65fe63df67ef3fedf63ffacfeffbe3dedbfed",
-    "7feefffefdffcffed9fdffff3f69a2c85aec7de0cdbfc0be58d5ea750b000000200002004000000000000000200410180bb9078c79161815a108bd42ffffffff",
-    "fbffffffffffffffffffffffffffff9ffbff7ffffffbffffffffff03000191907b4098258151118ad02be4ffedff73fff7efff7ff6cfefffffff268aacc5de07",
-    "defc0bec8b55ef5eb7068aacc5de07d67c0bec8b518c5eb7ffedff73fff7efff7ff6cfefffff7f0081b1907b4098678151118ad02b0428b2167b1f58f32db02f",
-    "46317addde32efb1f79bf7ff1efb67f5fff76d96798bbddfbcffd7d83fabffbf6f51642df63ef0e65f605fac6af4bab5cc5becfde6fdbfc6fe59fdff7dbbcc7b",
-    "ecfde6fdbfc7fe59fdff7d5b642df63ef0e65f605fac7af7be15198bbd07ac79169815a118bd46f7ffb9fffbf7ffbffbe7f7ffff3f2012720f08b32420224211",
-    "6a84d8f7dcfffdfb7f8ffdb3faffffffff73ffffefff7ff7ffffffffffacc5de27defd0bec8b55efdfb78c85dc03c63c0b8c8a50845ea1ff73fff7efff7ff6cf",
-    "effffffff7d8fbddfb7f8ffdb3fafffb3612720f08b32c302a42117a852021f1803043002220042100488bbdcfbcffd7d81fabdfbf6f2df61eb0e65b605f8462",
-    "f4ba7deefffefdbfc7fe59fdffff4f000400800000000000000020e41e10e65960548422f40a89bddfbcffd7d83fabffbf6f011000000200000000000080fbff",
-    "ffffffffffffffffffffffffffffffffffffffff7fef77efff3df6cfeaffeffbde03c63c0b8c8a50845ea14000c00c00000010000000ffffffffffffffffffff",
-    "ff7bc098678151118ad02b1405083300200240000280f480304300222014a10688078419021001a10835407efffedf63ffacfeffff0700800000000000000030",
-    "20cc0080080841080002106600000480000400018419001001210801408035df02fb6214a3d7ad79ffafb17f56bf7fdffefbffdffdffffffff1f6ffe05f6c5aa",
-    "77ef5bdeff4bec8f55efdfb7deff7bec9fd5ffdfb7efff3df6cfeaffff7f980100000002100000f32c302a42117a8536df02fb6214a3d7ad79161815a118bd46",
-    "ffffffffffffffff8700000000010000c000000000010000e05f605fac7af7befd17d817abdebf6f030000000400000000000000000000648151118ad02b8404",
-    "444428428d100bec8b508c5eb30bec8b518c5eb7004440084200108151118ad02be4b37f56ffffff03222214a146c8d83fabffbf6f637fac7affbec5fe58f5fe",
-    "7dcbfe59fdffffffffffffffffdf3fbfffffffa32214a146080240000280fcffffffff7f452846afd18a508c5ea30010800020452846af51118a50232456bd7f",
-    "df2214a10608abdfbf6ffffffffffffdffff0f0108008262f4babdffffff15a3d76dffffff030000e0ffff7f841a20efdfb746afdbddeb160280a0d7e8bf6ff5",
-    "baed750b00f0be054046088000e47b21b710d47e09",
-);
-const N33_PAIR_REGISTRY_SHA256_HEX_V2: &str =
-    "d6b9e522cdb878fe53fd959cb41c8042e7ab29189c059e90bbff7594d6271935";
+#[path = "../../../../test-support/n33_compact_pair_assignment_v2.rs"]
+mod n33_compact_pair_assignment_fixture_v2;
+use n33_compact_pair_assignment_fixture_v2::{
+    N33_COMPACT_ASSIGNMENT_BYTES_V2, N33_COMPACT_VARIABLE_COUNT_V2,
+    n33_compact_pair_assignment_sha256_v2, n33_compact_pair_assignment_v2,
+};
 
-fn decode_compact_hex_v2(encoded: &str) -> Vec<u8> {
-    assert!(encoded.len().is_multiple_of(2));
-    encoded
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| {
-            let nibble = |value: u8| match value {
-                b'0'..=b'9' => value - b'0',
-                b'a'..=b'f' => value - b'a' + 10,
-                _ => panic!("compact fixture must be lowercase hexadecimal"),
-            };
-            (nibble(pair[0]) << 4) | nibble(pair[1])
-        })
-        .collect()
+#[test]
+fn n33_compact_assignment_receipt_is_pinned_v2() {
+    let (variable_count, registry_digest, direction_bits) = n33_compact_pair_assignment_v2();
+    assert_eq!(
+        global_flat_layer_order_compact_pair_assignment_sha256_v2(
+            variable_count,
+            registry_digest,
+            &direction_bits,
+        )
+        .expect("checked N=33 assignment digest"),
+        n33_compact_pair_assignment_sha256_v2()
+    );
 }
 
 #[test]
 fn genuine_n33_compact_assignment_issues_without_search_v2() {
-    let direction_bits = decode_compact_hex_v2(N33_COMPACT_BITS_HEX_V2);
-    let digest_bytes = decode_compact_hex_v2(N33_PAIR_REGISTRY_SHA256_HEX_V2);
-    let registry_digest: [u8; 32] = digest_bytes
-        .try_into()
-        .expect("N33 registry digest is exactly 32 bytes");
-    assert_eq!(direction_bits.len(), 4_373);
+    let (variable_count, registry_digest, direction_bits) = n33_compact_pair_assignment_v2();
+    assert_eq!(variable_count, N33_COMPACT_VARIABLE_COUNT_V2);
+    assert_eq!(direction_bits.len(), N33_COMPACT_ASSIGNMENT_BYTES_V2);
     assert!(!facewise::compact_assignment_has_nonzero_tail_v2(
         &direction_bits,
-        34_980,
+        variable_count,
     ));
     let analysis = GlobalFlatFoldabilityLimits {
         max_search_nodes: 0,
@@ -326,21 +255,40 @@ fn genuine_n33_compact_assignment_issues_without_search_v2() {
             source: GlobalFlatFoldabilityInput::current_with_geometry(
                 namespace, &paper, &pattern, &topology, &local,
             ),
-            variable_count: 34_980,
+            variable_count,
             variable_registry_sha256: registry_digest,
             direction_bits_le: &direction_bits,
         },
         limits,
     )
     .expect("fixed-namespace N33 compact assignment issues without search");
-    assert_eq!(first.variable_count_v2(), 34_980);
+    assert_eq!(first.variable_count_v2(), variable_count);
     assert_eq!(first.variable_registry_sha256_v2(), registry_digest);
-    assert_eq!(first.resources_v2().compact_assignment_bytes, 4_373);
+    let expected_assignment_digest = n33_compact_pair_assignment_sha256_v2();
+    assert_eq!(
+        first.direction_assignment_sha256_v2(),
+        expected_assignment_digest,
+        "the sealed N=33 authority binds the checked assignment asset"
+    );
+    assert_eq!(
+        global_flat_layer_order_compact_pair_assignment_sha256_v2(
+            variable_count,
+            registry_digest,
+            &direction_bits,
+        )
+        .expect("checked N=33 assignment digest"),
+        expected_assignment_digest,
+        "the production domain-separated digest reproduces the pinned receipt"
+    );
+    assert_eq!(
+        first.resources_v2().compact_assignment_bytes,
+        N33_COMPACT_ASSIGNMENT_BYTES_V2
+    );
     assert_eq!(first.work_counts_v2().search_nodes, 0);
     assert_eq!(first.layer_order_snapshot_v2().material_faces.len(), 265);
     assert_eq!(
         first.layer_order_snapshot_v2().face_pair_orders.len(),
-        34_980
+        variable_count
     );
     assert_eq!(
         first
@@ -395,6 +343,74 @@ fn compact_pair_assignment_reconstructs_without_search_and_is_exactly_bounded() 
     assert_eq!(authority.work_counts_v2().search_nodes, 0);
     assert_eq!(authority.variable_count_v2(), variable_count);
     assert_eq!(authority.variable_registry_sha256_v2(), registry_digest);
+    assert_eq!(
+        authority.direction_assignment_sha256_v2(),
+        global_flat_layer_order_compact_pair_assignment_sha256_v2(
+            variable_count,
+            registry_digest,
+            &direction_bits,
+        )
+        .expect("well-formed compact assignment digest")
+    );
+    let mut wrong_domain = Sha256::new();
+    wrong_domain.update(GLOBAL_FLAT_LAYER_ORDER_PAIR_REGISTRY_DOMAIN_V2);
+    wrong_domain.update(
+        u64::try_from(variable_count)
+            .expect("fixture variable count fits u64")
+            .to_le_bytes(),
+    );
+    wrong_domain.update(registry_digest);
+    wrong_domain.update(
+        u64::try_from(direction_bits.len())
+            .expect("fixture assignment length fits u64")
+            .to_le_bytes(),
+    );
+    wrong_domain.update(&direction_bits);
+    assert_ne!(
+        authority.direction_assignment_sha256_v2(),
+        <[u8; 32]>::from(wrong_domain.finalize()),
+        "the assignment receipt must not reuse the registry hash domain"
+    );
+    let mut foreign_registry = registry_digest;
+    foreign_registry[0] ^= 1;
+    assert_ne!(
+        authority.direction_assignment_sha256_v2(),
+        global_flat_layer_order_compact_pair_assignment_sha256_v2(
+            variable_count,
+            foreign_registry,
+            &direction_bits,
+        )
+        .expect("foreign registry still has a well-formed digest")
+    );
+    let mut different_bits = direction_bits.clone();
+    different_bits[0] ^= 1;
+    assert_ne!(
+        authority.direction_assignment_sha256_v2(),
+        global_flat_layer_order_compact_pair_assignment_sha256_v2(
+            variable_count,
+            registry_digest,
+            &different_bits,
+        )
+        .expect("changed direction remains structurally well formed")
+    );
+    assert_eq!(
+        global_flat_layer_order_compact_pair_assignment_sha256_v2(
+            variable_count,
+            registry_digest,
+            &[],
+        ),
+        None
+    );
+    let mut nonzero_tail = direction_bits.clone();
+    *nonzero_tail.last_mut().expect("three-pair byte") |= 0x80;
+    assert_eq!(
+        global_flat_layer_order_compact_pair_assignment_sha256_v2(
+            variable_count,
+            registry_digest,
+            &nonzero_tail,
+        ),
+        None
+    );
     assert_eq!(authority.exact_limits_v2(), baseline_limits);
     assert_eq!(
         authority
@@ -777,6 +793,33 @@ fn compact_pair_assignment_is_canonical_and_rejects_drift_tamper_and_stops() {
             invalid_limits,
         ),
         Err(GlobalFlatLayerOrderCompactPairAssignmentErrorV2::InvalidLimits)
+    ));
+
+    let mut pre_hash_stop = StopObserver {
+        remaining: 0,
+        stop: GlobalFlatFoldabilityCheckpoint::Cancelled,
+    };
+    assert!(matches!(
+        issue_global_flat_layer_order_from_compact_pair_assignment_with_observer_v2(
+            GlobalFlatLayerOrderCompactPairAssignmentInputV2 {
+                source: source(),
+                variable_count,
+                variable_registry_sha256: registry_digest,
+                direction_bits_le: &direction_bits,
+            },
+            GlobalFlatLayerOrderCompactPairAssignmentLimitsV2 {
+                max_peak_bytes: direction_bits.len() - 1,
+                ..limits
+            },
+            &mut pre_hash_stop,
+        ),
+        Err(GlobalFlatLayerOrderCompactPairAssignmentErrorV2::Inconclusive {
+            reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                resource: FlatFoldabilityResource::LayerOrderReconstructionPeakBytes,
+                limit,
+                observed,
+            }
+        }) if limit + 1 == observed && observed == direction_bits.len()
     ));
 
     let observer_input = || GlobalFlatLayerOrderCompactPairAssignmentInputV2 {

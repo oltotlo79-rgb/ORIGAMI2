@@ -1,8 +1,10 @@
 use ori_foldability::GlobalFlatLayerOrderSourceAuthorityV2;
+use ori_kinematics::CycleScheduleLimitsV1;
 
 use super::super::*;
 use super::support::{
-    endpoint_replay_input_v2, limit_value_v2, replay_input_v2, set_endpoint_limit_v2, set_limit_v2,
+    boundary_configuration_replay_input_v2, endpoint_replay_input_v2, limit_value_v2,
+    replay_input_v2, set_boundary_configuration_limit_v2, set_endpoint_limit_v2, set_limit_v2,
 };
 use crate::CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2;
 use crate::dynamic_general_n_positive_thickness_v2::ordinary_interval::tests::{
@@ -188,5 +190,77 @@ pub(super) fn assert_endpoint_preflight_limits_and_entry_stops_v2(
             "nested Phase 3F policy rejects {invalid} as owned-proof identity"
         );
         assert_eq!(polls, 1);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn assert_boundary_configuration_preflight_limits_and_entry_stops_v2(
+    certificate: &CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteV2,
+    fixture: &OrdinaryFixtureV2,
+    policies: &ReliefFixtureInputV2,
+    public_limits: CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
+    authority: &GlobalFlatLayerOrderSourceAuthorityV2<'_>,
+    coverage_limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
+    endpoint_limits:
+        CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2,
+    schedule_limits: CycleScheduleLimitsV1,
+    limits:
+        CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteLimitsV2,
+) {
+    let values = [
+        limits.max_blocks,
+        limits.max_hinges,
+        limits.max_schedule_deep_retained_bytes,
+        limits.max_boundary_evidence_logical_work,
+        limits.max_boundary_evidence_workspace_bytes,
+        limits.max_retained_endpoint_prerequisite_bytes,
+        limits.max_publication_bytes,
+        limits.max_aggregate_peak_bytes,
+    ];
+    for (field, exact) in values.into_iter().enumerate() {
+        for invalid in [0, exact - 1, usize::MAX] {
+            assert_eq!(
+                certificate.revalidate_v2(boundary_configuration_replay_input_v2(
+                    fixture,
+                    policies,
+                    public_limits,
+                    authority,
+                    coverage_limits,
+                    endpoint_limits,
+                    schedule_limits,
+                    set_boundary_configuration_limit_v2(limits, field, invalid),
+                )),
+                Err(CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteErrorV2::ResourceLimit),
+                "boundary-configuration limit {field} rejects {invalid}"
+            );
+        }
+    }
+    for (stop, expected) in [
+        (
+            CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteStopV2::Cancelled,
+            CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteErrorV2::Cancelled,
+        ),
+        (
+            CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteStopV2::DeadlineExceeded,
+            CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteErrorV2::DeadlineExceeded,
+        ),
+    ] {
+        assert_eq!(
+            certificate.revalidate_with_checkpoint_v2(
+                boundary_configuration_replay_input_v2(
+                    fixture,
+                    policies,
+                    public_limits,
+                    authority,
+                    coverage_limits,
+                    endpoint_limits,
+                    schedule_limits,
+                    limits,
+                ),
+                || Err(stop),
+            ),
+            Err(expected),
+            "boundary-configuration entry stop mapping"
+        );
     }
 }

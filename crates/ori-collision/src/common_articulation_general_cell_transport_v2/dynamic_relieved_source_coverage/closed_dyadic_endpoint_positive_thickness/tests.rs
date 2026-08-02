@@ -55,9 +55,9 @@ fn fixed_promotion_work_contract_is_the_sum_of_documented_categories() {
     assert_eq!(PROMOTION_LIMIT_POLICY_WORK_V2, 19);
     assert_eq!(PROMOTION_RESOURCE_WORK_V2, 11);
     assert_eq!(PROMOTION_THEOREM_WORK_V2, 6);
-    assert_eq!(PROMOTION_BINDING_WORK_V2, 23);
+    assert_eq!(PROMOTION_BINDING_WORK_V2, 25);
     assert_eq!(PROMOTION_REPLAY_POLICY_WORK_V2, 77);
-    assert_eq!(PROMOTION_LOGICAL_WORK_V2, 136);
+    assert_eq!(PROMOTION_LOGICAL_WORK_V2, 138);
 }
 
 #[test]

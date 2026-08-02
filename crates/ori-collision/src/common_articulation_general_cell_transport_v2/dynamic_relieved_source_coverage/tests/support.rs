@@ -10,6 +10,7 @@ use ori_foldability::{
     GlobalFlatLayerOrderSourceAuthorityV2, LayerOrderSnapshot,
     issue_global_flat_layer_order_from_compact_pair_assignment_v2,
 };
+use ori_kinematics::{CanonicalCycleScheduleV1, CycleScheduleLimitsV1};
 use ori_topology::{
     FaceExtractionInput, LocalFlatFoldabilityReport, TopologySnapshot, analyze_faces,
 };
@@ -224,6 +225,91 @@ pub(super) fn endpoint_replay_input_v2<'a>(
         ),
         limits: endpoint_limits,
     }
+}
+
+pub(super) fn exact_boundary_configuration_limits_v2(
+    endpoint: &CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteV2,
+    schedule: &CanonicalCycleScheduleV1,
+    schedule_limits: CycleScheduleLimitsV1,
+) -> CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteLimitsV2{
+    let bound = schedule
+        .checked_closed_dyadic_boundary_resource_bound_v2(schedule_limits)
+        .expect("checked Phase 3I boundary resources");
+    let retained_endpoint = size_of::<
+        CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteV2,
+    >();
+    let publication = size_of::<
+        CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteV2,
+    >();
+    let outer_shell_delta = publication - retained_endpoint;
+    let endpoint_replay_phase = endpoint.replay_aggregate_peak_cap_v2() + outer_shell_delta;
+    let boundary_evidence_phase = publication
+        + bound.schedule_deep_retained_bytes_v2()
+        + bound.workspace_peak_bytes_upper_bound_v2()
+        + size_of::<ori_kinematics::CanonicalCycleScheduleClosedDyadicBoundaryEvidenceV2>();
+    let composition_phase = publication
+        + super::super::closed_dyadic_boundary_configuration_positive_thickness::COMPOSITION_WORKSPACE_BYTES_V2;
+    CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteLimitsV2 {
+        max_blocks: endpoint.actual_block_count_v2(),
+        max_hinges: bound.hinge_count_v2(),
+        max_schedule_deep_retained_bytes: bound.schedule_deep_retained_bytes_v2(),
+        max_boundary_evidence_logical_work: bound.logical_work_required_v2(),
+        max_boundary_evidence_workspace_bytes: bound.workspace_peak_bytes_upper_bound_v2(),
+        max_retained_endpoint_prerequisite_bytes: retained_endpoint,
+        max_publication_bytes: publication,
+        max_aggregate_peak_bytes: endpoint_replay_phase
+            .max(boundary_evidence_phase)
+            .max(composition_phase),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn boundary_configuration_replay_input_v2<'a>(
+    fixture: &'a OrdinaryFixtureV2,
+    policies: &'a ReliefFixtureInputV2,
+    public_limits: CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2,
+    source: &'a GlobalFlatLayerOrderSourceAuthorityV2<'a>,
+    coverage_limits: CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2,
+    endpoint_limits:
+        CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2,
+    schedule_limits: CycleScheduleLimitsV1,
+    limits:
+        CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteLimitsV2,
+) -> CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteRevalidationInputV2<'a>{
+    CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteRevalidationInputV2 {
+        geometry: &fixture.fixture.geometry,
+        schedule: &fixture.schedule,
+        schedule_limits,
+        endpoint_replay: endpoint_replay_input_v2(
+            fixture,
+            policies,
+            public_limits,
+            source,
+            coverage_limits,
+            endpoint_limits,
+        ),
+        limits,
+    }
+}
+
+pub(super) fn set_boundary_configuration_limit_v2(
+    mut limits:
+        CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteLimitsV2,
+    field: usize,
+    value: usize,
+) -> CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteLimitsV2{
+    match field {
+        0 => limits.max_blocks = value,
+        1 => limits.max_hinges = value,
+        2 => limits.max_schedule_deep_retained_bytes = value,
+        3 => limits.max_boundary_evidence_logical_work = value,
+        4 => limits.max_boundary_evidence_workspace_bytes = value,
+        5 => limits.max_retained_endpoint_prerequisite_bytes = value,
+        6 => limits.max_publication_bytes = value,
+        7 => limits.max_aggregate_peak_bytes = value,
+        _ => unreachable!(),
+    }
+    limits
 }
 
 pub(super) fn set_endpoint_limit_v2(

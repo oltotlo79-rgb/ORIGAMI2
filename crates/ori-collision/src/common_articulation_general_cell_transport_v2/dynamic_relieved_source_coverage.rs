@@ -33,6 +33,10 @@ mod validation;
 #[path = "dynamic_relieved_source_coverage/closed_dyadic_endpoint_positive_thickness.rs"]
 mod closed_dyadic_endpoint_positive_thickness;
 
+#[path = "dynamic_relieved_source_coverage/closed_dyadic_boundary_configuration_positive_thickness.rs"]
+mod closed_dyadic_boundary_configuration_positive_thickness;
+
+pub use closed_dyadic_boundary_configuration_positive_thickness::*;
 pub use closed_dyadic_endpoint_positive_thickness::*;
 
 use validation::{checkpoint_v2, validate_coverage_replay_v2, validate_coverage_v2};
@@ -257,6 +261,21 @@ impl CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageCertificateV2 {
     #[must_use]
     pub const fn all_source_order_pairs_covered_by_relieved_clearance_v2(&self) -> bool {
         true
+    }
+
+    pub(crate) const fn schedule_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.clearance.schedule_binding_fingerprint_v2()
+    }
+
+    pub(crate) const fn graph_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.clearance.graph_binding_fingerprint_v1()
+    }
+
+    pub(crate) fn matches_geometry_instance_v2(
+        &self,
+        geometry: &ori_kinematics::MaterialHingeGraphGeometry,
+    ) -> bool {
+        self.clearance.matches_geometry_instance_v2(geometry)
     }
 
     pub fn revalidate_v2(

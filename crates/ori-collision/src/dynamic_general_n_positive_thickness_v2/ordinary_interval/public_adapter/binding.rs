@@ -15,6 +15,8 @@ pub(super) fn adapter_binding_v2(
     let mut hash = Sha256::new();
     hash.update(ADAPTER_MODEL_ID_V2.as_bytes());
     hash.update(seal.aggregate_binding);
+    hash.update(input.parent_schedule.certificate_binding_fingerprint_v2());
+    hash.update(input.parent_schedule.graph_binding_fingerprint_v1());
     hash.update(limits_binding);
     hash.update(input.profile.binding_fingerprint_v2());
     for value in [

@@ -257,6 +257,8 @@ fn coverage_binding_v2(
     hash.update(
         COMMON_ARTICULATION_DYNAMIC_GENERAL_N_RELIEVED_SOURCE_ORDER_COVERAGE_MODEL_ID_V2.as_bytes(),
     );
+    hash.update(clearance.schedule_binding_fingerprint_v2());
+    hash.update(clearance.graph_binding_fingerprint_v1());
     hash.update(source.digest);
     hash_provenance_v2(&mut hash, source.provenance)?;
     for value in [

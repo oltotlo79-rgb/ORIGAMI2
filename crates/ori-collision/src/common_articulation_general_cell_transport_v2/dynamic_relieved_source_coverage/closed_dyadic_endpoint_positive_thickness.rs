@@ -31,7 +31,7 @@ const GENERAL_N_MIN_BLOCKS_V2: usize = 33;
 // Fixed Phase 3H work contract: 19 finite/envelope policy checks, eleven
 // checked resource-equation/cap operations, six authenticated theorem
 // predicates (four boundary counts plus the two retained proof predicates),
-// 23 binding operations (three fixed fields, nineteen scalar fields, and
+// 25 binding operations (five fixed fields, nineteen scalar fields, and
 // finalization), and 77 worst-case replay-policy binding operations: six
 // Phase 3H and twelve Phase 3G cap equalities, then the Phase 3F limits digest
 // domain tag, all fifty-five scalar hash updates, hash finalization, digest
@@ -40,7 +40,7 @@ const GENERAL_N_MIN_BLOCKS_V2: usize = 33;
 const PROMOTION_LIMIT_POLICY_WORK_V2: usize = 19;
 const PROMOTION_RESOURCE_WORK_V2: usize = 11;
 const PROMOTION_THEOREM_WORK_V2: usize = 6;
-const PROMOTION_BINDING_WORK_V2: usize = 23;
+const PROMOTION_BINDING_WORK_V2: usize = 25;
 const PROMOTION_REPLAY_POLICY_WORK_V2: usize = 77;
 pub(crate) const PROMOTION_LOGICAL_WORK_V2: usize = PROMOTION_LIMIT_POLICY_WORK_V2
     + PROMOTION_RESOURCE_WORK_V2
@@ -266,6 +266,37 @@ impl CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrere
     #[must_use]
     pub const fn aggregate_peak_bytes_upper_bound_v2(&self) -> usize {
         self.resources.aggregate_peak_bytes
+    }
+
+    pub(crate) const fn binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.binding_fingerprint
+    }
+
+    pub(crate) const fn schedule_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.coverage.schedule_binding_fingerprint_v2()
+    }
+
+    pub(crate) const fn graph_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.coverage.graph_binding_fingerprint_v1()
+    }
+
+    pub(crate) fn matches_geometry_instance_v2(
+        &self,
+        geometry: &ori_kinematics::MaterialHingeGraphGeometry,
+    ) -> bool {
+        self.coverage.matches_geometry_instance_v2(geometry)
+    }
+
+    pub(crate) const fn replay_aggregate_peak_cap_v2(&self) -> usize {
+        self.limits.max_aggregate_peak_bytes
+    }
+
+    pub(crate) const fn replay_limits_match_v2(
+        &self,
+        limits:
+            CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteLimitsV2,
+    ) -> bool {
+        endpoint_limits_match_v2(self.limits, limits)
     }
 
     pub fn revalidate_v2(

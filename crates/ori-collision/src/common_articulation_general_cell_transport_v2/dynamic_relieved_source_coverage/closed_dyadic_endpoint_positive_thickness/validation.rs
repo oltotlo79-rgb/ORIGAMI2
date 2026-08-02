@@ -166,6 +166,8 @@ fn endpoint_binding_v2(
     );
     hash.update(b"canonical-normalized-closed-dyadic-domain-outer-boundaries");
     hash.update(coverage.binding_fingerprint);
+    hash.update(coverage.schedule_binding_fingerprint_v2());
+    hash.update(coverage.graph_binding_fingerprint_v1());
     for value in [
         coverage.actual_block_count_v2(),
         coverage.material_face_count_v2(),

@@ -270,6 +270,24 @@ impl CommonArticulationDynamicGeneralNRelievedClearanceCertificateV2 {
         self.evidence.replay_aggregate_peak_cap_v2()
     }
 
+    /// Exact canonical schedule identity retained by the private proof.
+    pub(crate) const fn schedule_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.evidence.schedule_binding_fingerprint_v2()
+    }
+
+    /// Exact material-graph binding retained by the canonical schedule.
+    pub(crate) const fn graph_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.evidence.graph_binding_fingerprint_v1()
+    }
+
+    /// Preserves the opaque geometry-instance identity used by the proof.
+    pub(crate) fn matches_geometry_instance_v2(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+    ) -> bool {
+        self.evidence.matches_geometry_instance_v2(geometry)
+    }
+
     pub fn revalidate_v2(
         &self,
         input: CommonArticulationDynamicGeneralNRelievedClearanceRevalidationInputV2<'_>,

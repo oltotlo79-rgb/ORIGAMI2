@@ -351,6 +351,13 @@ fn exact_shared_pairs_v2(geometry: &MaterialHingeGraphGeometry) -> Vec<OrdinaryI
 }
 
 fn nonstationary_schedule_v2(fixture: &MiuraFixtureV2) -> CanonicalCycleScheduleV1 {
+    nonstationary_schedule_for_fixed_face_v2(fixture, fixture.parent_fixed_face)
+}
+
+pub(crate) fn nonstationary_schedule_for_fixed_face_v2(
+    fixture: &MiuraFixtureV2,
+    fixed_face: ori_domain::FaceId,
+) -> CanonicalCycleScheduleV1 {
     let first_block = &fixture.decomposition.blocks()[0];
     let moving = (0..3)
         .flat_map(|axis_index| {
@@ -421,7 +428,7 @@ fn nonstationary_schedule_v2(fixture: &MiuraFixtureV2) -> CanonicalCycleSchedule
     let schedule = CanonicalCycleScheduleV1::prepare(
         &fixture.geometry,
         &fixture.audit,
-        fixture.parent_fixed_face,
+        fixed_face,
         [-1.0, 1.0],
         entries,
         CycleScheduleLimitsV1 {

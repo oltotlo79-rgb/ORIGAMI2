@@ -118,6 +118,8 @@ fn assert_public_summary_v2(
     for secret in [
         "issuer_geometry",
         "adapter_binding",
+        "schedule_binding",
+        "graph_binding",
         "aggregate_binding",
         "shared_pair_digest",
         "hinge_policies",

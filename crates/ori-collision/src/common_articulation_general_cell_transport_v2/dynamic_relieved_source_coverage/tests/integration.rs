@@ -1,6 +1,3 @@
-use ori_core::analyze_global_flat_foldability;
-use ori_foldability::GlobalFlatFoldabilityLimits;
-
 use super::super::super::n33_compact_pair_assignment_fixture_v2::n33_compact_pair_assignment_v2;
 use super::super::*;
 use super::policy_assertions::{
@@ -11,7 +8,7 @@ use crate::common_articulation_clearance_v2::test_support::golden_n33_miura_fixt
 use crate::dynamic_general_n_positive_thickness_v2::ordinary_interval::tests::{
     relief_public_api_tests::{public_input_v2, public_limits_v2, revalidation_input_v2},
     relief_support::relief_policies_v2,
-    support::{n34_fixture_v2, ordinary_fixture_v2},
+    support::ordinary_fixture_v2,
 };
 use crate::{
     COMMON_ARTICULATION_DYNAMIC_GENERAL_N_RELIEVED_CLEARANCE_MODEL_ID_V2,
@@ -37,7 +34,7 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
     // consumption preserves that coverage while sharing this golden issuer.
     // Direct Phase 3F revalidation preserves its established resource-error
     // precedence and therefore performs the full proof before rejecting a
-    // valid policy drift. Coverage issuance and the final Phase 3H replay
+    // valid policy drift. Coverage issuance and the final Phase 3I replay
     // retain the distinct expensive success paths.
     for stop in [
         CommonArticulationDynamicGeneralNRelievedClearanceStopV2::Cancelled,
@@ -128,6 +125,8 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
         "source_digest",
         "source_provenance",
         "binding_fingerprint",
+        "schedule_binding",
+        "graph_binding",
         "clearance",
         "registry",
         "supporting_cells",
@@ -235,32 +234,14 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
         "boundary_coverage",
         "accepted_leaves",
         "binding_fingerprint",
+        "schedule_binding",
+        "graph_binding",
         "clearance",
         "source_digest",
     ] {
         assert!(!endpoint_debug.contains(secret), "Debug leaked {secret}");
     }
 
-    // This replaces the former successful Phase 3G replay above: Phase 3H
-    // delegates exactly that replay, so the golden test adds no full proof run.
-    let mut full_polls = 0usize;
-    endpoint
-        .revalidate_with_checkpoint_v2(
-            endpoint_replay_input_v2(
-                &fixture,
-                &policies,
-                public_limits,
-                &fresh_authority,
-                limits,
-                endpoint_limits,
-            ),
-            || {
-                full_polls += 1;
-                Ok(())
-            },
-        )
-        .expect("fresh semantic-equal source preserves the endpoint prerequisite");
-    assert!(full_polls > 100);
     assert_endpoint_preflight_limits_and_entry_stops_v2(
         &endpoint,
         &fixture,
@@ -345,51 +326,14 @@ fn genuine_n33_coverage_fixes_replay_resources_stops_and_fail_closed_boundaries(
     );
     assert_eq!(endpoint_nested_clearance_polls, 1);
 
-    let foreign_live = super::super::super::test_support::small_live_global_input_v2();
-    let foreign_report = analyze_global_flat_foldability(
-        foreign_live.input(),
-        GlobalFlatFoldabilityLimits::default(),
-    )
-    .expect("foreign small source report");
-    let foreign_authority = foreign_report
-        .layer_order_source_authority_v2()
-        .expect("foreign sealed source");
-    assert_eq!(
-        endpoint.revalidate_v2(endpoint_replay_input_v2(
-            &fixture,
-            &policies,
-            public_limits,
-            &foreign_authority,
-            limits,
-            endpoint_limits,
-        )),
-        Err(CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteErrorV2::Coverage(
-            CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageErrorV2::SourceBindingMismatch
-        ))
-    );
-
-    // The existing Phase 3F public-API test supplies the standalone genuine
-    // N34 positive. This repository has no genuine N34 source asset, so this
-    // retained N33 coverage identity cannot match the N34 live/policy tuple.
-    // Phase 3H rejects that tuple at the exact replay-policy boundary and does
-    // not manufacture a genuine N34 source authority for the test.
-    let n34 = n34_fixture_v2();
-    let n34_policies = relief_policies_v2(n34);
-    let n34_public_limits = public_limits_v2(n34);
-    let n34_limits = CommonArticulationDynamicGeneralNRelievedSourceOrderCoverageLimitsV2 {
-        max_blocks: n34.fixture.profile.configured_max_blocks_v2(),
-        ..limits
-    };
-    assert_eq!(
-        endpoint.revalidate_v2(endpoint_replay_input_v2(
-            n34,
-            &n34_policies,
-            n34_public_limits,
-            &fresh_authority,
-            n34_limits,
-            endpoint_limits,
-        )),
-        Err(CommonArticulationDynamicGeneralNClosedDyadicEndpointPositiveThicknessPrerequisiteErrorV2::CertificateBindingMismatch)
+    super::phase3i_boundary_configuration::assert_phase3i_boundary_configuration_v2(
+        endpoint,
+        &fixture,
+        &policies,
+        public_limits,
+        &fresh_authority,
+        limits,
+        endpoint_limits,
     );
 }
 
@@ -414,6 +358,8 @@ fn assert_phase3f_public_summary_v2(
     for secret in [
         "issuer_geometry",
         "adapter_binding",
+        "schedule_binding",
+        "graph_binding",
         "aggregate_binding",
         "shared_pair_digest",
         "hinge_policies",

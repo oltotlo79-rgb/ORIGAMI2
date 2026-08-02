@@ -44,6 +44,8 @@ pub(crate) enum AdapterErrorV2 {
 /// Opaque backing retained only by the public certificate facade.
 pub(crate) struct DirectClearanceEvidenceV2 {
     issuer_geometry: MaterialHingeGraphInstanceV1,
+    schedule_binding_fingerprint: [u8; 32],
+    graph_binding_fingerprint: [u8; 32],
     adapter_binding: [u8; 32],
     actual_block_count: usize,
     total_face_pairs: usize,
@@ -70,6 +72,8 @@ impl std::fmt::Debug for DirectClearanceEvidenceV2 {
 impl DirectClearanceEvidenceV2 {
     pub(crate) fn matches_v2(&self, candidate: &Self) -> bool {
         same_issuer_geometry_v2(&self.issuer_geometry, &candidate.issuer_geometry)
+            && self.schedule_binding_fingerprint == candidate.schedule_binding_fingerprint
+            && self.graph_binding_fingerprint == candidate.graph_binding_fingerprint
             && self.adapter_binding == candidate.adapter_binding
             && self.actual_block_count == candidate.actual_block_count
             && self.total_face_pairs == candidate.total_face_pairs
@@ -84,6 +88,21 @@ impl DirectClearanceEvidenceV2 {
 
     pub(crate) const fn actual_block_count_v2(&self) -> usize {
         self.actual_block_count
+    }
+
+    pub(crate) const fn schedule_binding_fingerprint_v2(&self) -> [u8; 32] {
+        self.schedule_binding_fingerprint
+    }
+
+    pub(crate) const fn graph_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.graph_binding_fingerprint
+    }
+
+    pub(crate) fn matches_geometry_instance_v2(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+    ) -> bool {
+        self.issuer_geometry.matches(geometry)
     }
 
     pub(crate) const fn total_face_pairs_v2(&self) -> usize {
@@ -294,6 +313,8 @@ fn finish_adapter_v2(
     adapter_checkpoint_v2(checkpoint)?;
     Ok(DirectClearanceEvidenceV2 {
         issuer_geometry: seal.issuer_geometry,
+        schedule_binding_fingerprint: input.parent_schedule.certificate_binding_fingerprint_v2(),
+        graph_binding_fingerprint: input.parent_schedule.graph_binding_fingerprint_v1(),
         adapter_binding,
         actual_block_count: preflight.actual_block_count,
         total_face_pairs: seal.total_face_pairs,

@@ -826,6 +826,14 @@ test('CI produces diagnostic bundles without weakening same-run release authorit
   assert.match(verifier, /'windows-bundle'/u)
 })
 
+test('CI preserves the active Rust component across a job timeout', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const rustJob = workflow.slice(workflow.indexOf('\n  rust:'), workflow.indexOf('\n  windows-bundle:'))
+  assert.match(rustJob, /::ORIGAMI2_CARGO_PACKAGE_BEGIN::%s/u)
+  assert.match(rustJob, /::notice title=Rust component started::%s/u)
+  assert.match(rustJob, /::notice title=Rust component completed::%s status=%s/u)
+})
+
 test('CI retains bounded browser accessibility evidence only on failure', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const smoke = readFileSync(

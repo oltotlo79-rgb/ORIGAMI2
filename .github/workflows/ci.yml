@@ -472,8 +472,10 @@ jobs:
             shift
             local component_status=0
             printf '::ORIGAMI2_CARGO_PACKAGE_BEGIN::%s\n' "$component" | tee -a cargo-test.log
+            printf '::notice title=Rust component started::%s\n' "$component"
             "$@" 2>&1 | tee -a cargo-test.log || component_status=$?
             printf '::ORIGAMI2_CARGO_PACKAGE_END::%s::status=%s\n' "$component" "$component_status" | tee -a cargo-test.log
+            printf '::notice title=Rust component completed::%s status=%s\n' "$component" "$component_status"
             if [ "$component_status" -ne 0 ] && [ "$test_status" -eq 0 ]; then
               printf '%s\n' "$component" > cargo-test-failed-package.txt
               test_status="$component_status"

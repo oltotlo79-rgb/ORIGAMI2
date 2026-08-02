@@ -9,6 +9,22 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+mod shared_pair_registry;
+
+pub(super) fn derive_exact_shared_pair_registry_v2(
+    geometry: &MaterialHingeGraphGeometry,
+    pair_cap: usize,
+    membership_test_cap: usize,
+    checkpoint: &mut impl FnMut() -> Result<(), OrdinaryIntervalStopV2>,
+) -> Result<Vec<OrdinaryIntervalFacePairV2>, OrdinaryIntervalErrorV2> {
+    shared_pair_registry::derive_exact_shared_pair_registry_v2(
+        geometry,
+        pair_cap,
+        membership_test_cap,
+        checkpoint,
+    )
+}
+
 pub(super) fn validate_exact_shared_pair_registry_v2(
     geometry: &MaterialHingeGraphGeometry,
     submitted: &[OrdinaryIntervalFacePairV2],

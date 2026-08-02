@@ -10,6 +10,8 @@ mod relief_aggregate_tests;
 mod relief_resource_tests;
 #[path = "tests/relief_support.rs"]
 mod relief_support;
+#[path = "tests/shared_pair_registry_tests.rs"]
+mod shared_pair_registry_tests;
 #[path = "tests/support.rs"]
 mod support;
 #[path = "tests/workspace_tests.rs"]

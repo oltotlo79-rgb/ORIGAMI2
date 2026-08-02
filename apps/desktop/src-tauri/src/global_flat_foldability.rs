@@ -2903,8 +2903,23 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn layer_order_view_preflight_enforces_exact_structural_limits_before_dto_build() {
-        let mut snapshot = current_layer_order_view_test_snapshot();
+    fn layer_order_view_preflight_and_summary_cases_share_one_native_snapshot() {
+        let base_snapshot = current_layer_order_view_test_snapshot();
+
+        layer_order_view_preflight_enforces_exact_structural_limits_before_dto_build(
+            &base_snapshot,
+        );
+        layer_order_view_preflight_enforces_cell_shape_vertex_and_exact_magnitude_budgets(
+            &base_snapshot,
+        );
+        layer_order_view_remeasures_dto_capacity_and_exact_json_bytes(&base_snapshot);
+        possible_summary_marks_a_certificate_outside_the_view_budget_unavailable(&base_snapshot);
+    }
+
+    fn layer_order_view_preflight_enforces_exact_structural_limits_before_dto_build(
+        base_snapshot: &LayerOrderSnapshot,
+    ) {
+        let mut snapshot = base_snapshot.clone();
         let face = snapshot
             .material_faces
             .first()
@@ -2990,9 +3005,10 @@ pub(super) mod tests {
         );
     }
 
-    #[test]
-    fn layer_order_view_preflight_enforces_cell_shape_vertex_and_exact_magnitude_budgets() {
-        let mut snapshot = current_layer_order_view_test_snapshot();
+    fn layer_order_view_preflight_enforces_cell_shape_vertex_and_exact_magnitude_budgets(
+        base_snapshot: &LayerOrderSnapshot,
+    ) {
+        let mut snapshot = base_snapshot.clone();
         let face = snapshot
             .material_faces
             .first()
@@ -3128,9 +3144,10 @@ pub(super) mod tests {
         );
     }
 
-    #[test]
-    fn layer_order_view_remeasures_dto_capacity_and_exact_json_bytes() {
-        let snapshot = current_layer_order_view_test_snapshot();
+    fn layer_order_view_remeasures_dto_capacity_and_exact_json_bytes(
+        base_snapshot: &LayerOrderSnapshot,
+    ) {
+        let snapshot = base_snapshot.clone();
         let preflight =
             preflight_current_layer_order_view(&snapshot).expect("bounded view preflight");
         let cells = build_current_layer_order_view_cells(&snapshot, preflight)
@@ -4395,9 +4412,10 @@ pub(super) mod tests {
         assert!(layer_order.proof_summary.is_some());
     }
 
-    #[test]
-    fn possible_summary_marks_a_certificate_outside_the_view_budget_unavailable() {
-        let mut layer_order = current_layer_order_view_test_snapshot();
+    fn possible_summary_marks_a_certificate_outside_the_view_budget_unavailable(
+        base_snapshot: &LayerOrderSnapshot,
+    ) {
+        let mut layer_order = base_snapshot.clone();
         let canonical_faces = layer_order.material_faces.clone();
         let face = canonical_faces[0].face_id;
         layer_order.overlap_cells = vec![view_test_cell(

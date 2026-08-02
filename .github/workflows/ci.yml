@@ -519,7 +519,7 @@ jobs:
             done
             if [ "$core_failed" -eq 0 ]; then
               run_component origami2-desktop-release-lib \
-                cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1
+                cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4
               run_component origami2-desktop-event-schema-debug \
                 cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
             fi
@@ -529,7 +529,7 @@ jobs:
             run_component ori-collision-process-isolated-debug \
               cargo nextest run -p ori-collision --locked --all-targets --no-fail-fast --test-threads=4
             run_component origami2-desktop-release-lib \
-              cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1
+              cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4
             run_component origami2-desktop-event-schema-debug \
               cargo test -p origami2-desktop --locked --test event_schema_corpus --no-fail-fast
           fi

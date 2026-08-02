@@ -834,7 +834,7 @@ test('CI preserves the active Rust component across a job timeout', () => {
   assert.match(rustJob, /::notice title=Rust component completed::%s status=%s/u)
 })
 
-test('CI process-isolates the collision regressions with a pinned verified nextest', () => {
+test('CI process-isolates collision and desktop regressions with a pinned verified nextest', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const rustJob = workflow.slice(workflow.indexOf('\n  rust:'), workflow.indexOf('\n  windows-bundle:'))
   const installAction = 'taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60'
@@ -872,8 +872,16 @@ test('CI process-isolates the collision regressions with a pinned verified nexte
     /cargo nextest run -p (?:"\$package"|ori-collision)[^\r\n]*--test-threads=1/u,
   )
   assert.equal(
-    rustJob.match(/cargo test -p origami2-desktop --release --locked --lib --no-fail-fast -- --test-threads=1/gu)?.length,
+    rustJob.match(/cargo nextest run -p origami2-desktop --release --locked --lib --no-fail-fast --test-threads=4/gu)?.length,
     2,
+  )
+  assert.doesNotMatch(
+    rustJob,
+    /cargo (?:test|nextest run) -p origami2-desktop[^\r\n]*--test-threads=1/u,
+  )
+  assert.doesNotMatch(
+    rustJob,
+    /cargo test -p origami2-desktop --release --locked --lib/u,
   )
 })
 

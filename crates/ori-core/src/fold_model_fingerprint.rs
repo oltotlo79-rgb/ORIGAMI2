@@ -177,14 +177,14 @@ mod tests {
 
         assert_eq!(
             report
-                .provenance
+                .provenance_v2()
                 .source_fingerprint
                 .expect("geometry-backed report fingerprint")
                 .to_hex(),
             fold_model_fingerprint_v1(editor.pattern(), editor.paper())
         );
         assert_eq!(
-            report.provenance.identity_namespace,
+            report.provenance_v2().identity_namespace,
             Some(identity_namespace)
         );
     }

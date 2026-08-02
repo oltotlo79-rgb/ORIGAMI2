@@ -3109,7 +3109,8 @@ async fn propose_current_stacked_fold_read_inner(
                         GlobalFlatFoldabilityLimits::default(),
                     )
                     .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-                    let GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } = global.outcome
+                    let GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } =
+                        global.into_outcome_v2()
                     else {
                         return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
                     };
@@ -3485,7 +3486,7 @@ async fn propose_current_stacked_fold_read_inner(
                 GlobalFlatFoldabilityLimits::default(),
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            match report.outcome {
+            match report.into_outcome_v2() {
                 GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
                     let model = prepared_requested_pose.initial().target().model();
                     let pose = prepared_requested_pose.pose();

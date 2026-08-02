@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{cmp::Ordering, ops::Range};
 
 use crate::{FacewiseConstraintKind, OverlapCellKey};
 
@@ -46,25 +46,51 @@ pub(crate) struct ConstraintSet {
 }
 
 impl ConstraintSet {
+    #[cfg(test)]
     pub(crate) fn new(
         explicit: Vec<TupleConstraint>,
         transitivity: TransitivityConstraints,
         transitivity_insertion: usize,
     ) -> Option<Self> {
-        if transitivity_insertion > explicit.len() {
-            return None;
+        let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+        match Self::new_with_checkpoint(
+            explicit,
+            transitivity,
+            transitivity_insertion,
+            &mut checkpoint,
+        ) {
+            Ok(value) => value,
+            Err(never) => match never {},
         }
-        let logical_len = explicit.len().checked_add(transitivity.len())?;
+    }
+
+    pub(crate) fn new_with_checkpoint<E>(
+        explicit: Vec<TupleConstraint>,
+        transitivity: TransitivityConstraints,
+        transitivity_insertion: usize,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<Self>, E> {
+        checkpoint()?;
+        if transitivity_insertion > explicit.len() {
+            return Ok(None);
+        }
+        let Some(logical_len) = explicit.len().checked_add(transitivity.len()) else {
+            return Ok(None);
+        };
         let (compact_explicit_len, compact_explicit_incidence_len) =
-            compact_explicit_shape(&explicit)?;
-        Some(Self {
+            match compact_explicit_shape_with_checkpoint(&explicit, checkpoint)? {
+                Some(shape) => shape,
+                None => return Ok(None),
+            };
+        checkpoint()?;
+        Ok(Some(Self {
             explicit,
             transitivity,
             transitivity_insertion,
             logical_len,
             compact_explicit_len,
             compact_explicit_incidence_len,
-        })
+        }))
     }
 
     #[cfg(test)]
@@ -161,31 +187,65 @@ impl ConstraintSet {
         self.transitivity.len() >= COMPACT_COMPLETION_LOGICAL_THRESHOLD
     }
 
+    #[cfg(test)]
     pub(crate) fn try_iter(&self) -> Result<ConstraintSetIter<'_>, ()> {
-        Ok(ConstraintSetIter {
+        let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+        match self.try_iter_with_checkpoint(&mut checkpoint) {
+            Ok(iterator) => iterator,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn try_iter_with_checkpoint<E>(
+        &self,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Result<ConstraintSetIter<'_>, ()>, E> {
+        checkpoint()?;
+        let transitivity = match self.transitivity.try_iter_with_checkpoint(checkpoint)? {
+            Ok(iterator) => iterator,
+            Err(()) => return Ok(Err(())),
+        };
+        checkpoint()?;
+        Ok(Ok(ConstraintSetIter {
             explicit: &self.explicit,
             explicit_position: 0,
             transitivity_insertion: self.transitivity_insertion,
-            transitivity: self.transitivity.try_iter()?,
+            transitivity,
             phase: ConstraintSetIterPhase::ExplicitPrefix,
-        })
+        }))
     }
 }
 
+fn compact_explicit_shape_with_checkpoint<E>(
+    explicit: &[TupleConstraint],
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Option<(usize, usize)>, E> {
+    let (mut constraint_count, mut incidence_count) = (0_usize, 0_usize);
+    for constraint in explicit {
+        checkpoint()?;
+        if !tuple_constraint_is_tautology(constraint) {
+            let Some(next_constraint_count) = constraint_count.checked_add(1) else {
+                return Ok(None);
+            };
+            let Some(next_incidence_count) =
+                incidence_count.checked_add(constraint.variables.len())
+            else {
+                return Ok(None);
+            };
+            constraint_count = next_constraint_count;
+            incidence_count = next_incidence_count;
+        }
+    }
+    Ok(Some((constraint_count, incidence_count)))
+}
+
+#[cfg(test)]
 fn compact_explicit_shape(explicit: &[TupleConstraint]) -> Option<(usize, usize)> {
-    explicit.iter().try_fold(
-        (0_usize, 0_usize),
-        |(constraint_count, incidence_count), constraint| {
-            if tuple_constraint_is_tautology(constraint) {
-                Some((constraint_count, incidence_count))
-            } else {
-                Some((
-                    constraint_count.checked_add(1)?,
-                    incidence_count.checked_add(constraint.variables.len())?,
-                ))
-            }
-        },
-    )
+    let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+    match compact_explicit_shape_with_checkpoint(explicit, &mut checkpoint) {
+        Ok(shape) => shape,
+        Err(never) => match never {},
+    }
 }
 
 fn tuple_constraint_is_tautology(constraint: &TupleConstraint) -> bool {
@@ -421,6 +481,7 @@ pub(crate) fn complete_assignment_verification_working_memory_upper_bound(
         .checked_add(maximum_ply.checked_mul(std::mem::size_of::<u8>())?)
 }
 
+#[allow(clippy::same_item_push)] // Per-element pushes are cooperative checkpoint boundaries.
 pub(crate) fn verify_complete_assignment_with_memory<F>(
     assignment: &[bool],
     constraints: &ConstraintSet,
@@ -471,9 +532,19 @@ where
     for family in constraints.transitivity.families() {
         let ply = family.covering_faces.len();
         above_counts.clear();
-        above_counts.resize(ply, 0);
+        for _ in 0..ply {
+            above_counts.push(0);
+            if let Err(abort) = poll_after_record_batch(&mut control, 0, &mut pending) {
+                return complete_assignment_verification_abort(abort, required);
+            }
+        }
         seen_counts.clear();
-        seen_counts.resize(ply, 0);
+        for _ in 0..ply {
+            seen_counts.push(0);
+            if let Err(abort) = poll_after_record_batch(&mut control, 0, &mut pending) {
+                return complete_assignment_verification_abort(abort, required);
+            }
+        }
         for first in 0..ply {
             for second in first + 1..ply {
                 let Some(variable) = family.pair_variable(first, second) else {
@@ -493,6 +564,9 @@ where
             }
         }
         for &count in &above_counts {
+            if let Err(abort) = poll_after_record_batch(&mut control, 0, &mut pending) {
+                return complete_assignment_verification_abort(abort, required);
+            }
             if count >= ply || seen_counts[count] != 0 {
                 return CompleteAssignmentVerificationResult::Rejects;
             }
@@ -595,11 +669,23 @@ where
             observed: required_working_memory,
         };
     }
-    domains.extend(fixed_assignments.iter().map(|assignment| match assignment {
-        Some(false) => DOMAIN_FALSE,
-        Some(true) => DOMAIN_TRUE,
-        None => DOMAIN_BOTH,
-    }));
+    let mut initialization_pending = 0_usize;
+    for assignment in fixed_assignments {
+        domains.push(match assignment {
+            Some(false) => DOMAIN_FALSE,
+            Some(true) => DOMAIN_TRUE,
+            None => DOMAIN_BOTH,
+        });
+        if let Err(abort) = poll_after_record_batch(&mut control, 0, &mut initialization_pending) {
+            return solver_abort_result(abort, 0, required_working_memory);
+        }
+    }
+    if initialization_pending != 0
+        && let Some(abort) =
+            control_abort_result(&mut control, ConstraintSolverEvent::PropagationBatch, 0)
+    {
+        return abort;
+    }
     let mut search_nodes = 0_usize;
     if constraints.uses_compact_completion() {
         match try_compact_completion(&domains, constraints, max_search_nodes, &mut control) {
@@ -766,11 +852,11 @@ where
     if let Err(abort) = poll_iterator_initialization(constraints, &mut control, search_nodes) {
         return solver_abort_result(abort, search_nodes, required_working_memory);
     }
-    let Ok(constraint_iter) = constraints.try_iter() else {
-        return ConstraintSolverResult::WorkingMemoryLimit {
-            observed: required_working_memory,
+    let constraint_iter =
+        match checkpointed_constraint_iter(constraints, &mut control, search_nodes) {
+            Ok(iterator) => iterator,
+            Err(abort) => return solver_abort_result(abort, search_nodes, required_working_memory),
         };
-    };
     for (index, constraint) in constraint_iter.enumerate() {
         match control(ConstraintSolverEvent::VerifyingConstraint, search_nodes) {
             ConstraintSolverControl::Continue => {}
@@ -971,8 +1057,10 @@ where
         if let Err(abort) = poll_iterator_initialization(constraints, control, search_nodes) {
             return propagation_abort(abort);
         }
-        let Ok(constraint_iter) = constraints.try_iter() else {
-            return PropagationResult::WorkingMemoryLimit;
+        let constraint_iter = match checkpointed_constraint_iter(constraints, control, search_nodes)
+        {
+            Ok(iterator) => iterator,
+            Err(abort) => return propagation_abort(abort),
         };
         for (constraint_index, constraint) in constraint_iter.enumerate() {
             let variables = constraint.variables();
@@ -1109,17 +1197,21 @@ where
     parents
         .try_reserve_exact(variable_count)
         .map_err(|_| ConstraintSolverControl::WorkingMemoryLimit)?;
-    parents.extend(0..variable_count);
+    let mut processed_since_poll = 0_usize;
+    for parent in 0..variable_count {
+        parents.push(parent);
+        poll_after_record_batch(control, search_nodes, &mut processed_since_poll)?;
+    }
     let mut ranks = Vec::new();
     ranks
         .try_reserve_exact(variable_count)
         .map_err(|_| ConstraintSolverControl::WorkingMemoryLimit)?;
-    ranks.resize(variable_count, 0_u8);
-    let mut processed_since_poll = 0_usize;
+    for _ in 0..variable_count {
+        ranks.push(0_u8);
+        poll_after_record_batch(control, search_nodes, &mut processed_since_poll)?;
+    }
     poll_iterator_initialization(constraints, control, search_nodes)?;
-    let constraint_iter = constraints
-        .try_iter()
-        .map_err(|_| ConstraintSolverControl::WorkingMemoryLimit)?;
+    let constraint_iter = checkpointed_constraint_iter(constraints, control, search_nodes)?;
     for constraint in constraint_iter {
         if let Some((&first, rest)) = constraint.variables().split_first() {
             for &second in rest {
@@ -1137,7 +1229,7 @@ where
         let root = find_component_root(&mut parents, variable);
         grouped_variables.push((root, variable));
     }
-    grouped_variables.sort_unstable();
+    checkpointed_sort_unstable_by(&mut grouped_variables, control, search_nodes, Ord::cmp)?;
     let mut component_variables = Vec::new();
     component_variables
         .try_reserve_exact(variable_count)
@@ -1161,15 +1253,27 @@ where
         component_ranges.push(component_start..component_variables.len());
         cursor = end;
     }
-    component_ranges.sort_unstable_by_key(|component| {
-        (
-            component.len(),
-            component_variables
-                .get(component.start)
-                .copied()
-                .unwrap_or(usize::MAX),
-        )
-    });
+    checkpointed_sort_unstable_by(
+        &mut component_ranges,
+        control,
+        search_nodes,
+        |first, second| {
+            (
+                first.len(),
+                component_variables
+                    .get(first.start)
+                    .copied()
+                    .unwrap_or(usize::MAX),
+            )
+                .cmp(&(
+                    second.len(),
+                    component_variables
+                        .get(second.start)
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                ))
+        },
+    )?;
     if processed_since_poll != 0 {
         poll_control(
             control,
@@ -1181,6 +1285,112 @@ where
         variables: component_variables,
         ranges: component_ranges,
     })
+}
+
+fn checkpointed_sort_unstable_by<T, F, C>(
+    values: &mut [T],
+    control: &mut F,
+    search_nodes: usize,
+    mut compare: C,
+) -> Result<(), ConstraintSolverControl>
+where
+    F: FnMut(ConstraintSolverEvent, usize) -> ConstraintSolverControl,
+    C: FnMut(&T, &T) -> Ordering,
+{
+    fn poll_sort_operation<F>(
+        control: &mut F,
+        search_nodes: usize,
+        operations: &mut usize,
+    ) -> Result<(), ConstraintSolverControl>
+    where
+        F: FnMut(ConstraintSolverEvent, usize) -> ConstraintSolverControl,
+    {
+        *operations += 1;
+        if *operations >= CONTROL_BATCH_RECORDS {
+            *operations = 0;
+            poll_control(
+                control,
+                ConstraintSolverEvent::PropagationBatch,
+                search_nodes,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn sift_down<T, F, C>(
+        values: &mut [T],
+        mut root: usize,
+        end: usize,
+        control: &mut F,
+        search_nodes: usize,
+        operations: &mut usize,
+        compare: &mut C,
+    ) -> Result<(), ConstraintSolverControl>
+    where
+        F: FnMut(ConstraintSolverEvent, usize) -> ConstraintSolverControl,
+        C: FnMut(&T, &T) -> Ordering,
+    {
+        loop {
+            let Some(left) = root.checked_mul(2).and_then(|value| value.checked_add(1)) else {
+                return Ok(());
+            };
+            if left >= end {
+                return Ok(());
+            }
+            let right = left + 1;
+            let mut largest = left;
+            if right < end {
+                poll_sort_operation(control, search_nodes, operations)?;
+                if compare(&values[largest], &values[right]) == Ordering::Less {
+                    largest = right;
+                }
+            }
+            poll_sort_operation(control, search_nodes, operations)?;
+            if compare(&values[root], &values[largest]) != Ordering::Less {
+                return Ok(());
+            }
+            poll_sort_operation(control, search_nodes, operations)?;
+            values.swap(root, largest);
+            root = largest;
+        }
+    }
+
+    poll_control(
+        control,
+        ConstraintSolverEvent::PropagationBatch,
+        search_nodes,
+    )?;
+    let mut operations = 0_usize;
+    for root in (0..values.len() / 2).rev() {
+        poll_sort_operation(control, search_nodes, &mut operations)?;
+        sift_down(
+            values,
+            root,
+            values.len(),
+            control,
+            search_nodes,
+            &mut operations,
+            &mut compare,
+        )?;
+    }
+    for end in (1..values.len()).rev() {
+        poll_sort_operation(control, search_nodes, &mut operations)?;
+        values.swap(0, end);
+        sift_down(
+            values,
+            0,
+            end,
+            control,
+            search_nodes,
+            &mut operations,
+            &mut compare,
+        )?;
+    }
+    poll_control(
+        control,
+        ConstraintSolverEvent::PropagationBatch,
+        search_nodes,
+    )
 }
 
 fn find_component_root(parents: &mut [usize], variable: usize) -> usize {
@@ -1253,6 +1463,27 @@ where
         )?;
     }
     Ok(())
+}
+
+fn checkpointed_constraint_iter<'a, F>(
+    constraints: &'a ConstraintSet,
+    control: &mut F,
+    search_nodes: usize,
+) -> Result<ConstraintSetIter<'a>, ConstraintSolverControl>
+where
+    F: FnMut(ConstraintSolverEvent, usize) -> ConstraintSolverControl,
+{
+    let mut checkpoint = || {
+        poll_control(
+            control,
+            ConstraintSolverEvent::PropagationBatch,
+            search_nodes,
+        )
+    };
+    match constraints.try_iter_with_checkpoint(&mut checkpoint)? {
+        Ok(iterator) => Ok(iterator),
+        Err(()) => Err(ConstraintSolverControl::WorkingMemoryLimit),
+    }
 }
 
 fn poll_control<F>(

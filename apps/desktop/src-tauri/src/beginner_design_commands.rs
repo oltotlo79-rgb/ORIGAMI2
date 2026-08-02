@@ -2269,7 +2269,7 @@ pub(super) fn assess_beginner_generated_plan_with_control_v1(
                     GlobalFlatFoldabilityLimits::default(),
                     &mut observer,
                 ) {
-                    Ok(report) => match report.outcome {
+                    Ok(report) => match report.into_outcome_v2() {
                         GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
                             if certify_beginner_fold_path_with_control_v1(
                                 plan,

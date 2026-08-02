@@ -1,4 +1,7 @@
-use std::{cmp::Reverse, collections::BinaryHeap};
+use std::{
+    cmp::{Ordering, Reverse},
+    collections::BinaryHeap,
+};
 
 use crate::OverlapCellKey;
 
@@ -73,53 +76,83 @@ pub(crate) struct TransitivityConstraints {
 }
 
 impl TransitivityConstraints {
+    #[cfg(test)]
     pub(crate) fn try_new(
-        mut families: Vec<TransitivityConstraintFamily>,
+        families: Vec<TransitivityConstraintFamily>,
         variable_count: usize,
     ) -> Option<Self> {
+        let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+        match Self::try_new_with_checkpoint(families, variable_count, &mut checkpoint) {
+            Ok(value) => value,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn try_new_with_checkpoint<E>(
+        mut families: Vec<TransitivityConstraintFamily>,
+        variable_count: usize,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<Self>, E> {
         let mut recomputed_len = 0_usize;
         let mut maximum_ply = 0_usize;
         for family in &families {
-            if family.covering_faces.len() < 3
-                || !family
-                    .covering_faces
-                    .windows(2)
-                    .all(|faces| faces[0] < faces[1])
-                || family.pair_variables.len() != choose_two(family.covering_faces.len())?
-                || !family
-                    .pair_variables
-                    .windows(2)
-                    .all(|variables| variables[0] < variables[1])
-                || family
-                    .pair_variables
-                    .iter()
-                    .any(|variable| *variable >= variable_count)
-            {
-                return None;
+            checkpoint()?;
+            let Some(pair_count) = choose_two(family.covering_faces.len()) else {
+                return Ok(None);
+            };
+            if family.covering_faces.len() < 3 || family.pair_variables.len() != pair_count {
+                return Ok(None);
             }
-            recomputed_len = recomputed_len.checked_add(family.logical_len()?)?;
+            for faces in family.covering_faces.windows(2) {
+                checkpoint()?;
+                if faces[0] >= faces[1] {
+                    return Ok(None);
+                }
+            }
+            for variables in family.pair_variables.windows(2) {
+                checkpoint()?;
+                if variables[0] >= variables[1] {
+                    return Ok(None);
+                }
+            }
+            for variable in &family.pair_variables {
+                checkpoint()?;
+                if *variable >= variable_count {
+                    return Ok(None);
+                }
+            }
+            let Some(logical_len) = family.logical_len() else {
+                return Ok(None);
+            };
+            let Some(next_recomputed_len) = recomputed_len.checked_add(logical_len) else {
+                return Ok(None);
+            };
+            recomputed_len = next_recomputed_len;
             maximum_ply = maximum_ply.max(family.covering_faces.len());
         }
-        families.sort_unstable_by_key(|family| family.supporting_cell.0);
-        if families
-            .windows(2)
-            .any(|families| families[0].supporting_cell == families[1].supporting_cell)
-        {
-            return None;
+        checkpointed_sort_unstable_by(&mut families, checkpoint, |first, second| {
+            first.supporting_cell.0.cmp(&second.supporting_cell.0)
+        })?;
+        for families in families.windows(2) {
+            checkpoint()?;
+            if families[0].supporting_cell == families[1].supporting_cell {
+                return Ok(None);
+            }
         }
         // Equality between the independently rebuilt primary and verifier
         // problems must not depend on the arrangement traversal order.
-        families.sort_unstable_by(|left, right| {
+        checkpointed_sort_unstable_by(&mut families, checkpoint, |left, right| {
             left.covering_faces
                 .cmp(&right.covering_faces)
                 .then_with(|| left.supporting_cell.0.cmp(&right.supporting_cell.0))
                 .then_with(|| left.pair_variables.cmp(&right.pair_variables))
-        });
-        Some(Self {
+        })?;
+        checkpoint()?;
+        Ok(Some(Self {
             families,
             logical_len: recomputed_len,
             maximum_ply,
-        })
+        }))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -130,8 +163,20 @@ impl TransitivityConstraints {
         self.families.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn try_iter(&self) -> Result<TransitivityConstraintIter<'_>, ()> {
-        TransitivityConstraintIter::try_new(&self.families)
+        let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+        match self.try_iter_with_checkpoint(&mut checkpoint) {
+            Ok(iterator) => iterator,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(crate) fn try_iter_with_checkpoint<E>(
+        &self,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Result<TransitivityConstraintIter<'_>, ()>, E> {
+        TransitivityConstraintIter::try_new_with_checkpoint(&self.families, checkpoint)
     }
 
     pub(crate) fn iterator_working_memory_upper_bound(&self) -> Option<usize> {
@@ -147,6 +192,54 @@ impl TransitivityConstraints {
     pub(super) fn maximum_ply(&self) -> usize {
         self.maximum_ply
     }
+}
+
+fn checkpointed_sort_unstable_by<T, E>(
+    values: &mut [T],
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+    mut compare: impl FnMut(&T, &T) -> Ordering,
+) -> Result<(), E> {
+    fn sift_down<T, E>(
+        values: &mut [T],
+        mut root: usize,
+        end: usize,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+        compare: &mut impl FnMut(&T, &T) -> Ordering,
+    ) -> Result<(), E> {
+        loop {
+            let left = root * 2 + 1;
+            if left >= end {
+                return Ok(());
+            }
+            let right = left + 1;
+            let mut largest = left;
+            if right < end {
+                checkpoint()?;
+                if compare(&values[largest], &values[right]) == Ordering::Less {
+                    largest = right;
+                }
+            }
+            checkpoint()?;
+            if compare(&values[root], &values[largest]) != Ordering::Less {
+                return Ok(());
+            }
+            checkpoint()?;
+            values.swap(root, largest);
+            root = largest;
+        }
+    }
+
+    checkpoint()?;
+    for root in (0..values.len() / 2).rev() {
+        checkpoint()?;
+        sift_down(values, root, values.len(), checkpoint, &mut compare)?;
+    }
+    for end in (1..values.len()).rev() {
+        checkpoint()?;
+        values.swap(0, end);
+        sift_down(values, 0, end, checkpoint, &mut compare)?;
+    }
+    checkpoint()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -207,19 +300,26 @@ pub(crate) struct TransitivityConstraintIter<'a> {
 }
 
 impl<'a> TransitivityConstraintIter<'a> {
-    fn try_new(families: &'a [TransitivityConstraintFamily]) -> Result<Self, ()> {
-        let mut cursors = Vec::new();
-        cursors.try_reserve_exact(families.len()).map_err(|_| ())?;
-        cursors.extend(
-            families
-                .iter()
-                .enumerate()
-                .filter_map(|(index, family)| FamilyCursor::first(index, family).map(Reverse)),
-        );
-        Ok(Self {
-            families,
-            cursors: BinaryHeap::from(cursors),
-        })
+    fn try_new_with_checkpoint<E>(
+        families: &'a [TransitivityConstraintFamily],
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Result<Self, ()>, E> {
+        checkpoint()?;
+        let mut cursors = BinaryHeap::new();
+        if cursors.try_reserve_exact(families.len()).is_err() {
+            return Ok(Err(()));
+        }
+        for (index, family) in families.iter().enumerate() {
+            checkpoint()?;
+            if let Some(cursor) = FamilyCursor::first(index, family) {
+                // `BinaryHeap::push` is logarithmic in the family count;
+                // the surrounding per-family checkpoint bounds the next
+                // observer opportunity even for the largest admitted input.
+                cursors.push(Reverse(cursor));
+            }
+        }
+        checkpoint()?;
+        Ok(Ok(Self { families, cursors }))
     }
 }
 
@@ -326,6 +426,30 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort_unstable();
         assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn checkpointed_construction_cancels_before_large_family_sort() {
+        const FAMILY_COUNT: usize = 128;
+        let families = (0..FAMILY_COUNT)
+            .map(|index| TransitivityConstraintFamily {
+                covering_faces: vec![0, 1, 2],
+                pair_variables: vec![0, 1, 2],
+                supporting_cell: OverlapCellKey([index as u8; 32]),
+            })
+            .collect();
+        let mut checkpoints = 0usize;
+        let result = TransitivityConstraints::try_new_with_checkpoint(families, 3, &mut || {
+            checkpoints += 1;
+            if checkpoints == FAMILY_COUNT * 8 + 1 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(result, Err("cancelled"));
+        assert_eq!(checkpoints, FAMILY_COUNT * 8 + 1);
     }
 
     #[test]

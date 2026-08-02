@@ -220,7 +220,7 @@ pub(super) fn freshly_analyze_flat_layer_order_v1(
         GlobalFlatFoldabilityLimits::default(),
     )
     .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-    match report.outcome {
+    match report.into_outcome_v2() {
         GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => Ok(*layer_order),
         GlobalFlatFoldabilityOutcome::Impossible { .. }
         | GlobalFlatFoldabilityOutcome::Unknown { .. } => {

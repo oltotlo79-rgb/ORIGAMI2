@@ -1,6 +1,7 @@
 use ori_domain::{CreasePattern, EdgeKind, Paper, VertexId};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
 
 /// Domain separator for the first fold-model content fingerprint.
 ///
@@ -55,14 +56,23 @@ where
     let mut hasher = Sha256::new();
     hasher.update(FOLD_MODEL_FINGERPRINT_V1_DOMAIN);
 
-    let mut vertices = pattern.vertices.iter().collect::<Vec<_>>();
-    vertices.sort_by_key(|vertex| {
+    let mut vertices = Vec::with_capacity(pattern.vertices.len());
+    for vertex in &pattern.vertices {
+        checkpoint()?;
+        vertices.push(vertex);
+    }
+    checkpointed_sort_by(&mut vertices, checkpoint, |first, second| {
         (
-            vertex.id.canonical_bytes(),
-            vertex.position.x.to_bits(),
-            vertex.position.y.to_bits(),
+            first.id.canonical_bytes(),
+            first.position.x.to_bits(),
+            first.position.y.to_bits(),
         )
-    });
+            .cmp(&(
+                second.id.canonical_bytes(),
+                second.position.x.to_bits(),
+                second.position.y.to_bits(),
+            ))
+    })?;
     checkpoint()?;
     hash_len(&mut hasher, vertices.len());
     for (index, vertex) in vertices.into_iter().enumerate() {
@@ -73,16 +83,23 @@ where
     }
     checkpoint()?;
 
-    let mut edges = pattern.edges.iter().collect::<Vec<_>>();
-    edges.sort_by_key(|edge| {
-        let mut endpoints = [edge.start.canonical_bytes(), edge.end.canonical_bytes()];
-        endpoints.sort_unstable();
-        (
-            edge.id.canonical_bytes(),
-            endpoints,
-            edge_kind_tag(edge.kind),
-        )
-    });
+    let mut edges = Vec::with_capacity(pattern.edges.len());
+    for edge in &pattern.edges {
+        checkpoint()?;
+        edges.push(edge);
+    }
+    checkpointed_sort_by(&mut edges, checkpoint, |first, second| {
+        let edge_key = |edge: &ori_domain::Edge| {
+            let mut endpoints = [edge.start.canonical_bytes(), edge.end.canonical_bytes()];
+            endpoints.sort_unstable();
+            (
+                edge.id.canonical_bytes(),
+                endpoints,
+                edge_kind_tag(edge.kind),
+            )
+        };
+        edge_key(first).cmp(&edge_key(second))
+    })?;
     checkpoint()?;
     hash_len(&mut hasher, edges.len());
     for (index, edge) in edges.into_iter().enumerate() {
@@ -96,7 +113,7 @@ where
     }
     checkpoint()?;
 
-    let boundary = canonical_boundary(&paper.boundary_vertices);
+    let boundary = canonical_boundary_with_checkpoint(&paper.boundary_vertices, checkpoint)?;
     checkpoint()?;
     hash_len(&mut hasher, boundary.len());
     for (index, vertex) in boundary.into_iter().enumerate() {
@@ -108,6 +125,61 @@ where
 
     checkpoint()?;
     Ok(FoldModelFingerprintV1(hasher.finalize().into()))
+}
+
+fn checkpointed_sort_by<T, E, F, C>(
+    values: &mut [T],
+    checkpoint: &mut F,
+    mut compare: C,
+) -> Result<(), E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+    C: FnMut(&T, &T) -> Ordering,
+{
+    fn sift_down<T, E, F, C>(
+        values: &mut [T],
+        mut root: usize,
+        end: usize,
+        checkpoint: &mut F,
+        compare: &mut C,
+    ) -> Result<(), E>
+    where
+        F: FnMut() -> Result<(), E> + ?Sized,
+        C: FnMut(&T, &T) -> Ordering,
+    {
+        loop {
+            let Some(mut child) = root.checked_mul(2).and_then(|value| value.checked_add(1)) else {
+                return Ok(());
+            };
+            if child >= end {
+                return Ok(());
+            }
+            if child + 1 < end {
+                checkpoint()?;
+                if compare(&values[child], &values[child + 1]) == Ordering::Less {
+                    child += 1;
+                }
+            }
+            checkpoint()?;
+            if compare(&values[root], &values[child]) != Ordering::Less {
+                return Ok(());
+            }
+            values.swap(root, child);
+            root = child;
+        }
+    }
+
+    checkpoint()?;
+    for root in (0..values.len() / 2).rev() {
+        sift_down(values, root, values.len(), checkpoint, &mut compare)?;
+    }
+    for end in (1..values.len()).rev() {
+        checkpoint()?;
+        values.swap(0, end);
+        sift_down(values, 0, end, checkpoint, &mut compare)?;
+    }
+    checkpoint()?;
+    Ok(())
 }
 
 fn poll_checkpoint<E, F>(checkpoint: &mut F, index: usize) -> Result<(), E>
@@ -138,38 +210,60 @@ const fn edge_kind_tag(kind: EdgeKind) -> u8 {
     }
 }
 
-fn canonical_boundary(boundary: &[VertexId]) -> Vec<VertexId> {
+fn canonical_boundary_with_checkpoint<E, F>(
+    boundary: &[VertexId],
+    checkpoint: &mut F,
+) -> Result<Vec<VertexId>, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint()?;
     if boundary.len() < 2 {
-        return boundary.to_vec();
+        return rotated_with_checkpoint(boundary, 0, checkpoint);
     }
 
-    let forward_bytes = boundary
-        .iter()
-        .map(VertexId::canonical_bytes)
-        .collect::<Vec<_>>();
-    let reverse_bytes = forward_bytes.iter().copied().rev().collect::<Vec<_>>();
-    let forward_start = least_rotation_start(&forward_bytes);
-    let reverse_start = least_rotation_start(&reverse_bytes);
+    let mut forward_bytes = Vec::with_capacity(boundary.len());
+    for vertex in boundary {
+        checkpoint()?;
+        forward_bytes.push(vertex.canonical_bytes());
+    }
+    let mut reverse_bytes = Vec::with_capacity(forward_bytes.len());
+    for bytes in forward_bytes.iter().copied().rev() {
+        checkpoint()?;
+        reverse_bytes.push(bytes);
+    }
+    let forward_start = least_rotation_start_with_checkpoint(&forward_bytes, checkpoint)?;
+    let reverse_start = least_rotation_start_with_checkpoint(&reverse_bytes, checkpoint)?;
 
-    let forward_key = rotated(&forward_bytes, forward_start);
-    let reverse_key = rotated(&reverse_bytes, reverse_start);
-    if forward_key <= reverse_key {
-        rotated(boundary, forward_start)
+    let forward_key = rotated_with_checkpoint(&forward_bytes, forward_start, checkpoint)?;
+    let reverse_key = rotated_with_checkpoint(&reverse_bytes, reverse_start, checkpoint)?;
+    if slice_cmp_with_checkpoint(&forward_key, &reverse_key, checkpoint)? != Ordering::Greater {
+        rotated_with_checkpoint(boundary, forward_start, checkpoint)
     } else {
-        let reversed = boundary.iter().copied().rev().collect::<Vec<_>>();
-        rotated(&reversed, reverse_start)
+        let mut reversed = Vec::with_capacity(boundary.len());
+        for vertex in boundary.iter().copied().rev() {
+            checkpoint()?;
+            reversed.push(vertex);
+        }
+        rotated_with_checkpoint(&reversed, reverse_start, checkpoint)
     }
 }
 
 /// Booth's algorithm for the lexicographically least cyclic rotation.
-fn least_rotation_start<T: Ord>(values: &[T]) -> usize {
+fn least_rotation_start_with_checkpoint<T: Ord, E, F>(
+    values: &[T],
+    checkpoint: &mut F,
+) -> Result<usize, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
     let len = values.len();
     if len < 2 {
-        return 0;
+        return Ok(0);
     }
     let (mut first, mut second, mut offset) = (0, 1, 0);
     while first < len && second < len && offset < len {
-        use std::cmp::Ordering;
+        checkpoint()?;
         match values[(first + offset) % len].cmp(&values[(second + offset) % len]) {
             Ordering::Equal => offset += 1,
             Ordering::Greater => {
@@ -188,15 +282,44 @@ fn least_rotation_start<T: Ord>(values: &[T]) -> usize {
             }
         }
     }
-    first.min(second) % len
+    checkpoint()?;
+    Ok(first.min(second) % len)
 }
 
-fn rotated<T: Copy>(values: &[T], start: usize) -> Vec<T> {
-    values[start..]
-        .iter()
-        .chain(&values[..start])
-        .copied()
-        .collect()
+fn rotated_with_checkpoint<T: Copy, E, F>(
+    values: &[T],
+    start: usize,
+    checkpoint: &mut F,
+) -> Result<Vec<T>, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    let mut rotated = Vec::with_capacity(values.len());
+    for value in values[start..].iter().chain(&values[..start]) {
+        checkpoint()?;
+        rotated.push(*value);
+    }
+    checkpoint()?;
+    Ok(rotated)
+}
+
+fn slice_cmp_with_checkpoint<T: Ord, E, F>(
+    first: &[T],
+    second: &[T],
+    checkpoint: &mut F,
+) -> Result<Ordering, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    for (first, second) in first.iter().zip(second) {
+        checkpoint()?;
+        let ordering = first.cmp(second);
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    checkpoint()?;
+    Ok(first.len().cmp(&second.len()))
 }
 
 #[cfg(test)]
@@ -284,12 +407,54 @@ mod tests {
                         value
                     })
                     .collect::<Vec<_>>();
+                let rotate = |start| {
+                    rotated_with_checkpoint(&values, start, &mut || {
+                        Ok::<(), std::convert::Infallible>(())
+                    })
+                    .expect("infallible rotation")
+                };
                 let expected = (0..values.len())
-                    .map(|start| rotated(&values, start))
+                    .map(rotate)
                     .min()
                     .expect("non-empty sequence has a rotation");
-                assert_eq!(rotated(&values, least_rotation_start(&values)), expected);
+                let start = least_rotation_start_with_checkpoint(&values, &mut || {
+                    Ok::<(), std::convert::Infallible>(())
+                })
+                .expect("infallible least rotation");
+                assert_eq!(rotate(start), expected);
             }
         }
+    }
+
+    #[test]
+    fn sort_booth_and_copy_can_each_stop_mid_operation() {
+        fn stop_after(remaining: usize) -> impl FnMut() -> Result<(), &'static str> {
+            let mut remaining = remaining;
+            move || {
+                if remaining == 0 {
+                    Err("stopped")
+                } else {
+                    remaining -= 1;
+                    Ok(())
+                }
+            }
+        }
+
+        let mut sortable = (0_u32..4_096).rev().collect::<Vec<_>>();
+        assert_eq!(
+            checkpointed_sort_by(&mut sortable, &mut stop_after(128), u32::cmp),
+            Err("stopped")
+        );
+
+        let equal_cycle = vec![0_u8; 4_096];
+        assert_eq!(
+            least_rotation_start_with_checkpoint(&equal_cycle, &mut stop_after(128)),
+            Err("stopped")
+        );
+
+        assert_eq!(
+            rotated_with_checkpoint(&equal_cycle, 1, &mut stop_after(128)),
+            Err("stopped")
+        );
     }
 }

@@ -2464,6 +2464,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "ori-domain",
+ "ori-geometry",
  "ori-topology",
  "serde",
  "serde_json",

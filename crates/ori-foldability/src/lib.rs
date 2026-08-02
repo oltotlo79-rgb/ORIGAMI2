@@ -11,13 +11,15 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-use ori_domain::{CreasePattern, EdgeId, FaceId, Paper, ProjectId, VertexId};
+use ori_domain::{CreasePattern, Edge, EdgeId, FaceId, Paper, Point2, ProjectId, Vertex, VertexId};
+use ori_geometry::{PaperValidationIssue, ValidationIssue};
 use ori_topology::{
     CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint, EdgeIncidence, FaceExtractionInput,
     FaceKey, FoldAssignment, LocalFlatFoldabilityModel, LocalFlatFoldabilityReport,
     LocalFlatFoldabilityReportStatus, LocalFoldabilityConditionStatus, LocalFoldabilityReason,
-    LocalVertexFoldabilityVerdict, MAX_EXACT_FOLD_DEGREE, TopologyIssueSeverity, TopologySnapshot,
-    analyze_faces_with_checkpoint, analyze_local_flat_foldability_with_checkpoint,
+    LocalVertexFoldability, LocalVertexFoldabilityVerdict, MAX_EXACT_FOLD_DEGREE,
+    TopologyIssueSeverity, TopologySnapshot, analyze_faces_with_checkpoint,
+    analyze_local_flat_foldability_with_checkpoint,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -26,6 +28,7 @@ mod constraints;
 mod exact;
 mod facewise;
 mod fingerprint;
+mod snapshot_traversal;
 
 pub use exact::{ExactAffineTransform, ExactPointValue, ExactRationalValue, ExactSign};
 use fingerprint::fold_model_fingerprint_v1_with_checkpoint;
@@ -299,7 +302,7 @@ pub enum GlobalFlatFoldabilityExecutionError {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct GlobalFlatFoldabilityWorkCounts {
     pub source_vertex_records: usize,
     pub source_edge_records: usize,
@@ -480,6 +483,19 @@ pub enum LayerOrderSnapshotCloneErrorV1 {
     AllocationFailed,
 }
 
+/// Result of a limit-aware retained-byte walk over an untrusted layer-order
+/// snapshot.
+///
+/// `observed_lower_bound` is the cumulative retained storage known at the
+/// first over-limit allocation. It may be smaller than the snapshot's final
+/// retained size because traversal stops before scanning that vector's
+/// contents. Arithmetic overflow is reported as `usize::MAX`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerOrderSnapshotRetainedByteLimitV2 {
+    WithinLimit { retained_bytes: usize },
+    Exceeded { observed_lower_bound: usize },
+}
+
 impl LayerOrderSnapshot {
     /// Rejects stale, differently identified, or differently modelled layer
     /// state at a later boundary.
@@ -499,6 +515,48 @@ impl LayerOrderSnapshot {
         checked_layer_order_snapshot_actual_bytes_v1(self)
     }
 
+    /// As [`Self::checked_deep_retained_bytes_v1`], with cooperative polling
+    /// on both sides of the exact capacity walk.  The retained-byte result is
+    /// not returned when a caller cancellation/deadline wins either boundary.
+    pub fn checked_deep_retained_bytes_with_checkpoint_v2<E>(
+        &self,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<usize>, E> {
+        snapshot_traversal::checked_deep_retained_bytes_with_checkpoint_v2(self, checkpoint)
+    }
+
+    /// Walks retained storage cooperatively and stops as soon as its known
+    /// lower bound exceeds `maximum`.
+    ///
+    /// Each vector's capacity is charged before its elements are polled, so a
+    /// large untrusted vector cannot force a full content scan before the
+    /// caller's byte cap is enforced.
+    pub fn checked_deep_retained_bytes_with_limit_and_checkpoint_v2<E>(
+        &self,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<LayerOrderSnapshotRetainedByteLimitV2, E> {
+        snapshot_traversal::checked_deep_retained_bytes_with_limit_and_checkpoint_v2(
+            self, maximum, checkpoint,
+        )
+    }
+
+    /// Non-cancellable form of
+    /// [`Self::checked_deep_retained_bytes_with_limit_and_checkpoint_v2`].
+    #[must_use]
+    pub fn checked_deep_retained_bytes_with_limit_v2(
+        &self,
+        maximum: usize,
+    ) -> LayerOrderSnapshotRetainedByteLimitV2 {
+        let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+        match self
+            .checked_deep_retained_bytes_with_limit_and_checkpoint_v2(maximum, &mut checkpoint)
+        {
+            Ok(status) => status,
+            Err(error) => match error {},
+        }
+    }
+
     /// Fallibly clones this snapshot without an unbounded intermediate clone.
     ///
     /// The projected length-based size is checked before allocation. The
@@ -510,6 +568,20 @@ impl LayerOrderSnapshot {
         maximum: usize,
     ) -> Result<Self, LayerOrderSnapshotCloneErrorV1> {
         self.try_clone_filtered_with_retained_byte_limit_v1(None, maximum)
+    }
+
+    /// As [`Self::try_clone_with_retained_byte_limit_v1`], with cooperative
+    /// polls before allocation/copy and after the clone's exact remeasurement.
+    /// The nested clone still uses its existing bounded, fallible allocation
+    /// path; a stop is never converted into a successful retained value.
+    pub fn try_clone_with_retained_byte_limit_with_checkpoint_v2<E>(
+        &self,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Result<Self, LayerOrderSnapshotCloneErrorV1>, E> {
+        snapshot_traversal::try_clone_with_retained_byte_limit_with_checkpoint_v2(
+            self, maximum, checkpoint,
+        )
     }
 
     /// Returns the projected retained bytes of the face-restricted clone.
@@ -1080,6 +1152,8 @@ pub enum FlatFoldabilityResource {
     SearchNodes,
     ExactOperations,
     CertificateBytes,
+    LayerOrderSourceBytes,
+    LayerOrderRevalidationPeakBytes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1195,11 +1269,22 @@ pub enum GlobalFlatFoldabilityOutcome {
     },
 }
 
+/// Sealed, immutable result of one completed analysis.
+///
+/// ```compile_fail
+/// use ori_foldability::{GlobalFlatFoldabilityOutcome, GlobalFlatFoldabilityReport};
+/// fn replace_certificate(
+///     mut report: GlobalFlatFoldabilityReport,
+///     forged: GlobalFlatFoldabilityOutcome,
+/// ) {
+///     report.outcome = forged;
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GlobalFlatFoldabilityReport {
-    pub provenance: GlobalFlatFoldabilityProvenance,
-    pub work_counts: GlobalFlatFoldabilityWorkCounts,
-    pub outcome: GlobalFlatFoldabilityOutcome,
+    provenance: GlobalFlatFoldabilityProvenance,
+    work_counts: GlobalFlatFoldabilityWorkCounts,
+    outcome: GlobalFlatFoldabilityOutcome,
     #[serde(skip)]
     analysis_seal: GlobalFlatFoldabilityAnalysisSealV2,
 }
@@ -1224,7 +1309,7 @@ struct GlobalFlatFoldabilityAnalysisSealV2;
 ///     GlobalFlatLayerOrderSourceAuthorityV2 {
 ///         snapshot: todo!(),
 ///         provenance: todo!(),
-///         _analysis_seal: todo!(),
+///         _authority_seal: todo!(),
 ///     }
 /// }
 /// ```
@@ -1244,8 +1329,11 @@ struct GlobalFlatFoldabilityAnalysisSealV2;
 pub struct GlobalFlatLayerOrderSourceAuthorityV2<'report> {
     snapshot: &'report LayerOrderSnapshot,
     provenance: GlobalFlatFoldabilityProvenance,
-    _analysis_seal: &'report GlobalFlatFoldabilityAnalysisSealV2,
+    _authority_seal: GlobalFlatLayerOrderSourceAuthoritySealV2,
 }
+
+#[derive(Debug)]
+struct GlobalFlatLayerOrderSourceAuthoritySealV2;
 
 impl<'report> GlobalFlatLayerOrderSourceAuthorityV2<'report> {
     #[must_use]
@@ -1262,9 +1350,69 @@ impl<'report> GlobalFlatLayerOrderSourceAuthorityV2<'report> {
     pub fn is_current_v2(&self) -> bool {
         self.snapshot.is_current_for(&self.provenance)
     }
+
+    /// Historical solver telemetry in `proof_summary.search_nodes` is not an
+    /// authenticated property of this authority. A live no-search
+    /// revalidation proves the complete mathematical certificate, but cannot
+    /// independently reproduce how many branches an earlier producer used.
+    #[must_use]
+    pub const fn authenticates_historical_search_nodes_v2(&self) -> bool {
+        false
+    }
+}
+
+/// Explicit limits for no-search revalidation of a caller-supplied layer
+/// certificate. The borrowed source remains live throughout verification and
+/// is therefore included in `max_peak_bytes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalFlatLayerOrderRevalidationLimitsV2 {
+    pub analysis: GlobalFlatFoldabilityLimits,
+    pub max_source_retained_bytes: usize,
+    pub max_peak_bytes: usize,
+}
+
+/// Fail-closed result classes for live layer-certificate revalidation.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum GlobalFlatLayerOrderRevalidationErrorV2 {
+    #[error("the live source is inconclusive under the supplied limits")]
+    Inconclusive {
+        reason: GlobalFlatFoldabilityUnknownReason,
+    },
+    #[error("the live source violates a necessary flat-foldability condition")]
+    LiveSourceImpossible,
+    #[error("the supplied layer-order snapshot does not prove the live source")]
+    CertificateMismatch,
+    #[error("layer-order revalidation could not complete: {0}")]
+    Execution(#[from] GlobalFlatFoldabilityExecutionError),
 }
 
 impl GlobalFlatFoldabilityReport {
+    /// Returns the immutable live-source binding authenticated by this report.
+    #[must_use]
+    pub const fn provenance_v2(&self) -> GlobalFlatFoldabilityProvenance {
+        self.provenance
+    }
+
+    /// Returns the immutable work counters recorded by this analysis.
+    #[must_use]
+    pub const fn work_counts_v2(&self) -> GlobalFlatFoldabilityWorkCounts {
+        self.work_counts
+    }
+
+    /// Borrows the immutable outcome. Report fields are intentionally private:
+    /// otherwise a caller could retain the private analysis seal while
+    /// replacing a valid snapshot with arbitrary public certificate data.
+    #[must_use]
+    pub const fn outcome_v2(&self) -> &GlobalFlatFoldabilityOutcome {
+        &self.outcome
+    }
+
+    /// Consumes the sealed report and returns its outcome as ordinary data.
+    #[must_use]
+    pub fn into_outcome_v2(self) -> GlobalFlatFoldabilityOutcome {
+        self.outcome
+    }
+
     #[must_use]
     pub const fn verdict(&self) -> GlobalFlatFoldabilityVerdict {
         match self.outcome {
@@ -1298,8 +1446,213 @@ impl GlobalFlatFoldabilityReport {
             .then_some(GlobalFlatLayerOrderSourceAuthorityV2 {
                 snapshot,
                 provenance: self.provenance,
-                _analysis_seal: &self.analysis_seal,
+                _authority_seal: GlobalFlatLayerOrderSourceAuthoritySealV2,
             })
+    }
+}
+
+/// Revalidates an untrusted public layer-order snapshot against live geometry
+/// without running the completion search.
+///
+/// The complete pair assignment is decoded from `face_pair_orders`; the
+/// constraint problem, exact embedding, overlap arrangement, and geometric
+/// certificate are independently regenerated. Historical
+/// `proof_summary.search_nodes` is generation telemetry and is deliberately
+/// outside the returned authority's guarantee.
+pub fn revalidate_global_flat_layer_order_source_v2<'snapshot>(
+    input: GlobalFlatFoldabilityInput<'_>,
+    snapshot: &'snapshot LayerOrderSnapshot,
+    limits: GlobalFlatLayerOrderRevalidationLimitsV2,
+) -> Result<GlobalFlatLayerOrderSourceAuthorityV2<'snapshot>, GlobalFlatLayerOrderRevalidationErrorV2>
+{
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    revalidate_global_flat_layer_order_source_with_observer_v2(
+        input,
+        snapshot,
+        limits,
+        &mut observer,
+    )
+}
+
+/// Observer-enabled form of
+/// [`revalidate_global_flat_layer_order_source_v2`].
+pub fn revalidate_global_flat_layer_order_source_with_observer_v2<
+    'snapshot,
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    input: GlobalFlatFoldabilityInput<'_>,
+    snapshot: &'snapshot LayerOrderSnapshot,
+    limits: GlobalFlatLayerOrderRevalidationLimitsV2,
+    observer: &mut O,
+) -> Result<GlobalFlatLayerOrderSourceAuthorityV2<'snapshot>, GlobalFlatLayerOrderRevalidationErrorV2>
+{
+    revalidate_global_flat_layer_order_source_measured_v2(input, snapshot, limits, observer)
+        .map(|(authority, _)| authority)
+}
+
+fn revalidate_global_flat_layer_order_source_measured_v2<
+    'snapshot,
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    input: GlobalFlatFoldabilityInput<'_>,
+    snapshot: &'snapshot LayerOrderSnapshot,
+    limits: GlobalFlatLayerOrderRevalidationLimitsV2,
+    observer: &mut O,
+) -> Result<
+    (
+        GlobalFlatLayerOrderSourceAuthorityV2<'snapshot>,
+        facewise::FacewiseLayerOrderRevalidationSuccessV2,
+    ),
+    GlobalFlatLayerOrderRevalidationErrorV2,
+> {
+    let mut traversal_checkpoint = || match observer.checkpoint() {
+        GlobalFlatFoldabilityCheckpoint::Continue => Ok(()),
+        GlobalFlatFoldabilityCheckpoint::DeadlineReached => {
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::TimeLimitReached {
+                    phase: GlobalFlatFoldabilityPhase::VerifyingCertificate,
+                },
+            })
+        }
+        GlobalFlatFoldabilityCheckpoint::Cancelled => {
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::Execution(
+                GlobalFlatFoldabilityExecutionError::Cancelled,
+            ))
+        }
+    };
+    let source_retained_bytes = match snapshot
+        .checked_deep_retained_bytes_with_limit_and_checkpoint_v2(
+            limits.max_source_retained_bytes,
+            &mut traversal_checkpoint,
+        )? {
+        LayerOrderSnapshotRetainedByteLimitV2::WithinLimit { retained_bytes } => retained_bytes,
+        LayerOrderSnapshotRetainedByteLimitV2::Exceeded {
+            observed_lower_bound,
+        } => {
+            return Err(revalidation_resource_error(
+                FlatFoldabilityResource::LayerOrderSourceBytes,
+                limits.max_source_retained_bytes,
+                observed_lower_bound,
+            ));
+        }
+    };
+    if source_retained_bytes > limits.max_peak_bytes {
+        return Err(revalidation_resource_error(
+            FlatFoldabilityResource::LayerOrderRevalidationPeakBytes,
+            limits.max_peak_bytes,
+            source_retained_bytes,
+        ));
+    }
+
+    let mut validation_peak =
+        LiveValidationPeakLedgerV2::new(source_retained_bytes, limits.max_peak_bytes);
+    let validated = match validate_global_flat_source_with_observer(
+        input,
+        limits.analysis,
+        None,
+        Some(&mut validation_peak),
+        observer,
+    ) {
+        Ok(validated) => validated,
+        Err(failure) => {
+            return Err(match *failure {
+                GlobalFlatSourceValidationFailure::Unknown { reason, .. } => {
+                    GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive { reason }
+                }
+                GlobalFlatSourceValidationFailure::Impossible { .. } => {
+                    GlobalFlatLayerOrderRevalidationErrorV2::LiveSourceImpossible
+                }
+                GlobalFlatSourceValidationFailure::Execution(error) => {
+                    GlobalFlatLayerOrderRevalidationErrorV2::Execution(error)
+                }
+            });
+        }
+    };
+    let canonical_face_bytes = validated
+        .canonical_faces
+        .capacity()
+        .checked_mul(std::mem::size_of::<LayerFace>())
+        .ok_or_else(|| {
+            revalidation_resource_error(
+                FlatFoldabilityResource::LayerOrderRevalidationPeakBytes,
+                limits.max_peak_bytes,
+                usize::MAX,
+            )
+        })?;
+    let borrowed_live_bytes = source_retained_bytes
+        .checked_add(canonical_face_bytes)
+        .ok_or_else(|| {
+            revalidation_resource_error(
+                FlatFoldabilityResource::LayerOrderRevalidationPeakBytes,
+                limits.max_peak_bytes,
+                usize::MAX,
+            )
+        })?;
+    if borrowed_live_bytes > limits.max_peak_bytes {
+        return Err(revalidation_resource_error(
+            FlatFoldabilityResource::LayerOrderRevalidationPeakBytes,
+            limits.max_peak_bytes,
+            borrowed_live_bytes,
+        ));
+    }
+    let provenance = validated.provenance;
+    let mut verification = facewise::revalidate_layer_order_snapshot_v2(
+        facewise::FacewiseLayerOrderRevalidationInputV2 {
+            paper: validated.paper,
+            crease_pattern: validated.crease_pattern,
+            topology: validated.topology,
+            canonical_faces: &validated.canonical_faces,
+            provenance,
+            work_counts: validated.work_counts,
+            limits: limits.analysis,
+            snapshot,
+            borrowed_live_bytes,
+            max_peak_bytes: limits.max_peak_bytes,
+        },
+        observer,
+    )
+    .map_err(|failure| match failure {
+        facewise::FacewiseLayerOrderRevalidationFailureV2::Inconclusive(reason) => {
+            GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive { reason }
+        }
+        facewise::FacewiseLayerOrderRevalidationFailureV2::LiveSourceImpossible => {
+            GlobalFlatLayerOrderRevalidationErrorV2::LiveSourceImpossible
+        }
+        facewise::FacewiseLayerOrderRevalidationFailureV2::CertificateMismatch => {
+            GlobalFlatLayerOrderRevalidationErrorV2::CertificateMismatch
+        }
+        facewise::FacewiseLayerOrderRevalidationFailureV2::Execution(error) => {
+            GlobalFlatLayerOrderRevalidationErrorV2::Execution(error)
+        }
+    })?;
+    verification.observed_validation_peak_bytes = validation_peak.observed_peak_bytes;
+    verification.observed_peak_bytes = verification
+        .observed_facewise_peak_bytes
+        .max(verification.observed_validation_peak_bytes);
+    debug_assert_eq!(verification.work_counts.search_nodes, 0);
+    debug_assert!(verification.borrowed_live_bytes <= verification.observed_peak_bytes);
+    debug_assert!(verification.observed_peak_bytes <= limits.max_peak_bytes);
+    Ok((
+        GlobalFlatLayerOrderSourceAuthorityV2 {
+            snapshot,
+            provenance,
+            _authority_seal: GlobalFlatLayerOrderSourceAuthoritySealV2,
+        },
+        verification,
+    ))
+}
+
+fn revalidation_resource_error(
+    resource: FlatFoldabilityResource,
+    limit: usize,
+    observed: usize,
+) -> GlobalFlatLayerOrderRevalidationErrorV2 {
+    GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive {
+        reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+            resource,
+            limit,
+            observed,
+        },
     }
 }
 
@@ -1375,6 +1728,376 @@ struct ValidatedGlobalFlatSource<'a> {
     work_counts: GlobalFlatFoldabilityWorkCounts,
 }
 
+struct LiveValidationPeakLedgerV2 {
+    borrowed_source_bytes: usize,
+    max_peak_bytes: usize,
+    observed_peak_bytes: usize,
+}
+
+fn checked_storage_sum_v2<const N: usize>(values: [usize; N]) -> Option<usize> {
+    values.into_iter().try_fold(0_usize, usize::checked_add)
+}
+
+fn checked_vector_storage_v2<T>(count: usize) -> Option<usize> {
+    count.checked_mul(std::mem::size_of::<T>())
+}
+
+fn checked_growing_vector_storage_v2<T>(maximum_len: usize) -> Option<usize> {
+    if maximum_len == 0 {
+        return Some(0);
+    }
+    // Mirror `RawVec::MIN_NON_ZERO_CAP`: the first allocation is eight
+    // elements for byte-sized values, four for elements up to 1 KiB, and one
+    // for larger elements. Subsequent geometric growth stays below twice the
+    // requested maximum length.
+    let element_size = std::mem::size_of::<T>();
+    let minimum_non_zero_capacity = if element_size == 1 {
+        8
+    } else if element_size <= 1_024 {
+        4
+    } else {
+        1
+    };
+    checked_vector_storage_v2::<T>(maximum_len.checked_mul(2)?.max(minimum_non_zero_capacity))
+}
+
+// Slack for the replicated terminal control group used by open-addressed hash
+// tables. This deliberately exceeds current platform group widths so the
+// estimator does not rely on a particular SIMD implementation detail.
+const HASH_CONTROL_GROUP_TAIL_BYTES_V2: usize = 64;
+
+fn checked_hash_storage_v2<K, V>(count: usize) -> Option<usize> {
+    if count == 0 {
+        return Some(0);
+    }
+    // Four physical buckets per logical upper-bound entry covers minimum
+    // non-empty allocation, load-factor slack, geometric growth, and the old
+    // table that can coexist while a growth migration is in progress.
+    let physical_buckets = count.checked_mul(4)?.max(4);
+    let entry_bytes = checked_vector_storage_v2::<(K, V)>(physical_buckets)?;
+    let control_bytes = physical_buckets.checked_add(HASH_CONTROL_GROUP_TAIL_BYTES_V2)?;
+    checked_storage_sum_v2([
+        entry_bytes,
+        control_bytes,
+        std::mem::align_of::<(K, V)>().saturating_sub(1),
+    ])
+}
+
+fn checked_pair_count_v2(count: usize) -> Option<usize> {
+    count.checked_mul(count.saturating_sub(1))?.checked_div(2)
+}
+
+fn live_source_validation_workspace_upper_bound_v2(
+    input: &GlobalFlatFoldabilityInput<'_>,
+) -> Option<usize> {
+    let pattern = input.crease_pattern?;
+    let paper = input.paper?;
+    let topology = input.topology;
+    let local = input.local_flat_foldability;
+    let vertices = pattern.vertices.len();
+    let edges = pattern.edges.len();
+    let boundary = paper.boundary_vertices.len();
+    let faces = topology.faces.len();
+    let hinges = topology.hinge_adjacency.len();
+    let incidence = topology.edge_incidence.len();
+    let local_vertices = local.vertices.len();
+
+    // Fingerprinting owns either the canonical vertex/edge reference vector,
+    // or six boundary-normalization vectors (four UUID byte vectors plus the
+    // reversed and rotated VertexId vectors).
+    let fingerprint = checked_vector_storage_v2::<&Vertex>(vertices)?
+        .max(checked_vector_storage_v2::<&Edge>(edges)?)
+        .max(
+            boundary.checked_mul(
+                4_usize
+                    .checked_mul(std::mem::size_of::<[u8; 16]>())?
+                    .checked_add(2 * std::mem::size_of::<VertexId>())?,
+            )?,
+        );
+
+    // Every exact binary64 geometry predicate is a fixed-size transient. A
+    // coordinate integer uses at most 2,098 bits, a 2D determinant at most
+    // 4,199, and a proper-intersection coordinate numerator at most 6,298.
+    // Round that to 6,304 bits. Thirty-two simultaneous magnitudes cover the
+    // eight input coordinates, determinant/denominator values, both output
+    // numerators, and all expression temporaries. Each BigInt owns a header
+    // plus a limb vector whose geometric capacity is charged at twice length.
+    const EXACT_GEOMETRY_MAGNITUDES_V2: usize = 32;
+    const EXACT_GEOMETRY_MAGNITUDE_BITS_V2: usize = 6_304;
+    let exact_geometry_magnitude_bytes = std::mem::size_of::<num_bigint::BigInt>().checked_add(
+        EXACT_GEOMETRY_MAGNITUDE_BITS_V2
+            .div_ceil(usize::BITS as usize)
+            .checked_mul(std::mem::size_of::<usize>())?
+            .checked_mul(2)?,
+    )?;
+    let exact_geometry_transient_bytes =
+        EXACT_GEOMETRY_MAGNITUDES_V2.checked_mul(exact_geometry_magnitude_bytes)?;
+
+    // Exact midpoint containment materializes two exact coordinate integers
+    // for every paper-boundary vertex and retains that polygon throughout the
+    // edge scan. A binary64 coordinate needs at most 2,098 bits in 2^-1074
+    // units; round the per-coordinate allocation to 2,112 bits. The BigInt
+    // header accounts for the outer `(BigInt, BigInt)` vector storage, while
+    // the doubled limb term conservatively covers geometric Vec growth.
+    const EXACT_CONTAINMENT_COORDINATE_BITS_V2: usize = 2_112;
+    let exact_containment_coordinate_bytes = std::mem::size_of::<num_bigint::BigInt>()
+        .checked_add(
+            EXACT_CONTAINMENT_COORDINATE_BITS_V2
+                .div_ceil(usize::BITS as usize)
+                .checked_mul(std::mem::size_of::<usize>())?
+                .checked_mul(2)?,
+        )?;
+    let exact_containment_polygon_bytes = boundary
+        .checked_mul(2)?
+        .checked_mul(exact_containment_coordinate_bytes)?;
+    let exact_containment_workspace_bytes =
+        exact_containment_polygon_bytes.checked_add(exact_geometry_transient_bytes)?;
+    let topology_analysis_base = checked_storage_sum_v2([
+        checked_hash_storage_v2::<VertexId, ()>(vertices)?,
+        checked_hash_storage_v2::<EdgeId, ()>(edges)?,
+        checked_growing_vector_storage_v2::<&Edge>(edges)?,
+    ])?;
+
+    // Crease validation retains two vertex indexes, resolved source edges,
+    // the sweep permutation, linear structural issues, and at most one found
+    // issue for every unordered edge pair. Admission additionally retains the
+    // participant pattern while this validator runs.
+    let crease_pairs = checked_pair_count_v2(edges)?;
+    let crease_linear_issues = vertices
+        .checked_mul(2)?
+        .checked_add(edges.checked_mul(3)?)?;
+    let crease_total_issues = crease_linear_issues.checked_add(crease_pairs)?;
+    let resolved_edge_bytes = std::mem::size_of::<usize>()
+        .checked_add(3 * std::mem::size_of::<EdgeId>())?
+        .checked_add(8 * std::mem::size_of::<f64>())?;
+    let crease_validation = checked_storage_sum_v2([
+        checked_hash_storage_v2::<VertexId, Point2>(vertices)?,
+        checked_hash_storage_v2::<(u64, u64), VertexId>(vertices)?,
+        edges.checked_mul(resolved_edge_bytes)?.checked_mul(2)?,
+        checked_growing_vector_storage_v2::<usize>(edges)?,
+        checked_growing_vector_storage_v2::<ValidationIssue>(crease_total_issues)?,
+        crease_pairs.checked_mul(2)?.checked_mul(
+            (2 * std::mem::size_of::<usize>())
+                .checked_add(std::mem::size_of::<ValidationIssue>())?,
+        )?,
+        checked_growing_vector_storage_v2::<Vertex>(vertices)?,
+        checked_growing_vector_storage_v2::<Edge>(edges)?,
+        checked_hash_storage_v2::<VertexId, ()>(vertices)?,
+        exact_geometry_transient_bytes,
+    ])?;
+
+    // Paper validation's only quadratic retained collection is the found
+    // boundary-intersection vector. All other diagnostics and indexes are
+    // linear in B + V + E; a zero-area diagnostic may own one B-element clone.
+    let boundary_pairs = checked_pair_count_v2(boundary)?;
+    let paper_linear_issues = boundary
+        .checked_mul(6)?
+        .checked_add(edges)?
+        .checked_add(3)?;
+    let paper_total_issues = paper_linear_issues.checked_add(boundary_pairs)?;
+    let boundary_edge_ref_bytes =
+        std::mem::size_of::<usize>().checked_add(2 * std::mem::size_of::<VertexId>())?;
+    let resolved_boundary_edge_bytes =
+        boundary_edge_ref_bytes.checked_add(8 * std::mem::size_of::<f64>())?;
+    let paper_validation = checked_storage_sum_v2([
+        checked_hash_storage_v2::<VertexId, usize>(boundary)?,
+        checked_hash_storage_v2::<(VertexId, VertexId), usize>(boundary.checked_mul(2)?)?,
+        boundary
+            .checked_mul(2 * std::mem::size_of::<Vec<usize>>())?
+            .checked_mul(2)?,
+        boundary
+            .checked_mul(boundary_edge_ref_bytes)?
+            .checked_mul(2)?,
+        checked_growing_vector_storage_v2::<EdgeId>(edges)?,
+        checked_growing_vector_storage_v2::<PaperValidationIssue>(edges)?,
+        checked_hash_storage_v2::<VertexId, Point2>(vertices)?,
+        checked_growing_vector_storage_v2::<Option<Point2>>(boundary)?,
+        boundary
+            .checked_mul(resolved_boundary_edge_bytes)?
+            .checked_mul(2)?,
+        checked_growing_vector_storage_v2::<Point2>(boundary)?,
+        checked_growing_vector_storage_v2::<usize>(boundary)?,
+        checked_growing_vector_storage_v2::<PaperValidationIssue>(paper_total_issues)?,
+        boundary_pairs.checked_mul(2)?.checked_mul(
+            (2 * std::mem::size_of::<usize>())
+                .checked_add(std::mem::size_of::<PaperValidationIssue>())?,
+        )?,
+        checked_growing_vector_storage_v2::<VertexId>(boundary)?,
+        exact_geometry_transient_bytes,
+    ])?;
+
+    // Admission and DCEL construction retain only linear graph indexes. The
+    // expressions mirror positions/identity maps, the two directed records
+    // per participant edge, rotation adjacency (whose nested lengths sum to
+    // 2E), next/owner indexes, and the canonical walk partition.
+    let directed_edges = edges.checked_mul(2)?;
+    // Every non-empty per-vertex `Vec<HalfEdgeIndex>` has a minimum capacity
+    // of four elements. Above that floor geometric growth is bounded by twice
+    // its length, and the sum of all lengths is 2E.
+    let nested_outgoing_capacity_elements = vertices
+        .checked_mul(4)?
+        .checked_add(directed_edges.checked_mul(2)?)?;
+    let pending_half_edge_bytes = std::mem::size_of::<EdgeId>()
+        .checked_add(std::mem::size_of::<ori_domain::EdgeKind>())?
+        .checked_add(2 * std::mem::size_of::<VertexId>())?
+        .checked_add(std::mem::size_of::<usize>())?;
+    let embedded_half_edge_bytes =
+        pending_half_edge_bytes.checked_add(2 * std::mem::size_of::<usize>())?;
+    let ray_bytes = std::mem::size_of::<usize>()
+        .checked_add(std::mem::size_of::<EdgeId>())?
+        .checked_add(std::mem::size_of::<Point2>())?
+        .checked_add(std::mem::size_of::<u8>())?
+        .checked_add(std::mem::size_of::<[u8; 48]>())?;
+    let dcel = checked_storage_sum_v2([
+        checked_hash_storage_v2::<VertexId, Point2>(vertices)?,
+        checked_hash_storage_v2::<EdgeId, ()>(edges)?,
+        checked_growing_vector_storage_v2::<&Edge>(edges)?,
+        checked_hash_storage_v2::<(VertexId, VertexId), EdgeId>(edges)?,
+        directed_edges
+            .checked_mul(pending_half_edge_bytes)?
+            .checked_mul(2)?,
+        checked_hash_storage_v2::<VertexId, Vec<usize>>(vertices)?,
+        checked_vector_storage_v2::<usize>(nested_outgoing_capacity_elements)?,
+        checked_growing_vector_storage_v2::<u8>(directed_edges.checked_mul(2)?)?,
+        checked_hash_storage_v2::<[u8; 48], ()>(directed_edges)?,
+        checked_growing_vector_storage_v2::<u8>(directed_edges)?,
+        checked_growing_vector_storage_v2::<usize>(directed_edges)?,
+        checked_growing_vector_storage_v2::<[u8; 48]>(directed_edges)?,
+        checked_growing_vector_storage_v2::<Point2>(directed_edges)?,
+        directed_edges
+            .checked_mul(2 * std::mem::size_of::<Vec<usize>>())?
+            .checked_mul(2)?,
+        directed_edges.checked_mul(ray_bytes)?.checked_mul(2)?,
+        checked_growing_vector_storage_v2::<VertexId>(vertices)?,
+        checked_growing_vector_storage_v2::<Vec<usize>>(vertices)?,
+        checked_growing_vector_storage_v2::<usize>(directed_edges)?,
+        checked_growing_vector_storage_v2::<Option<usize>>(directed_edges)?,
+        vertices.checked_mul(
+            std::mem::size_of::<VertexId>().checked_add(2 * std::mem::size_of::<u64>())?,
+        )?,
+        checked_hash_storage_v2::<VertexId, usize>(vertices)?,
+        directed_edges
+            .checked_mul(embedded_half_edge_bytes)?
+            .checked_mul(2)?,
+        checked_growing_vector_storage_v2::<Vec<usize>>(directed_edges.max(1))?,
+        checked_growing_vector_storage_v2::<usize>(directed_edges.checked_mul(2)?)?,
+        exact_containment_workspace_bytes,
+    ])?;
+
+    // Face extraction retains the DCEL plus its reverse indexes and the owned
+    // regenerated snapshot. Public output record sizes are used directly;
+    // nested walk/component capacities are charged separately.
+    let raw_face_bound = directed_edges.max(1);
+    let topology_output = checked_storage_sum_v2([
+        checked_growing_vector_storage_v2::<ori_topology::Face>(raw_face_bound)?,
+        checked_growing_vector_storage_v2::<ori_topology::HalfEdgeRef>(directed_edges)?,
+        checked_growing_vector_storage_v2::<(EdgeId, EdgeIncidence)>(edges)?,
+        checked_growing_vector_storage_v2::<ori_topology::FaceAdjacency>(edges)?,
+        checked_growing_vector_storage_v2::<ori_topology::MaterialComponent>(raw_face_bound)?,
+        checked_growing_vector_storage_v2::<FaceId>(raw_face_bound)?,
+    ])?;
+    let topology_reextract = checked_storage_sum_v2([
+        topology_analysis_base,
+        dcel,
+        topology_output,
+        checked_hash_storage_v2::<EdgeId, Vec<usize>>(edges)?,
+        checked_growing_vector_storage_v2::<usize>(directed_edges)?,
+        checked_hash_storage_v2::<VertexId, Vec<VertexId>>(vertices)?,
+        checked_growing_vector_storage_v2::<VertexId>(directed_edges)?,
+        checked_hash_storage_v2::<FaceId, Vec<FaceId>>(raw_face_bound)?,
+        checked_growing_vector_storage_v2::<FaceId>(edges.checked_mul(2)?)?,
+        checked_hash_storage_v2::<FaceId, usize>(raw_face_bound)?,
+        checked_hash_storage_v2::<EdgeId, usize>(edges)?,
+        checked_growing_vector_storage_v2::<usize>(edges.checked_mul(4)?)?,
+    ])?;
+
+    // Local reanalysis keeps one admitted DCEL plus four source indexes, the
+    // final per-vertex report, and one maximum-degree vertex's temporary ray
+    // arrays. The sum of all degrees is 2E, so 2E is a strict single-vertex
+    // bound as well.
+    let local_reanalysis = checked_storage_sum_v2([
+        dcel,
+        checked_hash_storage_v2::<VertexId, Point2>(vertices)?,
+        checked_hash_storage_v2::<VertexId, usize>(vertices)?,
+        checked_hash_storage_v2::<VertexId, ()>(boundary)?,
+        checked_growing_vector_storage_v2::<VertexId>(vertices)?,
+        checked_growing_vector_storage_v2::<LocalVertexFoldability>(vertices)?,
+        checked_growing_vector_storage_v2::<&usize>(directed_edges)?,
+        checked_growing_vector_storage_v2::<usize>(directed_edges)?,
+        checked_growing_vector_storage_v2::<Point2>(directed_edges)?,
+        exact_geometry_transient_bytes,
+    ])?;
+
+    // The two caller-owned structure validators run after source
+    // reconstruction. These terms exactly mirror their requested maps/vectors
+    // (hash buckets use the crate-wide entry + three-word model).
+    let topology_input_validation = checked_storage_sum_v2([
+        checked_hash_storage_v2::<FaceId, ()>(faces)?,
+        checked_hash_storage_v2::<FaceKey, ()>(faces)?,
+        checked_hash_storage_v2::<FaceId, FaceKey>(faces)?,
+        checked_vector_storage_v2::<LayerFace>(faces)?,
+        checked_vector_storage_v2::<&ori_topology::Face>(faces)?,
+        checked_hash_storage_v2::<EdgeId, ()>(incidence)?,
+        checked_hash_storage_v2::<EdgeId, (FaceId, FaceId, FoldAssignment)>(incidence)?,
+        checked_vector_storage_v2::<(EdgeId, EdgeIncidence)>(incidence)?,
+        checked_hash_storage_v2::<EdgeId, ()>(hinges)?,
+        checked_vector_storage_v2::<ori_topology::FaceAdjacency>(hinges)?,
+    ])?;
+    let local_input_validation = checked_storage_sum_v2([
+        checked_vector_storage_v2::<LayerFace>(faces)?,
+        checked_hash_storage_v2::<VertexId, ()>(local_vertices)?,
+        checked_vector_storage_v2::<LocalNecessaryConditionViolation>(local_vertices)?,
+        checked_vector_storage_v2::<&LocalVertexFoldability>(local_vertices)?,
+    ])?;
+
+    [
+        fingerprint,
+        topology_analysis_base.checked_add(crease_validation)?,
+        topology_analysis_base.checked_add(paper_validation)?,
+        topology_reextract,
+        local_reanalysis,
+        topology_input_validation,
+        local_input_validation,
+    ]
+    .into_iter()
+    .max()
+}
+
+impl LiveValidationPeakLedgerV2 {
+    fn new(borrowed_source_bytes: usize, max_peak_bytes: usize) -> Self {
+        Self {
+            borrowed_source_bytes,
+            max_peak_bytes,
+            observed_peak_bytes: borrowed_source_bytes,
+        }
+    }
+
+    fn preflight(
+        &mut self,
+        input: &GlobalFlatFoldabilityInput<'_>,
+    ) -> Result<(), GlobalFlatFoldabilityUnknownReason> {
+        let workspace_bytes = live_source_validation_workspace_upper_bound_v2(input)
+            .ok_or_else(|| self.failure(usize::MAX))?;
+        let peak = self
+            .borrowed_source_bytes
+            .checked_add(workspace_bytes)
+            .ok_or_else(|| self.failure(usize::MAX))?;
+        self.observed_peak_bytes = self.observed_peak_bytes.max(peak);
+        if peak > self.max_peak_bytes {
+            return Err(self.failure(peak));
+        }
+        Ok(())
+    }
+
+    const fn failure(&self, observed: usize) -> GlobalFlatFoldabilityUnknownReason {
+        GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+            resource: FlatFoldabilityResource::LayerOrderRevalidationPeakBytes,
+            limit: self.max_peak_bytes,
+            observed,
+        }
+    }
+}
+
 enum GlobalFlatSourceValidationFailure {
     Unknown {
         provenance: GlobalFlatFoldabilityProvenance,
@@ -1393,6 +2116,7 @@ fn validate_global_flat_source_with_observer<'a, O: GlobalFlatFoldabilityObserve
     input: GlobalFlatFoldabilityInput<'a>,
     limits: GlobalFlatFoldabilityLimits,
     required_pair_count: Option<usize>,
+    mut validation_peak: Option<&mut LiveValidationPeakLedgerV2>,
     observer: &mut O,
 ) -> Result<ValidatedGlobalFlatSource<'a>, Box<GlobalFlatSourceValidationFailure>> {
     let mut provenance = GlobalFlatFoldabilityProvenance {
@@ -1401,8 +2125,21 @@ fn validate_global_flat_source_with_observer<'a, O: GlobalFlatFoldabilityObserve
         source_fingerprint: None,
         model_id: GLOBAL_FLAT_FOLDABILITY_MODEL_ID,
     };
-    let work_counts = count_work(&input)
-        .map_err(|error| Box::new(GlobalFlatSourceValidationFailure::Execution(error)))?;
+    let work_counts = match count_work(&input, observer) {
+        Ok(work_counts) => work_counts,
+        Err(SourceReverificationAbort::Unknown(reason)) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts: GlobalFlatFoldabilityWorkCounts::default(),
+                reason,
+            }));
+        }
+        Err(SourceReverificationAbort::Execution(error)) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Execution(
+                error,
+            )));
+        }
+    };
     match phase_checkpoint(
         observer,
         GlobalFlatFoldabilityPhase::Capturing,
@@ -1472,6 +2209,15 @@ fn validate_global_flat_source_with_observer<'a, O: GlobalFlatFoldabilityObserve
             },
         }));
     };
+    if let Some(validation_peak) = validation_peak.as_mut() {
+        validation_peak.preflight(&input).map_err(|reason| {
+            Box::new(GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts,
+                reason,
+            })
+        })?;
+    }
     match phase_checkpoint(
         observer,
         GlobalFlatFoldabilityPhase::ValidatingLocalConditions,
@@ -1534,9 +2280,12 @@ fn validate_global_flat_source_with_observer<'a, O: GlobalFlatFoldabilityObserve
             )));
         }
     }
-    let canonical_faces = validate_topology(input.topology).map_err(|failure| {
-        global_source_failure_from_input_structure(failure, provenance, work_counts)
-    })?;
+    let canonical_faces = {
+        let mut checkpoint = || input_structure_validation_checkpoint(observer);
+        validate_topology(input.topology, &mut checkpoint).map_err(|failure| {
+            global_source_failure_from_input_structure(failure, provenance, work_counts)
+        })?
+    };
     if canonical_faces.is_empty() {
         return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
             provenance,
@@ -1546,9 +2295,13 @@ fn validate_global_flat_source_with_observer<'a, O: GlobalFlatFoldabilityObserve
             },
         }));
     }
-    match validate_local_report(input.local_flat_foldability).map_err(|failure| {
-        global_source_failure_from_input_structure(failure, provenance, work_counts)
-    })? {
+    let local_evidence = {
+        let mut checkpoint = || input_structure_validation_checkpoint(observer);
+        validate_local_report(input.local_flat_foldability, &mut checkpoint).map_err(|failure| {
+            global_source_failure_from_input_structure(failure, provenance, work_counts)
+        })?
+    };
+    match local_evidence {
         LocalReportEvidence::Blocked => {
             return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
                 provenance,
@@ -1601,6 +2354,7 @@ pub fn analyze_global_flat_foldability_with_required_pair_orders_and_observer<
         input,
         limits,
         Some(required_pair_orders.len()),
+        None,
         observer,
     ) {
         Ok(validated) => validated,
@@ -1647,20 +2401,21 @@ pub fn analyze_global_flat_foldability_with_observer<O: GlobalFlatFoldabilityObs
     limits: GlobalFlatFoldabilityLimits,
     observer: &mut O,
 ) -> Result<GlobalFlatFoldabilityReport, GlobalFlatFoldabilityExecutionError> {
-    let validated = match validate_global_flat_source_with_observer(input, limits, None, observer) {
-        Ok(validated) => validated,
-        Err(failure) => match *failure {
-            GlobalFlatSourceValidationFailure::Unknown {
-                provenance,
-                work_counts,
-                reason,
-            } => return Ok(unknown(provenance, work_counts, reason)),
-            GlobalFlatSourceValidationFailure::Impossible {
-                provenance,
-                work_counts,
-                violations,
-            } => {
-                return Ok(GlobalFlatFoldabilityReport {
+    let validated =
+        match validate_global_flat_source_with_observer(input, limits, None, None, observer) {
+            Ok(validated) => validated,
+            Err(failure) => match *failure {
+                GlobalFlatSourceValidationFailure::Unknown {
+                    provenance,
+                    work_counts,
+                    reason,
+                } => return Ok(unknown(provenance, work_counts, reason)),
+                GlobalFlatSourceValidationFailure::Impossible {
+                    provenance,
+                    work_counts,
+                    violations,
+                } => {
+                    return Ok(GlobalFlatFoldabilityReport {
                     provenance,
                     work_counts,
                     outcome: GlobalFlatFoldabilityOutcome::Impossible {
@@ -1671,10 +2426,10 @@ pub fn analyze_global_flat_foldability_with_observer<O: GlobalFlatFoldabilityObs
                     },
                     analysis_seal: GlobalFlatFoldabilityAnalysisSealV2,
                 });
-            }
-            GlobalFlatSourceValidationFailure::Execution(error) => return Err(error),
-        },
-    };
+                }
+                GlobalFlatSourceValidationFailure::Execution(error) => return Err(error),
+            },
+        };
     facewise::analyze_facewise(
         facewise::FacewiseAnalysisInput {
             paper: validated.paper,
@@ -1697,19 +2452,171 @@ enum SourceReverificationAbort {
 fn observer_reverification_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
     observer: &mut O,
 ) -> Result<(), SourceReverificationAbort> {
+    observer_reverification_checkpoint_for_phase(
+        observer,
+        GlobalFlatFoldabilityPhase::ValidatingLocalConditions,
+    )
+}
+
+fn observer_reverification_checkpoint_for_phase<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    observer: &mut O,
+    phase: GlobalFlatFoldabilityPhase,
+) -> Result<(), SourceReverificationAbort> {
     match observer.checkpoint() {
         GlobalFlatFoldabilityCheckpoint::Continue => Ok(()),
         GlobalFlatFoldabilityCheckpoint::DeadlineReached => {
             Err(SourceReverificationAbort::Unknown(
-                GlobalFlatFoldabilityUnknownReason::TimeLimitReached {
-                    phase: GlobalFlatFoldabilityPhase::ValidatingLocalConditions,
-                },
+                GlobalFlatFoldabilityUnknownReason::TimeLimitReached { phase },
             ))
         }
         GlobalFlatFoldabilityCheckpoint::Cancelled => Err(SourceReverificationAbort::Execution(
             GlobalFlatFoldabilityExecutionError::Cancelled,
         )),
     }
+}
+
+fn boundary_walks_equal_with_checkpoint<E, F>(
+    first: &ori_topology::BoundaryWalk,
+    second: &ori_topology::BoundaryWalk,
+    checkpoint: &mut F,
+) -> Result<bool, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    if first.signed_double_area != second.signed_double_area
+        || first.half_edges.len() != second.half_edges.len()
+    {
+        return Ok(false);
+    }
+    for (first, second) in first.half_edges.iter().zip(&second.half_edges) {
+        checkpoint()?;
+        if first != second {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn faces_equal_with_checkpoint<E, F>(
+    first: &ori_topology::Face,
+    second: &ori_topology::Face,
+    checkpoint: &mut F,
+) -> Result<bool, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    if first.id != second.id
+        || first.key != second.key
+        || first.area != second.area
+        || first.holes.len() != second.holes.len()
+        || first.seams.len() != second.seams.len()
+        || !boundary_walks_equal_with_checkpoint(&first.outer, &second.outer, checkpoint)?
+    {
+        return Ok(false);
+    }
+    for (first, second) in first.holes.iter().zip(&second.holes) {
+        checkpoint()?;
+        if !boundary_walks_equal_with_checkpoint(first, second, checkpoint)? {
+            return Ok(false);
+        }
+    }
+    for (first, second) in first.seams.iter().zip(&second.seams) {
+        checkpoint()?;
+        if !boundary_walks_equal_with_checkpoint(first, second, checkpoint)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn topology_snapshots_equal_with_checkpoint<E, F>(
+    first: &TopologySnapshot,
+    second: &TopologySnapshot,
+    checkpoint: &mut F,
+) -> Result<bool, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint()?;
+    if first.source_revision != second.source_revision
+        || first.faces.len() != second.faces.len()
+        || first.edge_incidence.len() != second.edge_incidence.len()
+        || first.hinge_adjacency.len() != second.hinge_adjacency.len()
+        || first.material_components.len() != second.material_components.len()
+    {
+        return Ok(false);
+    }
+    for (first, second) in first.faces.iter().zip(&second.faces) {
+        checkpoint()?;
+        if !faces_equal_with_checkpoint(first, second, checkpoint)? {
+            return Ok(false);
+        }
+    }
+    for (first, second) in first.edge_incidence.iter().zip(&second.edge_incidence) {
+        checkpoint()?;
+        if first != second {
+            return Ok(false);
+        }
+    }
+    for (first, second) in first.hinge_adjacency.iter().zip(&second.hinge_adjacency) {
+        checkpoint()?;
+        if first != second {
+            return Ok(false);
+        }
+    }
+    for (first, second) in first
+        .material_components
+        .iter()
+        .zip(&second.material_components)
+    {
+        checkpoint()?;
+        if first.key != second.key
+            || first.sheet_origin != second.sheet_origin
+            || first.faces.len() != second.faces.len()
+        {
+            return Ok(false);
+        }
+        for (first, second) in first.faces.iter().zip(&second.faces) {
+            checkpoint()?;
+            if first != second {
+                return Ok(false);
+            }
+        }
+    }
+    checkpoint()?;
+    Ok(true)
+}
+
+fn local_reports_equal_with_checkpoint<E, F>(
+    first: &LocalFlatFoldabilityReport,
+    second: &LocalFlatFoldabilityReport,
+    checkpoint: &mut F,
+) -> Result<bool, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint()?;
+    if first.model != second.model
+        || first.max_exact_fold_degree != second.max_exact_fold_degree
+        || first.status != second.status
+        || first.total_vertices != second.total_vertices
+        || first.applicable_vertices != second.applicable_vertices
+        || first.satisfied_vertices != second.satisfied_vertices
+        || first.violated_vertices != second.violated_vertices
+        || first.not_applicable_vertices != second.not_applicable_vertices
+        || first.indeterminate_vertices != second.indeterminate_vertices
+        || first.vertices.len() != second.vertices.len()
+    {
+        return Ok(false);
+    }
+    for (first, second) in first.vertices.iter().zip(&second.vertices) {
+        checkpoint()?;
+        if first != second {
+            return Ok(false);
+        }
+    }
+    checkpoint()?;
+    Ok(true)
 }
 
 fn reverify_source_artifacts<O: GlobalFlatFoldabilityObserver + ?Sized>(
@@ -1721,53 +2628,68 @@ fn reverify_source_artifacts<O: GlobalFlatFoldabilityObserver + ?Sized>(
     local: &LocalFlatFoldabilityReport,
     observer: &mut O,
 ) -> Result<(), SourceReverificationAbort> {
-    let mut checkpoint = || match observer.checkpoint() {
-        GlobalFlatFoldabilityCheckpoint::Continue => CooperativeAnalysisCheckpoint::Continue,
-        GlobalFlatFoldabilityCheckpoint::DeadlineReached => {
-            CooperativeAnalysisCheckpoint::DeadlineReached
-        }
-        GlobalFlatFoldabilityCheckpoint::Cancelled => CooperativeAnalysisCheckpoint::Cancelled,
+    let topology_report = {
+        let mut checkpoint = || match observer.checkpoint() {
+            GlobalFlatFoldabilityCheckpoint::Continue => CooperativeAnalysisCheckpoint::Continue,
+            GlobalFlatFoldabilityCheckpoint::DeadlineReached => {
+                CooperativeAnalysisCheckpoint::DeadlineReached
+            }
+            GlobalFlatFoldabilityCheckpoint::Cancelled => CooperativeAnalysisCheckpoint::Cancelled,
+        };
+        analyze_faces_with_checkpoint(
+            FaceExtractionInput {
+                identity_namespace,
+                source_revision,
+                paper,
+                pattern: crease_pattern,
+            },
+            &mut checkpoint,
+        )
+        .map_err(source_reverification_abort)?
     };
-    let topology_report = analyze_faces_with_checkpoint(
-        FaceExtractionInput {
-            identity_namespace,
-            source_revision,
-            paper,
-            pattern: crease_pattern,
-        },
-        &mut checkpoint,
-    )
-    .map_err(source_reverification_abort)?;
-    let topology_matches = topology_report.snapshot.as_ref() == Some(topology)
-        && topology_report
-            .issues
-            .iter()
-            .all(|issue| issue.severity == TopologyIssueSeverity::Warning);
+    let topology_matches = if let Some(regenerated) = topology_report.snapshot.as_ref() {
+        topology_snapshots_equal_with_checkpoint(regenerated, topology, &mut || {
+            observer_reverification_checkpoint(observer)
+        })?
+    } else {
+        false
+    };
+    let mut only_warnings = true;
+    for issue in &topology_report.issues {
+        observer_reverification_checkpoint(observer)?;
+        if issue.severity != TopologyIssueSeverity::Warning {
+            only_warnings = false;
+            break;
+        }
+    }
+    let topology_matches = topology_matches && only_warnings;
     if !topology_matches {
         return Err(SourceReverificationAbort::Unknown(inconsistent(
             FlatFoldabilityInputConsistencyIssue::TopologyGeometryMismatch,
         )));
     }
+    drop(topology_report);
 
-    let verified_local =
+    let verified_local = {
+        let mut checkpoint = || match observer.checkpoint() {
+            GlobalFlatFoldabilityCheckpoint::Continue => CooperativeAnalysisCheckpoint::Continue,
+            GlobalFlatFoldabilityCheckpoint::DeadlineReached => {
+                CooperativeAnalysisCheckpoint::DeadlineReached
+            }
+            GlobalFlatFoldabilityCheckpoint::Cancelled => CooperativeAnalysisCheckpoint::Cancelled,
+        };
         analyze_local_flat_foldability_with_checkpoint(paper, crease_pattern, &mut checkpoint)
-            .map_err(source_reverification_abort)?;
-    if &verified_local != local {
+            .map_err(source_reverification_abort)?
+    };
+    if !local_reports_equal_with_checkpoint(&verified_local, local, &mut || {
+        observer_reverification_checkpoint(observer)
+    })? {
         return Err(SourceReverificationAbort::Unknown(inconsistent(
             FlatFoldabilityInputConsistencyIssue::LocalReportGeometryMismatch,
         )));
     }
-    match checkpoint() {
-        CooperativeAnalysisCheckpoint::Continue => Ok(()),
-        CooperativeAnalysisCheckpoint::DeadlineReached => Err(SourceReverificationAbort::Unknown(
-            GlobalFlatFoldabilityUnknownReason::TimeLimitReached {
-                phase: GlobalFlatFoldabilityPhase::ValidatingLocalConditions,
-            },
-        )),
-        CooperativeAnalysisCheckpoint::Cancelled => Err(SourceReverificationAbort::Execution(
-            GlobalFlatFoldabilityExecutionError::Cancelled,
-        )),
-    }
+    drop(verified_local);
+    observer_reverification_checkpoint(observer)
 }
 
 const fn source_reverification_abort(abort: CooperativeAnalysisAbort) -> SourceReverificationAbort {
@@ -1852,9 +2774,17 @@ const fn completed_work_count(work: GlobalFlatFoldabilityWorkCounts) -> usize {
         .saturating_add(work.search_nodes)
 }
 
-fn count_work(
+fn count_work<O: GlobalFlatFoldabilityObserver + ?Sized>(
     input: &GlobalFlatFoldabilityInput<'_>,
-) -> Result<GlobalFlatFoldabilityWorkCounts, GlobalFlatFoldabilityExecutionError> {
+    observer: &mut O,
+) -> Result<GlobalFlatFoldabilityWorkCounts, SourceReverificationAbort> {
+    let mut checkpoint = || {
+        observer_reverification_checkpoint_for_phase(
+            observer,
+            GlobalFlatFoldabilityPhase::Capturing,
+        )
+    };
+    checkpoint()?;
     let topology = input.topology;
     let local = input.local_flat_foldability;
     let source_vertex_records = input
@@ -1866,18 +2796,22 @@ fn count_work(
     let paper_boundary_vertex_records =
         input.paper.map_or(0, |paper| paper.boundary_vertices.len());
     let face_boundary_half_edges = topology.faces.iter().try_fold(0_usize, |total, face| {
-        let overflow = || GlobalFlatFoldabilityExecutionError::Internal {
-            reason: GlobalFlatFoldabilityInternalError::WorkCountOverflow,
+        checkpoint()?;
+        let overflow = || {
+            SourceReverificationAbort::Execution(GlobalFlatFoldabilityExecutionError::Internal {
+                reason: GlobalFlatFoldabilityInternalError::WorkCountOverflow,
+            })
         };
         let mut total = total
             .checked_add(face.outer.half_edges.len())
             .ok_or_else(overflow)?;
         for boundary in face.holes.iter().chain(&face.seams) {
+            checkpoint()?;
             total = total
                 .checked_add(boundary.half_edges.len())
                 .ok_or_else(overflow)?;
         }
-        Ok::<_, GlobalFlatFoldabilityExecutionError>(total)
+        Ok::<_, SourceReverificationAbort>(total)
     })?;
     let counts = [
         source_vertex_records,
@@ -1892,10 +2826,13 @@ fn count_work(
     let total_records = counts.into_iter().try_fold(0_usize, |total, count| {
         total
             .checked_add(count)
-            .ok_or(GlobalFlatFoldabilityExecutionError::Internal {
-                reason: GlobalFlatFoldabilityInternalError::WorkCountOverflow,
-            })
+            .ok_or(SourceReverificationAbort::Execution(
+                GlobalFlatFoldabilityExecutionError::Internal {
+                    reason: GlobalFlatFoldabilityInternalError::WorkCountOverflow,
+                },
+            ))
     })?;
+    checkpoint()?;
     Ok(GlobalFlatFoldabilityWorkCounts {
         source_vertex_records,
         source_edge_records,
@@ -2052,17 +2989,100 @@ fn try_validation_hash_map_with_capacity<K: Eq + Hash, V>(
     Ok(values)
 }
 
-fn validate_topology(
+fn input_structure_validation_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    observer: &mut O,
+) -> Result<(), InputStructureValidationFailure> {
+    match observer_reverification_checkpoint(observer) {
+        Ok(()) => Ok(()),
+        Err(SourceReverificationAbort::Unknown(reason)) => {
+            Err(InputStructureValidationFailure::Unknown(reason))
+        }
+        Err(SourceReverificationAbort::Execution(error)) => {
+            Err(InputStructureValidationFailure::Execution(error))
+        }
+    }
+}
+
+fn checkpointed_validation_sort_by<T, F, C>(
+    values: &mut [T],
+    checkpoint: &mut F,
+    mut compare: C,
+) -> Result<(), InputStructureValidationFailure>
+where
+    F: FnMut() -> Result<(), InputStructureValidationFailure> + ?Sized,
+    C: FnMut(&T, &T) -> std::cmp::Ordering,
+{
+    fn sift_down<T, F, C>(
+        values: &mut [T],
+        mut root: usize,
+        end: usize,
+        checkpoint: &mut F,
+        compare: &mut C,
+    ) -> Result<(), InputStructureValidationFailure>
+    where
+        F: FnMut() -> Result<(), InputStructureValidationFailure> + ?Sized,
+        C: FnMut(&T, &T) -> std::cmp::Ordering,
+    {
+        loop {
+            let Some(mut child) = root.checked_mul(2).and_then(|value| value.checked_add(1)) else {
+                return Err(GlobalFlatFoldabilityExecutionError::Internal {
+                    reason: GlobalFlatFoldabilityInternalError::WorkCountOverflow,
+                }
+                .into());
+            };
+            if child >= end {
+                return Ok(());
+            }
+            if child + 1 < end {
+                checkpoint()?;
+                if compare(&values[child], &values[child + 1]) == std::cmp::Ordering::Less {
+                    child += 1;
+                }
+            }
+            checkpoint()?;
+            if compare(&values[root], &values[child]) != std::cmp::Ordering::Less {
+                return Ok(());
+            }
+            values.swap(root, child);
+            root = child;
+        }
+    }
+
+    checkpoint()?;
+    for root in (0..values.len() / 2).rev() {
+        sift_down(values, root, values.len(), checkpoint, &mut compare)?;
+    }
+    for end in (1..values.len()).rev() {
+        checkpoint()?;
+        values.swap(0, end);
+        sift_down(values, 0, end, checkpoint, &mut compare)?;
+    }
+    checkpoint()?;
+    Ok(())
+}
+
+fn validate_topology<F>(
     topology: &TopologySnapshot,
-) -> Result<Vec<LayerFace>, InputStructureValidationFailure> {
+    checkpoint: &mut F,
+) -> Result<Vec<LayerFace>, InputStructureValidationFailure>
+where
+    F: FnMut() -> Result<(), InputStructureValidationFailure> + ?Sized,
+{
+    checkpoint()?;
     let mut face_ids = try_validation_hash_set_with_capacity(topology.faces.len())?;
     let mut face_keys = try_validation_hash_set_with_capacity(topology.faces.len())?;
     let mut keys_by_id = try_validation_hash_map_with_capacity(topology.faces.len())?;
     let mut canonical_faces = try_validation_vec_with_capacity(topology.faces.len())?;
     let mut face_records = try_validation_vec_with_capacity(topology.faces.len())?;
-    face_records.extend(topology.faces.iter());
-    face_records.sort_unstable_by_key(|face| (face.id.canonical_bytes(), face.key));
+    for face in &topology.faces {
+        checkpoint()?;
+        face_records.push(face);
+    }
+    checkpointed_validation_sort_by(&mut face_records, checkpoint, |first, second| {
+        (first.id.canonical_bytes(), first.key).cmp(&(second.id.canonical_bytes(), second.key))
+    })?;
     for face in face_records {
+        checkpoint()?;
         if !face_ids.insert(face.id) {
             return Err(
                 inconsistent(FlatFoldabilityInputConsistencyIssue::DuplicateFaceId {
@@ -2085,15 +3105,24 @@ fn validate_topology(
             face_key: face.key,
         });
     }
-    canonical_faces.sort_unstable_by_key(|face| (face.face_key, face.face_id.canonical_bytes()));
+    checkpointed_validation_sort_by(&mut canonical_faces, checkpoint, |first, second| {
+        (first.face_key, first.face_id.canonical_bytes())
+            .cmp(&(second.face_key, second.face_id.canonical_bytes()))
+    })?;
 
     let mut incidence_edges = try_validation_hash_set_with_capacity(topology.edge_incidence.len())?;
     let mut incidence_hinges =
         try_validation_hash_map_with_capacity(topology.edge_incidence.len())?;
     let mut incidence_records = try_validation_vec_with_capacity(topology.edge_incidence.len())?;
-    incidence_records.extend(topology.edge_incidence.iter().copied());
-    incidence_records.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+    for incidence in &topology.edge_incidence {
+        checkpoint()?;
+        incidence_records.push(*incidence);
+    }
+    checkpointed_validation_sort_by(&mut incidence_records, checkpoint, |first, second| {
+        first.0.canonical_bytes().cmp(&second.0.canonical_bytes())
+    })?;
     for (edge, incidence) in incidence_records {
+        checkpoint()?;
         if !incidence_edges.insert(edge) {
             return Err(inconsistent(
                 FlatFoldabilityInputConsistencyIssue::DuplicateIncidenceEdge { edge },
@@ -2133,9 +3162,18 @@ fn validate_topology(
     let mut adjacency_edges =
         try_validation_hash_set_with_capacity(topology.hinge_adjacency.len())?;
     let mut hinge_records = try_validation_vec_with_capacity(topology.hinge_adjacency.len())?;
-    hinge_records.extend(topology.hinge_adjacency.iter().copied());
-    hinge_records.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+    for hinge in &topology.hinge_adjacency {
+        checkpoint()?;
+        hinge_records.push(*hinge);
+    }
+    checkpointed_validation_sort_by(&mut hinge_records, checkpoint, |first, second| {
+        first
+            .edge
+            .canonical_bytes()
+            .cmp(&second.edge.canonical_bytes())
+    })?;
     for hinge in hinge_records {
+        checkpoint()?;
         if !adjacency_edges.insert(hinge.edge) {
             return Err(
                 inconsistent(FlatFoldabilityInputConsistencyIssue::DuplicateHingeEdge {
@@ -2196,17 +3234,23 @@ fn validate_topology(
             );
         }
     }
-    if let Some(edge) = incidence_hinges
-        .keys()
-        .filter(|edge| !adjacency_edges.contains(edge))
-        .min_by_key(|edge| edge.canonical_bytes())
-        .copied()
-    {
+    let mut missing_hinge = None;
+    for edge in incidence_hinges.keys().copied() {
+        checkpoint()?;
+        if !adjacency_edges.contains(&edge)
+            && missing_hinge
+                .is_none_or(|current: EdgeId| edge.canonical_bytes() < current.canonical_bytes())
+        {
+            missing_hinge = Some(edge);
+        }
+    }
+    if let Some(edge) = missing_hinge {
         return Err(inconsistent(
             FlatFoldabilityInputConsistencyIssue::HingeAdjacencyMissing { edge },
         )
         .into());
     }
+    checkpoint()?;
     Ok(canonical_faces)
 }
 
@@ -2234,9 +3278,14 @@ enum LocalReportEvidence {
     Indeterminate,
 }
 
-fn validate_local_report(
+fn validate_local_report<F>(
     report: &LocalFlatFoldabilityReport,
-) -> Result<LocalReportEvidence, InputStructureValidationFailure> {
+    checkpoint: &mut F,
+) -> Result<LocalReportEvidence, InputStructureValidationFailure>
+where
+    F: FnMut() -> Result<(), InputStructureValidationFailure> + ?Sized,
+{
+    checkpoint()?;
     if report.model != LocalFlatFoldabilityModel::InteriorSingleVertexZeroThicknessV1 {
         return Err(
             inconsistent(FlatFoldabilityInputConsistencyIssue::LocalReportStatusMismatch).into(),
@@ -2259,9 +3308,18 @@ fn validate_local_report(
     let mut indeterminate = 0_usize;
     let mut violations = try_validation_vec_with_capacity(report.vertices.len())?;
     let mut vertex_records = try_validation_vec_with_capacity(report.vertices.len())?;
-    vertex_records.extend(report.vertices.iter());
-    vertex_records.sort_unstable_by_key(|vertex| vertex.vertex.canonical_bytes());
+    for vertex in &report.vertices {
+        checkpoint()?;
+        vertex_records.push(vertex);
+    }
+    checkpointed_validation_sort_by(&mut vertex_records, checkpoint, |first, second| {
+        first
+            .vertex
+            .canonical_bytes()
+            .cmp(&second.vertex.canonical_bytes())
+    })?;
     for vertex in vertex_records {
+        checkpoint()?;
         if !vertices.insert(vertex.vertex) {
             return Err(
                 inconsistent(FlatFoldabilityInputConsistencyIssue::DuplicateLocalVertex {
@@ -2376,7 +3434,13 @@ fn validate_local_report(
             inconsistent(FlatFoldabilityInputConsistencyIssue::LocalReportStatusMismatch).into(),
         );
     }
-    violations.sort_unstable_by_key(|violation| violation.vertex.canonical_bytes());
+    checkpointed_validation_sort_by(&mut violations, checkpoint, |first, second| {
+        first
+            .vertex
+            .canonical_bytes()
+            .cmp(&second.vertex.canonical_bytes())
+    })?;
+    checkpoint()?;
     if !violations.is_empty() {
         Ok(LocalReportEvidence::Violated(violations))
     } else if indeterminate != 0 {
@@ -2570,6 +3634,172 @@ mod tests {
         assert_eq!(
             snapshot.checked_deep_retained_bytes_v1(),
             before.checked_add(expected_growth)
+        );
+    }
+
+    #[test]
+    fn validation_peak_collections_include_small_capacity_floors_and_overflow_boundaries() {
+        assert_eq!(checked_growing_vector_storage_v2::<u8>(0), Some(0));
+        assert_eq!(checked_growing_vector_storage_v2::<u8>(1), Some(8));
+        assert_eq!(
+            checked_growing_vector_storage_v2::<u64>(1),
+            Some(4 * std::mem::size_of::<u64>())
+        );
+        assert_eq!(
+            checked_growing_vector_storage_v2::<u64>(4),
+            Some(8 * std::mem::size_of::<u64>())
+        );
+
+        assert_eq!(checked_hash_storage_v2::<u8, u16>(0), Some(0));
+        let one_hash_entry = 4 * std::mem::size_of::<(u8, u16)>()
+            + 4
+            + HASH_CONTROL_GROUP_TAIL_BYTES_V2
+            + std::mem::align_of::<(u8, u16)>()
+            - 1;
+        assert_eq!(checked_hash_storage_v2::<u8, u16>(1), Some(one_hash_entry));
+        assert!(
+            checked_hash_storage_v2::<u8, u16>(2).expect("two-entry hash bound") > one_hash_entry
+        );
+        assert_eq!(checked_hash_storage_v2::<u8, ()>(usize::MAX / 4 + 1), None);
+    }
+
+    #[test]
+    fn checkpointed_source_size_and_clone_prioritize_stops() {
+        let snapshot = retained_layer_order_snapshot();
+        let retained = snapshot
+            .checked_deep_retained_bytes_v1()
+            .expect("fixture bytes");
+        let mut polls = 0usize;
+        assert_eq!(
+            snapshot
+                .checked_deep_retained_bytes_with_checkpoint_v2(&mut || {
+                    polls += 1;
+                    Ok::<(), &'static str>(())
+                })
+                .expect("size checkpoint"),
+            Some(retained)
+        );
+        assert!(
+            polls > snapshot.material_faces.len() + snapshot.folded_faces.len(),
+            "nested vectors and exact rational bytes must be checkpointed"
+        );
+        let mut limited_polls = 0_usize;
+        assert_eq!(
+            snapshot
+                .checked_deep_retained_bytes_with_limit_and_checkpoint_v2(retained, &mut || {
+                    limited_polls += 1;
+                    Ok::<(), &'static str>(())
+                },)
+                .expect("limit-aware size checkpoint"),
+            LayerOrderSnapshotRetainedByteLimitV2::WithinLimit {
+                retained_bytes: retained
+            }
+        );
+        assert_eq!(limited_polls, polls);
+        assert_eq!(
+            snapshot.checked_deep_retained_bytes_with_limit_v2(retained - 1),
+            LayerOrderSnapshotRetainedByteLimitV2::Exceeded {
+                observed_lower_bound: retained
+            }
+        );
+        let mut midpoint_polls = 0usize;
+        assert_eq!(
+            snapshot.checked_deep_retained_bytes_with_checkpoint_v2(&mut || {
+                midpoint_polls += 1;
+                if midpoint_polls == polls / 2 {
+                    Err("mid-size-cancel")
+                } else {
+                    Ok(())
+                }
+            }),
+            Err("mid-size-cancel")
+        );
+        assert_eq!(
+            snapshot.checked_deep_retained_bytes_with_checkpoint_v2(&mut || {
+                Err::<(), _>("cancelled")
+            }),
+            Err("cancelled")
+        );
+        assert_eq!(
+            snapshot.checked_deep_retained_bytes_with_limit_and_checkpoint_v2(0, &mut || Err::<
+                (),
+                _,
+            >(
+                "limited-cancelled"
+            ),),
+            Err("limited-cancelled")
+        );
+
+        let mut oversized = snapshot.clone();
+        oversized.material_faces = vec![snapshot.material_faces[0]; 16_384];
+        let shell_bytes = std::mem::size_of::<LayerOrderSnapshot>();
+        let oversized_lower_bound =
+            shell_bytes + oversized.material_faces.capacity() * std::mem::size_of::<LayerFace>();
+        let mut early_polls = 0_usize;
+        assert_eq!(
+            oversized
+                .checked_deep_retained_bytes_with_limit_and_checkpoint_v2(shell_bytes, &mut || {
+                    early_polls += 1;
+                    Ok::<(), &'static str>(())
+                },)
+                .expect("oversized traversal stops normally"),
+            LayerOrderSnapshotRetainedByteLimitV2::Exceeded {
+                observed_lower_bound: oversized_lower_bound
+            }
+        );
+        assert_eq!(
+            early_polls, 1,
+            "the outer vector capacity must reject before any element poll"
+        );
+        let mut full_polls = 0_usize;
+        oversized
+            .checked_deep_retained_bytes_with_checkpoint_v2(&mut || {
+                full_polls += 1;
+                Ok::<(), &'static str>(())
+            })
+            .expect("unbounded oversized traversal")
+            .expect("oversized fixture size fits usize");
+        assert!(full_polls > oversized.material_faces.len());
+        assert_eq!(
+            snapshot.try_clone_with_retained_byte_limit_with_checkpoint_v2(
+                retained,
+                &mut || Err::<(), _>("deadline"),
+            ),
+            Err("deadline")
+        );
+        let mut clone_polls = 0usize;
+        let cloned = snapshot
+            .try_clone_with_retained_byte_limit_with_checkpoint_v2(retained, &mut || {
+                clone_polls += 1;
+                Ok::<(), &'static str>(())
+            })
+            .expect("clone traversal completes")
+            .expect("exact retained-byte equality is admitted");
+        assert_eq!(cloned, snapshot);
+        assert!(clone_polls > polls);
+        assert!(matches!(
+            snapshot
+                .try_clone_with_retained_byte_limit_with_checkpoint_v2(
+                    retained - 1,
+                    &mut || Ok::<(), &'static str>(()),
+                )
+                .expect("one-short traversal completes"),
+            Err(LayerOrderSnapshotCloneErrorV1::ByteLimitExceeded {
+                maximum,
+                ..
+            }) if maximum == retained - 1
+        ));
+        let mut mid_clone_polls = 0usize;
+        assert_eq!(
+            snapshot.try_clone_with_retained_byte_limit_with_checkpoint_v2(retained, &mut || {
+                mid_clone_polls += 1;
+                if mid_clone_polls == clone_polls / 2 {
+                    Err("mid-clone-deadline")
+                } else {
+                    Ok(())
+                }
+            },),
+            Err("mid-clone-deadline")
         );
     }
 
@@ -4305,6 +5535,358 @@ mod tests {
 
         let serialized = serde_json::to_value(&report).expect("report serialization");
         assert!(serialized.get("analysis_seal").is_none());
+    }
+
+    fn live_revalidation_fixture() -> (
+        Paper,
+        CreasePattern,
+        TopologySnapshot,
+        LocalFlatFoldabilityReport,
+        GlobalFlatFoldabilityReport,
+    ) {
+        let (paper, pattern, topology, local) = centered_single_hinge_square();
+        let report = analyze_global_flat_foldability(
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(2),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            ),
+            GlobalFlatFoldabilityLimits::default(),
+        )
+        .expect("baseline live layer certificate");
+        (paper, pattern, topology, local, report)
+    }
+
+    #[test]
+    fn no_search_live_revalidation_is_exactly_resource_bounded_and_rejects_forgery() {
+        let (paper, pattern, topology, local, report) = live_revalidation_fixture();
+        let snapshot = report.layer_order().expect("possible source");
+        let retained = snapshot
+            .checked_deep_retained_bytes_v1()
+            .expect("bounded source bytes");
+        let input = || {
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(2),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            )
+        };
+        let baseline_limits = GlobalFlatLayerOrderRevalidationLimitsV2 {
+            analysis: GlobalFlatFoldabilityLimits::default(),
+            max_source_retained_bytes: retained,
+            max_peak_bytes: usize::MAX / 4,
+        };
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let (authority, measured) = revalidate_global_flat_layer_order_source_measured_v2(
+            input(),
+            snapshot,
+            baseline_limits,
+            &mut observer,
+        )
+        .expect("valid public snapshot revalidates without search");
+        assert!(std::ptr::eq(authority.layer_order_snapshot_v2(), snapshot));
+        assert_eq!(authority.provenance_v2(), report.provenance);
+        assert!(authority.is_current_v2());
+        assert!(!authority.authenticates_historical_search_nodes_v2());
+        assert_eq!(measured.work_counts.search_nodes, 0);
+        assert!(measured.borrowed_live_bytes >= retained);
+        assert!(measured.observed_peak_bytes > measured.borrowed_live_bytes);
+        assert_eq!(
+            measured.observed_peak_bytes,
+            measured
+                .observed_facewise_peak_bytes
+                .max(measured.observed_validation_peak_bytes)
+        );
+        assert!(measured.observed_validation_peak_bytes >= retained);
+        assert!(
+            measured.observed_validation_peak_bytes > measured.observed_facewise_peak_bytes,
+            "the fixture keeps the exact/one-short peak regression in live validation"
+        );
+
+        let exact_peak_limits = GlobalFlatLayerOrderRevalidationLimitsV2 {
+            max_peak_bytes: measured.observed_peak_bytes,
+            ..baseline_limits
+        };
+        revalidate_global_flat_layer_order_source_v2(input(), snapshot, exact_peak_limits)
+            .expect("exact peak equality is admitted");
+        assert!(matches!(
+            revalidate_global_flat_layer_order_source_v2(
+                input(),
+                snapshot,
+                GlobalFlatLayerOrderRevalidationLimitsV2 {
+                    max_peak_bytes: measured.observed_peak_bytes - 1,
+                    ..baseline_limits
+                },
+            ),
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::LayerOrderRevalidationPeakBytes,
+                    limit,
+                    observed,
+                }
+            }) if limit == measured.observed_peak_bytes - 1
+                && observed == measured.observed_peak_bytes
+        ));
+        assert!(matches!(
+            revalidate_global_flat_layer_order_source_v2(
+                input(),
+                snapshot,
+                GlobalFlatLayerOrderRevalidationLimitsV2 {
+                    max_source_retained_bytes: retained - 1,
+                    ..baseline_limits
+                },
+            ),
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::LayerOrderSourceBytes,
+                    limit,
+                    observed,
+                }
+            }) if limit == retained - 1 && observed == retained
+        ));
+
+        struct CountingObserver {
+            checkpoints: usize,
+        }
+        impl GlobalFlatFoldabilityObserver for CountingObserver {
+            fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
+                self.checkpoints += 1;
+                GlobalFlatFoldabilityCheckpoint::Continue
+            }
+        }
+        let mut oversized = snapshot.clone();
+        oversized.material_faces = vec![snapshot.material_faces[0]; 16_384];
+        let mut counting = CountingObserver { checkpoints: 0 };
+        assert!(matches!(
+            revalidate_global_flat_layer_order_source_with_observer_v2(
+                input(),
+                &oversized,
+                baseline_limits,
+                &mut counting,
+            ),
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::LayerOrderSourceBytes,
+                    limit,
+                    observed,
+                }
+            }) if limit == retained && observed > limit
+        ));
+        assert_eq!(
+            counting.checkpoints, 1,
+            "source-byte rejection must precede oversized vector element scans"
+        );
+
+        let internal_peak = measured
+            .observed_facewise_peak_bytes
+            .checked_sub(measured.borrowed_live_bytes)
+            .expect("borrowed bytes are part of the peak");
+        let certificate_limit = internal_peak.max(
+            snapshot
+                .proof_summary
+                .expect("facewise summary")
+                .certificate_bytes,
+        );
+        let mut exact_workspace_analysis = baseline_limits.analysis;
+        exact_workspace_analysis.max_certificate_bytes = certificate_limit;
+        revalidate_global_flat_layer_order_source_v2(
+            input(),
+            snapshot,
+            GlobalFlatLayerOrderRevalidationLimitsV2 {
+                analysis: exact_workspace_analysis,
+                max_peak_bytes: measured.observed_peak_bytes,
+                ..baseline_limits
+            },
+        )
+        .expect("exact verifier workspace equality is admitted");
+        exact_workspace_analysis.max_certificate_bytes -= 1;
+        assert!(matches!(
+            revalidate_global_flat_layer_order_source_v2(
+                input(),
+                snapshot,
+                GlobalFlatLayerOrderRevalidationLimitsV2 {
+                    analysis: exact_workspace_analysis,
+                    max_peak_bytes: measured.observed_peak_bytes,
+                    ..baseline_limits
+                },
+            ),
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::CertificateBytes,
+                    limit,
+                    observed,
+                }
+            }) if limit == certificate_limit - 1 && observed == certificate_limit
+        ));
+
+        let mut missing_pair = snapshot.clone();
+        missing_pair.face_pair_orders.pop();
+        assert!(matches!(
+            revalidate_global_flat_layer_order_source_v2(
+                input(),
+                &missing_pair,
+                GlobalFlatLayerOrderRevalidationLimitsV2 {
+                    max_source_retained_bytes: usize::MAX / 4,
+                    ..baseline_limits
+                },
+            ),
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::CertificateMismatch)
+        ));
+        let mut foreign = snapshot.clone();
+        foreign.provenance.source.identity_namespace = Some(fixed_id::<ProjectId>(99));
+        assert!(matches!(
+            revalidate_global_flat_layer_order_source_v2(
+                input(),
+                &foreign,
+                GlobalFlatLayerOrderRevalidationLimitsV2 {
+                    max_source_retained_bytes: usize::MAX / 4,
+                    ..baseline_limits
+                },
+            ),
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::CertificateMismatch)
+        ));
+
+        let mut telemetry_changed = snapshot.clone();
+        telemetry_changed
+            .proof_summary
+            .as_mut()
+            .expect("facewise summary")
+            .search_nodes += 1;
+        let telemetry_authority = revalidate_global_flat_layer_order_source_v2(
+            input(),
+            &telemetry_changed,
+            GlobalFlatLayerOrderRevalidationLimitsV2 {
+                max_source_retained_bytes: usize::MAX / 4,
+                ..baseline_limits
+            },
+        )
+        .expect("historical search telemetry is intentionally non-semantic");
+        assert!(!telemetry_authority.authenticates_historical_search_nodes_v2());
+    }
+
+    #[test]
+    fn live_revalidation_preserves_cancel_and_deadline_distinctions() {
+        struct StopObserver {
+            remaining: usize,
+            stop: GlobalFlatFoldabilityCheckpoint,
+        }
+        impl GlobalFlatFoldabilityObserver for StopObserver {
+            fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
+                if self.remaining == 0 {
+                    self.stop
+                } else {
+                    self.remaining -= 1;
+                    GlobalFlatFoldabilityCheckpoint::Continue
+                }
+            }
+        }
+
+        let (paper, pattern, topology, local, report) = live_revalidation_fixture();
+        let snapshot = report.layer_order().expect("possible source");
+        let retained = snapshot
+            .checked_deep_retained_bytes_v1()
+            .expect("source bytes");
+        let input = || {
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(2),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            )
+        };
+        let limits = GlobalFlatLayerOrderRevalidationLimitsV2 {
+            analysis: GlobalFlatFoldabilityLimits::default(),
+            max_source_retained_bytes: retained,
+            max_peak_bytes: usize::MAX / 4,
+        };
+        let mut cancelled = StopObserver {
+            remaining: 10,
+            stop: GlobalFlatFoldabilityCheckpoint::Cancelled,
+        };
+        assert!(matches!(
+            revalidate_global_flat_layer_order_source_with_observer_v2(
+                input(),
+                snapshot,
+                limits,
+                &mut cancelled,
+            ),
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::Execution(
+                GlobalFlatFoldabilityExecutionError::Cancelled
+            ))
+        ));
+        let mut deadline = StopObserver {
+            remaining: 10,
+            stop: GlobalFlatFoldabilityCheckpoint::DeadlineReached,
+        };
+        assert!(matches!(
+            revalidate_global_flat_layer_order_source_with_observer_v2(
+                input(),
+                snapshot,
+                limits,
+                &mut deadline,
+            ),
+            Err(GlobalFlatLayerOrderRevalidationErrorV2::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn work_counting_can_stop_mid_nested_boundary_scan() {
+        struct StopAfter {
+            remaining: usize,
+            stop: GlobalFlatFoldabilityCheckpoint,
+        }
+        impl GlobalFlatFoldabilityObserver for StopAfter {
+            fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
+                if self.remaining == 0 {
+                    self.stop
+                } else {
+                    self.remaining -= 1;
+                    GlobalFlatFoldabilityCheckpoint::Continue
+                }
+            }
+        }
+
+        let mut topology = zero_hinge();
+        topology.faces[0].holes = vec![
+            BoundaryWalk {
+                half_edges: Vec::new(),
+                signed_double_area: -1.0,
+            };
+            4_096
+        ];
+        let local = local_not_applicable(0);
+        let input = GlobalFlatFoldabilityInput::current(&topology, &local);
+
+        let mut cancel = StopAfter {
+            remaining: 1_024,
+            stop: GlobalFlatFoldabilityCheckpoint::Cancelled,
+        };
+        assert!(matches!(
+            count_work(&input, &mut cancel),
+            Err(SourceReverificationAbort::Execution(
+                GlobalFlatFoldabilityExecutionError::Cancelled
+            ))
+        ));
+
+        let mut deadline = StopAfter {
+            remaining: 1_024,
+            stop: GlobalFlatFoldabilityCheckpoint::DeadlineReached,
+        };
+        assert!(matches!(
+            count_work(&input, &mut deadline),
+            Err(SourceReverificationAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::TimeLimitReached {
+                    phase: GlobalFlatFoldabilityPhase::Capturing
+                }
+            ))
+        ));
     }
 
     #[test]

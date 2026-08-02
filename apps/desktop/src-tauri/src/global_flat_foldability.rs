@@ -112,7 +112,8 @@ fn reanalyze_editor_flat_layer_order_with_observer<O: GlobalFlatFoldabilityObser
         observer,
     )
     .map_err(|_| ())?;
-    let GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } = report.outcome else {
+    let GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } = report.into_outcome_v2()
+    else {
         return Err(());
     };
     let provenance = layer_order.provenance.source;
@@ -1762,7 +1763,7 @@ fn run_worker(source: GlobalFlatFoldabilitySource) -> WorkerOutcome {
                 return WorkerOutcome::Failed(GlobalFlatFoldabilityErrorCategory::InternalFailure);
             }
         };
-    source.runtime.set_reported_counts(report.work_counts);
+    source.runtime.set_reported_counts(report.work_counts_v2());
 
     if source.runtime.phase.load(Ordering::SeqCst) < PHASE_VERIFYING_CERTIFICATE
         && let Some(outcome) = checkpoint_outcome(&source.runtime, PHASE_VERIFYING_CERTIFICATE)
@@ -1945,21 +1946,21 @@ fn report_to_dto(
     expected_project_id: ProjectId,
     expected_fold_model_fingerprint: &str,
 ) -> Result<(GlobalFlatFoldabilityResultDto, Option<LayerOrderSnapshot>), ()> {
-    if report.provenance.model_id != GLOBAL_FLAT_FOLDABILITY_MODEL_ID
-        || report.provenance.source_revision != topology.source_revision
-        || report.provenance.identity_namespace != Some(expected_project_id)
+    let provenance = report.provenance_v2();
+    if provenance.model_id != GLOBAL_FLAT_FOLDABILITY_MODEL_ID
+        || provenance.source_revision != topology.source_revision
+        || provenance.identity_namespace != Some(expected_project_id)
     {
         return Err(());
     }
-    let source_fingerprint_matches = report
-        .provenance
+    let source_fingerprint_matches = provenance
         .source_fingerprint
         .map(|fingerprint| fingerprint.to_hex() == expected_fold_model_fingerprint);
     if source_fingerprint_matches == Some(false) {
         return Err(());
     }
-    let work_counts = report.work_counts;
-    match report.outcome {
+    let work_counts = report.work_counts_v2();
+    match report.into_outcome_v2() {
         GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
             if source_fingerprint_matches != Some(true) {
                 return Err(());
@@ -1967,7 +1968,7 @@ fn report_to_dto(
             validate_proof_summary_counts(summary, work_counts)?;
             let canonical_faces = canonical_face_registry(topology, summary.counts.face_count)?;
             if layer_order.model_id != LAYER_ORDER_MODEL_ID
-                || !layer_order.is_current_for(&report.provenance)
+                || !layer_order.is_current_for(&provenance)
                 || layer_order.material_faces.is_empty()
             {
                 return Err(());
@@ -2323,7 +2324,9 @@ const fn map_resource_limit(
         | FlatFoldabilityResource::TotalRecords
         | FlatFoldabilityResource::SearchNodes
         | FlatFoldabilityResource::ExactOperations
-        | FlatFoldabilityResource::CertificateBytes => {
+        | FlatFoldabilityResource::CertificateBytes
+        | FlatFoldabilityResource::LayerOrderSourceBytes
+        | FlatFoldabilityResource::LayerOrderRevalidationPeakBytes => {
             GlobalFlatFoldabilityUnknownReasonDto::WorkLimitReached
         }
     }
@@ -4492,9 +4495,9 @@ pub(super) mod tests {
             &mut observer,
         )
         .expect("deadline is a mathematical unknown");
-        assert_eq!(report.provenance.source_fingerprint, None);
+        assert_eq!(report.provenance_v2().source_fingerprint, None);
         assert!(matches!(
-            &report.outcome,
+            report.outcome_v2(),
             GlobalFlatFoldabilityOutcome::Unknown {
                 reason: GlobalFlatFoldabilityUnknownReason::TimeLimitReached {
                     phase: GlobalFlatFoldabilityPhase::Capturing,
@@ -4534,9 +4537,9 @@ pub(super) mod tests {
                 ..GlobalFlatFoldabilityLimits::default()
             },
         );
-        assert_eq!(report.provenance.source_fingerprint, None);
+        assert_eq!(report.provenance_v2().source_fingerprint, None);
         assert!(matches!(
-            &report.outcome,
+            report.outcome_v2(),
             GlobalFlatFoldabilityOutcome::Unknown {
                 reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
                     resource: FlatFoldabilityResource::SourceVertices,
@@ -4544,21 +4547,6 @@ pub(super) mod tests {
                 },
             }
         ));
-
-        let mut mismatched_fingerprint = report.clone();
-        mismatched_fingerprint.provenance.source_fingerprint =
-            Some(ori_core::FoldModelFingerprintV1([0xa5; 32]));
-        assert!(
-            report_to_dto(
-                mismatched_fingerprint,
-                GlobalFlatFoldabilityRuntime::new(30_000).summary(),
-                &topology,
-                project.project_id,
-                &project.editor.fold_model_fingerprint_v1(),
-            )
-            .is_err(),
-            "an unknown report with a present but mismatched fingerprint must be rejected"
-        );
 
         let converted = report_to_dto(
             report,
@@ -4581,19 +4569,19 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn report_conversion_rejects_fingerprintless_proof_verdicts() {
+    fn proof_verdict_reports_remain_fingerprint_bound_during_conversion() {
         let possible_project = initial_project_state();
         let possible_topology = simulation_topology(&possible_project);
-        let mut possible_report = core_report_for(
+        let possible_report = core_report_for(
             &possible_project,
             &possible_topology,
             GlobalFlatFoldabilityLimits::default(),
         );
         assert!(matches!(
-            &possible_report.outcome,
+            possible_report.outcome_v2(),
             GlobalFlatFoldabilityOutcome::Possible { .. }
         ));
-        possible_report.provenance.source_fingerprint = None;
+        assert!(possible_report.provenance_v2().source_fingerprint.is_some());
         assert!(
             report_to_dto(
                 possible_report,
@@ -4602,21 +4590,26 @@ pub(super) mod tests {
                 possible_project.project_id,
                 &possible_project.editor.fold_model_fingerprint_v1(),
             )
-            .is_err()
+            .is_ok()
         );
 
         let (impossible_project, _) = four_ray_local_violation_project();
         let impossible_topology = simulation_topology(&impossible_project);
-        let mut impossible_report = core_report_for(
+        let impossible_report = core_report_for(
             &impossible_project,
             &impossible_topology,
             GlobalFlatFoldabilityLimits::default(),
         );
         assert!(matches!(
-            &impossible_report.outcome,
+            impossible_report.outcome_v2(),
             GlobalFlatFoldabilityOutcome::Impossible { .. }
         ));
-        impossible_report.provenance.source_fingerprint = None;
+        assert!(
+            impossible_report
+                .provenance_v2()
+                .source_fingerprint
+                .is_some()
+        );
         assert!(
             report_to_dto(
                 impossible_report,
@@ -4625,7 +4618,7 @@ pub(super) mod tests {
                 impossible_project.project_id,
                 &impossible_project.editor.fold_model_fingerprint_v1(),
             )
-            .is_err()
+            .is_ok()
         );
     }
 

@@ -1,9 +1,11 @@
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     io::{self, Write},
 };
 
+use num_bigint::{BigInt, Sign};
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, VertexId};
@@ -26,7 +28,8 @@ use crate::{
         CompleteAssignmentVerificationResult, ConstraintConflict, ConstraintSet,
         ConstraintSolverControl, ConstraintSolverEvent, ConstraintSolverResult, ConstraintView,
         TransitivityConstraintFamily, TransitivityConstraints, TupleConstraint, choose_three,
-        choose_two, solve_constraints_with_memory, verify_complete_assignment_with_memory,
+        choose_two, complete_assignment_verification_working_memory_upper_bound,
+        solve_constraints_with_memory, verify_complete_assignment_with_memory,
     },
     exact::{
         self, ExactBudget, ExactError, Point, Rational, Transform, add, apply, average3, cmp,
@@ -133,6 +136,9 @@ struct Runtime<'a, O: GlobalFlatFoldabilityObserver + ?Sized> {
     work: GlobalFlatFoldabilityWorkCounts,
     phase: GlobalFlatFoldabilityPhase,
     exact_storage: ExactStorage,
+    borrowed_source_bytes: usize,
+    max_peak_bytes: usize,
+    observed_peak_bytes: Cell<usize>,
 }
 
 impl<'a, O: GlobalFlatFoldabilityObserver + ?Sized> Runtime<'a, O> {
@@ -147,7 +153,31 @@ impl<'a, O: GlobalFlatFoldabilityObserver + ?Sized> Runtime<'a, O> {
             work,
             phase: GlobalFlatFoldabilityPhase::ValidatingLocalConditions,
             exact_storage: ExactStorage::default(),
+            borrowed_source_bytes: 0,
+            max_peak_bytes: limits.max_certificate_bytes,
+            observed_peak_bytes: Cell::new(0),
         }
+    }
+
+    fn new_revalidation(
+        observer: &'a mut O,
+        limits: GlobalFlatFoldabilityLimits,
+        work: GlobalFlatFoldabilityWorkCounts,
+        borrowed_source_bytes: usize,
+        max_peak_bytes: usize,
+    ) -> FacewiseResult<Self> {
+        let runtime = Self {
+            observer,
+            limits,
+            work,
+            phase: GlobalFlatFoldabilityPhase::ValidatingLocalConditions,
+            exact_storage: ExactStorage::default(),
+            borrowed_source_bytes,
+            max_peak_bytes,
+            observed_peak_bytes: Cell::new(0),
+        };
+        runtime.ensure_storage_values(ExactStorage::default(), 0)?;
+        Ok(runtime)
     }
 
     fn advance(
@@ -326,7 +356,28 @@ impl<'a, O: GlobalFlatFoldabilityObserver + ?Sized> Runtime<'a, O> {
         if observed > self.limits.max_certificate_bytes {
             return Err(self.exact_storage_limit_failure(observed));
         }
+        let peak = self
+            .borrowed_source_bytes
+            .checked_add(observed)
+            .ok_or_else(|| self.peak_storage_limit_failure(usize::MAX))?;
+        if peak > self.max_peak_bytes {
+            return Err(self.peak_storage_limit_failure(peak));
+        }
+        self.observed_peak_bytes
+            .set(self.observed_peak_bytes.get().max(peak));
         Ok(observed)
+    }
+
+    fn peak_storage_limit_failure(&self, observed: usize) -> FacewiseAbort {
+        FacewiseAbort::Unknown(GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+            resource: FlatFoldabilityResource::LayerOrderRevalidationPeakBytes,
+            limit: self.max_peak_bytes,
+            observed,
+        })
+    }
+
+    fn observed_peak_bytes(&self) -> usize {
+        self.observed_peak_bytes.get()
     }
 
     fn set_embedding_exact_storage(&mut self, observed: usize) -> FacewiseResult<()> {
@@ -433,10 +484,20 @@ impl<'a, O: GlobalFlatFoldabilityObserver + ?Sized> Runtime<'a, O> {
             .exact_storage
             .total()
             .ok_or_else(|| self.exact_storage_limit_failure(usize::MAX))?;
-        self.limits
+        let certificate_remaining = self
+            .limits
             .max_certificate_bytes
             .checked_sub(used)
-            .ok_or_else(|| self.exact_storage_limit_failure(used))
+            .ok_or_else(|| self.exact_storage_limit_failure(used))?;
+        let live = self
+            .borrowed_source_bytes
+            .checked_add(used)
+            .ok_or_else(|| self.peak_storage_limit_failure(usize::MAX))?;
+        let peak_remaining = self
+            .max_peak_bytes
+            .checked_sub(live)
+            .ok_or_else(|| self.peak_storage_limit_failure(live))?;
+        Ok(certificate_remaining.min(peak_remaining))
     }
 
     fn clear_verification_storage(&mut self) {
@@ -790,8 +851,14 @@ fn build_flat_embedding<O: GlobalFlatFoldabilityObserver + ?Sized>(
     canonical_faces: &[LayerFace],
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<FlatEmbedding> {
-    let mut vertex_records = crease_pattern.vertices.iter().collect::<Vec<_>>();
-    vertex_records.sort_unstable_by_key(|vertex| vertex.id.canonical_bytes());
+    let mut vertex_records = Vec::new();
+    vertex_records
+        .try_reserve_exact(crease_pattern.vertices.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    checkpointed_extend(&mut vertex_records, crease_pattern.vertices.iter(), runtime)?;
+    checkpointed_sort_unstable_by(&mut vertex_records, runtime, |first, second| {
+        first.id.canonical_bytes().cmp(&second.id.canonical_bytes())
+    })?;
     let mut vertices = HashMap::with_capacity(vertex_records.len());
     for vertex in vertex_records {
         runtime.checkpoint(None)?;
@@ -807,6 +874,7 @@ fn build_flat_embedding<O: GlobalFlatFoldabilityObserver + ?Sized>(
         vertices.insert(vertex.id, point);
     }
     for boundary_vertex in &paper.boundary_vertices {
+        runtime.checkpoint(None)?;
         if !vertices.contains_key(boundary_vertex) {
             return Err(FacewiseAbort::Unknown(
                 GlobalFlatFoldabilityUnknownReason::UnsupportedTopology {
@@ -816,8 +884,14 @@ fn build_flat_embedding<O: GlobalFlatFoldabilityObserver + ?Sized>(
         }
     }
 
-    let mut edge_records = crease_pattern.edges.iter().collect::<Vec<_>>();
-    edge_records.sort_unstable_by_key(|edge| edge.id.canonical_bytes());
+    let mut edge_records = Vec::new();
+    edge_records
+        .try_reserve_exact(crease_pattern.edges.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    checkpointed_extend(&mut edge_records, crease_pattern.edges.iter(), runtime)?;
+    checkpointed_sort_unstable_by(&mut edge_records, runtime, |first, second| {
+        first.id.canonical_bytes().cmp(&second.id.canonical_bytes())
+    })?;
     let mut edges = HashMap::with_capacity(edge_records.len());
     for edge in edge_records {
         runtime.checkpoint(None)?;
@@ -966,12 +1040,19 @@ fn build_flat_embedding<O: GlobalFlatFoldabilityObserver + ?Sized>(
         ));
     }
 
-    let face_indexes = source_faces
-        .iter()
-        .enumerate()
-        .map(|(index, face)| (face.layer.face_id, index))
-        .collect::<HashMap<_, _>>();
-    let mut adjacency = vec![Vec::new(); source_faces.len()];
+    let mut face_indexes = HashMap::with_capacity(source_faces.len());
+    for (index, face) in source_faces.iter().enumerate() {
+        runtime.checkpoint(None)?;
+        face_indexes.insert(face.layer.face_id, index);
+    }
+    let mut adjacency = Vec::new();
+    adjacency
+        .try_reserve_exact(source_faces.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    for _ in 0..source_faces.len() {
+        runtime.checkpoint(None)?;
+        adjacency.push(Vec::new());
+    }
     for hinge in &topology.hinge_adjacency {
         let Some(&first) = face_indexes.get(&hinge.first) else {
             return Err(FacewiseAbort::Unknown(
@@ -1023,16 +1104,26 @@ fn build_flat_embedding<O: GlobalFlatFoldabilityObserver + ?Sized>(
         adjacency[second].push((hinge.edge, first, assignment, edge.clone()));
     }
     for neighbors in &mut adjacency {
-        neighbors.sort_unstable_by_key(|(edge, neighbor, _, _)| {
-            (
-                source_faces[*neighbor].layer.face_key,
-                edge.canonical_bytes(),
-            )
-        });
+        checkpointed_sort_unstable_by(neighbors, runtime, |first, second| {
+            let key = |(edge, neighbor, _, _): &(EdgeId, usize, FoldAssignment, SourceEdge)| {
+                (
+                    source_faces[*neighbor].layer.face_key,
+                    edge.canonical_bytes(),
+                )
+            };
+            key(first).cmp(&key(second))
+        })?;
     }
 
     let reference_face = 0;
-    let mut transforms = vec![None::<(Transform, bool, Option<EdgeId>)>; source_faces.len()];
+    let mut transforms = Vec::new();
+    transforms
+        .try_reserve_exact(source_faces.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    for _ in 0..source_faces.len() {
+        runtime.checkpoint(None)?;
+        transforms.push(None::<(Transform, bool, Option<EdgeId>)>);
+    }
     let identity = Transform::identity();
     runtime.add_embedding_exact_storage(exact_storage_bytes_transform(&identity)?)?;
     transforms[reference_face] = Some((identity, true, None));
@@ -1140,7 +1231,7 @@ fn build_flat_embedding<O: GlobalFlatFoldabilityObserver + ?Sized>(
         }
         let area = signed_double_area(&polygon, runtime)?;
         if area.is_negative() {
-            polygon.reverse();
+            checkpointed_reverse(&mut polygon, runtime)?;
         } else if area.is_zero() {
             return Err(FacewiseAbort::Unknown(
                 GlobalFlatFoldabilityUnknownReason::UnsupportedTopology {
@@ -1198,7 +1289,12 @@ fn build_flat_embedding<O: GlobalFlatFoldabilityObserver + ?Sized>(
             second_point,
         });
     }
-    folded_hinges.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+    checkpointed_sort_unstable_by(&mut folded_hinges, runtime, |first, second| {
+        first
+            .edge
+            .canonical_bytes()
+            .cmp(&second.edge.canonical_bytes())
+    })?;
     let embedding = FlatEmbedding {
         reference_face,
         faces: folded_faces,
@@ -1414,7 +1510,7 @@ fn convex_polygon_intersection<O: GlobalFlatFoldabilityObserver + ?Sized>(
         deduplicate_polygon(&mut output);
     }
     if output.len() >= 3 && signed_double_area(&output, runtime)?.is_negative() {
-        output.reverse();
+        checkpointed_reverse(&mut output, runtime)?;
     }
     Ok(output)
 }
@@ -1835,7 +1931,7 @@ fn normalize_covering_face_capacity<O: GlobalFlatFoldabilityObserver + ?Sized>(
     normalized
         .try_reserve_exact(target_capacity)
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    normalized.extend(possible_faces);
+    checkpointed_extend(&mut normalized, possible_faces, runtime)?;
     Ok(normalized)
 }
 
@@ -2167,7 +2263,7 @@ fn build_overlap_cells_with_supporting_line_deduplication_inner<
                     .checked_add(retained_bytes)
                     .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
             )?;
-            possible_faces.extend(0..faces.len());
+            checkpointed_extend(&mut possible_faces, 0..faces.len(), runtime)?;
             Ok((possible_faces, retained_bytes))
         })();
         match allocation {
@@ -2185,13 +2281,22 @@ fn build_overlap_cells_with_supporting_line_deduplication_inner<
         boundary: bounding_rectangle,
         possible_faces: initial_possible_faces.0,
     }];
-    let mut supporting_lines = faces
-        .iter()
-        .enumerate()
-        .flat_map(|(face_index, face)| {
-            (0..face.polygon.len()).map(move |edge_index| (face_index, edge_index))
-        })
-        .collect::<Vec<_>>();
+    let supporting_line_count = faces.iter().try_fold(0_usize, |total, face| {
+        runtime.checkpoint(None)?;
+        total
+            .checked_add(face.polygon.len())
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))
+    })?;
+    let mut supporting_lines = Vec::new();
+    supporting_lines
+        .try_reserve_exact(supporting_line_count)
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    for (face_index, face) in faces.iter().enumerate() {
+        for edge_index in 0..face.polygon.len() {
+            runtime.checkpoint(None)?;
+            supporting_lines.push((face_index, edge_index));
+        }
+    }
     let supporting_line_tuple_bytes = runtime.allocation_bytes(
         supporting_lines.capacity(),
         std::mem::size_of::<(usize, usize)>(),
@@ -2202,13 +2307,16 @@ fn build_overlap_cells_with_supporting_line_deduplication_inner<
             .and_then(|total| total.checked_add(supporting_line_tuple_bytes))
             .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
     )?;
-    supporting_lines.sort_unstable_by_key(|(face_index, edge_index)| {
-        (
-            faces[*face_index].source.layer.face_key,
-            *edge_index,
-            faces[*face_index].source.layer.face_id.canonical_bytes(),
-        )
-    });
+    checkpointed_sort_unstable_by(&mut supporting_lines, runtime, |first, second| {
+        let key = |(face_index, edge_index): &(usize, usize)| {
+            (
+                faces[*face_index].source.layer.face_key,
+                *edge_index,
+                faces[*face_index].source.layer.face_id.canonical_bytes(),
+            )
+        };
+        key(first).cmp(&key(second))
+    })?;
     if deduplicate_supporting_lines {
         let (keep_flags, _) = supporting_line_keep_flags(faces, &supporting_lines, runtime)?;
         let mut line_index = 0_usize;
@@ -2292,8 +2400,10 @@ fn build_overlap_cells_with_supporting_line_deduplication_inner<
     if prioritize_global_supporting_lines && propagate_region_face_candidates {
         // The ordinal preserves the existing canonical tie order without the
         // hidden scratch allocation of a stable sort.
-        prepared_supporting_lines
-            .sort_unstable_by_key(|line| (!line.globally_supporting, line.canonical_ordinal));
+        checkpointed_sort_unstable_by(&mut prepared_supporting_lines, runtime, |first, second| {
+            (!first.globally_supporting, first.canonical_ordinal)
+                .cmp(&(!second.globally_supporting, second.canonical_ordinal))
+        })?;
     }
     for supporting_line in prepared_supporting_lines {
         runtime.checkpoint(None)?;
@@ -2630,16 +2740,29 @@ fn classify_overlap_regions<O: GlobalFlatFoldabilityObserver + ?Sized>(
         }
         runtime.set_overlap_cells(cells.len())?;
     }
-    let cells = cells.into_values().collect::<Vec<_>>();
+    let mut ordered_cells = Vec::new();
+    ordered_cells
+        .try_reserve_exact(cells.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    checkpointed_extend(&mut ordered_cells, cells.into_values(), runtime)?;
+    let cells = ordered_cells;
     let cell_boundary_bytes = cells.iter().try_fold(0_usize, |total, cell| {
         total
             .checked_add(exact_storage_bytes_points(&cell.boundary)?)
             .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))
     })?;
     for pair in pairs {
-        if !cells.iter().any(|cell| {
-            cell.covering_faces.contains(&pair.first) && cell.covering_faces.contains(&pair.second)
-        }) {
+        let mut supported = false;
+        for cell in &cells {
+            runtime.checkpoint(None)?;
+            if slice_contains_with_checkpoint(&cell.covering_faces, &pair.first, runtime)?
+                && slice_contains_with_checkpoint(&cell.covering_faces, &pair.second, runtime)?
+            {
+                supported = true;
+                break;
+            }
+        }
+        if !supported {
             return Err(FacewiseAbort::Unknown(
                 GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
                     reason: FlatFoldabilityProofIncompleteReason::CertificateReverificationFailed,
@@ -2686,8 +2809,10 @@ fn verify_canonical_overlap_cells<O: GlobalFlatFoldabilityObserver + ?Sized>(
         supplied_order.try_reserve_exact(cells.len()).map_err(|_| {
             runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
         })?;
-        supplied_order.extend(0..cells.len());
-        supplied_order.sort_unstable_by_key(|index| cells[*index].key.0);
+        checkpointed_extend(&mut supplied_order, 0..cells.len(), runtime)?;
+        checkpointed_sort_unstable_by(&mut supplied_order, runtime, |first, second| {
+            cells[*first].key.0.cmp(&cells[*second].key.0)
+        })?;
 
         for (expected, supplied_index) in canonical.iter().zip(supplied_order) {
             runtime.checkpoint(None)?;
@@ -3340,7 +3465,7 @@ fn overlay_required_pair_orders<O: GlobalFlatFoldabilityObserver + ?Sized>(
         };
         required_assignments.push((variable, upper == pair.1));
     }
-    required_assignments.sort_unstable();
+    checkpointed_sort_unstable_by(&mut required_assignments, runtime, Ord::cmp)?;
     let mut group_start = 0;
     while group_start < required_assignments.len() {
         let variable_index = required_assignments[group_start].0;
@@ -3378,7 +3503,11 @@ fn overlay_required_pair_orders<O: GlobalFlatFoldabilityObserver + ?Sized>(
     fixed_assignments
         .try_reserve_exact(problem.fixed_assignments.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    fixed_assignments.extend_from_slice(&problem.fixed_assignments);
+    checkpointed_extend(
+        &mut fixed_assignments,
+        problem.fixed_assignments.iter().copied(),
+        runtime,
+    )?;
     for &(variable, required) in &required_assignments {
         if fixed_assignments[variable].is_some_and(|fixed| fixed != required) {
             let (lower, upper) =
@@ -3524,8 +3653,7 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
         problem.variables.len(),
         std::mem::size_of::<((usize, usize), bool)>(),
     )?)?;
-    let pair_values = PairValues::try_from_parallel(&problem.variables, &assignment)
-        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let pair_values = PairValues::try_from_parallel(&problem.variables, &assignment, runtime)?;
     drop(assignment);
     drop(problem);
     runtime.clear_constraint_storage();
@@ -3576,22 +3704,26 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 supporting_cells.push(cell.key);
             }
         }
-        runtime.checkpoint(None)?;
-        supporting_cells.sort_unstable_by_key(|key| key.0);
+        checkpointed_sort_unstable_by(&mut supporting_cells, runtime, |first, second| {
+            first.0.cmp(&second.0)
+        })?;
         face_pair_orders.push(FacePairOrderSnapshot {
             lower_face: embedding.faces[lower].source.layer,
             upper_face: embedding.faces[upper].source.layer,
             supporting_cells,
         });
     }
-    face_pair_orders.sort_unstable_by_key(|order| {
-        (
-            order.lower_face.face_key,
-            order.upper_face.face_key,
-            order.lower_face.face_id.canonical_bytes(),
-            order.upper_face.face_id.canonical_bytes(),
-        )
-    });
+    checkpointed_sort_unstable_by(&mut face_pair_orders, runtime, |first, second| {
+        let key = |order: &FacePairOrderSnapshot| {
+            (
+                order.lower_face.face_key,
+                order.upper_face.face_key,
+                order.lower_face.face_id.canonical_bytes(),
+                order.upper_face.face_id.canonical_bytes(),
+            )
+        };
+        key(first).cmp(&key(second))
+    })?;
 
     let overlap_cell_snapshot_bytes =
         runtime.allocation_bytes(cells.len(), std::mem::size_of::<OverlapCellSnapshot>())?;
@@ -3658,7 +3790,9 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
             bottom_to_top_faces,
         });
     }
-    overlap_cells.sort_unstable_by_key(|cell| cell.cell_key.0);
+    checkpointed_sort_unstable_by(&mut overlap_cells, runtime, |first, second| {
+        first.cell_key.0.cmp(&second.cell_key.0)
+    })?;
     let global_order =
         canonical_global_linear_extension(embedding.faces.len(), &pair_values, runtime)?;
     let global_bottom_to_top = if let Some(order) = global_order {
@@ -3843,6 +3977,475 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
     provenance: GlobalFlatFoldabilityProvenance,
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<()> {
+    let expected_search_nodes = runtime.work.search_nodes;
+    verify_layer_order_snapshot_with_search_node_policy(
+        layer_order,
+        embedding,
+        cells,
+        pair_values,
+        provenance,
+        Some(expected_search_nodes),
+        runtime,
+    )
+}
+
+fn slices_equal_with_checkpoint<T: PartialEq, O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &[T],
+    second: &[T],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    runtime.checkpoint(None)?;
+    if first.len() != second.len() {
+        return Ok(false);
+    }
+    let mut control_poll = 0_usize;
+    for (first, second) in first.iter().zip(second) {
+        runtime.poll_control(&mut control_poll)?;
+        if first != second {
+            return Ok(false);
+        }
+    }
+    runtime.checkpoint(None)?;
+    Ok(true)
+}
+
+fn slice_contains_with_checkpoint<T: PartialEq, O: GlobalFlatFoldabilityObserver + ?Sized>(
+    values: &[T],
+    needle: &T,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    let mut control_poll = 0_usize;
+    for value in values {
+        runtime.poll_control(&mut control_poll)?;
+        if value == needle {
+            return Ok(true);
+        }
+    }
+    runtime.checkpoint(None)?;
+    Ok(false)
+}
+
+fn checkpointed_sort_unstable_by<
+    T,
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+    F: FnMut(&T, &T) -> Ordering,
+>(
+    values: &mut [T],
+    runtime: &mut Runtime<'_, O>,
+    mut compare: F,
+) -> FacewiseResult<()> {
+    fn sift_down<T, O: GlobalFlatFoldabilityObserver + ?Sized, F: FnMut(&T, &T) -> Ordering>(
+        values: &mut [T],
+        mut root: usize,
+        end: usize,
+        runtime: &mut Runtime<'_, O>,
+        control_poll: &mut usize,
+        compare: &mut F,
+    ) -> FacewiseResult<()> {
+        loop {
+            let Some(mut child) = root.checked_mul(2).and_then(|value| value.checked_add(1)) else {
+                return Err(internal_abort());
+            };
+            if child >= end {
+                return Ok(());
+            }
+            if child + 1 < end {
+                runtime.poll_control(control_poll)?;
+                if compare(&values[child], &values[child + 1]) == Ordering::Less {
+                    child += 1;
+                }
+            }
+            runtime.poll_control(control_poll)?;
+            if compare(&values[root], &values[child]) != Ordering::Less {
+                return Ok(());
+            }
+            values.swap(root, child);
+            root = child;
+        }
+    }
+
+    runtime.checkpoint(None)?;
+    let mut control_poll = 0_usize;
+    for root in (0..values.len() / 2).rev() {
+        sift_down(
+            values,
+            root,
+            values.len(),
+            runtime,
+            &mut control_poll,
+            &mut compare,
+        )?;
+    }
+    for end in (1..values.len()).rev() {
+        runtime.poll_control(&mut control_poll)?;
+        values.swap(0, end);
+        sift_down(values, 0, end, runtime, &mut control_poll, &mut compare)?;
+    }
+    runtime.checkpoint(None)?;
+    Ok(())
+}
+
+fn checkpointed_reverse<T, O: GlobalFlatFoldabilityObserver + ?Sized>(
+    values: &mut [T],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()> {
+    let mut control_poll = 0_usize;
+    for index in 0..values.len() / 2 {
+        runtime.poll_control(&mut control_poll)?;
+        values.swap(index, values.len() - 1 - index);
+    }
+    runtime.checkpoint(None)
+}
+
+fn checkpointed_extend<T, I, O>(
+    target: &mut Vec<T>,
+    values: I,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()>
+where
+    I: IntoIterator<Item = T>,
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+{
+    for value in values {
+        runtime.checkpoint(None)?;
+        target.push(value);
+    }
+    runtime.checkpoint(None)
+}
+
+fn exact_bigint_magnitude_matches<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &[u8],
+    expected: &BigInt,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    let byte_len = expected
+        .bits()
+        .checked_add(7)
+        .and_then(|bits| usize::try_from(bits / 8).ok())
+        .map_or(1, |bytes| bytes.max(1));
+    if snapshot.len() != byte_len {
+        return Ok(false);
+    }
+    if expected.sign() == Sign::NoSign {
+        runtime.checkpoint(None)?;
+        return Ok(snapshot == [0]);
+    }
+    let leading_bytes = byte_len % std::mem::size_of::<u32>();
+    let mut snapshot_index = 0_usize;
+    let mut control_poll = 0_usize;
+    for (digit_index, digit) in expected.iter_u32_digits().rev().enumerate() {
+        let bytes = digit.to_be_bytes();
+        let start = if digit_index == 0 && leading_bytes != 0 {
+            bytes.len() - leading_bytes
+        } else {
+            0
+        };
+        for byte in &bytes[start..] {
+            runtime.poll_control(&mut control_poll)?;
+            if snapshot.get(snapshot_index) != Some(byte) {
+                return Ok(false);
+            }
+            snapshot_index += 1;
+        }
+    }
+    runtime.checkpoint(None)?;
+    Ok(snapshot_index == snapshot.len())
+}
+
+fn exact_rational_matches<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &crate::ExactRationalValue,
+    expected: &Rational,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    let expected_sign = match expected.numer().sign() {
+        Sign::Minus => crate::ExactSign::Negative,
+        Sign::NoSign => crate::ExactSign::Zero,
+        Sign::Plus => crate::ExactSign::Positive,
+    };
+    if snapshot.sign != expected_sign
+        || !exact_bigint_magnitude_matches(
+            &snapshot.numerator_magnitude_be,
+            expected.numer(),
+            runtime,
+        )?
+        || !exact_bigint_magnitude_matches(&snapshot.denominator_be, expected.denom(), runtime)?
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn exact_point_matches<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &crate::ExactPointValue,
+    expected: &Point,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    Ok(exact_rational_matches(&snapshot.x, &expected.x, runtime)?
+        && exact_rational_matches(&snapshot.y, &expected.y, runtime)?)
+}
+
+fn exact_transform_matches<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &crate::ExactAffineTransform,
+    expected: &Transform,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    Ok(
+        exact_rational_matches(&snapshot.m00, &expected.m00, runtime)?
+            && exact_rational_matches(&snapshot.m01, &expected.m01, runtime)?
+            && exact_rational_matches(&snapshot.m10, &expected.m10, runtime)?
+            && exact_rational_matches(&snapshot.m11, &expected.m11, runtime)?
+            && exact_rational_matches(&snapshot.tx, &expected.tx, runtime)?
+            && exact_rational_matches(&snapshot.ty, &expected.ty, runtime)?,
+    )
+}
+
+fn bigints_equal_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &BigInt,
+    second: &BigInt,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if first.sign() != second.sign() || first.bits() != second.bits() {
+        return Ok(false);
+    }
+    let mut first_digits = first.iter_u32_digits();
+    let mut second_digits = second.iter_u32_digits();
+    let mut control_poll = 0_usize;
+    loop {
+        runtime.poll_control(&mut control_poll)?;
+        match (first_digits.next(), second_digits.next()) {
+            (Some(first), Some(second)) if first == second => {}
+            (None, None) => {
+                runtime.checkpoint(None)?;
+                return Ok(true);
+            }
+            _ => return Ok(false),
+        }
+    }
+}
+
+fn rationals_equal_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &Rational,
+    second: &Rational,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    Ok(
+        bigints_equal_with_checkpoint(first.numer(), second.numer(), runtime)?
+            && bigints_equal_with_checkpoint(first.denom(), second.denom(), runtime)?,
+    )
+}
+
+fn points_equal_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &Point,
+    second: &Point,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    Ok(
+        rationals_equal_with_checkpoint(&first.x, &second.x, runtime)?
+            && rationals_equal_with_checkpoint(&first.y, &second.y, runtime)?,
+    )
+}
+
+fn point_slices_equal_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &[Point],
+    second: &[Point],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if first.len() != second.len() {
+        return Ok(false);
+    }
+    for (first, second) in first.iter().zip(second) {
+        runtime.checkpoint(None)?;
+        if !points_equal_with_checkpoint(first, second, runtime)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn transforms_equal_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &Transform,
+    second: &Transform,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    Ok(
+        rationals_equal_with_checkpoint(&first.m00, &second.m00, runtime)?
+            && rationals_equal_with_checkpoint(&first.m01, &second.m01, runtime)?
+            && rationals_equal_with_checkpoint(&first.m10, &second.m10, runtime)?
+            && rationals_equal_with_checkpoint(&first.m11, &second.m11, runtime)?
+            && rationals_equal_with_checkpoint(&first.tx, &second.tx, runtime)?
+            && rationals_equal_with_checkpoint(&first.ty, &second.ty, runtime)?,
+    )
+}
+
+fn find_polygon_representative_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    representatives: &[usize],
+    faces: &[FoldedFace],
+    polygon: &[Point],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<Option<usize>> {
+    for (class, representative) in representatives.iter().copied().enumerate() {
+        runtime.checkpoint(None)?;
+        if point_slices_equal_with_checkpoint(&faces[representative].polygon, polygon, runtime)? {
+            return Ok(Some(class));
+        }
+    }
+    Ok(None)
+}
+
+fn folded_hinges_same_segment_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &FoldedHinge,
+    second: &FoldedHinge,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    let same_direction =
+        points_equal_with_checkpoint(&first.first_point, &second.first_point, runtime)?
+            && points_equal_with_checkpoint(&first.second_point, &second.second_point, runtime)?;
+    if same_direction {
+        return Ok(true);
+    }
+    Ok(
+        points_equal_with_checkpoint(&first.first_point, &second.second_point, runtime)?
+            && points_equal_with_checkpoint(&first.second_point, &second.first_point, runtime)?,
+    )
+}
+
+fn exact_boundary_matches<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &[crate::ExactPointValue],
+    expected: &[Point],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if snapshot.len() != expected.len() {
+        return Ok(false);
+    }
+    for (snapshot, expected) in snapshot.iter().zip(expected) {
+        runtime.checkpoint(None)?;
+        if !exact_point_matches(snapshot, expected, runtime)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn covering_faces_match<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &[LayerFace],
+    expected: &[usize],
+    embedding: &FlatEmbedding,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if snapshot.len() != expected.len() {
+        return Ok(false);
+    }
+    for (snapshot, expected) in snapshot.iter().zip(expected) {
+        runtime.checkpoint(None)?;
+        if *snapshot != embedding.faces[*expected].source.layer {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn ordered_face_ids_match<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &[ori_domain::FaceId],
+    expected: &[usize],
+    embedding: &FlatEmbedding,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if snapshot.len() != expected.len() {
+        return Ok(false);
+    }
+    for (snapshot, expected) in snapshot.iter().zip(expected) {
+        runtime.checkpoint(None)?;
+        if *snapshot != embedding.faces[*expected].source.layer.face_id {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn face_pair_order_sort_key(
+    order: &FacePairOrderSnapshot,
+) -> (
+    ori_topology::FaceKey,
+    ori_topology::FaceKey,
+    [u8; 16],
+    [u8; 16],
+) {
+    (
+        order.lower_face.face_key,
+        order.upper_face.face_key,
+        order.lower_face.face_id.canonical_bytes(),
+        order.upper_face.face_id.canonical_bytes(),
+    )
+}
+
+fn face_pair_orders_equal_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &[FacePairOrderSnapshot],
+    expected: &[FacePairOrderSnapshot],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if snapshot.len() != expected.len() {
+        return Ok(false);
+    }
+    for (snapshot, expected) in snapshot.iter().zip(expected) {
+        runtime.checkpoint(None)?;
+        if snapshot.lower_face != expected.lower_face
+            || snapshot.upper_face != expected.upper_face
+            || !slices_equal_with_checkpoint(
+                &snapshot.supporting_cells,
+                &expected.supporting_cells,
+                runtime,
+            )?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn optional_layer_faces_equal_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: Option<&[LayerFace]>,
+    expected: Option<&[LayerFace]>,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    match (snapshot, expected) {
+        (Some(snapshot), Some(expected)) => {
+            slices_equal_with_checkpoint(snapshot, expected, runtime)
+        }
+        (None, None) => Ok(true),
+        (Some(_), None) | (None, Some(_)) => Ok(false),
+    }
+}
+
+fn verify_revalidated_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    layer_order: &LayerOrderSnapshot,
+    embedding: &FlatEmbedding,
+    cells: &[OverlapCell],
+    pair_values: &PairValues,
+    provenance: GlobalFlatFoldabilityProvenance,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()> {
+    verify_layer_order_snapshot_with_search_node_policy(
+        layer_order,
+        embedding,
+        cells,
+        pair_values,
+        provenance,
+        None,
+        runtime,
+    )
+}
+
+fn verify_layer_order_snapshot_with_search_node_policy<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    layer_order: &LayerOrderSnapshot,
+    embedding: &FlatEmbedding,
+    cells: &[OverlapCell],
+    pair_values: &PairValues,
+    provenance: GlobalFlatFoldabilityProvenance,
+    expected_search_nodes: Option<usize>,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()> {
     runtime.clear_verification_storage();
     runtime.checkpoint(None)?;
     verify_canonical_overlap_cells(&embedding.faces, cells, runtime)?;
@@ -3854,6 +4457,7 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
         .try_reserve_exact(embedding.faces.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     for face in &embedding.faces {
+        runtime.checkpoint(None)?;
         expected_material_faces.push(face.source.layer);
     }
     let reference_face = embedding.faces[embedding.reference_face].source.layer;
@@ -3867,17 +4471,23 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
         || layer_order.provenance.source != provenance
         || layer_order.provenance.derivation != expected_derivation
         || layer_order.reference_face != Some(reference_face)
-        || layer_order.material_faces != expected_material_faces
         || layer_order.folded_faces.len() != embedding.faces.len()
         || layer_order.overlap_cells.len() != cells.len()
         || layer_order.face_pair_orders.len() != pair_values.len()
     {
         return Err(certificate_failure());
     }
+    if !slices_equal_with_checkpoint(
+        &layer_order.material_faces,
+        &expected_material_faces,
+        runtime,
+    )? {
+        return Err(certificate_failure());
+    }
     for (snapshot, face) in layer_order.folded_faces.iter().zip(&embedding.faces) {
-        runtime.ensure_transient_exact_storage(exact_storage_bytes_transform(&face.transform)?)?;
+        runtime.checkpoint(None)?;
         if snapshot.face != face.source.layer
-            || snapshot.source_to_flat != face.transform.to_value()
+            || !exact_transform_matches(&snapshot.source_to_flat, &face.transform, runtime)?
             || snapshot.orientation
                 != if face.front_up {
                     FoldedFaceOrientation::FrontUp
@@ -3909,11 +4519,17 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
         .try_reserve_exact(cells.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     for cell in cells {
+        runtime.checkpoint(None)?;
         internal_cell_keys.push(cell.key);
     }
-    internal_cell_keys.sort_unstable_by_key(|key| key.0);
-    if internal_cell_keys.windows(2).any(|keys| keys[0] == keys[1]) {
-        return Err(certificate_failure());
+    checkpointed_sort_unstable_by(&mut internal_cell_keys, runtime, |first, second| {
+        first.0.cmp(&second.0)
+    })?;
+    for index in 1..internal_cell_keys.len() {
+        runtime.checkpoint(None)?;
+        if internal_cell_keys[index - 1] == internal_cell_keys[index] {
+            return Err(certificate_failure());
+        }
     }
     runtime.add_verification_storage(runtime.allocation_bytes(
         layer_order.overlap_cells.len(),
@@ -3924,9 +4540,10 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
         .try_reserve_exact(layer_order.overlap_cells.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     for cell in &layer_order.overlap_cells {
+        runtime.checkpoint(None)?;
         snapshot_cell_keys.push(cell.cell_key);
     }
-    if snapshot_cell_keys != internal_cell_keys {
+    if !slices_equal_with_checkpoint(&snapshot_cell_keys, &internal_cell_keys, runtime)? {
         return Err(certificate_failure());
     }
     let internal_cell_entry_bytes = std::mem::size_of::<(OverlapCellKey, &OverlapCell)>()
@@ -3940,6 +4557,7 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
         .try_reserve(cells.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     for cell in cells {
+        runtime.checkpoint(None)?;
         internal_cells.insert(cell.key, cell);
     }
     for snapshot in &layer_order.overlap_cells {
@@ -3948,50 +4566,22 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
             return Err(certificate_failure());
         };
         let expected_order = order_cell_faces(&cell.covering_faces, pair_values, runtime)?;
-        let expected_boundary_structure = runtime.allocation_bytes(
-            cell.boundary.len(),
-            std::mem::size_of::<crate::ExactPointValue>(),
-        )?;
-        let expected_covering_structure = runtime
-            .allocation_bytes(cell.covering_faces.len(), std::mem::size_of::<LayerFace>())?;
-        let expected_order_structure = runtime.allocation_bytes(
-            expected_order.len(),
-            std::mem::size_of::<ori_domain::FaceId>(),
-        )?;
-        let expected_structure = expected_boundary_structure
-            .checked_add(expected_covering_structure)
-            .and_then(|total| total.checked_add(expected_order_structure))
-            .and_then(|total| {
-                total.checked_add(
-                    runtime
-                        .allocation_bytes(expected_order.capacity(), std::mem::size_of::<usize>())
-                        .ok()?,
-                )
-            })
-            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
-        let expected_exact = exact_storage_bytes_points(&cell.boundary)?;
         runtime.ensure_transient_exact_storage(
-            expected_structure
-                .checked_add(expected_exact)
-                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            runtime.allocation_bytes(expected_order.capacity(), std::mem::size_of::<usize>())?,
         )?;
-        if snapshot.exact_boundary
-            != cell
-                .boundary
-                .iter()
-                .map(Point::to_value)
-                .collect::<Vec<_>>()
-            || snapshot.covering_faces
-                != cell
-                    .covering_faces
-                    .iter()
-                    .map(|index| embedding.faces[*index].source.layer)
-                    .collect::<Vec<_>>()
-            || snapshot.bottom_to_top_faces
-                != expected_order
-                    .iter()
-                    .map(|index| embedding.faces[*index].source.layer.face_id)
-                    .collect::<Vec<_>>()
+        if !exact_boundary_matches(&snapshot.exact_boundary, &cell.boundary, runtime)?
+            || !covering_faces_match(
+                &snapshot.covering_faces,
+                &cell.covering_faces,
+                embedding,
+                runtime,
+            )?
+            || !ordered_face_ids_match(
+                &snapshot.bottom_to_top_faces,
+                &expected_order,
+                embedding,
+                runtime,
+            )?
         {
             return Err(certificate_failure());
         }
@@ -4016,7 +4606,9 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
         let mut supporting_cell_poll = 0_usize;
         for cell in cells {
             runtime.poll_control(&mut supporting_cell_poll)?;
-            if cell.covering_faces.contains(&first) && cell.covering_faces.contains(&second) {
+            if slice_contains_with_checkpoint(&cell.covering_faces, &first, runtime)?
+                && slice_contains_with_checkpoint(&cell.covering_faces, &second, runtime)?
+            {
                 if supporting_cells.len() == supporting_cells.capacity() {
                     let prior_capacity = supporting_cells.capacity();
                     let next_capacity = next_vector_capacity(
@@ -4043,7 +4635,9 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
             }
         }
         runtime.checkpoint(None)?;
-        supporting_cells.sort_unstable_by_key(|key| key.0);
+        checkpointed_sort_unstable_by(&mut supporting_cells, runtime, |first, second| {
+            first.0.cmp(&second.0)
+        })?;
         if supporting_cells.is_empty() {
             return Err(certificate_failure());
         }
@@ -4053,15 +4647,14 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
             supporting_cells,
         });
     }
-    expected_face_pair_orders.sort_unstable_by_key(|order| {
-        (
-            order.lower_face.face_key,
-            order.upper_face.face_key,
-            order.lower_face.face_id.canonical_bytes(),
-            order.upper_face.face_id.canonical_bytes(),
-        )
-    });
-    if layer_order.face_pair_orders != expected_face_pair_orders {
+    checkpointed_sort_unstable_by(&mut expected_face_pair_orders, runtime, |first, second| {
+        face_pair_order_sort_key(first).cmp(&face_pair_order_sort_key(second))
+    })?;
+    if !face_pair_orders_equal_with_checkpoint(
+        &layer_order.face_pair_orders,
+        &expected_face_pair_orders,
+        runtime,
+    )? {
         return Err(certificate_failure());
     }
 
@@ -4083,20 +4676,25 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
             runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
         })?;
         for index in order {
+            runtime.checkpoint(None)?;
             mapped.push(embedding.faces[index].source.layer);
         }
         Some(mapped)
     } else {
         None
     };
-    if layer_order.global_bottom_to_top != recomputed_global {
+    if !optional_layer_faces_equal_with_checkpoint(
+        layer_order.global_bottom_to_top.as_deref(),
+        recomputed_global.as_deref(),
+        runtime,
+    )? {
         return Err(certificate_failure());
     }
-    let maximum_ply = cells
-        .iter()
-        .map(|cell| cell.covering_faces.len())
-        .max()
-        .unwrap_or(1);
+    let mut maximum_ply = 1_usize;
+    for cell in cells {
+        runtime.checkpoint(None)?;
+        maximum_ply = maximum_ply.max(cell.covering_faces.len());
+    }
     let Some(summary) = layer_order.proof_summary else {
         return Err(certificate_failure());
     };
@@ -4104,7 +4702,7 @@ fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
         || summary.overlap_face_pairs != pair_values.len()
         || summary.overlap_cells != cells.len()
         || summary.constraints != runtime.work.constraints
-        || summary.search_nodes != runtime.work.search_nodes
+        || expected_search_nodes.is_some_and(|expected| summary.search_nodes != expected)
         || summary.maximum_ply != maximum_ply
     {
         return Err(certificate_failure());
@@ -4137,13 +4735,20 @@ struct ConstraintProblem {
 struct PairValues(Vec<((usize, usize), bool)>);
 
 impl PairValues {
-    fn try_from_parallel(
+    fn try_from_parallel<O: GlobalFlatFoldabilityObserver + ?Sized>(
         variables: &[(usize, usize)],
         assignment: &[bool],
-    ) -> Result<Self, std::collections::TryReserveError> {
+        runtime: &mut Runtime<'_, O>,
+    ) -> FacewiseResult<Self> {
         let mut values = Vec::new();
-        values.try_reserve_exact(variables.len())?;
-        values.extend(variables.iter().copied().zip(assignment.iter().copied()));
+        values.try_reserve_exact(variables.len()).map_err(|_| {
+            runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+        })?;
+        checkpointed_extend(
+            &mut values,
+            variables.iter().copied().zip(assignment.iter().copied()),
+            runtime,
+        )?;
         Ok(Self(values))
     }
 
@@ -4245,7 +4850,7 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
         runtime.poll_control(&mut variable_poll)?;
         variables.push(ordered_pair(pair.first, pair.second));
     }
-    variables.sort_unstable();
+    checkpointed_sort_unstable_by(&mut variables, runtime, Ord::cmp)?;
     let original_variable_count = variables.len();
     variables.dedup();
     if variables.len() != original_variable_count {
@@ -4265,7 +4870,11 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
     fixed_assignments
         .try_reserve_exact(variables.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    fixed_assignments.resize(variables.len(), None);
+    checkpointed_extend(
+        &mut fixed_assignments,
+        (0..variables.len()).map(|_| None),
+        runtime,
+    )?;
 
     for (variable, &(first, second)) in variables.iter().enumerate() {
         runtime.checkpoint(None)?;
@@ -4467,18 +5076,27 @@ fn build_constraint_problem<O: GlobalFlatFoldabilityObserver + ?Sized>(
     // The current target class has only M/V hinges. `Auxiliary` edges are
     // topology annotations (`AuxiliaryIgnored`), not unfolded material
     // creases, so tortilla-tortilla constraints are intentionally zero.
-    constraints.sort_unstable_by(compare_constraints);
+    checkpointed_sort_unstable_by(&mut constraints, runtime, compare_constraints)?;
     let transitivity_insertion = constraints.partition_point(|constraint| {
         constraint_kind_rank(constraint.kind)
             < constraint_kind_rank(FacewiseConstraintKind::Transitivity)
     });
-    let transitivity = TransitivityConstraints::try_new(transitivity_families, variables.len())
-        .ok_or_else(internal_abort)?;
+    let transitivity = TransitivityConstraints::try_new_with_checkpoint(
+        transitivity_families,
+        variables.len(),
+        &mut || runtime.checkpoint(None),
+    )?
+    .ok_or_else(internal_abort)?;
     if transitivity.len() != transitivity_constraint_count {
         return Err(FacewiseAbort::Execution(internal_error()));
     }
-    let constraints = ConstraintSet::new(constraints, transitivity, transitivity_insertion)
-        .ok_or_else(internal_abort)?;
+    let constraints = ConstraintSet::new_with_checkpoint(
+        constraints,
+        transitivity,
+        transitivity_insertion,
+        &mut || runtime.checkpoint(None),
+    )?
+    .ok_or_else(internal_abort)?;
     if record_work {
         runtime.set_constraints(constraints.len())?;
     } else if constraints.len() > runtime.limits.max_constraints {
@@ -4567,7 +5185,11 @@ fn build_transitivity_constraint_family<O: GlobalFlatFoldabilityObserver + ?Size
     covering_faces
         .try_reserve_exact(cell.covering_faces.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    covering_faces.extend_from_slice(&cell.covering_faces);
+    checkpointed_extend(
+        &mut covering_faces,
+        cell.covering_faces.iter().copied(),
+        runtime,
+    )?;
     let mut pair_variables = Vec::new();
     pair_variables
         .try_reserve_exact(pair_count)
@@ -4885,7 +5507,7 @@ fn supporting_cell<O: GlobalFlatFoldabilityObserver + ?Sized>(
         let mut supports_all = true;
         for face in faces {
             runtime.poll_control(&mut control_poll)?;
-            if !cell.covering_faces.contains(face) {
+            if !slice_contains_with_checkpoint(&cell.covering_faces, face, runtime)? {
                 supports_all = false;
                 break;
             }
@@ -5158,21 +5780,25 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
             return Err(abort);
         }
     };
-    if regenerated != *problem || assignment.len() != problem.variables.len() {
-        drop(regenerated);
-        runtime.restore_verification_storage(verification_base);
-        return Err(certificate_failure());
-    }
-    if problem
-        .fixed_assignments
-        .iter()
-        .zip(assignment)
-        .any(|(fixed, value)| fixed.is_some_and(|fixed| fixed != *value))
+    if !constraint_problems_equal_with_checkpoint(&regenerated, problem, runtime)?
+        || assignment.len() != problem.variables.len()
     {
         drop(regenerated);
         runtime.restore_verification_storage(verification_base);
         return Err(certificate_failure());
     }
+    for (fixed, value) in problem.fixed_assignments.iter().zip(assignment) {
+        runtime.checkpoint(None)?;
+        if fixed.is_some_and(|fixed| fixed != *value) {
+            drop(regenerated);
+            runtime.restore_verification_storage(verification_base);
+            return Err(certificate_failure());
+        }
+    }
+    let verifier_workspace =
+        complete_assignment_verification_working_memory_upper_bound(&regenerated.constraints)
+            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    runtime.ensure_transient_exact_storage(verifier_workspace)?;
     let verifier_memory_limit = runtime.remaining_storage_bytes()?;
     let retained_search_nodes = runtime.work.search_nodes;
     let verification = verify_complete_assignment_with_memory(
@@ -5221,8 +5847,7 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         problem.variables.len(),
         std::mem::size_of::<((usize, usize), bool)>(),
     )?)?;
-    let pair_values = PairValues::try_from_parallel(&problem.variables, assignment)
-        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let pair_values = PairValues::try_from_parallel(&problem.variables, assignment, runtime)?;
     if pair_values.len() != pairs.len() {
         return Err(certificate_failure());
     }
@@ -5264,12 +5889,14 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
             }
         }
     }
-    if pair_values
-        .keys()
-        .copied()
-        .ne(actual_pair_areas.iter().map(|(pair, _)| *pair))
-    {
+    if pair_values.len() != actual_pair_areas.len() {
         return Err(certificate_failure());
+    }
+    for (pair, (actual_pair, _)) in pair_values.keys().zip(&actual_pair_areas) {
+        runtime.checkpoint(None)?;
+        if pair != actual_pair {
+            return Err(certificate_failure());
+        }
     }
     runtime.add_verification_storage(
         runtime.allocation_bytes(
@@ -5290,13 +5917,19 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         .try_reserve_exact(embedding.faces.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     for (index, face) in embedding.faces.iter().enumerate() {
-        let class = polygon_representatives
-            .iter()
-            .position(|representative| embedding.faces[*representative].polygon == face.polygon)
-            .unwrap_or_else(|| {
+        runtime.checkpoint(None)?;
+        let class = match find_polygon_representative_with_checkpoint(
+            &polygon_representatives,
+            &embedding.faces,
+            &face.polygon,
+            runtime,
+        )? {
+            Some(class) => class,
+            None => {
                 polygon_representatives.push(index);
                 polygon_representatives.len() - 1
-            });
+            }
+        };
         polygon_classes.push(class);
     }
     // No independent O(F^3) common-interior scan is needed here. The checks
@@ -5350,10 +5983,14 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
             .and_then(|total| total.checked_add(ordered_face_bytes))
             .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
         runtime.add_verification_storage(cell_temporary_bytes)?;
-        let covering_faces_are_unique = cell
-            .covering_faces
-            .windows(2)
-            .all(|faces| faces[0] < faces[1]);
+        let mut covering_faces_are_unique = true;
+        for adjacent in cell.covering_faces.windows(2) {
+            runtime.checkpoint(None)?;
+            if adjacent[0] >= adjacent[1] {
+                covering_faces_are_unique = false;
+                break;
+            }
+        }
         let mut boundary_points_are_unique = true;
         let mut uniqueness_poll = 0_usize;
         for first in 0..cell.boundary.len() {
@@ -5452,7 +6089,10 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         runtime.checkpoint(None)?;
         let mut covered_area = Rational::zero();
         for (cell, area) in cells.iter().zip(&verified_cell_areas) {
-            if cell.covering_faces.contains(first) && cell.covering_faces.contains(second) {
+            runtime.checkpoint(None)?;
+            if slice_contains_with_checkpoint(&cell.covering_faces, first, runtime)?
+                && slice_contains_with_checkpoint(&cell.covering_faces, second, runtime)?
+            {
                 covered_area = add(&covered_area, area, runtime)?;
                 runtime.ensure_transient_exact_storage(exact::rational_storage_bytes(
                     &covered_area,
@@ -5468,7 +6108,8 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
         let expected_area = signed_double_area(&face.polygon, runtime)?;
         let mut covered_area = Rational::zero();
         for (cell, area) in cells.iter().zip(&verified_cell_areas) {
-            if cell.covering_faces.contains(&face_index) {
+            runtime.checkpoint(None)?;
+            if slice_contains_with_checkpoint(&cell.covering_faces, &face_index, runtime)? {
                 covered_area = add(&covered_area, area, runtime)?;
                 runtime.ensure_transient_exact_storage(exact::rational_storage_bytes(
                     &covered_area,
@@ -5494,16 +6135,95 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
     Ok(())
 }
 
+fn constraint_problems_equal_with_checkpoint<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    first: &ConstraintProblem,
+    second: &ConstraintProblem,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<bool> {
+    if first.variables.len() != second.variables.len()
+        || first.fixed_assignments.len() != second.fixed_assignments.len()
+        || first.constraints.len() != second.constraints.len()
+    {
+        return Ok(false);
+    }
+    for (first, second) in first.variables.iter().zip(&second.variables) {
+        runtime.checkpoint(None)?;
+        if first != second {
+            return Ok(false);
+        }
+    }
+    for (first, second) in first
+        .fixed_assignments
+        .iter()
+        .zip(&second.fixed_assignments)
+    {
+        runtime.checkpoint(None)?;
+        if first != second {
+            return Ok(false);
+        }
+    }
+    let iterator_bytes = first
+        .constraints
+        .iterator_working_memory_upper_bound()
+        .and_then(|first| {
+            second
+                .constraints
+                .iterator_working_memory_upper_bound()?
+                .checked_add(first)
+        })
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    runtime.ensure_transient_exact_storage(iterator_bytes)?;
+    for _ in 0..first
+        .constraints
+        .iterator_initialization_records()
+        .checked_add(second.constraints.iterator_initialization_records())
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?
+    {
+        runtime.checkpoint(None)?;
+    }
+    let mut first_constraints = first
+        .constraints
+        .try_iter_with_checkpoint(&mut || runtime.checkpoint(None))?
+        .map_err(|_| runtime.exact_storage_limit_failure(iterator_bytes))?;
+    let mut second_constraints = second
+        .constraints
+        .try_iter_with_checkpoint(&mut || runtime.checkpoint(None))?
+        .map_err(|_| runtime.exact_storage_limit_failure(iterator_bytes))?;
+    loop {
+        runtime.checkpoint(None)?;
+        match (first_constraints.next(), second_constraints.next()) {
+            (Some(first), Some(second)) => {
+                if first.kind() != second.kind()
+                    || first.variables() != second.variables()
+                    || first.allowed_rows() != second.allowed_rows()
+                    || first.faces() != second.faces()
+                    || first.supporting_cell() != second.supporting_cell()
+                {
+                    return Ok(false);
+                }
+            }
+            (None, None) => return Ok(true),
+            _ => return Ok(false),
+        }
+    }
+}
+
 fn verify_embedding_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
     embedding: &FlatEmbedding,
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<()> {
     if embedding.faces.is_empty()
         || embedding.reference_face != 0
-        || embedding.faces[0].transform != Transform::identity()
         || !embedding.faces[0].front_up
         || embedding.material_internal_edge_count != embedding.hinges.len()
     {
+        return Err(certificate_failure());
+    }
+    if !transforms_equal_with_checkpoint(
+        &embedding.faces[0].transform,
+        &Transform::identity(),
+        runtime,
+    )? {
         return Err(certificate_failure());
     }
     let face_set_entry_bytes = std::mem::size_of::<ori_domain::FaceId>()
@@ -5573,9 +6293,11 @@ fn verify_embedding_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
         )?;
         if area.is_negative() {
-            recomputed_polygon.reverse();
+            checkpointed_reverse(&mut recomputed_polygon, runtime)?;
         }
-        if area.is_zero() || recomputed_polygon != face.polygon {
+        if area.is_zero()
+            || !point_slices_equal_with_checkpoint(&recomputed_polygon, &face.polygon, runtime)?
+        {
             return Err(certificate_failure());
         }
     }
@@ -5602,12 +6324,16 @@ fn verify_embedding_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
     parents
         .try_reserve_exact(embedding.faces.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    parents.extend(0..embedding.faces.len());
+    checkpointed_extend(&mut parents, 0..embedding.faces.len(), runtime)?;
     let mut ranks = Vec::new();
     ranks
         .try_reserve_exact(embedding.faces.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    ranks.resize(embedding.faces.len(), 0_u8);
+    checkpointed_extend(
+        &mut ranks,
+        (0..embedding.faces.len()).map(|_| 0_u8),
+        runtime,
+    )?;
     for hinge in &embedding.hinges {
         runtime.checkpoint(None)?;
         if hinge.first_face >= embedding.faces.len()
@@ -5723,20 +6449,21 @@ fn verify_geometric_constraints_direct<O: GlobalFlatFoldabilityObserver + ?Sized
         .try_reserve_exact(embedding.faces.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     for (index, face) in embedding.faces.iter().enumerate() {
-        let class = polygon_representatives
-            .iter()
-            .position(|representative| embedding.faces[*representative].polygon == face.polygon)
-            .unwrap_or_else(|| {
+        runtime.checkpoint(None)?;
+        let class = match find_polygon_representative_with_checkpoint(
+            &polygon_representatives,
+            &embedding.faces,
+            &face.polygon,
+            runtime,
+        )? {
+            Some(class) => class,
+            None => {
                 polygon_representatives.push(index);
                 polygon_representatives.len() - 1
-            });
+            }
+        };
         polygon_classes.push(class);
     }
-    let same_segment = |first: &FoldedHinge, second: &FoldedHinge| {
-        (first.first_point == second.first_point && first.second_point == second.second_point)
-            || (first.first_point == second.second_point
-                && first.second_point == second.first_point)
-    };
     runtime.add_verification_storage(
         runtime.allocation_bytes(
             embedding
@@ -5756,13 +6483,23 @@ fn verify_geometric_constraints_direct<O: GlobalFlatFoldabilityObserver + ?Sized
         .try_reserve_exact(embedding.hinges.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     for (index, hinge) in embedding.hinges.iter().enumerate() {
-        let class = segment_representatives
-            .iter()
-            .position(|representative| same_segment(&embedding.hinges[*representative], hinge))
-            .unwrap_or_else(|| {
-                segment_representatives.push(index);
-                segment_representatives.len() - 1
-            });
+        runtime.checkpoint(None)?;
+        let mut class = None;
+        for (candidate, representative) in segment_representatives.iter().copied().enumerate() {
+            runtime.checkpoint(None)?;
+            if folded_hinges_same_segment_with_checkpoint(
+                &embedding.hinges[representative],
+                hinge,
+                runtime,
+            )? {
+                class = Some(candidate);
+                break;
+            }
+        }
+        let class = class.unwrap_or_else(|| {
+            segment_representatives.push(index);
+            segment_representatives.len() - 1
+        });
         segment_classes.push(class);
     }
     let mut segment_face_overlap = HashMap::<(usize, usize), bool>::new();
@@ -5816,7 +6553,11 @@ fn verify_geometric_constraints_direct<O: GlobalFlatFoldabilityObserver + ?Sized
             continue;
         }
         tournament_outdegrees.clear();
-        tournament_outdegrees.resize(ply, 0_usize);
+        checkpointed_extend(
+            &mut tournament_outdegrees,
+            (0..ply).map(|_| 0_usize),
+            runtime,
+        )?;
         for first_index in 0..ply {
             for second_index in (first_index + 1)..ply {
                 runtime.poll_control(&mut transitivity_poll)?;
@@ -6142,7 +6883,7 @@ fn order_cell_faces<O: GlobalFlatFoldabilityObserver + ?Sized>(
     ordered
         .try_reserve_exact(faces.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    ordered.extend_from_slice(faces);
+    checkpointed_extend(&mut ordered, faces.iter().copied(), runtime)?;
     let mut control_poll = 0_usize;
     for index in 1..ordered.len() {
         let mut cursor = index;
@@ -6200,8 +6941,10 @@ fn canonical_global_linear_extension<O: GlobalFlatFoldabilityObserver + ?Sized>(
     outdegrees
         .try_reserve_exact(face_count)
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    outdegrees.resize(face_count, 0_usize);
+    checkpointed_extend(&mut outdegrees, (0..face_count).map(|_| 0_usize), runtime)?;
+    let mut control_poll = 0_usize;
     for &((first, second), second_above_first) in pair_values.iter() {
+        runtime.poll_control(&mut control_poll)?;
         let lower = if second_above_first { first } else { second };
         outdegrees[lower] = outdegrees[lower]
             .checked_add(1)
@@ -6222,8 +6965,7 @@ fn canonical_global_linear_extension<O: GlobalFlatFoldabilityObserver + ?Sized>(
     indegree
         .try_reserve_exact(face_count)
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    indegree.resize(face_count, 0_usize);
-    let mut control_poll = 0_usize;
+    checkpointed_extend(&mut indegree, (0..face_count).map(|_| 0_usize), runtime)?;
     for &((first, second), second_above_first) in pair_values.iter() {
         runtime.poll_control(&mut control_poll)?;
         let (lower, upper) = if second_above_first {
@@ -6235,18 +6977,33 @@ fn canonical_global_linear_extension<O: GlobalFlatFoldabilityObserver + ?Sized>(
         indegree[upper] += 1;
     }
     for neighbors in &mut outgoing {
-        neighbors.sort_unstable();
+        checkpointed_sort_unstable_by(neighbors, runtime, usize::cmp)?;
     }
     let mut ready = Vec::new();
     ready
         .try_reserve_exact(face_count)
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    ready.extend(indegree.iter().map(|degree| *degree == 0));
+    checkpointed_extend(
+        &mut ready,
+        indegree.iter().map(|degree| *degree == 0),
+        runtime,
+    )?;
     let mut result = Vec::new();
     result
         .try_reserve_exact(face_count)
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
-    while let Some(current) = (0..face_count).find(|index| ready[*index]) {
+    loop {
+        let mut current = None;
+        for (index, is_ready) in ready.iter().copied().enumerate() {
+            runtime.poll_control(&mut control_poll)?;
+            if is_ready {
+                current = Some(index);
+                break;
+            }
+        }
+        let Some(current) = current else {
+            break;
+        };
         runtime.poll_control(&mut control_poll)?;
         ready[current] = false;
         result.push(current);
@@ -6271,3 +7028,9 @@ fn canonical_global_linear_extension<O: GlobalFlatFoldabilityObserver + ?Sized>(
 #[cfg(test)]
 #[path = "facewise/tests.rs"]
 mod tests;
+
+mod revalidation;
+pub(crate) use revalidation::{
+    FacewiseLayerOrderRevalidationFailureV2, FacewiseLayerOrderRevalidationInputV2,
+    FacewiseLayerOrderRevalidationSuccessV2, revalidate_layer_order_snapshot_v2,
+};

@@ -10,6 +10,7 @@ num-bigint.workspace = true
 num-rational = "0.4.2"
 num-traits = "0.2.19"
 ori-domain = { path = "../ori-domain" }
+ori-geometry = { path = "../ori-geometry" }
 ori-topology = { path = "../ori-topology" }
 serde.workspace = true
 serde_json.workspace = true

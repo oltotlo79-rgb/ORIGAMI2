@@ -126,7 +126,7 @@ pub(crate) fn golden_n33_miura_fixture_v2() -> MiuraFixtureV2 {
     )
 }
 
-pub(super) fn miura_fixture_v2_with_profile(
+pub(crate) fn miura_fixture_v2_with_profile(
     configured_max_blocks: usize,
     actual_block_count: usize,
 ) -> MiuraFixtureV2 {

@@ -329,6 +329,8 @@ N=32実fixtureの資源値は、3×3 Miura block（9 face / 12 hinge）と31個�
 
 `2e24e479`の10-bay radial-bifoldはgeometry fixtureのみである。51 material face、60 hinge、20 moving hinge、60 boundary vertex、convex central faceのouter half-edge 30、各bayの厳密opposite ray、Kawasaki、4 Mountain / 2 Valley Maekawa、short moving rayの0.5..=0.6 mm corridorを検証するが、bounded selectorは10を構築前に拒否する。このfixtureはproduction Apply/authority/admission capへ接続せず、production 3..=9 block、E2E 4..=9 block、MUST集計85 / 2 / 0、全体81.96%（表示82.0%）を変更しない。
 
+Phase3Bでは、既存static/V1 clearance・GeneralCell/Compact transport・既存public struct literalを不変にし、additive sibling `CommonArticulationDynamicClosureClearance*V2`を追加した。caller-owned opaque bridgeをissue/revalidationごとに完全replayし、canonical全cross-block pair registryとblock/face/pair/retained/temporary/publication/aggregateの7有限上限をfail-closedで照合する。N=33非静止0.5°→1.5°のissue/replayとN=34 parent face `273`、全exact/one-short、foreign bridge・parent fixed face、canonical・duplicate・同一長wrong-pair・coverage不一致、cancel/deadlineを固定した。結果は`WholeParentPositiveThicknessEvidenceUnavailable`の`Unpromoted`だけで、Debug-only、Clone/serde/V1変換/Deref/bridge・leaf accessor/authorizationを持たず、continuous motion、collision clearance、layer transport、project mutation、Apply、viewerを認可しない。native `ori-collision` lib 726/726 PASSでもSIM-010部分実装、MUST集計85 / 2 / 0、全体81.96%（表示82.0%）と82.29%（表示82.3%）候補のremote CI発効条件は変更しない。
+
 ## 折り手順
 
 | ID | 状態 | 現在の根拠・不足 |

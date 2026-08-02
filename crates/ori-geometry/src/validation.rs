@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 use num_bigint::{BigInt, BigUint, Sign};
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
 
 use crate::{
-    GeometryError, Orientation, PointPolygonRelation, SegmentIntersection, ensure_finite,
-    segment_intersection,
+    GeometryCheckpointError, GeometryError, Orientation, PointPolygonRelation, SegmentIntersection,
+    ensure_finite, segment_intersection,
 };
 
 // The smallest binary64 value is 2^-1074, so every coordinate product can be
@@ -21,6 +21,75 @@ where
         checkpoint()?;
     }
     Ok(())
+}
+
+/// Sorts without allocating a hidden merge buffer and keeps cooperative stop
+/// latency bounded inside the `O(n log n)` work, rather than only before and
+/// after it. The ordering is intentionally unstable, matching every caller
+/// replaced by this helper.
+fn checkpointed_heapsort_by<T, Compare, F, E>(
+    values: &mut [T],
+    mut compare: Compare,
+    checkpoint: &mut F,
+) -> Result<(), E>
+where
+    Compare: FnMut(&T, &T) -> Ordering,
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    fn sift_down<T, Compare, F, E>(
+        values: &mut [T],
+        mut root: usize,
+        end: usize,
+        compare: &mut Compare,
+        checkpoint: &mut F,
+        work: &mut usize,
+    ) -> Result<(), E>
+    where
+        Compare: FnMut(&T, &T) -> Ordering,
+        F: FnMut() -> Result<(), E> + ?Sized,
+    {
+        while let Some(left) = root.checked_mul(2).and_then(|value| value.checked_add(1)) {
+            if left >= end {
+                break;
+            }
+            poll_validation_checkpoint(checkpoint, *work)?;
+            *work = work.saturating_add(1);
+            let right = left + 1;
+            let child = if right < end && compare(&values[left], &values[right]).is_lt() {
+                right
+            } else {
+                left
+            };
+            poll_validation_checkpoint(checkpoint, *work)?;
+            *work = work.saturating_add(1);
+            if !compare(&values[root], &values[child]).is_lt() {
+                break;
+            }
+            values.swap(root, child);
+            root = child;
+        }
+        Ok(())
+    }
+
+    checkpoint()?;
+    let mut work = 1_usize;
+    for root in (0..values.len() / 2).rev() {
+        sift_down(
+            values,
+            root,
+            values.len(),
+            &mut compare,
+            checkpoint,
+            &mut work,
+        )?;
+    }
+    for end in (1..values.len()).rev() {
+        poll_validation_checkpoint(checkpoint, work)?;
+        work = work.saturating_add(1);
+        values.swap(0, end);
+        sift_down(values, 0, end, &mut compare, checkpoint, &mut work)?;
+    }
+    checkpoint()
 }
 
 /// Identifies which endpoint of an edge references a missing vertex.
@@ -507,18 +576,21 @@ where
     // Sweep on the x-axis as a broad phase. This avoids testing every pair for
     // ordinary sparse diagrams while retaining exact narrow-phase semantics.
     let mut by_min_x: Vec<_> = (0..edges.len()).collect();
-    by_min_x.sort_unstable_by(|left, right| {
-        edges[*left]
-            .bounds
-            .min_x
-            .total_cmp(&edges[*right].bounds.min_x)
-            .then_with(|| {
-                edges[*left]
-                    .original_index
-                    .cmp(&edges[*right].original_index)
-            })
-    });
-    checkpoint()?;
+    checkpointed_heapsort_by(
+        &mut by_min_x,
+        |left, right| {
+            edges[*left]
+                .bounds
+                .min_x
+                .total_cmp(&edges[*right].bounds.min_x)
+                .then_with(|| {
+                    edges[*left]
+                        .original_index
+                        .cmp(&edges[*right].original_index)
+                })
+        },
+        checkpoint,
+    )?;
 
     let mut found = Vec::new();
     for (position, left_index) in by_min_x.iter().copied().enumerate() {
@@ -567,7 +639,11 @@ where
     }
 
     checkpoint()?;
-    found.sort_unstable_by_key(|(first, second, _)| (*first, *second));
+    checkpointed_heapsort_by(
+        &mut found,
+        |left, right| (left.0, left.1).cmp(&(right.0, right.1)),
+        checkpoint,
+    )?;
     issues.extend(found.into_iter().map(|(_, _, issue)| issue));
     checkpoint()?;
     Ok(())
@@ -685,15 +761,18 @@ where
     F: FnMut() -> Result<(), E> + ?Sized,
 {
     let mut by_min_x: Vec<_> = (0..edges.len()).collect();
-    by_min_x.sort_unstable_by(|left, right| {
-        edges[*left]
-            .bounds
-            .min_x
-            .total_cmp(&edges[*right].bounds.min_x)
-            .then_with(|| edges[*left].edge.index.cmp(&edges[*right].edge.index))
-            .then_with(|| left.cmp(right))
-    });
-    checkpoint()?;
+    checkpointed_heapsort_by(
+        &mut by_min_x,
+        |left, right| {
+            edges[*left]
+                .bounds
+                .min_x
+                .total_cmp(&edges[*right].bounds.min_x)
+                .then_with(|| edges[*left].edge.index.cmp(&edges[*right].edge.index))
+                .then_with(|| left.cmp(right))
+        },
+        checkpoint,
+    )?;
 
     let mut found = Vec::new();
     for (position, left_index) in by_min_x.iter().copied().enumerate() {
@@ -744,7 +823,11 @@ where
     }
 
     checkpoint()?;
-    found.sort_unstable_by_key(|(first, second, _)| (*first, *second));
+    checkpointed_heapsort_by(
+        &mut found,
+        |left, right| (left.0, left.1).cmp(&(right.0, right.1)),
+        checkpoint,
+    )?;
     issues.extend(found.into_iter().map(|(_, _, issue)| issue));
     checkpoint()?;
     Ok(())
@@ -767,10 +850,30 @@ fn boundary_edges_are_adjacent(first: usize, second: usize, boundary_length: usi
 /// Values too small to represent round to signed zero; values too large to
 /// represent return [`GeometryError::ArithmeticOverflow`].
 pub fn polygon_signed_double_area(points: &[Point2]) -> Result<f64, GeometryError> {
-    for point in points {
-        ensure_finite("polygon point", *point)?;
+    let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+    match polygon_signed_double_area_with_checkpoint(points, &mut checkpoint) {
+        Ok(area) => Ok(area),
+        Err(GeometryCheckpointError::Geometry(error)) => Err(error),
+        Err(GeometryCheckpointError::Checkpoint(never)) => match never {},
     }
-    scaled_bigint_to_f64(exact_polygon_double_area(points), EXACT_PRODUCT_EXPONENT)
+}
+
+/// Checkpointed form of [`polygon_signed_double_area`].
+pub fn polygon_signed_double_area_with_checkpoint<E, F>(
+    points: &[Point2],
+    checkpoint: &mut F,
+) -> Result<f64, GeometryCheckpointError<E>>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint().map_err(GeometryCheckpointError::Checkpoint)?;
+    for point in points {
+        checkpoint().map_err(GeometryCheckpointError::Checkpoint)?;
+        ensure_finite("polygon point", *point).map_err(GeometryCheckpointError::Geometry)?;
+    }
+    let area = exact_polygon_double_area_with_checkpoint(points, checkpoint)
+        .map_err(GeometryCheckpointError::Checkpoint)?;
+    scaled_bigint_to_f64(area, EXACT_PRODUCT_EXPONENT).map_err(GeometryCheckpointError::Geometry)
 }
 
 /// Classifies the exact sign of an ordered polygon boundary.
@@ -781,10 +884,30 @@ pub fn polygon_signed_double_area(points: &[Point2]) -> Result<f64, GeometryErro
 /// only. A positive exact shoelace sum is counter-clockwise; a negative sum is
 /// clockwise; and an exactly zero sum is collinear/zero-area.
 pub fn exact_polygon_orientation(points: &[Point2]) -> Result<Orientation, GeometryError> {
-    for point in points {
-        ensure_finite("polygon point", *point)?;
+    let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+    match exact_polygon_orientation_with_checkpoint(points, &mut checkpoint) {
+        Ok(orientation) => Ok(orientation),
+        Err(GeometryCheckpointError::Geometry(error)) => Err(error),
+        Err(GeometryCheckpointError::Checkpoint(never)) => match never {},
     }
-    Ok(match exact_polygon_double_area(points).sign() {
+}
+
+/// Checkpointed form of [`exact_polygon_orientation`].
+pub fn exact_polygon_orientation_with_checkpoint<E, F>(
+    points: &[Point2],
+    checkpoint: &mut F,
+) -> Result<Orientation, GeometryCheckpointError<E>>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint().map_err(GeometryCheckpointError::Checkpoint)?;
+    for point in points {
+        checkpoint().map_err(GeometryCheckpointError::Checkpoint)?;
+        ensure_finite("polygon point", *point).map_err(GeometryCheckpointError::Geometry)?;
+    }
+    let exact_area = exact_polygon_double_area_with_checkpoint(points, checkpoint)
+        .map_err(GeometryCheckpointError::Checkpoint)?;
+    Ok(match exact_area.sign() {
         Sign::Minus => Orientation::Clockwise,
         Sign::NoSign => Orientation::Collinear,
         Sign::Plus => Orientation::CounterClockwise,
@@ -805,11 +928,15 @@ pub(super) fn exact_triangle_orientation(a: Point2, b: Point2, c: Point2) -> Ori
 /// Classifies the midpoint `(start + end) / 2` without first rounding it to
 /// binary64. All coordinates use integer units of 2^-1074 and the midpoint
 /// numerator keeps its denominator of two through every comparison.
-pub(super) fn exact_segment_midpoint_polygon_relation(
+pub(super) fn exact_segment_midpoint_polygon_relation_with_checkpoint<E, F>(
     start: Point2,
     end: Point2,
     polygon: &[Point2],
-) -> PointPolygonRelation {
+    checkpoint: &mut F,
+) -> Result<PointPolygonRelation, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
     debug_assert!(start.x.is_finite() && start.y.is_finite());
     debug_assert!(end.x.is_finite() && end.y.is_finite());
     debug_assert!(
@@ -818,32 +945,34 @@ pub(super) fn exact_segment_midpoint_polygon_relation(
             .all(|point| point.x.is_finite() && point.y.is_finite())
     );
 
+    checkpoint()?;
     if polygon.is_empty() {
-        return PointPolygonRelation::Outside;
+        return Ok(PointPolygonRelation::Outside);
     }
 
     let midpoint_x = exact_coordinate_units(start.x) + exact_coordinate_units(end.x);
     let midpoint_y = exact_coordinate_units(start.y) + exact_coordinate_units(end.y);
-    let exact_polygon = polygon
-        .iter()
-        .map(|point| {
-            (
-                exact_coordinate_units(point.x),
-                exact_coordinate_units(point.y),
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut exact_polygon = Vec::with_capacity(polygon.len());
+    for point in polygon {
+        checkpoint()?;
+        exact_polygon.push((
+            exact_coordinate_units(point.x),
+            exact_coordinate_units(point.y),
+        ));
+    }
 
     for index in 0..exact_polygon.len() {
+        checkpoint()?;
         let edge_start = &exact_polygon[index];
         let edge_end = &exact_polygon[(index + 1) % exact_polygon.len()];
         if rational_midpoint_on_segment(&midpoint_x, &midpoint_y, edge_start, edge_end) {
-            return PointPolygonRelation::Boundary;
+            return Ok(PointPolygonRelation::Boundary);
         }
     }
 
     let mut winding = 0_i128;
     for index in 0..exact_polygon.len() {
+        checkpoint()?;
         let edge_start = &exact_polygon[index];
         let edge_end = &exact_polygon[(index + 1) % exact_polygon.len()];
         let start_y_scaled = &edge_start.1 << 1_usize;
@@ -859,11 +988,12 @@ pub(super) fn exact_segment_midpoint_polygon_relation(
         }
     }
 
-    if winding == 0 {
+    checkpoint()?;
+    Ok(if winding == 0 {
         PointPolygonRelation::Outside
     } else {
         PointPolygonRelation::Inside
-    }
+    })
 }
 
 fn rational_midpoint_orientation(
@@ -982,8 +1112,24 @@ fn exact_coordinate_units(value: f64) -> BigInt {
 }
 
 fn exact_polygon_double_area(points: &[Point2]) -> BigInt {
+    let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+    match exact_polygon_double_area_with_checkpoint(points, &mut checkpoint) {
+        Ok(area) => area,
+        Err(never) => match never {},
+    }
+}
+
+fn exact_polygon_double_area_with_checkpoint<E, F>(
+    points: &[Point2],
+    checkpoint: &mut F,
+) -> Result<BigInt, E>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint()?;
     let mut exact_area = BigInt::from(0_u8);
     for index in 0..points.len() {
+        checkpoint()?;
         let current = points[index];
         let next = points[(index + 1) % points.len()];
 
@@ -1009,7 +1155,8 @@ fn exact_polygon_double_area(points: &[Point2]) -> BigInt {
         );
     }
 
-    exact_area
+    checkpoint()?;
+    Ok(exact_area)
 }
 
 fn decompose_f64(value: f64) -> (i64, i32) {
@@ -1539,6 +1686,38 @@ mod tests {
     }
 
     #[test]
+    fn exact_polygon_area_and_orientation_can_stop_mid_accumulation() {
+        let points = vec![Point2::new(1.0, 1.0); 4_096];
+        let stop_after = points.len() + 128;
+        let mut orientation_checkpoints = 0_usize;
+        let orientation = exact_polygon_orientation_with_checkpoint(&points, &mut || {
+            orientation_checkpoints += 1;
+            if orientation_checkpoints >= stop_after {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            orientation,
+            Err(GeometryCheckpointError::Checkpoint("cancelled"))
+        );
+        assert_eq!(orientation_checkpoints, stop_after);
+
+        let mut area_checkpoints = 0_usize;
+        let area = polygon_signed_double_area_with_checkpoint(&points, &mut || {
+            area_checkpoints += 1;
+            if area_checkpoints >= stop_after {
+                Err("deadline")
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(area, Err(GeometryCheckpointError::Checkpoint("deadline")));
+        assert_eq!(area_checkpoints, stop_after);
+    }
+
+    #[test]
     fn exact_polygon_area_handles_subnormal_rounding_and_overflow() {
         let minimum_area_side = f64::from_bits(486_u64 << 52);
         assert_eq!(
@@ -1870,6 +2049,24 @@ mod tests {
         assert_eq!(result, Err("cancelled"));
         assert_eq!(checkpoint_calls, 3);
         assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn cooperative_heapsort_aborts_during_ordering_work() {
+        let mut values = (0_u32..4_096).rev().collect::<Vec<_>>();
+        let mut checkpoint_calls = 0_usize;
+
+        let result = checkpointed_heapsort_by(&mut values, Ord::cmp, &mut || {
+            checkpoint_calls += 1;
+            if checkpoint_calls >= 2 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(result, Err("cancelled"));
+        assert_eq!(checkpoint_calls, 2);
     }
 
     #[test]

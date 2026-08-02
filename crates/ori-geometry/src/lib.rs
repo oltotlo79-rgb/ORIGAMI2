@@ -17,7 +17,8 @@ pub use exact_convex_overlap::{
 
 pub use validation::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, PaperValidation, PaperValidationIssue,
-    ValidationIssue, exact_polygon_orientation, polygon_signed_double_area,
+    ValidationIssue, exact_polygon_orientation, exact_polygon_orientation_with_checkpoint,
+    polygon_signed_double_area, polygon_signed_double_area_with_checkpoint,
     validate_crease_pattern, validate_crease_pattern_with_checkpoint, validate_paper,
     validate_paper_with_checkpoint,
 };
@@ -76,6 +77,25 @@ impl fmt::Display for GeometryError {
 }
 
 impl Error for GeometryError {}
+
+/// Distinguishes an invalid geometric input from a caller-requested stop in a
+/// checkpointed predicate.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GeometryCheckpointError<E> {
+    Geometry(GeometryError),
+    Checkpoint(E),
+}
+
+impl<E: fmt::Display> fmt::Display for GeometryCheckpointError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Geometry(error) => error.fmt(formatter),
+            Self::Checkpoint(error) => write!(formatter, "geometry operation stopped: {error}"),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for GeometryCheckpointError<E> {}
 
 /// Classifies the orientation of the ordered triplet `(a, b, c)`.
 ///
@@ -277,14 +297,40 @@ pub fn segment_midpoint_polygon_relation(
     end: Point2,
     polygon: &[Point2],
 ) -> Result<PointPolygonRelation, GeometryError> {
-    ensure_finite("start", start)?;
-    ensure_finite("end", end)?;
-    for vertex in polygon {
-        ensure_finite("polygon point", *vertex)?;
+    let mut checkpoint = || Ok::<(), std::convert::Infallible>(());
+    match segment_midpoint_polygon_relation_with_checkpoint(start, end, polygon, &mut checkpoint) {
+        Ok(relation) => Ok(relation),
+        Err(GeometryCheckpointError::Geometry(error)) => Err(error),
+        Err(GeometryCheckpointError::Checkpoint(never)) => match never {},
     }
-    Ok(validation::exact_segment_midpoint_polygon_relation(
-        start, end, polygon,
-    ))
+}
+
+/// Checkpointed form of [`segment_midpoint_polygon_relation`].
+///
+/// The callback is invoked while validating, materializing, and scanning the
+/// exact polygon, so cancellation and deadlines do not have to wait for a
+/// caller-controlled boundary of arbitrary length. Geometry failures and
+/// cooperative stops remain separate error classes.
+pub fn segment_midpoint_polygon_relation_with_checkpoint<E, F>(
+    start: Point2,
+    end: Point2,
+    polygon: &[Point2],
+    checkpoint: &mut F,
+) -> Result<PointPolygonRelation, GeometryCheckpointError<E>>
+where
+    F: FnMut() -> Result<(), E> + ?Sized,
+{
+    checkpoint().map_err(GeometryCheckpointError::Checkpoint)?;
+    ensure_finite("start", start).map_err(GeometryCheckpointError::Geometry)?;
+    ensure_finite("end", end).map_err(GeometryCheckpointError::Geometry)?;
+    for vertex in polygon {
+        checkpoint().map_err(GeometryCheckpointError::Checkpoint)?;
+        ensure_finite("polygon point", *vertex).map_err(GeometryCheckpointError::Geometry)?;
+    }
+    validation::exact_segment_midpoint_polygon_relation_with_checkpoint(
+        start, end, polygon, checkpoint,
+    )
+    .map_err(GeometryCheckpointError::Checkpoint)
 }
 
 /// Classifies `point` against the directed segment `start -> end`.
@@ -1084,6 +1130,33 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn exact_segment_midpoint_relation_can_stop_during_polygon_materialization() {
+        let polygon = vec![Point2::new(1.0, 1.0); 4_096];
+        let stop_after = polygon.len() + 128;
+        let mut checkpoint_calls = 0_usize;
+
+        let result = segment_midpoint_polygon_relation_with_checkpoint(
+            Point2::new(0.0, 0.0),
+            Point2::new(2.0, 2.0),
+            &polygon,
+            &mut || {
+                checkpoint_calls += 1;
+                if checkpoint_calls >= stop_after {
+                    Err("cancelled")
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert_eq!(
+            result,
+            Err(GeometryCheckpointError::Checkpoint("cancelled"))
+        );
+        assert_eq!(checkpoint_calls, stop_after);
     }
 
     #[test]

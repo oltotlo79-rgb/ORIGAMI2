@@ -12,8 +12,158 @@ use std::{
 
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, Point2, VertexId};
 use ori_geometry::{
-    Orientation, exact_orientation, exact_polygon_orientation, polygon_signed_double_area,
+    GeometryCheckpointError, Orientation, exact_orientation,
+    exact_polygon_orientation_with_checkpoint, polygon_signed_double_area_with_checkpoint,
 };
+
+use crate::{
+    CooperativeAnalysisCheckpoint, CooperativeOperationError, poll_cooperative_checkpoint,
+    run_cooperative_checkpoint,
+};
+
+type DcelResult<T> = Result<T, CooperativeOperationError<DcelBuildError>>;
+
+impl From<DcelBuildError> for CooperativeOperationError<DcelBuildError> {
+    fn from(error: DcelBuildError) -> Self {
+        Self::Operation(error)
+    }
+}
+
+fn complete_without_checkpoint<T>(result: DcelResult<T>) -> Result<T, DcelBuildError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(CooperativeOperationError::Operation(error)) => Err(error),
+        Err(CooperativeOperationError::Aborted(_)) => {
+            unreachable!("the no-op DCEL checkpoint cannot abort")
+        }
+    }
+}
+
+fn dcel_checkpoint<F>(checkpoint: &mut F) -> DcelResult<()>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    run_cooperative_checkpoint(checkpoint)?;
+    Ok(())
+}
+
+fn dcel_poll<F>(checkpoint: &mut F, iteration: usize) -> DcelResult<()>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    poll_cooperative_checkpoint(checkpoint, iteration)?;
+    Ok(())
+}
+
+fn dcel_geometry_result<T>(
+    result: Result<T, GeometryCheckpointError<CooperativeOperationError<DcelBuildError>>>,
+) -> DcelResult<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(GeometryCheckpointError::Checkpoint(abort)) => Err(abort),
+        Err(GeometryCheckpointError::Geometry(_)) => Err(DcelBuildError::AreaFailure.into()),
+    }
+}
+
+pub(crate) fn checkpointed_heapsort_by<T, F, C>(
+    values: &mut [T],
+    mut compare: C,
+    checkpoint: &mut F,
+) -> DcelResult<()>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+    C: FnMut(&T, &T) -> Ordering,
+{
+    fn sift_down<T, F, C>(
+        values: &mut [T],
+        mut root: usize,
+        end: usize,
+        compare: &mut C,
+        checkpoint: &mut F,
+        comparisons: &mut usize,
+    ) -> DcelResult<()>
+    where
+        F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+        C: FnMut(&T, &T) -> Ordering,
+    {
+        loop {
+            let left = root
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(1))
+                .ok_or(DcelBuildError::InternalInvariant)?;
+            if left >= end {
+                return Ok(());
+            }
+            let right = left + 1;
+            let mut largest = left;
+            if right < end {
+                dcel_poll(checkpoint, *comparisons)?;
+                *comparisons = comparisons.wrapping_add(1);
+                if compare(&values[largest], &values[right]) == Ordering::Less {
+                    largest = right;
+                }
+            }
+            dcel_poll(checkpoint, *comparisons)?;
+            *comparisons = comparisons.wrapping_add(1);
+            if compare(&values[root], &values[largest]) != Ordering::Less {
+                return Ok(());
+            }
+            values.swap(root, largest);
+            root = largest;
+        }
+    }
+
+    dcel_checkpoint(checkpoint)?;
+    let mut comparisons = 0;
+    for start in (0..values.len() / 2).rev() {
+        sift_down(
+            values,
+            start,
+            values.len(),
+            &mut compare,
+            checkpoint,
+            &mut comparisons,
+        )?;
+    }
+    for end in (1..values.len()).rev() {
+        dcel_poll(checkpoint, comparisons)?;
+        comparisons = comparisons.wrapping_add(1);
+        values.swap(0, end);
+        sift_down(values, 0, end, &mut compare, checkpoint, &mut comparisons)?;
+    }
+    dcel_checkpoint(checkpoint)
+}
+
+fn checkpointed_reverse<T, F>(values: &mut [T], checkpoint: &mut F) -> DcelResult<()>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    for index in 0..values.len() / 2 {
+        dcel_poll(checkpoint, index)?;
+        values.swap(index, values.len() - 1 - index);
+    }
+    dcel_checkpoint(checkpoint)
+}
+
+fn checkpointed_rotate_left<T, F>(
+    values: &mut [T],
+    amount: usize,
+    checkpoint: &mut F,
+) -> DcelResult<()>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    if values.is_empty() {
+        return Ok(());
+    }
+    let amount = amount % values.len();
+    if amount == 0 {
+        return Ok(());
+    }
+    checkpointed_reverse(&mut values[..amount], checkpoint)?;
+    checkpointed_reverse(&mut values[amount..], checkpoint)?;
+    checkpointed_reverse(values, checkpoint)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct HalfEdgeIndex(pub(crate) usize);
@@ -220,26 +370,45 @@ struct Ray {
 /// global intersection and paper-containment validation to the admission stage
 /// that precedes it.
 pub(crate) fn build_embedding(pattern: &CreasePattern) -> Result<DcelEmbedding, DcelBuildError> {
-    let positions = index_vertices(pattern)?;
-    ensure_unique_edge_ids(pattern)?;
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    complete_without_checkpoint(build_embedding_with_checkpoint(pattern, &mut checkpoint))
+}
 
-    let mut participant_edges = pattern
-        .edges
-        .iter()
-        .filter(|edge| participates_in_topology(edge.kind))
-        .collect::<Vec<_>>();
-    participant_edges.sort_by_key(|edge| edge.id.canonical_bytes());
+pub(crate) fn build_embedding_with_checkpoint<F>(
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> DcelResult<DcelEmbedding>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    dcel_checkpoint(checkpoint)?;
+    let positions = index_vertices(pattern, checkpoint)?;
+    ensure_unique_edge_ids(pattern, checkpoint)?;
+
+    let mut participant_edges = Vec::new();
+    for (index, edge) in pattern.edges.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if participates_in_topology(edge.kind) {
+            participant_edges.push(edge);
+        }
+    }
+    checkpointed_heapsort_by(
+        &mut participant_edges,
+        |left, right| left.id.canonical_bytes().cmp(&right.id.canonical_bytes()),
+        checkpoint,
+    )?;
 
     let mut endpoint_pairs = HashMap::with_capacity(participant_edges.len());
     let mut pending = Vec::with_capacity(participant_edges.len().saturating_mul(2));
     let mut outgoing_by_vertex: HashMap<VertexId, Vec<HalfEdgeIndex>> = HashMap::new();
 
-    for edge in participant_edges {
+    for (index, edge) in participant_edges.into_iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
         let endpoints = canonical_endpoints(edge.start, edge.end);
         let start_position = resolve_endpoint(&positions, edge.id, endpoints.first)?;
         let end_position = resolve_endpoint(&positions, edge.id, endpoints.second)?;
         if endpoints.first == endpoints.second || start_position == end_position {
-            return Err(DcelBuildError::DegenerateEdge { edge: edge.id });
+            return Err(DcelBuildError::DegenerateEdge { edge: edge.id }.into());
         }
 
         let endpoint_key = UndirectedEndpoints::new(endpoints.first, endpoints.second);
@@ -247,7 +416,8 @@ pub(crate) fn build_embedding(pattern: &CreasePattern) -> Result<DcelEmbedding, 
             return Err(DcelBuildError::DuplicateEmbeddedEdge {
                 first,
                 second: edge.id,
-            });
+            }
+            .into());
         }
 
         let forward = HalfEdgeIndex(pending.len());
@@ -276,23 +446,39 @@ pub(crate) fn build_embedding(pattern: &CreasePattern) -> Result<DcelEmbedding, 
             .push(reverse);
     }
 
-    let mut vertices = outgoing_by_vertex.keys().copied().collect::<Vec<_>>();
-    vertices.sort_by_key(VertexId::canonical_bytes);
+    let mut vertices = Vec::with_capacity(outgoing_by_vertex.len());
+    for (index, vertex) in outgoing_by_vertex.keys().copied().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        vertices.push(vertex);
+    }
+    checkpointed_heapsort_by(
+        &mut vertices,
+        |left, right| left.canonical_bytes().cmp(&right.canonical_bytes()),
+        checkpoint,
+    )?;
     let mut rotations = Vec::with_capacity(vertices.len());
-    for vertex in vertices {
+    for (index, vertex) in vertices.into_iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
         let outgoing = outgoing_by_vertex
             .remove(&vertex)
             .ok_or(DcelBuildError::InternalInvariant)?;
-        rotations.push(build_rotation(vertex, outgoing, &pending, &positions)?);
+        rotations.push(build_rotation(
+            vertex, outgoing, &pending, &positions, checkpoint,
+        )?);
     }
 
     let mut next = vec![None; pending.len()];
+    let mut next_operations = 0;
     for rotation in &rotations {
+        dcel_poll(checkpoint, next_operations)?;
+        next_operations = next_operations.wrapping_add(1);
         let degree = rotation.outgoing.len();
         if degree == 0 {
-            return Err(DcelBuildError::InternalInvariant);
+            return Err(DcelBuildError::InternalInvariant.into());
         }
         for (position, outgoing) in rotation.outgoing.iter().copied().enumerate() {
+            dcel_poll(checkpoint, next_operations)?;
+            next_operations = next_operations.wrapping_add(1);
             let incoming = pending
                 .get(outgoing.0)
                 .ok_or(DcelBuildError::InternalInvariant)?
@@ -302,59 +488,63 @@ pub(crate) fn build_embedding(pattern: &CreasePattern) -> Result<DcelEmbedding, 
                 .get_mut(incoming.0)
                 .ok_or(DcelBuildError::InternalInvariant)?;
             if slot.replace(clockwise).is_some() {
-                return Err(DcelBuildError::InternalInvariant);
+                return Err(DcelBuildError::InternalInvariant.into());
             }
         }
     }
 
-    let participant_vertices = rotations
-        .iter()
-        .map(|rotation| {
-            let position = positions
-                .get(&rotation.vertex)
-                .copied()
-                .ok_or(DcelBuildError::InternalInvariant)?;
-            Ok(EmbeddedVertexPosition::new(rotation.vertex, position))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let participant_indices = participant_vertices
-        .iter()
-        .enumerate()
-        .map(|(index, participant)| (participant.vertex, index))
-        .collect::<HashMap<_, _>>();
-    let half_edges = pending
-        .into_iter()
-        .enumerate()
-        .map(|(index, half_edge)| {
-            let next = next[index].ok_or(DcelBuildError::InternalInvariant)?;
-            let origin_position = participant_indices
-                .get(&half_edge.origin)
-                .copied()
-                .ok_or(DcelBuildError::InternalInvariant)?;
-            Ok(EmbeddedHalfEdge {
-                edge: half_edge.edge,
-                kind: half_edge.kind,
-                origin: half_edge.origin,
-                destination: half_edge.destination,
-                twin: half_edge.twin,
-                next,
-                origin_position,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut participant_vertices = Vec::with_capacity(rotations.len());
+    for (index, rotation) in rotations.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        let position = positions
+            .get(&rotation.vertex)
+            .copied()
+            .ok_or(DcelBuildError::InternalInvariant)?;
+        participant_vertices.push(EmbeddedVertexPosition::new(rotation.vertex, position));
+    }
+    let mut participant_indices = HashMap::with_capacity(participant_vertices.len());
+    for (index, participant) in participant_vertices.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        participant_indices.insert(participant.vertex, index);
+    }
+    let mut half_edges = Vec::with_capacity(pending.len());
+    for (index, half_edge) in pending.into_iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        let next = next[index].ok_or(DcelBuildError::InternalInvariant)?;
+        let origin_position = participant_indices
+            .get(&half_edge.origin)
+            .copied()
+            .ok_or(DcelBuildError::InternalInvariant)?;
+        half_edges.push(EmbeddedHalfEdge {
+            edge: half_edge.edge,
+            kind: half_edge.kind,
+            origin: half_edge.origin,
+            destination: half_edge.destination,
+            twin: half_edge.twin,
+            next,
+            origin_position,
+        });
+    }
     let embedding = DcelEmbedding {
         half_edges,
         rotations,
         participant_vertices,
     };
-    verify_embedding(&embedding)?;
+    verify_embedding_with_checkpoint(&embedding, checkpoint)?;
     Ok(embedding)
 }
 
-fn index_vertices(pattern: &CreasePattern) -> Result<HashMap<VertexId, Point2>, DcelBuildError> {
+fn index_vertices<F>(
+    pattern: &CreasePattern,
+    checkpoint: &mut F,
+) -> DcelResult<HashMap<VertexId, Point2>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
     let mut positions = HashMap::with_capacity(pattern.vertices.len());
     let mut duplicate = None;
-    for vertex in &pattern.vertices {
+    for (index, vertex) in pattern.vertices.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
         if positions.insert(vertex.id, vertex.position).is_some()
             && duplicate.is_none_or(|current: VertexId| {
                 vertex.id.canonical_bytes() < current.canonical_bytes()
@@ -364,14 +554,18 @@ fn index_vertices(pattern: &CreasePattern) -> Result<HashMap<VertexId, Point2>, 
         }
     }
     duplicate.map_or(Ok(positions), |vertex| {
-        Err(DcelBuildError::DuplicateVertexId { vertex })
+        Err(DcelBuildError::DuplicateVertexId { vertex }.into())
     })
 }
 
-fn ensure_unique_edge_ids(pattern: &CreasePattern) -> Result<(), DcelBuildError> {
+fn ensure_unique_edge_ids<F>(pattern: &CreasePattern, checkpoint: &mut F) -> DcelResult<()>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
     let mut ids = HashSet::with_capacity(pattern.edges.len());
     let mut duplicate = None;
-    for edge in &pattern.edges {
+    for (index, edge) in pattern.edges.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
         if !ids.insert(edge.id)
             && duplicate
                 .is_none_or(|current: EdgeId| edge.id.canonical_bytes() < current.canonical_bytes())
@@ -379,7 +573,9 @@ fn ensure_unique_edge_ids(pattern: &CreasePattern) -> Result<(), DcelBuildError>
             duplicate = Some(edge.id);
         }
     }
-    duplicate.map_or(Ok(()), |edge| Err(DcelBuildError::DuplicateEdgeId { edge }))
+    duplicate.map_or(Ok(()), |edge| {
+        Err(DcelBuildError::DuplicateEdgeId { edge }.into())
+    })
 }
 
 fn participates_in_topology(kind: EdgeKind) -> bool {
@@ -409,55 +605,63 @@ fn resolve_endpoint(
     }
 }
 
-fn build_rotation(
+fn build_rotation<F>(
     vertex: VertexId,
     outgoing: Vec<HalfEdgeIndex>,
     pending: &[PendingHalfEdge],
     positions: &HashMap<VertexId, Point2>,
-) -> Result<VertexRotation, DcelBuildError> {
+    checkpoint: &mut F,
+) -> DcelResult<VertexRotation>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
     let origin = positions
         .get(&vertex)
         .copied()
         .ok_or(DcelBuildError::InternalInvariant)?;
-    let mut rays = outgoing
-        .into_iter()
-        .map(|half_edge| {
-            let half_edge_record = pending
-                .get(half_edge.0)
-                .ok_or(DcelBuildError::InternalInvariant)?;
-            if half_edge_record.origin != vertex {
-                return Err(DcelBuildError::InternalInvariant);
-            }
-            let destination = positions
-                .get(&half_edge_record.destination)
-                .copied()
-                .ok_or(DcelBuildError::InternalInvariant)?;
-            let half_plane =
-                ray_half_plane(origin, destination).ok_or(DcelBuildError::DegenerateEdge {
-                    edge: half_edge_record.edge,
-                })?;
-            Ok(Ray {
-                half_edge,
+    let mut rays = Vec::with_capacity(outgoing.len());
+    for (index, half_edge) in outgoing.into_iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        let half_edge_record = pending
+            .get(half_edge.0)
+            .ok_or(DcelBuildError::InternalInvariant)?;
+        if half_edge_record.origin != vertex {
+            return Err(DcelBuildError::InternalInvariant.into());
+        }
+        let destination = positions
+            .get(&half_edge_record.destination)
+            .copied()
+            .ok_or(DcelBuildError::InternalInvariant)?;
+        let half_plane =
+            ray_half_plane(origin, destination).ok_or(DcelBuildError::DegenerateEdge {
                 edge: half_edge_record.edge,
-                destination,
-                half_plane,
-                token: half_edge_token(half_edge_record),
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut predicate_failed = false;
-    rays.sort_by(|left, right| {
-        compare_rays(origin, left, right).unwrap_or_else(|()| {
-            predicate_failed = true;
-            left.token.cmp(&right.token)
-        })
-    });
-    if predicate_failed {
-        return Err(DcelBuildError::PredicateFailure { vertex });
+            })?;
+        rays.push(Ray {
+            half_edge,
+            edge: half_edge_record.edge,
+            destination,
+            half_plane,
+            token: half_edge_token(half_edge_record),
+        });
     }
 
-    for pair in rays.windows(2) {
+    let mut predicate_failed = false;
+    checkpointed_heapsort_by(
+        &mut rays,
+        |left, right| {
+            compare_rays(origin, left, right).unwrap_or_else(|()| {
+                predicate_failed = true;
+                left.token.cmp(&right.token)
+            })
+        },
+        checkpoint,
+    )?;
+    if predicate_failed {
+        return Err(DcelBuildError::PredicateFailure { vertex }.into());
+    }
+
+    for (index, pair) in rays.windows(2).enumerate() {
+        dcel_poll(checkpoint, index)?;
         if pair[0].half_plane == pair[1].half_plane
             && exact_orientation(origin, pair[0].destination, pair[1].destination)
                 .map_err(|_| DcelBuildError::PredicateFailure { vertex })?
@@ -468,13 +672,19 @@ fn build_rotation(
                 vertex,
                 first,
                 second,
-            });
+            }
+            .into());
         }
     }
 
+    let mut ordered_outgoing = Vec::with_capacity(rays.len());
+    for (index, ray) in rays.into_iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        ordered_outgoing.push(ray.half_edge);
+    }
     Ok(VertexRotation {
         vertex,
-        outgoing: rays.into_iter().map(|ray| ray.half_edge).collect(),
+        outgoing: ordered_outgoing,
     })
 }
 
@@ -539,7 +749,18 @@ struct PendingCanonicalWalk {
 pub(crate) fn canonical_walks(
     embedding: &DcelEmbedding,
 ) -> Result<Vec<CanonicalWalk>, DcelBuildError> {
-    verify_embedding(embedding)?;
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    complete_without_checkpoint(canonical_walks_with_checkpoint(embedding, &mut checkpoint))
+}
+
+pub(crate) fn canonical_walks_with_checkpoint<F>(
+    embedding: &DcelEmbedding,
+    checkpoint: &mut F,
+) -> DcelResult<Vec<CanonicalWalk>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    verify_embedding_with_checkpoint(embedding, checkpoint)?;
 
     const UNSEEN: u8 = 0;
     const VISITING: u8 = 1;
@@ -548,17 +769,22 @@ pub(crate) fn canonical_walks(
     let mut states = vec![UNSEEN; half_edge_count];
     let mut pending_walks = Vec::new();
 
+    let mut walk_operations = 0;
     for start in 0..half_edge_count {
+        dcel_poll(checkpoint, walk_operations)?;
+        walk_operations = walk_operations.wrapping_add(1);
         if states[start] == COMPLETE {
             continue;
         }
         if states[start] != UNSEEN {
-            return Err(DcelBuildError::InternalInvariant);
+            return Err(DcelBuildError::InternalInvariant.into());
         }
 
         let mut indices = Vec::new();
         let mut current = start;
         loop {
+            dcel_poll(checkpoint, walk_operations)?;
+            walk_operations = walk_operations.wrapping_add(1);
             let state = states
                 .get_mut(current)
                 .ok_or(DcelBuildError::InternalInvariant)?;
@@ -567,7 +793,7 @@ pub(crate) fn canonical_walks(
                     *state = VISITING;
                     indices.push(HalfEdgeIndex(current));
                     if indices.len() > half_edge_count {
-                        return Err(DcelBuildError::InternalInvariant);
+                        return Err(DcelBuildError::InternalInvariant.into());
                     }
                     current = embedding
                         .half_edges
@@ -579,38 +805,56 @@ pub(crate) fn canonical_walks(
                 VISITING if current == start => break,
                 // Re-entering a different point of this traversal forms a
                 // lasso; entering COMPLETE merges into an earlier cycle.
-                VISITING | COMPLETE => return Err(DcelBuildError::InternalInvariant),
-                _ => return Err(DcelBuildError::InternalInvariant),
+                VISITING | COMPLETE => return Err(DcelBuildError::InternalInvariant.into()),
+                _ => return Err(DcelBuildError::InternalInvariant.into()),
             }
         }
 
         for index in &indices {
+            dcel_poll(checkpoint, walk_operations)?;
+            walk_operations = walk_operations.wrapping_add(1);
             let state = states
                 .get_mut(index.0)
                 .ok_or(DcelBuildError::InternalInvariant)?;
             if *state != VISITING {
-                return Err(DcelBuildError::InternalInvariant);
+                return Err(DcelBuildError::InternalInvariant.into());
             }
             *state = COMPLETE;
         }
-        pending_walks.push(canonicalize_and_measure_walk(embedding, indices)?);
+        pending_walks.push(canonicalize_and_measure_walk(
+            embedding, indices, checkpoint,
+        )?);
     }
 
-    if states.iter().any(|state| *state != COMPLETE)
-        || pending_walks
-            .iter()
-            .map(|pending| pending.walk.half_edges.len())
-            .sum::<usize>()
-            != half_edge_count
-    {
-        return Err(DcelBuildError::InternalInvariant);
+    for (index, state) in states.iter().enumerate() {
+        dcel_poll(checkpoint, walk_operations.wrapping_add(index))?;
+        if *state != COMPLETE {
+            return Err(DcelBuildError::InternalInvariant.into());
+        }
+    }
+    let mut walk_half_edges = 0usize;
+    for (index, pending) in pending_walks.iter().enumerate() {
+        dcel_poll(checkpoint, walk_operations.wrapping_add(index))?;
+        walk_half_edges = walk_half_edges
+            .checked_add(pending.walk.half_edges.len())
+            .ok_or(DcelBuildError::InternalInvariant)?;
+    }
+    if walk_half_edges != half_edge_count {
+        return Err(DcelBuildError::InternalInvariant.into());
     }
 
-    pending_walks.sort_by(|left, right| left.tokens.cmp(&right.tokens));
-    Ok(pending_walks
-        .into_iter()
-        .map(|pending| pending.walk)
-        .collect())
+    checkpointed_heapsort_by(
+        &mut pending_walks,
+        |left, right| left.tokens.cmp(&right.tokens),
+        checkpoint,
+    )?;
+    let mut walks = Vec::with_capacity(pending_walks.len());
+    for (index, pending) in pending_walks.into_iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        walks.push(pending.walk);
+    }
+    dcel_checkpoint(checkpoint)?;
+    Ok(walks)
 }
 
 /// Builds one snapshot-owned walk partition and anchors its exterior cycle to
@@ -632,30 +876,59 @@ pub(super) fn build_paper_walks_unchecked(
     pattern: &CreasePattern,
     paper: &Paper,
 ) -> Result<PaperWalkSet, DcelBuildError> {
-    let embedding = build_embedding(pattern)?;
-    let boundary = normalized_ccw_paper_boundary(&embedding, paper)?;
-    let expected_exterior = expected_exterior_cycle(&embedding, &boundary)?;
-    let walks = canonical_walks(&embedding)?;
-    let half_edge_to_walk = index_walk_partition(&embedding, &walks)?;
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    complete_without_checkpoint(build_paper_walks_unchecked_with_checkpoint(
+        pattern,
+        paper,
+        &mut checkpoint,
+    ))
+}
+
+pub(super) fn build_paper_walks_unchecked_with_checkpoint<F>(
+    pattern: &CreasePattern,
+    paper: &Paper,
+    checkpoint: &mut F,
+) -> DcelResult<PaperWalkSet>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    dcel_checkpoint(checkpoint)?;
+    let embedding = build_embedding_with_checkpoint(pattern, checkpoint)?;
+    let boundary = normalized_ccw_paper_boundary(&embedding, paper, checkpoint)?;
+    let expected_exterior = expected_exterior_cycle(&embedding, &boundary, checkpoint)?;
+    let walks = canonical_walks_with_checkpoint(&embedding, checkpoint)?;
+    let half_edge_to_walk = index_walk_partition(&embedding, &walks, checkpoint)?;
     let exterior = *half_edge_to_walk
         .get(expected_exterior[0].0)
         .ok_or(DcelBuildError::InternalInvariant)?;
 
-    if expected_exterior
-        .iter()
-        .any(|half_edge| half_edge_to_walk.get(half_edge.0).copied() != Some(exterior))
-    {
-        return Err(DcelBuildError::ExteriorWalkMismatch);
+    for (index, half_edge) in expected_exterior.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if half_edge_to_walk.get(half_edge.0).copied() != Some(exterior) {
+            return Err(DcelBuildError::ExteriorWalkMismatch.into());
+        }
     }
     let exterior_walk = walks
         .get(exterior.0)
         .ok_or(DcelBuildError::InternalInvariant)?;
-    if exterior_walk.half_edges != expected_exterior
+    if exterior_walk.half_edges.len() != expected_exterior.len()
         || exterior_walk.orientation != Orientation::Clockwise
     {
-        return Err(DcelBuildError::ExteriorWalkMismatch);
+        return Err(DcelBuildError::ExteriorWalkMismatch.into());
+    }
+    for (index, (actual, expected)) in exterior_walk
+        .half_edges
+        .iter()
+        .zip(&expected_exterior)
+        .enumerate()
+    {
+        dcel_poll(checkpoint, index)?;
+        if actual != expected {
+            return Err(DcelBuildError::ExteriorWalkMismatch.into());
+        }
     }
 
+    dcel_checkpoint(checkpoint)?;
     Ok(PaperWalkSet {
         embedding,
         walks,
@@ -672,95 +945,129 @@ fn build_paper_walks(
     build_paper_walks_unchecked(pattern, paper)
 }
 
-fn normalized_ccw_paper_boundary(
+fn normalized_ccw_paper_boundary<F>(
     embedding: &DcelEmbedding,
     paper: &Paper,
-) -> Result<Vec<VertexId>, DcelBuildError> {
-    let mut boundary = paper.boundary_vertices.clone();
+    checkpoint: &mut F,
+) -> DcelResult<Vec<VertexId>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    let mut boundary = Vec::with_capacity(paper.boundary_vertices.len());
+    for (index, vertex) in paper.boundary_vertices.iter().copied().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        boundary.push(vertex);
+    }
     if boundary.len() < 3 {
-        return Err(DcelBuildError::PaperBoundary(
-            PaperBoundaryError::TooFewVertices {
+        return Err(
+            DcelBuildError::PaperBoundary(PaperBoundaryError::TooFewVertices {
                 count: boundary.len(),
-            },
-        ));
+            })
+            .into(),
+        );
     }
 
     let mut seen = HashSet::with_capacity(boundary.len());
-    let duplicate = boundary
-        .iter()
-        .copied()
-        .filter(|vertex| !seen.insert(*vertex))
-        .min_by_key(VertexId::canonical_bytes);
+    let mut duplicate = None;
+    for (index, vertex) in boundary.iter().copied().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if !seen.insert(vertex)
+            && duplicate.is_none_or(|current: VertexId| {
+                vertex.canonical_bytes() < current.canonical_bytes()
+            })
+        {
+            duplicate = Some(vertex);
+        }
+    }
     if let Some(vertex) = duplicate {
-        return Err(DcelBuildError::PaperBoundary(
-            PaperBoundaryError::DuplicateVertex { vertex },
-        ));
+        return Err(
+            DcelBuildError::PaperBoundary(PaperBoundaryError::DuplicateVertex { vertex }).into(),
+        );
     }
 
-    let positions = embedding
-        .participant_vertices
-        .iter()
-        .map(|participant| (participant.vertex, participant.position()))
-        .collect::<HashMap<_, _>>();
-    if let Some(vertex) = boundary
-        .iter()
-        .copied()
-        .filter(|vertex| !positions.contains_key(vertex))
-        .min_by_key(VertexId::canonical_bytes)
-    {
-        return Err(DcelBuildError::PaperBoundary(
-            PaperBoundaryError::MissingVertex { vertex },
-        ));
+    let mut positions = HashMap::with_capacity(embedding.participant_vertices.len());
+    for (index, participant) in embedding.participant_vertices.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        positions.insert(participant.vertex, participant.position());
     }
-    let boundary_positions = boundary
-        .iter()
-        .map(|vertex| {
+    let mut missing = None;
+    for (index, vertex) in boundary.iter().copied().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if !positions.contains_key(&vertex)
+            && missing.is_none_or(|current: VertexId| {
+                vertex.canonical_bytes() < current.canonical_bytes()
+            })
+        {
+            missing = Some(vertex);
+        }
+    }
+    if let Some(vertex) = missing {
+        return Err(
+            DcelBuildError::PaperBoundary(PaperBoundaryError::MissingVertex { vertex }).into(),
+        );
+    }
+    let mut boundary_positions = Vec::with_capacity(boundary.len());
+    for (index, vertex) in boundary.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        boundary_positions.push(
             positions
                 .get(vertex)
                 .copied()
-                .ok_or(DcelBuildError::InternalInvariant)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    match exact_polygon_orientation(&boundary_positions).map_err(|_| DcelBuildError::AreaFailure)? {
+                .ok_or(DcelBuildError::InternalInvariant)?,
+        );
+    }
+    match dcel_geometry_result(exact_polygon_orientation_with_checkpoint(
+        &boundary_positions,
+        &mut || dcel_checkpoint(checkpoint),
+    ))? {
         Orientation::CounterClockwise => {}
-        Orientation::Clockwise => boundary.reverse(),
+        Orientation::Clockwise => checkpointed_reverse(&mut boundary, checkpoint)?,
         Orientation::Collinear => {
-            return Err(DcelBuildError::PaperBoundary(PaperBoundaryError::Collinear));
+            return Err(DcelBuildError::PaperBoundary(PaperBoundaryError::Collinear).into());
         }
     }
 
-    let minimum = boundary
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, vertex)| vertex.canonical_bytes())
-        .map(|(index, _)| index)
-        .ok_or(DcelBuildError::InternalInvariant)?;
-    boundary.rotate_left(minimum);
+    let mut minimum: Option<usize> = None;
+    for (index, vertex) in boundary.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if minimum
+            .is_none_or(|current| vertex.canonical_bytes() < boundary[current].canonical_bytes())
+        {
+            minimum = Some(index);
+        }
+    }
+    checkpointed_rotate_left(
+        &mut boundary,
+        minimum.ok_or(DcelBuildError::InternalInvariant)?,
+        checkpoint,
+    )?;
     Ok(boundary)
 }
 
-fn expected_exterior_cycle(
+fn expected_exterior_cycle<F>(
     embedding: &DcelEmbedding,
     boundary: &[VertexId],
-) -> Result<Vec<HalfEdgeIndex>, DcelBuildError> {
-    let directed = embedding
-        .half_edges
-        .iter()
-        .enumerate()
-        .map(|(index, half_edge)| {
-            (
-                (half_edge.origin, half_edge.destination),
-                HalfEdgeIndex(index),
-            )
-        })
-        .collect::<HashMap<_, _>>();
+    checkpoint: &mut F,
+) -> DcelResult<Vec<HalfEdgeIndex>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    let mut directed = HashMap::with_capacity(embedding.half_edges.len());
+    for (index, half_edge) in embedding.half_edges.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        directed.insert(
+            (half_edge.origin, half_edge.destination),
+            HalfEdgeIndex(index),
+        );
+    }
     if directed.len() != embedding.half_edges.len() {
-        return Err(DcelBuildError::InternalInvariant);
+        return Err(DcelBuildError::InternalInvariant.into());
     }
 
     let mut material = Vec::with_capacity(boundary.len());
     let mut expected_boundary_edges = HashSet::with_capacity(boundary.len());
     for index in 0..boundary.len() {
+        dcel_poll(checkpoint, index)?;
         let start = boundary[index];
         let end = boundary[(index + 1) % boundary.len()];
         let half_edge =
@@ -775,47 +1082,53 @@ fn expected_exterior_cycle(
             .get(half_edge.0)
             .ok_or(DcelBuildError::InternalInvariant)?;
         if record.kind != EdgeKind::Boundary {
-            return Err(DcelBuildError::PaperBoundary(
-                PaperBoundaryError::NonBoundaryPair {
+            return Err(
+                DcelBuildError::PaperBoundary(PaperBoundaryError::NonBoundaryPair {
                     edge: record.edge,
                     kind: record.kind,
-                },
-            ));
+                })
+                .into(),
+            );
         }
         if !expected_boundary_edges.insert(record.edge) {
-            return Err(DcelBuildError::InternalInvariant);
+            return Err(DcelBuildError::InternalInvariant.into());
         }
         material.push(half_edge);
     }
 
-    if let Some(edge) = embedding
-        .half_edges
-        .iter()
-        .enumerate()
-        .filter(|(index, half_edge)| {
-            half_edge.kind == EdgeKind::Boundary
-                && *index < half_edge.twin.0
-                && !expected_boundary_edges.contains(&half_edge.edge)
-        })
-        .map(|(_, half_edge)| half_edge.edge)
-        .min_by_key(EdgeId::canonical_bytes)
-    {
-        return Err(DcelBuildError::PaperBoundary(
-            PaperBoundaryError::UnexpectedBoundaryEdge { edge },
-        ));
+    let mut unexpected = None;
+    for (index, half_edge) in embedding.half_edges.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if half_edge.kind == EdgeKind::Boundary
+            && index < half_edge.twin.0
+            && !expected_boundary_edges.contains(&half_edge.edge)
+            && unexpected.is_none_or(|current: EdgeId| {
+                half_edge.edge.canonical_bytes() < current.canonical_bytes()
+            })
+        {
+            unexpected = Some(half_edge.edge);
+        }
+    }
+    if let Some(edge) = unexpected {
+        return Err(
+            DcelBuildError::PaperBoundary(PaperBoundaryError::UnexpectedBoundaryEdge { edge })
+                .into(),
+        );
     }
 
-    let exterior = material
-        .iter()
-        .map(|half_edge| {
+    let mut exterior = Vec::with_capacity(material.len());
+    for (index, half_edge) in material.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        exterior.push(
             embedding
                 .half_edges
                 .get(half_edge.0)
                 .map(|record| record.twin)
-                .ok_or(DcelBuildError::InternalInvariant)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+                .ok_or(DcelBuildError::InternalInvariant)?,
+        );
+    }
     for index in 0..exterior.len() {
+        dcel_poll(checkpoint, index)?;
         let expected_next = exterior[(index + exterior.len() - 1) % exterior.len()];
         let actual_next = embedding
             .half_edges
@@ -823,101 +1136,130 @@ fn expected_exterior_cycle(
             .map(|record| record.next)
             .ok_or(DcelBuildError::InternalInvariant)?;
         if actual_next != expected_next {
-            return Err(DcelBuildError::ExteriorWalkMismatch);
+            return Err(DcelBuildError::ExteriorWalkMismatch.into());
         }
     }
 
-    let mut canonical = exterior.into_iter().rev().collect::<Vec<_>>();
-    let minimum = canonical
-        .iter()
-        .enumerate()
-        .map(|(index, half_edge)| {
+    let mut canonical = Vec::with_capacity(exterior.len());
+    for (index, half_edge) in exterior.into_iter().rev().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        canonical.push(half_edge);
+    }
+    let mut minimum = None;
+    for (index, half_edge) in canonical.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        let token = embedded_half_edge_token(
             embedding
                 .half_edges
                 .get(half_edge.0)
-                .map(|record| (index, embedded_half_edge_token(record)))
-                .ok_or(DcelBuildError::InternalInvariant)
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .min_by_key(|(_, token)| *token)
-        .map(|(index, _)| index)
-        .ok_or(DcelBuildError::InternalInvariant)?;
-    canonical.rotate_left(minimum);
+                .ok_or(DcelBuildError::InternalInvariant)?,
+        );
+        if minimum.is_none_or(|(_, current)| token < current) {
+            minimum = Some((index, token));
+        }
+    }
+    checkpointed_rotate_left(
+        &mut canonical,
+        minimum.ok_or(DcelBuildError::InternalInvariant)?.0,
+        checkpoint,
+    )?;
     Ok(canonical)
 }
 
-fn index_walk_partition(
+fn index_walk_partition<F>(
     embedding: &DcelEmbedding,
     walks: &[CanonicalWalk],
-) -> Result<Vec<WalkIndex>, DcelBuildError> {
+    checkpoint: &mut F,
+) -> DcelResult<Vec<WalkIndex>>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
     let mut owners = vec![None; embedding.half_edges.len()];
+    let mut operations = 0;
     for (walk_index, walk) in walks.iter().enumerate() {
         for half_edge in &walk.half_edges {
+            dcel_poll(checkpoint, operations)?;
+            operations = operations.wrapping_add(1);
             let owner = owners
                 .get_mut(half_edge.0)
                 .ok_or(DcelBuildError::InternalInvariant)?;
             if owner.replace(WalkIndex(walk_index)).is_some() {
-                return Err(DcelBuildError::InternalInvariant);
+                return Err(DcelBuildError::InternalInvariant.into());
             }
         }
     }
-    owners
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or(DcelBuildError::InternalInvariant)
+    let mut partition = Vec::with_capacity(owners.len());
+    for (index, owner) in owners.into_iter().enumerate() {
+        dcel_poll(checkpoint, operations.wrapping_add(index))?;
+        partition.push(owner.ok_or(DcelBuildError::InternalInvariant)?);
+    }
+    Ok(partition)
 }
 
-fn canonicalize_and_measure_walk(
+fn canonicalize_and_measure_walk<F>(
     embedding: &DcelEmbedding,
     mut half_edges: Vec<HalfEdgeIndex>,
-) -> Result<PendingCanonicalWalk, DcelBuildError> {
+    checkpoint: &mut F,
+) -> DcelResult<PendingCanonicalWalk>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
     if half_edges.is_empty() {
-        return Err(DcelBuildError::InternalInvariant);
+        return Err(DcelBuildError::InternalInvariant.into());
     }
-    let mut tokens = half_edges
-        .iter()
-        .map(|index| {
+    let mut tokens = Vec::with_capacity(half_edges.len());
+    for (index, half_edge) in half_edges.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        tokens.push(embedded_half_edge_token(
             embedding
                 .half_edges
-                .get(index.0)
-                .map(embedded_half_edge_token)
-                .ok_or(DcelBuildError::InternalInvariant)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let minimum = tokens
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, token)| *token)
-        .map(|(index, _)| index)
-        .ok_or(DcelBuildError::InternalInvariant)?;
-    half_edges.rotate_left(minimum);
-    tokens.rotate_left(minimum);
-
-    if tokens.iter().skip(1).any(|token| token == &tokens[0]) {
-        return Err(DcelBuildError::InternalInvariant);
+                .get(half_edge.0)
+                .ok_or(DcelBuildError::InternalInvariant)?,
+        ));
     }
-    let positions = half_edges
-        .iter()
-        .map(|index| {
-            let half_edge = embedding
-                .half_edges
-                .get(index.0)
-                .ok_or(DcelBuildError::InternalInvariant)?;
+    let mut minimum = None;
+    for (index, token) in tokens.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if minimum.is_none_or(|(_, current)| *token < current) {
+            minimum = Some((index, *token));
+        }
+    }
+    let minimum = minimum.ok_or(DcelBuildError::InternalInvariant)?.0;
+    checkpointed_rotate_left(&mut half_edges, minimum, checkpoint)?;
+    checkpointed_rotate_left(&mut tokens, minimum, checkpoint)?;
+
+    for (index, token) in tokens.iter().enumerate().skip(1) {
+        dcel_poll(checkpoint, index)?;
+        if token == &tokens[0] {
+            return Err(DcelBuildError::InternalInvariant.into());
+        }
+    }
+    let mut positions = Vec::with_capacity(half_edges.len());
+    for (index, half_edge) in half_edges.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        let half_edge = embedding
+            .half_edges
+            .get(half_edge.0)
+            .ok_or(DcelBuildError::InternalInvariant)?;
+        positions.push(
             embedding
                 .participant_vertices
                 .get(half_edge.origin_position)
                 .copied()
                 .map(EmbeddedVertexPosition::position)
-                .ok_or(DcelBuildError::InternalInvariant)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let orientation =
-        exact_polygon_orientation(&positions).map_err(|_| DcelBuildError::AreaFailure)?;
-    let signed_double_area =
-        polygon_signed_double_area(&positions).map_err(|_| DcelBuildError::AreaFailure)?;
+                .ok_or(DcelBuildError::InternalInvariant)?,
+        );
+    }
+    let orientation = dcel_geometry_result(exact_polygon_orientation_with_checkpoint(
+        &positions,
+        &mut || dcel_checkpoint(checkpoint),
+    ))?;
+    let signed_double_area = dcel_geometry_result(polygon_signed_double_area_with_checkpoint(
+        &positions,
+        &mut || dcel_checkpoint(checkpoint),
+    ))?;
     if !signed_double_area.is_finite() {
-        return Err(DcelBuildError::AreaFailure);
+        return Err(DcelBuildError::AreaFailure.into());
     }
 
     Ok(PendingCanonicalWalk {
@@ -931,10 +1273,23 @@ fn canonicalize_and_measure_walk(
 }
 
 fn verify_embedding(embedding: &DcelEmbedding) -> Result<(), DcelBuildError> {
+    let mut checkpoint = || CooperativeAnalysisCheckpoint::Continue;
+    complete_without_checkpoint(verify_embedding_with_checkpoint(embedding, &mut checkpoint))
+}
+
+fn verify_embedding_with_checkpoint<F>(
+    embedding: &DcelEmbedding,
+    checkpoint: &mut F,
+) -> DcelResult<()>
+where
+    F: FnMut() -> CooperativeAnalysisCheckpoint + ?Sized,
+{
+    dcel_checkpoint(checkpoint)?;
     if embedding.participant_vertices.len() != embedding.rotations.len() {
-        return Err(DcelBuildError::InternalInvariant);
+        return Err(DcelBuildError::InternalInvariant.into());
     }
     for (index, participant) in embedding.participant_vertices.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
         let position = participant.position();
         if embedding.rotations[index].vertex != participant.vertex
             || !position.x.is_finite()
@@ -945,33 +1300,42 @@ fn verify_embedding(embedding: &DcelEmbedding) -> Result<(), DcelBuildError> {
                     .canonical_bytes()
                     >= participant.vertex.canonical_bytes()
         {
-            return Err(DcelBuildError::InternalInvariant);
+            return Err(DcelBuildError::InternalInvariant.into());
         }
     }
 
     let mut seen_outgoing = vec![false; embedding.half_edges.len()];
+    let mut outgoing_operations = 0;
     for rotation in &embedding.rotations {
+        dcel_poll(checkpoint, outgoing_operations)?;
+        outgoing_operations = outgoing_operations.wrapping_add(1);
         if rotation.outgoing.is_empty() {
-            return Err(DcelBuildError::InternalInvariant);
+            return Err(DcelBuildError::InternalInvariant.into());
         }
         for half_edge in &rotation.outgoing {
+            dcel_poll(checkpoint, outgoing_operations)?;
+            outgoing_operations = outgoing_operations.wrapping_add(1);
             let record = embedding
                 .half_edges
                 .get(half_edge.0)
                 .ok_or(DcelBuildError::InternalInvariant)?;
             if record.origin != rotation.vertex || seen_outgoing[half_edge.0] {
-                return Err(DcelBuildError::InternalInvariant);
+                return Err(DcelBuildError::InternalInvariant.into());
             }
             seen_outgoing[half_edge.0] = true;
         }
     }
-    if seen_outgoing.iter().any(|seen| !seen) {
-        return Err(DcelBuildError::InternalInvariant);
+    for (index, seen) in seen_outgoing.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if !seen {
+            return Err(DcelBuildError::InternalInvariant.into());
+        }
     }
 
     let mut seen_next = vec![false; embedding.half_edges.len()];
     let mut seen_tokens = HashSet::with_capacity(embedding.half_edges.len());
     for (index, half_edge) in embedding.half_edges.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
         let twin = embedding
             .half_edges
             .get(half_edge.twin.0)
@@ -995,14 +1359,17 @@ fn verify_embedding(embedding: &DcelEmbedding) -> Result<(), DcelBuildError> {
             || seen_next[half_edge.next.0]
             || !seen_tokens.insert(embedded_half_edge_token(half_edge))
         {
-            return Err(DcelBuildError::InternalInvariant);
+            return Err(DcelBuildError::InternalInvariant.into());
         }
         seen_next[half_edge.next.0] = true;
     }
-    if seen_next.iter().any(|seen| !seen) {
-        return Err(DcelBuildError::InternalInvariant);
+    for (index, seen) in seen_next.iter().enumerate() {
+        dcel_poll(checkpoint, index)?;
+        if !seen {
+            return Err(DcelBuildError::InternalInvariant.into());
+        }
     }
-    Ok(())
+    dcel_checkpoint(checkpoint)
 }
 
 #[cfg(test)]
@@ -1038,6 +1405,45 @@ mod tests {
             boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
             ..Paper::default()
         }
+    }
+
+    fn radial_pattern(edge_count: usize) -> CreasePattern {
+        let center = vertex(0x100, 0.0, 0.0);
+        let mut vertices = Vec::with_capacity(edge_count + 1);
+        let mut edges = Vec::with_capacity(edge_count);
+        vertices.push(center.clone());
+        for index in 0..edge_count {
+            let angle = std::f64::consts::TAU * index as f64 / edge_count as f64;
+            let outer = vertex(0x200 + index as u64, angle.cos(), angle.sin());
+            edges.push(edge(
+                0x1000 + index as u64,
+                &center,
+                &outer,
+                EdgeKind::Mountain,
+            ));
+            vertices.push(outer);
+        }
+        CreasePattern { vertices, edges }
+    }
+
+    fn convex_boundary_pattern(vertex_count: usize) -> (CreasePattern, Paper) {
+        let mut vertices = Vec::with_capacity(vertex_count);
+        for index in 0..vertex_count {
+            let angle = std::f64::consts::TAU * index as f64 / vertex_count as f64;
+            vertices.push(vertex(0x400 + index as u64, angle.cos(), angle.sin()));
+        }
+        let edges = (0..vertex_count)
+            .map(|index| {
+                edge(
+                    0x2000 + index as u64,
+                    &vertices[index],
+                    &vertices[(index + 1) % vertex_count],
+                    EdgeKind::Boundary,
+                )
+            })
+            .collect();
+        let paper = paper(&vertices.iter().collect::<Vec<_>>());
+        (CreasePattern { vertices, edges }, paper)
     }
 
     fn exterior_records(set: &PaperWalkSet) -> Vec<EmbeddedHalfEdge> {
@@ -1095,6 +1501,101 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(seen.into_iter().all(|was_seen| was_seen));
         assert!(token_sequences.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn checkpointed_embedding_cancels_during_participant_heapsort() {
+        let pattern = radial_pattern(128);
+        let mut checkpoints = 0usize;
+        let result = build_embedding_with_checkpoint(&pattern, &mut || {
+            checkpoints += 1;
+            if checkpoints == 10 {
+                CooperativeAnalysisCheckpoint::Cancelled
+            } else {
+                CooperativeAnalysisCheckpoint::Continue
+            }
+        });
+
+        assert!(matches!(
+            result,
+            Err(CooperativeOperationError::Aborted(
+                crate::CooperativeAnalysisAbort::Cancelled
+            ))
+        ));
+        assert_eq!(checkpoints, 10);
+    }
+
+    #[test]
+    fn checkpointed_walk_enumeration_honors_deadline_mid_cycle() {
+        let embedding = build_embedding(&radial_pattern(128)).expect("star embedding");
+        let mut checkpoints = 0usize;
+        let result = canonical_walks_with_checkpoint(&embedding, &mut || {
+            checkpoints += 1;
+            if checkpoints == 25 {
+                CooperativeAnalysisCheckpoint::DeadlineReached
+            } else {
+                CooperativeAnalysisCheckpoint::Continue
+            }
+        });
+
+        assert!(matches!(
+            result,
+            Err(CooperativeOperationError::Aborted(
+                crate::CooperativeAnalysisAbort::DeadlineReached
+            ))
+        ));
+        assert_eq!(checkpoints, 25);
+    }
+
+    #[test]
+    fn checkpointed_boundary_normalization_cancels_during_exact_orientation() {
+        let (pattern, paper) = convex_boundary_pattern(128);
+        let embedding = build_embedding(&pattern).expect("boundary embedding");
+        let mut checkpoints = 0usize;
+        let result = normalized_ccw_paper_boundary(&embedding, &paper, &mut || {
+            checkpoints += 1;
+            if checkpoints == 200 {
+                CooperativeAnalysisCheckpoint::Cancelled
+            } else {
+                CooperativeAnalysisCheckpoint::Continue
+            }
+        });
+
+        assert!(matches!(
+            result,
+            Err(CooperativeOperationError::Aborted(
+                crate::CooperativeAnalysisAbort::Cancelled
+            ))
+        ));
+        assert_eq!(checkpoints, 200);
+    }
+
+    #[test]
+    fn checkpointed_walk_measurement_honors_deadline_during_signed_area() {
+        let (pattern, _) = convex_boundary_pattern(128);
+        let embedding = build_embedding(&pattern).expect("boundary embedding");
+        let walk = canonical_walks(&embedding)
+            .expect("canonical walks")
+            .into_iter()
+            .max_by_key(|walk| walk.half_edges.len())
+            .expect("boundary walk");
+        let mut checkpoints = 0usize;
+        let result = canonicalize_and_measure_walk(&embedding, walk.half_edges, &mut || {
+            checkpoints += 1;
+            if checkpoints == 450 {
+                CooperativeAnalysisCheckpoint::DeadlineReached
+            } else {
+                CooperativeAnalysisCheckpoint::Continue
+            }
+        });
+
+        assert!(matches!(
+            result,
+            Err(CooperativeOperationError::Aborted(
+                crate::CooperativeAnalysisAbort::DeadlineReached
+            ))
+        ));
+        assert_eq!(checkpoints, 450);
     }
 
     fn outgoing_destinations(embedding: &DcelEmbedding, vertex: VertexId) -> Vec<VertexId> {

@@ -10,14 +10,16 @@ use std::collections::{HashMap, HashSet};
 
 use ori_domain::{CreasePattern, EdgeId, EdgeKind, Paper, VertexId};
 use ori_geometry::{
-    PointPolygonRelation, segment_midpoint_polygon_relation,
-    validate_crease_pattern_with_checkpoint, validate_paper_with_checkpoint,
+    GeometryCheckpointError, PointPolygonRelation,
+    segment_midpoint_polygon_relation_with_checkpoint, validate_crease_pattern_with_checkpoint,
+    validate_paper_with_checkpoint,
 };
 
 use crate::{
     CooperativeAnalysisCheckpoint, CooperativeOperationError,
     dcel::{
-        DcelBuildError, DcelEmbedding, PaperWalkSet, build_embedding, build_paper_walks_unchecked,
+        DcelBuildError, DcelEmbedding, PaperWalkSet, build_embedding_with_checkpoint,
+        build_paper_walks_unchecked_with_checkpoint, checkpointed_heapsort_by,
     },
     poll_cooperative_checkpoint, run_cooperative_checkpoint,
 };
@@ -82,9 +84,9 @@ where
     let validated = validate_for_containment_with_checkpoint(paper, pattern, checkpoint)?;
     let admitted = admit_contained_graph_with_checkpoint(validated, checkpoint)?;
     run_cooperative_checkpoint(checkpoint)?;
-    let walks = build_paper_walks_unchecked(admitted.pattern, admitted.paper).map_err(|error| {
-        CooperativeOperationError::Operation(PaperGraphAdmissionError::Dcel(error))
-    })?;
+    let walks =
+        build_paper_walks_unchecked_with_checkpoint(admitted.pattern, admitted.paper, checkpoint)
+            .map_err(|error| error.map_operation(PaperGraphAdmissionError::Dcel))?;
     run_cooperative_checkpoint(checkpoint)?;
     Ok(walks)
 }
@@ -122,9 +124,8 @@ where
     let validated = validate_for_containment_with_checkpoint(paper, pattern, checkpoint)?;
     let admitted = admit_contained_graph_with_checkpoint(validated, checkpoint)?;
     run_cooperative_checkpoint(checkpoint)?;
-    let embedding = build_embedding(admitted.pattern).map_err(|error| {
-        CooperativeOperationError::Operation(PaperGraphAdmissionError::Dcel(error))
-    })?;
+    let embedding = build_embedding_with_checkpoint(admitted.pattern, checkpoint)
+        .map_err(|error| error.map_operation(PaperGraphAdmissionError::Dcel))?;
     run_cooperative_checkpoint(checkpoint)?;
     Ok(embedding)
 }
@@ -235,7 +236,12 @@ where
             active_edges.push(edge);
         }
     }
-    active_edges.sort_by_key(|edge| edge.id.canonical_bytes());
+    checkpointed_heapsort_by(
+        &mut active_edges,
+        |left, right| left.id.canonical_bytes().cmp(&right.id.canonical_bytes()),
+        checkpoint,
+    )
+    .map_err(|error| error.map_operation(PaperGraphAdmissionError::Dcel))?;
     run_cooperative_checkpoint(checkpoint)?;
 
     for (index, edge) in active_edges.into_iter().enumerate() {
@@ -250,11 +256,26 @@ where
                 PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id },
             )
         })?;
-        match segment_midpoint_polygon_relation(start, end, &boundary).map_err(|_| {
-            CooperativeOperationError::Operation(
-                PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id },
-            )
-        })? {
+        let relation = {
+            let mut geometry_checkpoint = || run_cooperative_checkpoint(checkpoint);
+            match segment_midpoint_polygon_relation_with_checkpoint(
+                start,
+                end,
+                &boundary,
+                &mut geometry_checkpoint,
+            ) {
+                Ok(relation) => relation,
+                Err(GeometryCheckpointError::Checkpoint(abort)) => {
+                    return Err(CooperativeOperationError::Aborted(abort));
+                }
+                Err(GeometryCheckpointError::Geometry(_)) => {
+                    return Err(CooperativeOperationError::Operation(
+                        PaperGraphAdmissionError::ContainmentPredicateFailure { edge: edge.id },
+                    ));
+                }
+            }
+        };
+        match relation {
             PointPolygonRelation::Outside => {
                 return Err(CooperativeOperationError::Operation(
                     PaperGraphAdmissionError::ActiveEdgeOutsidePaper { edge: edge.id },

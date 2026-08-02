@@ -2326,7 +2326,10 @@ const fn map_resource_limit(
         | FlatFoldabilityResource::ExactOperations
         | FlatFoldabilityResource::CertificateBytes
         | FlatFoldabilityResource::LayerOrderSourceBytes
-        | FlatFoldabilityResource::LayerOrderRevalidationPeakBytes => {
+        | FlatFoldabilityResource::LayerOrderRevalidationPeakBytes
+        | FlatFoldabilityResource::CompactPairAssignmentBytes
+        | FlatFoldabilityResource::LayerOrderResultBytes
+        | FlatFoldabilityResource::LayerOrderReconstructionPeakBytes => {
             GlobalFlatFoldabilityUnknownReasonDto::WorkLimitReached
         }
     }

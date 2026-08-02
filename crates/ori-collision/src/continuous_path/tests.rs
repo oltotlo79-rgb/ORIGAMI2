@@ -1538,7 +1538,7 @@ fn two_patch_miura_cactus_has_native_layer_authority() {
         ori_foldability::GlobalFlatFoldabilityLimits::default(),
     )
     .unwrap();
-    assert!(global.layer_order().is_some(), "{:?}", global.outcome);
+    assert!(global.layer_order().is_some(), "{:?}", global.outcome_v2());
 }
 
 #[test]
@@ -7673,7 +7673,7 @@ fn miura_rank_four_fixture_keeps_stationary_global_layer_authority() {
         ori_foldability::GlobalFlatFoldabilityLimits::default(),
     )
     .unwrap();
-    assert!(global.layer_order().is_some(), "{:?}", global.outcome);
+    assert!(global.layer_order().is_some(), "{:?}", global.outcome_v2());
 
     let geometry = MaterialHingeGraphGeometry::prepare(
         &pattern,

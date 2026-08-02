@@ -24,12 +24,17 @@ use ori_topology::{
 use serde::Serialize;
 use thiserror::Error;
 
+mod compact_pair_assignment;
+#[cfg(test)]
+#[path = "compact_pair_assignment/tests.rs"]
+mod compact_pair_assignment_tests;
 mod constraints;
 mod exact;
 mod facewise;
 mod fingerprint;
 mod snapshot_traversal;
 
+pub use compact_pair_assignment::*;
 pub use exact::{ExactAffineTransform, ExactPointValue, ExactRationalValue, ExactSign};
 use fingerprint::fold_model_fingerprint_v1_with_checkpoint;
 pub use fingerprint::{FoldModelFingerprintV1, fold_model_fingerprint_v1};
@@ -1154,6 +1159,9 @@ pub enum FlatFoldabilityResource {
     CertificateBytes,
     LayerOrderSourceBytes,
     LayerOrderRevalidationPeakBytes,
+    CompactPairAssignmentBytes,
+    LayerOrderResultBytes,
+    LayerOrderReconstructionPeakBytes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

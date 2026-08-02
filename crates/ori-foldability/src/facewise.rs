@@ -3658,6 +3658,29 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
     drop(problem);
     runtime.clear_constraint_storage();
 
+    let layer_order =
+        build_layer_order_snapshot(&embedding, &cells, &pair_values, provenance, runtime)?;
+    if let Some(required_pair_orders) = required_pair_orders {
+        verify_required_pair_orders_against_snapshot(&layer_order, required_pair_orders, runtime)?;
+    }
+    let reference_face = embedding.faces[embedding.reference_face].source.layer;
+    Ok(SolveSuccess {
+        reason: GlobalFlatFoldabilityPossibleReason::FacewiseConstraintCertificate {
+            reference_face,
+            overlap_cell_count: layer_order.overlap_cells.len(),
+            constraint_count: runtime.work.constraints,
+        },
+        layer_order,
+    })
+}
+
+fn build_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    embedding: &FlatEmbedding,
+    cells: &[OverlapCell],
+    pair_values: &PairValues,
+    provenance: GlobalFlatFoldabilityProvenance,
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<LayerOrderSnapshot> {
     let reference_face = embedding.faces[embedding.reference_face].source.layer;
     let face_pair_order_bytes = runtime.allocation_bytes(
         pair_values.len(),
@@ -3676,7 +3699,7 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
         };
         let mut supporting_cells = Vec::new();
         let mut supporting_cell_poll = 0_usize;
-        for cell in &cells {
+        for cell in cells {
             runtime.poll_control(&mut supporting_cell_poll)?;
             if cell.covering_faces.contains(&first) && cell.covering_faces.contains(&second) {
                 if supporting_cells.len() == supporting_cells.capacity() {
@@ -3733,7 +3756,7 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
         .try_reserve_exact(cells.len())
         .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
     let mut maximum_ply = 1_usize;
-    for cell in &cells {
+    for cell in cells {
         runtime.checkpoint(None)?;
         let boundary_structure_bytes = runtime.allocation_bytes(
             cell.boundary.len(),
@@ -3750,7 +3773,7 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
             .and_then(|total| total.checked_add(ordered_structure_bytes))
             .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
         runtime.add_certificate_structure_storage(inner_structure_bytes)?;
-        let ordered = order_cell_faces(&cell.covering_faces, &pair_values, runtime)?;
+        let ordered = order_cell_faces(&cell.covering_faces, pair_values, runtime)?;
         runtime.ensure_transient_exact_storage(
             runtime.allocation_bytes(ordered.capacity(), std::mem::size_of::<usize>())?,
         )?;
@@ -3794,7 +3817,7 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
         first.cell_key.0.cmp(&second.cell_key.0)
     })?;
     let global_order =
-        canonical_global_linear_extension(embedding.faces.len(), &pair_values, runtime)?;
+        canonical_global_linear_extension(embedding.faces.len(), pair_values, runtime)?;
     let global_bottom_to_top = if let Some(order) = global_order {
         let final_bytes =
             runtime.allocation_bytes(order.len(), std::mem::size_of::<LayerFace>())?;
@@ -3857,7 +3880,7 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
         certificate_bytes: 0,
     };
     let derivation = layer_order_derivation(
-        &embedding,
+        embedding,
         reference_face,
         overlap_cells.len(),
         runtime.work.constraints,
@@ -3879,23 +3902,13 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
     finalize_certificate_size(&mut layer_order, runtime)?;
     verify_layer_order_snapshot(
         &layer_order,
-        &embedding,
-        &cells,
-        &pair_values,
+        embedding,
+        cells,
+        pair_values,
         provenance,
         runtime,
     )?;
-    if let Some(required_pair_orders) = required_pair_orders {
-        verify_required_pair_orders_against_snapshot(&layer_order, required_pair_orders, runtime)?;
-    }
-    Ok(SolveSuccess {
-        reason: GlobalFlatFoldabilityPossibleReason::FacewiseConstraintCertificate {
-            reference_face,
-            overlap_cell_count: layer_order.overlap_cells.len(),
-            constraint_count: runtime.work.constraints,
-        },
-        layer_order,
-    })
+    Ok(layer_order)
 }
 
 fn verify_required_pair_orders_against_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
@@ -7028,6 +7041,16 @@ fn canonical_global_linear_extension<O: GlobalFlatFoldabilityObserver + ?Sized>(
 #[cfg(test)]
 #[path = "facewise/tests.rs"]
 mod tests;
+
+mod compact_pair_assignment;
+#[cfg(test)]
+pub(crate) use compact_pair_assignment::compact_assignment_from_snapshot_for_test_v2;
+pub(crate) use compact_pair_assignment::{
+    FacewiseCompactPairAssignmentFailureV2, FacewiseCompactPairAssignmentInputV2,
+    FacewiseCompactPairAssignmentSuccessV2, compact_assignment_byte_len_v2,
+    compact_assignment_has_nonzero_tail_v2,
+    reconstruct_layer_order_from_compact_pair_assignment_v2,
+};
 
 mod revalidation;
 pub(crate) use revalidation::{

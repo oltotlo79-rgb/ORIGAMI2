@@ -14,6 +14,8 @@ mod pair_scanner;
 mod phase3i_boundary_configuration;
 #[path = "tests/phase3j_representation_boundary_pose.rs"]
 mod phase3j_representation_boundary_pose;
+#[path = "tests/phase3k_canonical_pose.rs"]
+mod phase3k_canonical_pose;
 #[path = "tests/policy_assertions.rs"]
 mod policy_assertions;
 #[path = "tests/support.rs"]

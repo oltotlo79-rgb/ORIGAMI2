@@ -237,6 +237,27 @@ impl CommonArticulationDynamicGeneralNClosedDyadicRepresentationBoundaryPoseAngl
         self.resources.aggregate_peak_bytes
     }
 
+    pub(super) const fn replay_aggregate_peak_cap_internal_v2(&self) -> usize {
+        self.limits.max_aggregate_peak_bytes
+    }
+
+    pub(super) const fn block_count_cap_internal_v2(&self) -> usize {
+        self.limits.max_blocks
+    }
+
+    pub(super) const fn hinge_count_cap_internal_v2(&self) -> usize {
+        self.limits.max_hinges
+    }
+
+    pub(super) const fn pose_pair_deep_retained_bytes_cap_internal_v2(&self) -> usize {
+        self.limits
+            .max_representation_boundary_poses_deep_retained_bytes
+    }
+
+    pub(super) const fn binding_fingerprint_internal_v2(&self) -> [u8; 32] {
+        self.binding_fingerprint
+    }
+
     pub fn revalidate_v2(
         &self,
         input: CommonArticulationDynamicGeneralNClosedDyadicRepresentationBoundaryPoseAngleIdentityPositiveThicknessPrerequisiteRevalidationInputV2<'_>,

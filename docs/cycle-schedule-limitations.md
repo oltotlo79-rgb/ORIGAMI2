@@ -6,6 +6,7 @@
 - 有理係数、次数、hinge 数、exact arithmetic work、二進分割深さと leaf 数を固定上限で検査する。
 - schedule の係数全体を SHA-256 指紋へ含め、別 schedule の区間閉路証明との差し替えを拒否する。
 - material-local hinge transform を canonical spanning tree から world pose へ右合成し、全 spanning hinge と全 closure hinge を外向き区間で照合する。
+- Phase3Kのcanonical binary64 transform realizationは、positive thicknessを持つ同一scheduled representation-boundary lower/upper pose `Arc`二件だけを対象とする。各poseのspanning-tree transform bitsを再生成して照合するが、caller-tolerance closureを数学的exact closureへ昇格せず、source/application/direction/motion/collision/layer/Apply/viewer/exportを含む下流authorityを発行しない。
 - `u=0` と `u=1` は近傍 sample ではなく exact rational Horner 評価から外向き角度区間を作り、initial pose と requested pose をそれぞれ認証する。
 - native preview は project instance、project、revision、fold-model fingerprint、pose generation、layer-order generation を再検証する。成功した token は一回だけ明示適用できる。
 - schedule がない cycle、unknown field、非 canonical ID、係数上限超過、証明不能 leaf、旧 uniform endpoint 診断だけの入力は mutation token を得ない。

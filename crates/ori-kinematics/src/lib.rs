@@ -69,6 +69,7 @@
 
 #![forbid(unsafe_code)]
 
+mod canonical_binary64_pose_pair_transform_realization_v2;
 mod common_articulation_block_closure_set_v2;
 mod common_articulation_dynamic_closure_bridge_v2;
 mod common_articulation_dynamic_closure_bundle_v2;
@@ -85,6 +86,17 @@ mod tree;
 use ori_domain::{EdgeId, FaceId};
 use thiserror::Error;
 
+pub use canonical_binary64_pose_pair_transform_realization_v2::{
+    CANONICAL_BINARY64_POSE_PAIR_TRANSFORM_REALIZATION_EVIDENCE_MODEL_ID_V2,
+    CanonicalBinary64PosePairTransformRealizationErrorV2,
+    CanonicalBinary64PosePairTransformRealizationEvidenceV2,
+    CanonicalBinary64PosePairTransformRealizationInputV2,
+    CanonicalBinary64PosePairTransformRealizationLimitsV2,
+    CanonicalBinary64PosePairTransformRealizationResourceBoundV2,
+    CanonicalBinary64PosePairTransformRealizationStopV2,
+    prove_canonical_binary64_pose_pair_transform_realization_evidence_v2,
+    prove_canonical_binary64_pose_pair_transform_realization_evidence_with_checkpoint_v2,
+};
 pub use common_articulation_block_closure_set_v2::{
     COMMON_ARTICULATION_BLOCK_CLOSURE_SET_MODEL_ID_V2, CommonArticulationBlockClosureSetErrorV2,
     CommonArticulationBlockClosureSetInputV2, CommonArticulationBlockClosureSetLimitsV2,

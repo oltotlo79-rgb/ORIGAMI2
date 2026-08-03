@@ -339,34 +339,20 @@ pub(super) fn assert_phase3j_representation_boundary_pose_v2<'a>(
         assert_eq!(polls, 1);
     }
 
-    // This replaces the former successful Phase 3I replay. Phase 3J delegates
-    // that exact replay once, then replays the retained K angle identity.
-    let mut full_polls = 0usize;
-    phase3j
-        .revalidate_with_checkpoint_v2(
-            phase3j_replay_input_v2(
-                boundary_configuration_replay_input_v2(
-                    fixture,
-                    policies,
-                    public_limits,
-                    fresh_authority,
-                    coverage_limits,
-                    endpoint_limits,
-                    schedule_limits,
-                    limits,
-                ),
-                &fixture.fixture.audit,
-                &lower_pose,
-                &upper_pose,
-                phase3j_limits,
-            ),
-            || {
-                full_polls += 1;
-                Ok(())
-            },
-        )
-        .expect("fresh semantic-equal source preserves the Phase 3J join");
-    assert!(full_polls > 100);
+    super::phase3k_canonical_pose::assert_phase3k_canonical_pose_v2(
+        phase3j,
+        fixture,
+        policies,
+        public_limits,
+        fresh_authority,
+        coverage_limits,
+        endpoint_limits,
+        schedule_limits,
+        limits,
+        phase3j_limits,
+        &lower_pose,
+        &upper_pose,
+    );
 }
 
 const fn phase3j_limit_values_v2(

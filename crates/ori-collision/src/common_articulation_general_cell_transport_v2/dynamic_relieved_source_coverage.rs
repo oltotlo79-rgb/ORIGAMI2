@@ -39,9 +39,13 @@ mod closed_dyadic_boundary_configuration_positive_thickness;
 #[path = "dynamic_relieved_source_coverage/closed_dyadic_representation_boundary_pose_angle_identity_positive_thickness.rs"]
 mod closed_dyadic_representation_boundary_pose_angle_identity_positive_thickness;
 
+#[path = "dynamic_relieved_source_coverage/closed_dyadic_representation_boundary_pose_canonical_binary64_transform_positive_thickness.rs"]
+mod closed_dyadic_representation_boundary_pose_canonical_binary64_transform_positive_thickness;
+
 pub use closed_dyadic_boundary_configuration_positive_thickness::*;
 pub use closed_dyadic_endpoint_positive_thickness::*;
 pub use closed_dyadic_representation_boundary_pose_angle_identity_positive_thickness::*;
+pub use closed_dyadic_representation_boundary_pose_canonical_binary64_transform_positive_thickness::*;
 
 use validation::{checkpoint_v2, validate_coverage_replay_v2, validate_coverage_v2};
 

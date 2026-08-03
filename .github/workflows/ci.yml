@@ -478,13 +478,21 @@ jobs:
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          # Keep the compact optimized profiles distinct and retain compiled
-          # dependencies even when a later exhaustive test reaches the job cap.
-          key: test-opt2-line-tables-v2
+          # This workspace contains most of the compiled Rust code. Preserve
+          # unchanged workspace artifacts as well as third-party dependencies,
+          # and rotate the immutable cache after enabling that scope.
+          key: test-opt2-line-tables-workspace-v3
           cache-on-failure: true
+          cache-workspace-crates: true
+          # Pull requests may restore the trusted main cache but do not create
+          # branch-scoped duplicates that consume the repository cache quota.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
       - name: Rust tests
         id: rust-tests
+        # Leave enough of the 240-minute job envelope for failure logs and the
+        # rust-cache post action to persist a cold workspace build.
+        timeout-minutes: 205
         shell: bash
         env:
           RUST_BACKTRACE: "1"

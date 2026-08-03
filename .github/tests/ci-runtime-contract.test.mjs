@@ -42,7 +42,13 @@ test('CI fixes one optimized fail-closed profile with fixture sharing and bounde
   const staticRuntime = rustJob.indexOf('Link the Windows Rust test harness to the static MSVC runtime')
   const rustCache = rustJob.indexOf('uses: Swatinem/rust-cache@')
   assert.ok(staticRuntime >= 0 && rustCache > staticRuntime)
-  assert.match(rustJob, /key: test-opt2-line-tables-v2/u)
+  assert.match(rustJob, /key: test-opt2-line-tables-workspace-v3/u)
+  assert.match(rustJob, /cache-workspace-crates: true/u)
+  assert.match(rustJob, /save-if: \$\{\{ github\.ref == 'refs\/heads\/main' \}\}/u)
+  assert.match(
+    rustJob,
+    /- name: Rust tests\s+id: rust-tests\s+[^]*?timeout-minutes: 205\s+shell: bash/u,
+  )
 
   const installAction = 'taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60'
   assert.equal(rustJob.split(installAction).length - 1, 1)
@@ -70,6 +76,11 @@ test('CI fixes one optimized fail-closed profile with fixture sharing and bounde
     /^[ \t]*cargo nextest run -p origami2-desktop --locked --lib --no-fail-fast --test-threads=4 --ignore-default-filter -E 'all\(\)'[ \t]*$/mu,
   )
   assert.doesNotMatch(commands, /cargo nextest run -p origami2-desktop[^\r\n]*--release/u)
+  assert.match(
+    rustJob,
+    /cargo clippy --workspace --locked --all-targets --all-features -- -D warnings/u,
+  )
+  assert.doesNotMatch(rustJob, /cargo clippy --profile test/u)
   assertInOrder(commands, [
     'run_component ori-collision-fixture-shared-test-profile',
     'run_component workspace-core-excluding-collision-test-profile',

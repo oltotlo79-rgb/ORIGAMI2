@@ -173,16 +173,23 @@ pub use interval::{
 };
 pub use schedule::{
     CANONICAL_CYCLE_SCHEDULE_CLOSED_DYADIC_BOUNDARY_EVIDENCE_MODEL_ID_V2,
-    CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2, CanonicalCycleScheduleClosedDyadicBoundaryEvidenceV2,
+    CANONICAL_CYCLE_SCHEDULE_MODEL_ID_V2,
+    CANONICAL_CYCLE_SCHEDULE_REPRESENTATION_BOUNDARY_POSE_ANGLE_IDENTITY_EVIDENCE_MODEL_ID_V2,
+    CanonicalCycleScheduleClosedDyadicBoundaryEvidenceV2,
+    CanonicalCycleScheduleRepresentationBoundaryPoseAngleIdentityEvidenceV2,
+    CanonicalCycleScheduleRepresentationBoundaryPoseAngleIdentityInputV2,
+    CanonicalCycleScheduleRepresentationBoundaryPoseAngleIdentityLimitsV2,
     CanonicalCycleScheduleV1, CycleScheduleClosedDyadicBoundaryErrorV2,
     CycleScheduleClosedDyadicBoundaryResourceBoundV2, CycleScheduleClosedDyadicBoundaryStopV2,
     CycleScheduleDyadicEvaluationErrorV2, CycleScheduleDyadicEvaluationStopV2,
     CycleScheduleDyadicWorkspaceBoundV2, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
-    CycleSchedulePrepareErrorV1, CycleScheduleRestrictionErrorV1, CycleScheduleRestrictionStopV1,
-    EXACT_COMMON_LINEAR_CYCLE_PROFILE_MODEL_ID_V1, ExactCommonLinearCycleProfileErrorV1,
-    ExactCommonLinearCycleProfileLimitsV1, ExactCommonLinearCycleProfileV1,
-    GeneratedMultiHingePathCandidateV1, HalfAngleDomainV1, HalfAngleRationalEntryInputV1,
-    MultiHingePathCandidateErrorV1, MultiHingePathCandidateLimitsV1,
+    CycleSchedulePrepareErrorV1, CycleScheduleRepresentationBoundaryPoseAngleIdentityErrorV2,
+    CycleScheduleRepresentationBoundaryPoseAngleIdentityResourceBoundV2,
+    CycleScheduleRepresentationBoundaryPoseAngleIdentityStopV2, CycleScheduleRestrictionErrorV1,
+    CycleScheduleRestrictionStopV1, EXACT_COMMON_LINEAR_CYCLE_PROFILE_MODEL_ID_V1,
+    ExactCommonLinearCycleProfileErrorV1, ExactCommonLinearCycleProfileLimitsV1,
+    ExactCommonLinearCycleProfileV1, GeneratedMultiHingePathCandidateV1, HalfAngleDomainV1,
+    HalfAngleRationalEntryInputV1, MultiHingePathCandidateErrorV1, MultiHingePathCandidateLimitsV1,
     PoleFreeBernsteinCertificateV1, PreparedHalfAngleRationalEntryV1, RationalCoefficientV1,
     admit_canonical_multi_hinge_path_candidate_v1, deterministic_half_angle_ratio_degrees_v1,
     evaluate_half_angle_rational_degrees_interval_v1,
@@ -192,6 +199,8 @@ pub use schedule::{
     generate_bounded_degree_four_kawasaki_path_candidate_v1,
     generate_kawasaki_120_120_60_60_path_candidate_v1,
     generate_linear_multi_hinge_path_candidate_v1, prepare_pole_free_bernstein_certificate_v1,
+    prove_canonical_cycle_schedule_representation_boundary_pose_angle_identity_evidence_v2,
+    prove_canonical_cycle_schedule_representation_boundary_pose_angle_identity_evidence_with_checkpoint_v2,
 };
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};
 pub use tree::{

@@ -4,6 +4,11 @@ mod binding;
 mod evaluate;
 mod resources;
 
+#[path = "closed_dyadic_boundary_v2/representation_boundary_pose_angle_identity.rs"]
+mod representation_boundary_pose_angle_identity;
+
+pub use representation_boundary_pose_angle_identity::*;
+
 pub const CANONICAL_CYCLE_SCHEDULE_CLOSED_DYADIC_BOUNDARY_EVIDENCE_MODEL_ID_V2: &str =
     "canonical_cycle_schedule_closed_dyadic_boundary_evidence_v2";
 

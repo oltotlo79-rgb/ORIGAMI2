@@ -81,6 +81,30 @@ fn closed_dyadic_boundary_resource_bound_reports_borrowed_schedule_separately() 
 }
 
 #[test]
+fn closed_dyadic_boundary_shallow_workspace_projection_matches_deep_bound_for_both_representations()
+{
+    let ordinary = policy_schedule_v2();
+    let half_angle = half_angle_schedule_v2(vec![HalfAngleRationalEntryInputV1 {
+        edge: test_edge_v2(b"workspace-projection-half"),
+        u_domain: [rational_v2(0, 1), rational_v2(1, 1)],
+        numerator_power_coefficients: vec![rational_v2(0, 1), rational_v2(1, 1)],
+        denominator_power_coefficients: vec![rational_v2(1, 1)],
+    }]);
+    let limits = CycleScheduleLimitsV1::default();
+    for schedule in [&ordinary, &half_angle] {
+        let deep = schedule
+            .checked_closed_dyadic_boundary_resource_bound_v2(limits)
+            .unwrap();
+        let projected_shape =
+            resources::checked_resource_projection_shape_v2(schedule, &mut || Ok(())).unwrap();
+        assert_eq!(
+            resources::checked_projected_boundary_workspace_peak_v2(projected_shape, limits),
+            Some(deep.workspace_peak_bytes_upper_bound_v2())
+        );
+    }
+}
+
+#[test]
 fn closed_dyadic_boundary_maps_entry_and_midstream_cooperative_stops() {
     let schedule = policy_schedule_v2();
     let limits = CycleScheduleLimitsV1::default();
@@ -136,6 +160,9 @@ fn closed_dyadic_boundary_checked_work_formula_fails_closed_on_overflow() {
         ordinary_coefficient_count: 0,
         half_angle_power_coefficient_count: usize::MAX,
         retained_scan_visits: usize::MAX,
+        ordinary_max_coefficient_count: 0,
+        half_angle_max_coefficient_count: usize::MAX,
+        has_empty_coefficient_vector: false,
     };
     assert_eq!(
         resources::checked_logical_work_required_v2(shape, CycleScheduleLimitsV1::default()),

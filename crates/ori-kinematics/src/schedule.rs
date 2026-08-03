@@ -23,8 +23,18 @@ use dyadic_endpoint::ordinary_dyadic_chebyshev_interval_v2;
 
 pub use closed_dyadic_boundary_v2::{
     CANONICAL_CYCLE_SCHEDULE_CLOSED_DYADIC_BOUNDARY_EVIDENCE_MODEL_ID_V2,
-    CanonicalCycleScheduleClosedDyadicBoundaryEvidenceV2, CycleScheduleClosedDyadicBoundaryErrorV2,
-    CycleScheduleClosedDyadicBoundaryResourceBoundV2, CycleScheduleClosedDyadicBoundaryStopV2,
+    CANONICAL_CYCLE_SCHEDULE_REPRESENTATION_BOUNDARY_POSE_ANGLE_IDENTITY_EVIDENCE_MODEL_ID_V2,
+    CanonicalCycleScheduleClosedDyadicBoundaryEvidenceV2,
+    CanonicalCycleScheduleRepresentationBoundaryPoseAngleIdentityEvidenceV2,
+    CanonicalCycleScheduleRepresentationBoundaryPoseAngleIdentityInputV2,
+    CanonicalCycleScheduleRepresentationBoundaryPoseAngleIdentityLimitsV2,
+    CycleScheduleClosedDyadicBoundaryErrorV2, CycleScheduleClosedDyadicBoundaryResourceBoundV2,
+    CycleScheduleClosedDyadicBoundaryStopV2,
+    CycleScheduleRepresentationBoundaryPoseAngleIdentityErrorV2,
+    CycleScheduleRepresentationBoundaryPoseAngleIdentityResourceBoundV2,
+    CycleScheduleRepresentationBoundaryPoseAngleIdentityStopV2,
+    prove_canonical_cycle_schedule_representation_boundary_pose_angle_identity_evidence_v2,
+    prove_canonical_cycle_schedule_representation_boundary_pose_angle_identity_evidence_with_checkpoint_v2,
 };
 pub(crate) use dyadic_workspace_v2::ExactParallelCutProfileErrorV2;
 pub use dyadic_workspace_v2::{

@@ -217,8 +217,23 @@ pub(super) fn assert_boundary_configuration_preflight_limits_and_entry_stops_v2(
         limits.max_publication_bytes,
         limits.max_aggregate_peak_bytes,
     ];
+    let required = [
+        certificate.actual_block_count_v2(),
+        certificate.hinge_count_v2(),
+        certificate.schedule_deep_retained_bytes_upper_bound_v2(),
+        certificate.boundary_evidence_logical_work_v2(),
+        certificate.boundary_evidence_workspace_bytes_upper_bound_v2(),
+        certificate.retained_endpoint_prerequisite_bytes_v2(),
+        certificate.publication_bytes_v2(),
+        certificate.aggregate_peak_bytes_upper_bound_v2(),
+    ];
     for (field, exact) in values.into_iter().enumerate() {
         for invalid in [0, exact - 1, usize::MAX] {
+            let expected = if invalid == 0 || invalid == usize::MAX || invalid < required[field] {
+                CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteErrorV2::ResourceLimit
+            } else {
+                CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteErrorV2::CertificateBindingMismatch
+            };
             assert_eq!(
                 certificate.revalidate_v2(boundary_configuration_replay_input_v2(
                     fixture,
@@ -230,7 +245,7 @@ pub(super) fn assert_boundary_configuration_preflight_limits_and_entry_stops_v2(
                     schedule_limits,
                     set_boundary_configuration_limit_v2(limits, field, invalid),
                 )),
-                Err(CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteErrorV2::ResourceLimit),
+                Err(expected),
                 "boundary-configuration limit {field} rejects {invalid}"
             );
         }

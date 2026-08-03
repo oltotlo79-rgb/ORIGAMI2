@@ -3,10 +3,8 @@
 //! This module deliberately defines no `#[test]`; its helper consumes Phase
 //! 3H once, and the existing integration test remains the sole heavy proof.
 
-use ori_core::analyze_global_flat_foldability;
-use ori_foldability::{GlobalFlatFoldabilityLimits, GlobalFlatLayerOrderSourceAuthorityV2};
-
 use super::super::*;
+use super::phase3j_representation_boundary_pose::assert_phase3j_representation_boundary_pose_v2;
 use super::policy_assertions::assert_boundary_configuration_preflight_limits_and_entry_stops_v2;
 use super::support::*;
 use crate::CommonArticulationDynamicGeneralNRelievedClearanceLimitsV2;
@@ -16,6 +14,8 @@ use crate::dynamic_general_n_positive_thickness_v2::ordinary_interval::tests::{
     relief_support::{ReliefFixtureInputV2, relief_policies_v2},
     support::{OrdinaryFixtureV2, n34_fixture_v2, nonstationary_schedule_for_fixed_face_v2},
 };
+use ori_core::analyze_global_flat_foldability;
+use ori_foldability::{GlobalFlatFoldabilityLimits, GlobalFlatLayerOrderSourceAuthorityV2};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn assert_phase3i_boundary_configuration_v2<'a>(
@@ -38,8 +38,20 @@ pub(super) fn assert_phase3i_boundary_configuration_v2<'a>(
     );
     assert!(endpoint.matches_geometry_instance_v2(&fixture.fixture.geometry));
     let schedule_limits = public_limits.ordinary.schedule_limits;
-    let limits =
+    let exact_limits =
         exact_boundary_configuration_limits_v2(&endpoint, &fixture.schedule, schedule_limits);
+    let mut limits = exact_limits;
+    // Exercise genuine cap semantics: the six upper caps may be wider than
+    // actual occupancy, while the two work identities remain exact and replay
+    // preserves the whole policy.
+    limits.max_blocks += 1;
+    limits.max_hinges += 1;
+    limits.max_schedule_deep_retained_bytes += 1;
+    limits.max_retained_endpoint_prerequisite_bytes += 1;
+    limits.max_publication_bytes += 1;
+    // The wider schedule cap can raise the declared aggregate by one byte;
+    // leave another byte of genuine aggregate slack beyond it.
+    limits.max_aggregate_peak_bytes += 2;
     let boundary = prove_common_articulation_dynamic_general_n_closed_dyadic_boundary_configuration_positive_thickness_prerequisite_v2(
         CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteInputV2 {
             geometry: &fixture.fixture.geometry,
@@ -51,14 +63,19 @@ pub(super) fn assert_phase3i_boundary_configuration_v2<'a>(
     )
     .expect("Phase 3H and kinematics boundaries share one exact schedule and geometry instance");
     assert_eq!(boundary.actual_block_count_v2(), 33);
+    assert!(boundary.actual_block_count_v2() < boundary.block_count_cap_internal_v2());
     assert_eq!(boundary.material_face_count_v2(), 265);
     assert_eq!(boundary.source_order_pair_count_v2(), 34_980);
-    assert_eq!(boundary.hinge_count_v2(), limits.max_hinges);
+    assert!(boundary.hinge_count_v2() < limits.max_hinges);
+    assert_eq!(boundary.hinge_count_cap_internal_v2(), limits.max_hinges);
     assert_eq!(boundary.closed_dyadic_boundary_configuration_count_v2(), 2);
     assert!(boundary.both_closed_dyadic_boundary_configurations_have_positive_thickness_v2());
-    assert_eq!(
-        boundary.retained_endpoint_prerequisite_bytes_v2(),
-        limits.max_retained_endpoint_prerequisite_bytes
+    assert!(
+        boundary.retained_endpoint_prerequisite_bytes_v2()
+            < limits.max_retained_endpoint_prerequisite_bytes
+    );
+    assert!(
+        exact_limits.max_schedule_deep_retained_bytes < limits.max_schedule_deep_retained_bytes
     );
     assert_eq!(
         boundary.schedule_deep_retained_bytes_upper_bound_v2(),
@@ -72,14 +89,8 @@ pub(super) fn assert_phase3i_boundary_configuration_v2<'a>(
         boundary.boundary_evidence_workspace_bytes_upper_bound_v2(),
         limits.max_boundary_evidence_workspace_bytes
     );
-    assert_eq!(
-        boundary.publication_bytes_v2(),
-        limits.max_publication_bytes
-    );
-    assert_eq!(
-        boundary.aggregate_peak_bytes_upper_bound_v2(),
-        limits.max_aggregate_peak_bytes
-    );
+    assert!(boundary.publication_bytes_v2() < limits.max_publication_bytes);
+    assert!(boundary.aggregate_peak_bytes_upper_bound_v2() < limits.max_aggregate_peak_bytes);
     assert!(!boundary.authorizes_continuous_motion());
     assert!(!boundary.authorizes_collision_clearance());
     assert!(!boundary.authorizes_layer_transport());
@@ -202,29 +213,6 @@ pub(super) fn assert_phase3i_boundary_configuration_v2<'a>(
         limits,
     );
 
-    // This replaces the former successful Phase 3H replay. Phase 3I delegates
-    // that exact replay, so the golden test retains one full collision proof.
-    let mut full_polls = 0usize;
-    boundary
-        .revalidate_with_checkpoint_v2(
-            boundary_configuration_replay_input_v2(
-                fixture,
-                policies,
-                public_limits,
-                fresh_authority,
-                coverage_limits,
-                endpoint_limits,
-                schedule_limits,
-                limits,
-            ),
-            || {
-                full_polls += 1;
-                Ok(())
-            },
-        )
-        .expect("fresh semantic-equal source preserves the joined boundary prerequisite");
-    assert!(full_polls > 100);
-
     let foreign_live = super::super::super::test_support::small_live_global_input_v2();
     let foreign_report = analyze_global_flat_foldability(
         foreign_live.input(),
@@ -273,6 +261,18 @@ pub(super) fn assert_phase3i_boundary_configuration_v2<'a>(
             limits,
         )),
         Err(CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteErrorV2::CertificateBindingMismatch)
+    );
+
+    assert_phase3j_representation_boundary_pose_v2(
+        boundary,
+        fixture,
+        policies,
+        public_limits,
+        fresh_authority,
+        coverage_limits,
+        endpoint_limits,
+        schedule_limits,
+        limits,
     );
 }
 

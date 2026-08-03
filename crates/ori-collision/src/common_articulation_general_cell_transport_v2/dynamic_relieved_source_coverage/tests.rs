@@ -12,6 +12,8 @@ mod integration;
 mod pair_scanner;
 #[path = "tests/phase3i_boundary_configuration.rs"]
 mod phase3i_boundary_configuration;
+#[path = "tests/phase3j_representation_boundary_pose.rs"]
+mod phase3j_representation_boundary_pose;
 #[path = "tests/policy_assertions.rs"]
 mod policy_assertions;
 #[path = "tests/support.rs"]

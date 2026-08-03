@@ -263,6 +263,63 @@ pub(super) fn exact_boundary_configuration_limits_v2(
     }
 }
 
+pub(super) fn exact_phase3j_limits_v2(
+    boundary: &CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteV2,
+    pose_identity: &ori_kinematics::CanonicalCycleScheduleRepresentationBoundaryPoseAngleIdentityEvidenceV2,
+) -> CommonArticulationDynamicGeneralNClosedDyadicRepresentationBoundaryPoseAngleIdentityPositiveThicknessPrerequisiteLimitsV2{
+    let retained_boundary = size_of::<
+        CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteV2,
+    >();
+    let publication = size_of::<
+        CommonArticulationDynamicGeneralNClosedDyadicRepresentationBoundaryPoseAngleIdentityPositiveThicknessPrerequisiteV2,
+    >();
+    let pose_bytes =
+        pose_identity.replay_representation_boundary_poses_deep_retained_bytes_cap_v2();
+    let boundary_replay_phase = boundary.replay_aggregate_peak_cap_internal_v2()
+        + (publication - retained_boundary)
+        + pose_bytes;
+    let pose_join_phase = publication
+        + pose_identity.replay_schedule_deep_retained_bytes_cap_v2()
+        + pose_bytes
+        + pose_identity.workspace_peak_bytes_upper_bound_v2()
+        + size_of::<
+            ori_kinematics::CanonicalCycleScheduleRepresentationBoundaryPoseAngleIdentityEvidenceV2,
+        >();
+    let composition_phase = publication
+        + super::super::closed_dyadic_representation_boundary_pose_angle_identity_positive_thickness::COMPOSITION_WORKSPACE_BYTES_V2;
+    CommonArticulationDynamicGeneralNClosedDyadicRepresentationBoundaryPoseAngleIdentityPositiveThicknessPrerequisiteLimitsV2 {
+        max_blocks: boundary.block_count_cap_internal_v2(),
+        max_hinges: pose_identity.replay_hinge_count_cap_v2(),
+        max_schedule_deep_retained_bytes: pose_identity
+            .replay_schedule_deep_retained_bytes_cap_v2(),
+        max_representation_boundary_poses_deep_retained_bytes: pose_bytes,
+        max_pose_angle_identity_logical_work: pose_identity.logical_work_v2(),
+        max_pose_angle_identity_workspace_bytes: pose_identity
+            .workspace_peak_bytes_upper_bound_v2(),
+        max_retained_boundary_configuration_prerequisite_bytes: retained_boundary,
+        max_publication_bytes: publication,
+        max_aggregate_peak_bytes: boundary_replay_phase
+            .max(pose_join_phase)
+            .max(composition_phase),
+    }
+}
+
+pub(super) fn phase3j_replay_input_v2<'a>(
+    boundary_configuration_replay: CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteRevalidationInputV2<'a>,
+    audit: &'a ori_kinematics::MaterialHingeGraphAudit,
+    lower_pose: &'a ori_kinematics::ClosedMaterialHingeGraphPose,
+    upper_pose: &'a ori_kinematics::ClosedMaterialHingeGraphPose,
+    limits: CommonArticulationDynamicGeneralNClosedDyadicRepresentationBoundaryPoseAngleIdentityPositiveThicknessPrerequisiteLimitsV2,
+) -> CommonArticulationDynamicGeneralNClosedDyadicRepresentationBoundaryPoseAngleIdentityPositiveThicknessPrerequisiteRevalidationInputV2<'a>{
+    CommonArticulationDynamicGeneralNClosedDyadicRepresentationBoundaryPoseAngleIdentityPositiveThicknessPrerequisiteRevalidationInputV2 {
+        boundary_configuration_replay,
+        audit,
+        lower_pose,
+        upper_pose,
+        limits,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn boundary_configuration_replay_input_v2<'a>(
     fixture: &'a OrdinaryFixtureV2,

@@ -59,7 +59,11 @@ pub enum CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPosit
     DeadlineExceeded,
 }
 
-/// Exact outer policy for the schedule join and its two delegated proofs.
+/// Replay-bound outer policy for the schedule join and its two delegated proofs.
+///
+/// The six count/retained/publication/aggregate `max_*` fields are upper caps:
+/// issuance may retain genuine slack, but replay must reproduce each cap
+/// exactly. Boundary-evidence logical work and workspace are exact identities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteLimitsV2
 {
@@ -284,6 +288,83 @@ impl CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveT
     #[must_use]
     pub const fn aggregate_peak_bytes_upper_bound_v2(&self) -> usize {
         self.resources.aggregate_peak_bytes
+    }
+
+    pub(super) const fn issuer_geometry_instance_v2(&self) -> &MaterialHingeGraphInstanceV1 {
+        &self.issuer_geometry
+    }
+
+    pub(super) const fn schedule_binding_fingerprint_internal_v2(&self) -> [u8; 32] {
+        self.boundary_evidence.schedule_binding_fingerprint_v2()
+    }
+
+    pub(super) const fn graph_binding_fingerprint_internal_v2(&self) -> [u8; 32] {
+        self.endpoint_prerequisite.graph_binding_fingerprint_v1()
+    }
+
+    pub(super) const fn closed_boundary_binding_fingerprint_internal_v2(&self) -> [u8; 32] {
+        self.boundary_evidence.binding_fingerprint_v2()
+    }
+
+    pub(super) const fn closed_boundary_evidence_internal_v2(
+        &self,
+    ) -> &CanonicalCycleScheduleClosedDyadicBoundaryEvidenceV2 {
+        &self.boundary_evidence
+    }
+
+    pub(super) const fn schedule_limits_internal_v2(&self) -> CycleScheduleLimitsV1 {
+        self.schedule_limits
+    }
+
+    pub(super) const fn schedule_deep_retained_bytes_cap_internal_v2(&self) -> usize {
+        self.limits.max_schedule_deep_retained_bytes
+    }
+
+    pub(super) const fn block_count_cap_internal_v2(&self) -> usize {
+        self.limits.max_blocks
+    }
+
+    pub(super) const fn hinge_count_cap_internal_v2(&self) -> usize {
+        self.limits.max_hinges
+    }
+
+    pub(super) const fn replay_aggregate_peak_cap_internal_v2(&self) -> usize {
+        self.limits.max_aggregate_peak_bytes
+    }
+
+    pub(super) const fn binding_fingerprint_internal_v2(&self) -> [u8; 32] {
+        self.binding_fingerprint
+    }
+
+    pub(super) fn cheap_replay_tuple_matches_internal_v2(
+        &self,
+        input: &CommonArticulationDynamicGeneralNClosedDyadicBoundaryConfigurationPositiveThicknessPrerequisiteRevalidationInputV2<'_>,
+    ) -> bool {
+        let replay_geometry = input.endpoint_replay.coverage_replay.live.geometry;
+        let replay_schedule = input.endpoint_replay.coverage_replay.live.parent_schedule;
+        validation::limits_match_v2(self.limits, input.limits)
+            && self.schedule_limits == input.schedule_limits
+            && self
+                .endpoint_prerequisite
+                .replay_limits_match_v2(input.endpoint_replay.limits)
+            && self.issuer_geometry.matches(input.geometry)
+            && self.issuer_geometry.matches(replay_geometry)
+            && self
+                .endpoint_prerequisite
+                .matches_geometry_instance_v2(input.geometry)
+            && self
+                .endpoint_prerequisite
+                .matches_geometry_instance_v2(replay_geometry)
+            && self.endpoint_prerequisite.schedule_binding_fingerprint_v2()
+                == self.boundary_evidence.schedule_binding_fingerprint_v2()
+            && self.boundary_evidence.schedule_binding_fingerprint_v2()
+                == input.schedule.certificate_binding_fingerprint_v2()
+            && self.boundary_evidence.schedule_binding_fingerprint_v2()
+                == replay_schedule.certificate_binding_fingerprint_v2()
+            && self.endpoint_prerequisite.graph_binding_fingerprint_v1()
+                == input.schedule.graph_binding_fingerprint_v1()
+            && self.endpoint_prerequisite.graph_binding_fingerprint_v1()
+                == replay_schedule.graph_binding_fingerprint_v1()
     }
 
     pub fn revalidate_v2(

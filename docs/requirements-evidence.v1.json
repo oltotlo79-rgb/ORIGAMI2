@@ -2142,7 +2142,8 @@
         "7e2e1247dd9685c609899017205bc3c9b317f84b",
         "bd3e9940117bad55ce7fcfcca6090c15032bdc1e",
         "b7a4bc726cd818d7bc6a9d5758446cffc1e11f1b",
-        "be34d05ead8211129126a0a784414caf63ce2f30"
+        "be34d05ead8211129126a0a784414caf63ce2f30",
+        "ee777c25a5c736c6d7c4d449a9bfbe5c8d750ed3"
       ],
       "evidence": [
         {
@@ -2569,6 +2570,21 @@
           "kind": "test",
           "path": "test-support/n33_compact_pair_assignment_v2.rs",
           "selector": "pub const N33_COMPACT_ASSIGNMENT_SHA256_HEX_V2"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-kinematics/src/canonical_binary64_pose_pair_transform_realization_v2.rs",
+          "selector": "pub fn prove_canonical_binary64_pose_pair_transform_realization_evidence_v2("
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/lib.rs",
+          "selector": "prove_common_articulation_dynamic_general_n_closed_dyadic_representation_boundary_pose_canonical_binary64_transform_positive_thickness_prerequisite_v2,"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/common_articulation_general_cell_transport_v2/dynamic_relieved_source_coverage/tests/phase3k_canonical_pose.rs",
+          "selector": "pub(super) fn assert_phase3k_canonical_pose_v2<'a>("
         }
       ],
       "limitations": [

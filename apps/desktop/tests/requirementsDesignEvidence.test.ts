@@ -53,6 +53,8 @@ const SIM_010_STAGED_EXTENSION_LIMITATION
   = 'Commit cf30d9c901f153c5dde01280218f32fdd32c8856 adds only a separately typed, non-authorizing 11..=32 staged extension authority. It binds [11, configured cap, actual] u64LE with revalidated pose and clearance prerequisites while legacy 2..=10 paths remain unchanged. Invalid/resource/cap/count/partition/live-drift/cancel/deadline failures do not connect it to final or desktop paths, project mutation, Apply, or viewer.'
 const SIM_010_FINAL_AND_STATIONARY_POSITIVE_COMMIT
   = 'be34d05ead8211129126a0a784414caf63ce2f30'
+const SIM_010_PHASE3K_CANONICAL_BINARY64_COMMIT
+  = 'ee777c25a5c736c6d7c4d449a9bfbe5c8d750ed3'
 
 test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]
@@ -96,7 +98,8 @@ test('SIM-010 keeps staged, final, and stationary-positive evidence separately t
   assert.ok(simEvidence.commits.includes(SIM_010_CLEARANCE_EXTENSION_COMMIT))
   assert.ok(simEvidence.commits.includes(SIM_010_STAGED_EXTENSION_COMMIT))
   assert.ok(simEvidence.commits.includes(SIM_010_FINAL_AND_STATIONARY_POSITIVE_COMMIT))
-  assert.equal(simEvidence.evidence.length, 85)
+  assert.ok(simEvidence.commits.includes(SIM_010_PHASE3K_CANONICAL_BINARY64_COMMIT))
+  assert.equal(simEvidence.evidence.length, 88)
   assert.ok(simEvidence.limitations.includes(SIM_010_POSE_EXTENSION_LIMITATION))
   assert.ok(simEvidence.limitations.includes(SIM_010_CLEARANCE_EXTENSION_LIMITATION))
   assert.ok(simEvidence.limitations.includes(SIM_010_STAGED_EXTENSION_LIMITATION))
@@ -145,6 +148,9 @@ test('SIM-010 keeps staged, final, and stationary-positive evidence separately t
     ['test', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/compact_pair_source/tests.rs', 'fn n33_compact_assignment_receipt_is_pinned_v2()'],
     ['test', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/compact_pair_source/tests.rs', 'fn genuine_n33_compact_authority_reaches_only_unpromoted_transport_v2()'],
     ['test', 'test-support/n33_compact_pair_assignment_v2.rs', 'pub const N33_COMPACT_ASSIGNMENT_SHA256_HEX_V2'],
+    ['production-symbol', 'crates/ori-kinematics/src/canonical_binary64_pose_pair_transform_realization_v2.rs', 'pub fn prove_canonical_binary64_pose_pair_transform_realization_evidence_v2('],
+    ['production-symbol', 'crates/ori-collision/src/lib.rs', 'prove_common_articulation_dynamic_general_n_closed_dyadic_representation_boundary_pose_canonical_binary64_transform_positive_thickness_prerequisite_v2,'],
+    ['test', 'crates/ori-collision/src/common_articulation_general_cell_transport_v2/dynamic_relieved_source_coverage/tests/phase3k_canonical_pose.rs', "pub(super) fn assert_phase3k_canonical_pose_v2<'a>("],
   ]
   for (const [kind, path, selector] of expectedEvidence) {
     assert.ok(simEvidence.evidence.some(

@@ -137,7 +137,23 @@ jobs:
       - name: Install headless Chromium for Khronos Sample Viewer
         run: npx --no-install playwright install --with-deps chromium
       - name: Verify bounded general target lifecycle in Chromium
-        run: npm run test:generic-target-browser
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npm run test:generic-target-browser 2>&1 | tee "$RUNNER_TEMP/generic-target-browser.log"; then
+            message="$(
+              tail -n 40 "$RUNNER_TEMP/generic-target-browser.log" |
+                tr '\n' ' ' |
+                sed -E 's/[[:space:]]+/ /g' |
+                cut -c1-4000
+            )"
+            message="${message//'%'/'%25'}"
+            message="${message//$'\r'/'%0D'}"
+            message="${message//$'\n'/'%0A'}"
+            message="${message:0:4000}"
+            echo "::error title=Generic target browser E2E failed::${message:-browser test failed without diagnostic output}"
+            exit 1
+          fi
       - name: Verify complete animal lifecycle in Chromium
         run: npm run test:complete-animal-browser
       - name: Verify complete insect lifecycle in Chromium

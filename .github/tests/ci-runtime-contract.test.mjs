@@ -113,6 +113,30 @@ test('frontend builds once before production audits and retains Blender and lint
   assert.ok(frontendJob.indexOf(blender) < frontendJob.indexOf(lint))
 })
 
+test('generic target browser failure emits one bounded diagnostic annotation', () => {
+  const frontendJob = frontendJobSource()
+  assert.match(
+    frontendJob,
+    /npm run test:generic-target-browser 2>&1 \| tee "\$RUNNER_TEMP\/generic-target-browser\.log"/u,
+  )
+  assert.match(frontendJob, /tail -n 40 "\$RUNNER_TEMP\/generic-target-browser\.log"/u)
+  assert.match(frontendJob, /cut -c1-4000/u)
+  assertInOrder(frontendJob, [
+    'set -o pipefail',
+    'npm run test:generic-target-browser 2>&1 | tee "$RUNNER_TEMP/generic-target-browser.log"',
+    'message="${message//\'%\'/\'%25\'}"',
+    'message="${message//$\'\\r\'/\'%0D\'}"',
+    'message="${message//$\'\\n\'/\'%0A\'}"',
+    'message="${message:0:4000}"',
+    '::error title=Generic target browser E2E failed::',
+  ])
+  assert.equal(
+    frontendJob.split('::error title=Generic target browser E2E failed::').length - 1,
+    1,
+  )
+  assert.doesNotMatch(frontendJob, /test:generic-target-browser[^\r\n]*retry/iu)
+})
+
 test('CI preserves required release checks and evidence artifacts', () => {
   const workflow = readFileSync(workflowPath, 'utf8')
   const jobs = workflow.slice(workflow.indexOf('\njobs:\n'))
